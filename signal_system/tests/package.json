@@ -1,0 +1,15 @@
+{
+  "name": "signal-system-ui-tests",
+  "version": "1.0.0",
+  "description": "Playwright UI tests for ATHENA dashboard",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:report": "playwright show-report",
+    "test:record": "playwright codegen http://localhost:7842"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0"
+  }
+}

@@ -1,0 +1,35 @@
+[Unit]
+Description=Signal System — BRIDGE Orchestrator
+Documentation=https://github.com/yourusername/signal_system
+After=network.target
+
+# Wants the other services to also be running
+Wants=signal-listener.service signal-aurum.service signal-athena.service
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+Group=YOUR_USERNAME
+
+WorkingDirectory=/home/YOUR_USERNAME/signal_system/python
+EnvironmentFile=/home/YOUR_USERNAME/signal_system/.env
+Environment=PYTHONPATH=/home/YOUR_USERNAME/signal_system/python
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/usr/bin/python3 /home/YOUR_USERNAME/signal_system/python/bridge.py --mode WATCH
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Auto-restart on failure
+Restart=on-failure
+RestartSec=10s
+
+# Logs — view with: journalctl -u signal-bridge -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signal-bridge
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

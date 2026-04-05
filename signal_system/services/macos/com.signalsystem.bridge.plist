@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- ── Identity ────────────────────────────────────────────── -->
+    <key>Label</key>
+    <string>com.signalsystem.bridge</string>
+
+    <!-- ── Command ─────────────────────────────────────────────── -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/python3</string>
+        <string>/Users/YOUR_USERNAME/signal_system/python/bridge.py</string>
+        <string>--mode</string>
+        <string>WATCH</string>
+    </array>
+
+    <!-- ── Working directory ────────────────────────────────────── -->
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/signal_system/python</string>
+
+    <!-- ── Environment ─────────────────────────────────────────── -->
+    <!-- Load .env via the EnvironmentVariables key.              -->
+    <!-- Alternatively the bridge.py reads dotenv automatically. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/YOUR_USERNAME/signal_system/python</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <!-- ── Logging ──────────────────────────────────────────────── -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/signal_system/logs/bridge.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/signal_system/logs/bridge.error.log</string>
+
+    <!-- ── Auto-start on login ──────────────────────────────────── -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- ── Auto-restart on crash ───────────────────────────────── -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- ── Restart throttle (wait 10s before restarting) ──────── -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+</dict>
+</plist>

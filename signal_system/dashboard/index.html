@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ATHENA — Signal System</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#060709;color:#A8B8CC;font-family:Georgia,serif;overflow:hidden;height:100vh;}
+    ::-webkit-scrollbar{width:4px;} ::-webkit-scrollbar-track{background:#0B0D14;}
+    ::-webkit-scrollbar-thumb{background:#1C2035;border-radius:2px;}
+    input,button{outline:none;font-family:inherit;}
+    @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.35;}}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(3px);}to{opacity:1;transform:translateY(0);}}
+    @keyframes slideIn{from{opacity:0;transform:translateX(-6px);}to{opacity:1;transform:translateX(0);}}
+    .blink{animation:pulse 2s infinite;} .fade{animation:fadeIn 0.25s ease;} .slide{animation:slideIn 0.2s ease;}
+  </style>
+</head>
+<body><div id="root"></div>
+<script type="text/babel" src="app.js"></script>
+</body>
+</html>

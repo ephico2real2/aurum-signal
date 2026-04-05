@@ -1,0 +1,66 @@
+# ── Credentials — NEVER commit ────────────────────────────────────
+.env
+*.session
+*.session.json
+config/telegram_session*
+
+# ── Runtime config files ───────────────────────────────────────────
+config/status.json
+config/parsed_signal.json
+config/lens_snapshot.json
+config/sentinel_status.json
+config/aurum_cmd.json
+config/management_cmd.json
+config/reconciler_last.json
+config/broker_info.json
+config/tick_data.json
+
+# ── MT5 files (written by FORGE — not source code) ────────────────
+MT5/
+python/MT5/
+
+# ── Database ───────────────────────────────────────────────────────
+data/*.db
+python/data/*.db
+*.db
+
+# ── Logs ───────────────────────────────────────────────────────────
+logs/
+*.log
+*.error.log
+
+# ── Node ───────────────────────────────────────────────────────────
+node_modules/
+tests/playwright-report/
+tests/test-results/
+tests/.cache/
+
+# ── Python ─────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ── macOS ──────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# ── IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Test artifacts ─────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+python/config/*.json
+python/config/*.session

@@ -1,0 +1,21 @@
+[Unit]
+Description=Signal System — AURUM AI Agent Telegram Bot
+After=network.target signal-bridge.service
+Requires=signal-bridge.service
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/signal_system/python
+EnvironmentFile=/home/YOUR_USERNAME/signal_system/.env
+Environment=PYTHONPATH=/home/YOUR_USERNAME/signal_system/python
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/YOUR_USERNAME/signal_system/python/aurum.py --telegram
+Restart=on-failure
+RestartSec=15s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signal-aurum
+
+[Install]
+WantedBy=multi-user.target

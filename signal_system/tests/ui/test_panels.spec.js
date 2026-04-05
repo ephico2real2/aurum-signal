@@ -1,0 +1,74 @@
+// test_panels.spec.js — ATHENA panel interaction tests
+const { test, expect } = require('@playwright/test');
+
+const ATHENA_URL = process.env.ATHENA_URL || 'http://localhost:7842';
+
+test.describe('ATHENA Panel Interactions', () => {
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto(ATHENA_URL);
+    await page.waitForSelector('#root > div', { timeout: 10000 });
+    await page.waitForTimeout(1000); // allow poll to run
+  });
+
+  test('Activity tab switches content', async ({ page }) => {
+    const activityTab = page.locator('text=Activity').first();
+    await expect(activityTab).toBeVisible();
+    await activityTab.click();
+    // Should show activity log area
+    await page.waitForTimeout(500);
+    // Filter buttons should appear
+    await expect(page.locator('text=INFO').first()).toBeVisible();
+  });
+
+  test('Mode control buttons are clickable', async ({ page }) => {
+    // Click WATCH mode button
+    const watchBtn = page.locator('text=WATCH').first();
+    await expect(watchBtn).toBeVisible();
+    await watchBtn.click();
+    await page.waitForTimeout(500);
+    // Should not crash
+  });
+
+  test('AURUM chat input is present', async ({ page }) => {
+    const chatInput = page.locator('input[placeholder*="AURUM"]').first();
+    if (await chatInput.isVisible().catch(() => false)) {
+      await expect(chatInput).toBeEnabled();
+    } else {
+      // AURUM chat may be in right panel — scroll or check
+      const aurum = page.locator('text=AURUM').first();
+      await expect(aurum).toBeVisible();
+    }
+  });
+
+  test('Performance tab shows stats', async ({ page }) => {
+    const perfTab = page.locator('text=Performance').first();
+    await expect(perfTab).toBeVisible();
+    await perfTab.click();
+    await page.waitForTimeout(500);
+    await expect(page.locator('text=Win Rate').first()).toBeVisible();
+  });
+
+  test('Groups tab shows open groups or empty state', async ({ page }) => {
+    // Groups is default tab
+    const groupsArea = page.locator('text=Groups').first();
+    await expect(groupsArea).toBeVisible();
+    await groupsArea.click();
+    await page.waitForTimeout(500);
+    // Either shows groups or "No open groups"
+    const hasGroups = await page.locator('text=No open groups').isVisible().catch(() => false);
+    const hasGroupCard = await page.locator('text=BUY').isVisible().catch(() => false) ||
+                         await page.locator('text=SELL').isVisible().catch(() => false);
+    expect(hasGroups || hasGroupCard).toBe(true);
+  });
+
+  test('SENTINEL panel shows status', async ({ page }) => {
+    const sentinel = page.locator('text=SENTINEL').first();
+    await expect(sentinel).toBeVisible();
+    // Should show either CLEAR TO TRADE or TRADING PAUSED
+    const clear = await page.locator('text=CLEAR TO TRADE').isVisible().catch(() => false);
+    const paused = await page.locator('text=TRADING PAUSED').isVisible().catch(() => false);
+    expect(clear || paused).toBe(true);
+  });
+
+});
