@@ -180,8 +180,15 @@ class Aurum:
             "Supported JSON actions:",
             '- MODE_CHANGE: {"action":"MODE_CHANGE","new_mode":"SCALPER","reason":"..."}',
             '- OPEN_GROUP (preferred): {"action":"OPEN_GROUP","direction":"SELL","entry_low":4610.7,"entry_high":4610.9,"sl":4614.0,"tp1":4607.0,"tp2":null,"lot_per_trade":0.01,"reason":"..."}',
+            '- MODIFY_TP: {"action":"MODIFY_TP","tp":4648.50,"group_id":15,"reason":"..."}',
+            '- MODIFY_SL: {"action":"MODIFY_SL","sl":4660.00,"group_id":15,"reason":"..."}',
+            '- CLOSE_GROUP: {"action":"CLOSE_GROUP","group_id":15,"reason":"..."}',
+            '- CLOSE_GROUP_PCT: {"action":"CLOSE_GROUP_PCT","group_id":15,"pct":70,"reason":"..."}',
+            '- CLOSE_ALL, MOVE_BE, CLOSE_PROFITABLE, CLOSE_LOSING (no group_id needed)',
             '- OPEN_TRADE is accepted as an alias for OPEN_GROUP; map numeric "entry" or entry=market uses MT5 mid from context.',
             "Do **not** use action OPEN_TRADE as a separate protocol — it is normalized to OPEN_GROUP.",
+            "**Multiple commands**: If you need to modify MULTIPLE groups, put each as a SEPARATE ```json block in your reply. "
+            "BRIDGE processes them sequentially (6s delay between each). All blocks in one reply are fine.",
             "Never tell the user a trade was written unless you included a valid JSON fence or the mode-change phrase above.",
             "BRIDGE runs AEGIS on every OPEN_GROUP; if AEGIS rejects, FORGE never sees the order.",
             "Automatic SCALPER entries from BRIDGE (without AURUM) only fire when ADX>20 and RSI/MACD/BB align — low ADX means no *auto* scalp from BRIDGE.",
@@ -514,10 +521,22 @@ class Aurum:
             return None
 
     def _extract_json_commands_from_response(self, text: str) -> None:
-        """Parse ```json ... ``` fences and write the first actionable command to aurum_cmd.json."""
+        """Parse ```json ... ``` fences and write actionable commands to aurum_cmd.json.
+
+        IMPORTANT: aurum_cmd.json holds ONE command at a time. If the response
+        contains multiple JSON blocks, they are queued sequentially with a
+        small delay so BRIDGE can process each before the next overwrites.
+        """
         if not text or "```" not in text:
             return
         chunks = text.split("```")
+        valid_actions = (
+            "MODE_CHANGE", "CLOSE_ALL", "OPEN_GROUP", "OPEN_TRADE",
+            "MODIFY_TP", "MODIFY_SL", "CLOSE_GROUP", "CLOSE_GROUP_PCT",
+            "MOVE_BE", "CLOSE_PROFITABLE", "CLOSE_LOSING",
+            "SENTINEL_OVERRIDE",
+        )
+        commands_found: list[dict] = []
         for i in range(1, len(chunks), 2):
             block = chunks[i].strip()
             if block.lower().startswith("json"):
@@ -533,23 +552,29 @@ class Aurum:
             if act == "OPEN_TRADE":
                 obj["action"] = "OPEN_GROUP"
                 act = "OPEN_GROUP"
-            ts = datetime.now(timezone.utc).isoformat()
-            valid_modes = ("OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID", "AUTO_SCALPER")
-            if act == "MODE_CHANGE" and obj.get("new_mode") in valid_modes:
-                obj["timestamp"] = ts
-                self.write_command(obj)
-                log.info("AURUM: queued MODE_CHANGE from response JSON")
-                return
-            if act == "CLOSE_ALL":
-                obj["timestamp"] = ts
-                self.write_command(obj)
-                log.info("AURUM: queued CLOSE_ALL from response JSON")
-                return
-            if act == "OPEN_GROUP":
-                obj["timestamp"] = ts
-                self.write_command(obj)
-                log.info("AURUM: queued OPEN_GROUP from response JSON")
-                return
+            if act in valid_actions:
+                obj["timestamp"] = datetime.now(timezone.utc).isoformat()
+                commands_found.append(obj)
+
+        if not commands_found:
+            return
+
+        if len(commands_found) > 1:
+            log.warning(
+                "AURUM: %d JSON commands in one reply — processing sequentially "
+                "(aurum_cmd.json holds one at a time)",
+                len(commands_found),
+            )
+
+        # Write commands sequentially with delay between them
+        for idx, cmd in enumerate(commands_found):
+            if idx > 0:
+                # Wait for BRIDGE to consume previous command (~6s > BRIDGE_LOOP_SEC)
+                import time as _time
+                _time.sleep(6)
+            self.write_command(cmd)
+            log.info("AURUM: queued %s from response JSON (%d/%d)",
+                     cmd.get("action"), idx + 1, len(commands_found))
 
     def _check_for_command(self, response: str):
         """Check if AURUM's response contains a system command to execute."""

@@ -1405,6 +1405,82 @@ class Bridge:
             )
             self._dispatch_aurum_open_group(cmd, mt5 or {})
 
+        elif action == "MODIFY_TP":
+            tp = cmd.get("tp")
+            gid = cmd.get("group_id")
+            if tp:
+                forge_cmd = {"action": "MODIFY_TP", "tp": float(tp), "timestamp": _now()}
+                if gid:
+                    magic = self._lookup_group_magic(int(gid))
+                    if magic:
+                        forge_cmd["magic"] = magic
+                _write_forge_command(forge_cmd)
+                self._bridge_activity(
+                    "MGMT_COMMAND", reason="MODIFY_TP",
+                    notes=json.dumps({"tp": tp, "group_id": gid, "via": "AURUM"}, default=str))
+                log.info("BRIDGE: AURUM MODIFY_TP tp=%s group=%s", tp, gid)
+
+        elif action == "MODIFY_SL":
+            sl = cmd.get("sl")
+            gid = cmd.get("group_id")
+            if sl:
+                forge_cmd = {"action": "MODIFY_SL", "sl": float(sl), "timestamp": _now()}
+                if gid:
+                    magic = self._lookup_group_magic(int(gid))
+                    if magic:
+                        forge_cmd["magic"] = magic
+                _write_forge_command(forge_cmd)
+                self._bridge_activity(
+                    "MGMT_COMMAND", reason="MODIFY_SL",
+                    notes=json.dumps({"sl": sl, "group_id": gid, "via": "AURUM"}, default=str))
+                log.info("BRIDGE: AURUM MODIFY_SL sl=%s group=%s", sl, gid)
+
+        elif action == "CLOSE_GROUP":
+            gid = cmd.get("group_id")
+            if gid:
+                magic = self._lookup_group_magic(int(gid))
+                if magic:
+                    _write_forge_command({"action": "CLOSE_GROUP", "magic": magic, "timestamp": _now()})
+                    self.scribe.update_trade_group(int(gid), "CLOSED", close_reason="AURUM_CLOSE_GROUP")
+                    self._bridge_activity(
+                        "MGMT_COMMAND", reason="CLOSE_GROUP",
+                        notes=json.dumps({"group_id": gid, "via": "AURUM"}, default=str))
+                    log.info("BRIDGE: AURUM CLOSE_GROUP G%s", gid)
+
+        elif action == "CLOSE_GROUP_PCT":
+            gid = cmd.get("group_id")
+            pct = cmd.get("pct", 70)
+            if gid:
+                magic = self._lookup_group_magic(int(gid))
+                if magic:
+                    _write_forge_command({"action": "CLOSE_GROUP_PCT", "magic": magic,
+                                          "pct": float(pct), "timestamp": _now()})
+                    self._bridge_activity(
+                        "MGMT_COMMAND", reason="CLOSE_GROUP_PCT",
+                        notes=json.dumps({"group_id": gid, "pct": pct, "via": "AURUM"}, default=str))
+                    log.info("BRIDGE: AURUM CLOSE_GROUP_PCT G%s %s%%", gid, pct)
+
+        elif action == "MOVE_BE":
+            _write_forge_command({"action": "MOVE_BE_ALL", "timestamp": _now()})
+            self._bridge_activity("MGMT_COMMAND", reason="MOVE_BE",
+                                  notes=json.dumps({"via": "AURUM"}, default=str))
+            log.info("BRIDGE: AURUM MOVE_BE_ALL")
+
+        elif action == "CLOSE_PROFITABLE":
+            _write_forge_command({"action": "CLOSE_PROFITABLE", "timestamp": _now()})
+            self._bridge_activity("MGMT_COMMAND", reason="CLOSE_PROFITABLE",
+                                  notes=json.dumps({"via": "AURUM"}, default=str))
+            log.info("BRIDGE: AURUM CLOSE_PROFITABLE")
+
+        elif action == "CLOSE_LOSING":
+            _write_forge_command({"action": "CLOSE_LOSING", "timestamp": _now()})
+            self._bridge_activity("MGMT_COMMAND", reason="CLOSE_LOSING",
+                                  notes=json.dumps({"via": "AURUM"}, default=str))
+            log.info("BRIDGE: AURUM CLOSE_LOSING")
+
+        else:
+            log.warning("BRIDGE: unknown AURUM action %r — ignored", action)
+
         # Clear command after processing
         try:
             import os as _os
