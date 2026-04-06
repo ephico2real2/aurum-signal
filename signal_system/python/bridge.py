@@ -355,19 +355,39 @@ class Bridge:
         """Infer SL_HIT / TP1_HIT / TP2_HIT / TP3_HIT / MANUAL_CLOSE
         by comparing close_price to the position's SL and TP levels.
         Tolerance: $0.50 (XAUUSD spread + slippage).
+        Zero SL/TP (no stop set) is treated as unset, not matched.
         """
         TOL = 0.50  # $0.50 tolerance for XAUUSD
-        if not close_price:
+        if not close_price or close_price <= 0:
             return "UNKNOWN"
 
-        # Check SL
-        if sl and abs(close_price - sl) <= TOL:
+        # Check SL (skip if unset / zero — FORGE reports 0.00 for no SL)
+        if sl and sl > 100 and abs(close_price - sl) <= TOL:
             return "SL_HIT"
 
-        # Check TP — the position's TP field has the assigned target (TP1 or TP2)
-        if tp and abs(close_price - tp) <= TOL:
+        # Check TP (skip if unset / zero)
+        if tp and tp > 100 and abs(close_price - tp) <= TOL:
             # Determine which TP stage by looking up the group's original targets
             return self._match_tp_stage(close_price, group_id, TOL)
+
+        # Also check group-level TP1/TP2/TP3 in case position TP was modified
+        if group_id is not None:
+            try:
+                rows = self.scribe.query(
+                    "SELECT sl, tp1, tp2, tp3 FROM trade_groups WHERE id=?",
+                    (group_id,))
+                if rows:
+                    g = rows[0]
+                    g_sl = g.get("sl") or 0
+                    if g_sl > 100 and abs(close_price - g_sl) <= TOL:
+                        return "SL_HIT"
+                    for tp_name, tp_val in [("tp1", g.get("tp1")),
+                                            ("tp2", g.get("tp2")),
+                                            ("tp3", g.get("tp3"))]:
+                        if tp_val and tp_val > 100 and abs(close_price - tp_val) <= TOL:
+                            return tp_name.upper() + "_HIT"
+            except Exception:
+                pass
 
         # Close price doesn't match SL or TP — manual or partial close
         return "MANUAL_CLOSE"
