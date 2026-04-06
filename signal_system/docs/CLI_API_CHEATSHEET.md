@@ -883,10 +883,30 @@ curl -s -X POST http://localhost:7842/api/mode \
 
 Config: `RESTORE_MODE_ON_RESTART=true` (default) in .env
 
+## Web Search (Google News RSS)
+
+Search for live news (free, no API key):
+```bash
+curl -s "http://localhost:7842/api/search?q=trump+speaking+gold&n=3" | python3 -m json.tool
+```
+
+AURUM auto-triggers this when you ask about live events:
+```bash
+curl -s -X POST http://localhost:7842/api/aurum/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "Is Trump still speaking? What is the latest gold news?"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('response','error'))"
+```
+
+Trigger keywords: news, speaking, live, right now, trump, powell, fomc, breaking, latest, etc.
+
 ## Useful Make Targets
 
 ```bash
-make restart              # restart all Python services
+make reload               # hot-restart all Python processes (fast)
+make reload-bridge        # hot-restart BRIDGE only (sentinel/aegis/aurum changes)
+make restart              # full restart (re-renders plists from .env)
+make stop / make start    # stop / install + start all services
 make forge-compile        # compile FORGE.mq5 → .ex5
 make forge-reload         # compile + restart MT5 + check if EA auto-loaded
 make forge-refresh        # compile + open MT5 (manual reattach)
