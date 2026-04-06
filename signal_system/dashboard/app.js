@@ -826,6 +826,13 @@ function ATHENA(){
               )}
               {(D.open_groups||[]).map(g=>{
                 const cl=g.trades_closed||0,tot=g.num_trades||8;
+                // Match live MT5 positions to this group by magic number
+                const gMagic=g.magic_number||0;
+                const livePos=(D.open_positions||[]).filter(p=>p.magic===gMagic);
+                const liveFloating=livePos.reduce((s,p)=>s+(p.profit||0),0);
+                const hasLive=livePos.length>0;
+                // Use live floating P&L for open groups, SCRIBE total_pnl for closed
+                const displayPnl=hasLive?liveFloating:(g.total_pnl||0);
                 return(<div key={g.id} className="fade" style={{background:T.card,
                   border:`1px solid ${T.border2}`,
                   borderLeft:`3px solid ${g.direction==='BUY'?T.green:T.red}`,
@@ -849,22 +856,38 @@ function ATHENA(){
                       </div>
                     </div>
                     <div style={{textAlign:'right'}}>
-                      <span style={{fontFamily:T.mono,color:(g.total_pnl||0)>=0?T.green:T.red,fontWeight:700}}>
-                        {(g.total_pnl||0)>=0?'+':''}{(g.total_pnl||0).toFixed(2)}</span>
-                      <div style={{fontSize:8,color:T.text,fontFamily:T.mono}}>
-                        +{(g.pips_captured||0).toFixed(1)}p</div>
+                      <span style={{fontFamily:T.mono,color:displayPnl>=0?T.green:T.red,fontWeight:700,
+                        fontSize:hasLive?15:13}}>
+                        {displayPnl>=0?'+':''}{displayPnl.toFixed(2)}</span>
+                      {hasLive&&<div style={{fontSize:7,color:T.gold,fontFamily:T.mono}}>LIVE</div>}
+                      {!hasLive&&<div style={{fontSize:8,color:T.text,fontFamily:T.mono}}>
+                        +{(g.pips_captured||0).toFixed(1)}p</div>}
                     </div>
                   </div>
+                  {/* Position grid: show entry price + live P&L from MT5 */}
                   <div style={{display:'grid',gridTemplateColumns:`repeat(${tot},1fr)`,
                     gap:2,marginBottom:8}}>
-                    {Array.from({length:tot}).map((_,i)=>{const isCl=i<cl;return(
-                      <div key={i} style={{height:14,borderRadius:2,
+                    {Array.from({length:tot}).map((_,i)=>{
+                      const isCl=i<cl;
+                      const pos=livePos[i-cl];  // map remaining slots to live positions
+                      const activePos=!isCl&&i-cl>=0&&i-cl<livePos.length?livePos[i-cl]:null;
+                      return(
+                      <div key={i} title={activePos?`#${activePos.ticket} @ ${activePos.open_price} pnl $${activePos.profit}`:''}
+                        style={{height:activePos?28:14,borderRadius:2,
                         background:isCl?(g.direction==='BUY'?T.greenBg:T.redBg)
                           :(g.direction==='BUY'?'rgba(16,185,129,0.2)':'rgba(239,68,68,0.2)'),
                         border:`1px solid ${isCl?T.border:(g.direction==='BUY'?T.green:T.red)}`,
                         display:'flex',alignItems:'center',justifyContent:'center',
+                        flexDirection:'column',gap:1,
                         fontSize:7,color:isCl?T.textD:(g.direction==='BUY'?T.green:T.red),
-                        fontFamily:T.mono}}>{isCl?'✓':'●'}</div>);})}
+                        fontFamily:T.mono}}>
+                        {isCl?'✓':activePos?(<>
+                          <span style={{fontSize:6,color:T.textD}}>{activePos.open_price}</span>
+                          <span style={{fontSize:7,fontWeight:700,
+                            color:(activePos.profit||0)>=0?T.green:T.red}}>
+                            {(activePos.profit||0)>=0?'+':''}{(activePos.profit||0).toFixed(2)}</span>
+                        </>):'●'}
+                      </div>);})}
                   </div>
                   <div style={{height:3,background:T.border,borderRadius:2,overflow:'hidden',marginBottom:4}}>
                     <div style={{width:`${Math.min(100,(cl/tot)*140)}%`,height:'100%',
