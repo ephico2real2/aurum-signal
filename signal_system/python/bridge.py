@@ -1466,6 +1466,14 @@ class Bridge:
                                   notes=json.dumps({"via": "AURUM"}, default=str))
             log.info("BRIDGE: AURUM MOVE_BE_ALL")
 
+        elif action == "CLOSE_PCT":
+            pct = cmd.get("pct", 70)
+            _write_forge_command({"action": "CLOSE_PCT", "pct": float(pct), "timestamp": _now()})
+            self._bridge_activity(
+                "MGMT_COMMAND", reason="CLOSE_PCT",
+                notes=json.dumps({"pct": pct, "via": "AURUM"}, default=str))
+            log.info("BRIDGE: AURUM CLOSE_PCT %s%%", pct)
+
         elif action == "CLOSE_PROFITABLE":
             _write_forge_command({"action": "CLOSE_PROFITABLE", "timestamp": _now()})
             self._bridge_activity("MGMT_COMMAND", reason="CLOSE_PROFITABLE",

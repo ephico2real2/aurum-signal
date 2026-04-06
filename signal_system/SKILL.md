@@ -61,17 +61,31 @@ AURUM’s reply is scanned for (a) a **magic phrase** or (b) **one** markdown `j
 **Note:** Dashboard can also queue the same change via `POST /api/mode` with `{"mode":"SCALPER"}` (writes `aurum_cmd.json` for BRIDGE). That path does not use AURUM.
 
 ### 5. Request Trades & Risk Commands (via `config/aurum_cmd.json`)
-BRIDGE reads `aurum_cmd.json` every cycle. **Implemented today:**
-- **CLOSE_ALL** → FORGE closes EA positions + cancels pending orders
-- **OPEN_GROUP** (or **OPEN_TRADE**, normalized) → AEGIS validates → SCRIBE group → FORGE `command.json` with **OPEN_GROUP**  
-  Full gate order, R:R formulas, rejection codes, and **`AEGIS_*` env tuning:** [docs/AEGIS.md](docs/AEGIS.md).
+BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supported:
+
+**Trade execution:**
+- **OPEN_GROUP** (or **OPEN_TRADE**, normalized) → AEGIS validates → SCRIBE group → FORGE places N trades across entry ladder with TP split (70% TP1, 30% TP2). Full gate order, R:R formulas, rejection codes: [docs/AEGIS.md](docs/AEGIS.md).
+
+**Close commands:**
+- **CLOSE_ALL** → close all EA positions + cancel all pending orders
+- **CLOSE_GROUP** → close positions + pendings for a specific group: `{"action":"CLOSE_GROUP","group_id":15}`
+- **CLOSE_GROUP_PCT** → close N% of a group: `{"action":"CLOSE_GROUP_PCT","group_id":15,"pct":70}`
+- **CLOSE_PCT** → close N% of ALL positions (no group_id): `{"action":"CLOSE_PCT","pct":70}`
+- **CLOSE_PROFITABLE** → close only positions in profit (P&L + swap + commission > 0)
+- **CLOSE_LOSING** → close only positions in loss
+
+**Modify commands:**
+- **MODIFY_SL** → change SL on all positions + pending orders: `{"action":"MODIFY_SL","sl":4660.00}`
+- **MODIFY_TP** → change TP on all positions + pending orders: `{"action":"MODIFY_TP","tp":4648.50}`
+- **MOVE_BE** → move all SL to breakeven (entry price): `{"action":"MOVE_BE"}`
+
+**Note on MODIFY_SL/TP scope:** FORGE v1.3.0 applies MODIFY_SL and MODIFY_TP to **all** EA positions (no per-group filtering). If you include `group_id`, BRIDGE passes the magic number in the JSON, but FORGE currently ignores it and modifies all. Per-group SL/TP modification requires a FORGE update.
+
+**Mode control:**
 - **MODE_CHANGE** → operating mode (also triggered by exact phrases like *Switching to SCALPER mode.*)
-- **MODIFY_SL** → FORGE modifies SL on all positions + pending orders to a specific price
-- **MODIFY_TP** → FORGE modifies TP on all positions + pending orders to a specific price
-- **CLOSE_GROUP** → close all positions + pendings for a specific group (by group_id)
-- **CLOSE_GROUP_PCT** → close N% of positions in a specific group (e.g., "close 70% of G9")
-- **CLOSE_PROFITABLE** → close only positions currently in profit (take profits)
-- **CLOSE_LOSING** → close only positions currently in loss (cut losses)
+- **SENTINEL_OVERRIDE** → bypass news guard for N seconds: `{"action":"SENTINEL_OVERRIDE","duration":300}`
+
+**Multiple commands in one reply:** Put each as a SEPARATE \`\`\`json block. BRIDGE processes them sequentially (6s delay between each).
 
 #### SIGNAL mode — Telegram channel signals
 In **SIGNAL** or **HYBRID** mode, LISTENER monitors configured Telegram channels and dispatches.
