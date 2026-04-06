@@ -948,7 +948,25 @@ def api_openapi_yaml():
     )
 
 
-# ── Health check ───────────────────────────────────────────────────
+# ── Web search (reusable — Google CSE) ─────────────────────────────
+@app.route("/api/search")
+def api_search():
+    """On-demand web search. GET /api/search?q=trump+speaking&n=5"""
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"error": "missing ?q= parameter"}), 400
+    n = max(1, min(int(request.args.get("n", "5")), 10))
+    try:
+        from web_search import search, is_configured
+        if not is_configured():
+            return jsonify({"error": "GOOGLE_SEARCH_API_KEY or GOOGLE_SEARCH_CX not set"}), 503
+        result = search(q, num_results=n)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+
+
+# ── Health check ───────────────────────────────────────────
 @app.route("/api/health")
 def api_health():
     return jsonify({

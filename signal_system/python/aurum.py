@@ -98,11 +98,18 @@ class Aurum:
         """
         Answer a query. Returns response string.
         Injects last 5 conversations from SCRIBE for continuity.
+        If query triggers live-search keywords, injects web search results.
         """
         if not self.claude:
             return "AURUM: Claude API not configured. Set ANTHROPIC_API_KEY in .env"
 
         context  = self._build_context()
+
+        # On-demand web search: inject fresh results when query asks about live events
+        web_context = self._maybe_web_search(query)
+        if web_context:
+            context += "\n\n" + web_context
+
         memory   = self._build_memory()
         system   = self._build_system_prompt(context, memory)
 
@@ -415,6 +422,25 @@ class Aurum:
                      f"Avg pips: {perf.get('avg_pips',0):+.1f}")
 
         return "\n".join(lines)
+
+    # ── On-demand web search ──────────────────────────────────────
+    @staticmethod
+    def _maybe_web_search(query: str) -> str | None:
+        """
+        If the query contains trigger keywords and Google CSE is configured,
+        run a live web search and return formatted context. Otherwise None.
+        """
+        try:
+            from web_search import needs_search, is_configured, search_and_format
+        except ImportError:
+            return None
+        if not is_configured() or not needs_search(query):
+            return None
+        try:
+            return search_and_format(query, num_results=3)
+        except Exception as e:
+            log.debug("AURUM web_search failed: %s", e)
+            return None
 
     def _extract_json_commands_from_response(self, text: str) -> None:
         """Parse ```json ... ``` fences and write the first actionable command to aurum_cmd.json."""
