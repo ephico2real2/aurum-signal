@@ -1,5 +1,37 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [1.3.1] — 2026-04-06
+
+### SL/TP Hit Logging (trade_closures)
+- New `trade_closures` SCRIBE table logs every position closure with full context
+- `close_reason` inferred by BRIDGE: `SL_HIT`, `TP1_HIT`, `TP2_HIT`, `TP3_HIT`, `MANUAL_CLOSE`, `RECONCILER`, `UNKNOWN`
+- BRIDGE `_infer_close_reason()` compares close price to SL/TP levels ($0.50 tolerance for XAUUSD)
+- BRIDGE `_match_tp_stage()` resolves TP1/TP2/TP3 from trade_group record
+- HERALD `tp_hit()` and `position_closed()` now called per position on SL/TP detection
+- RECONCILER ghost positions logged to `trade_closures` with reason `RECONCILER`
+- New API: `GET /api/closures?days=7&limit=50` — recent closures with reason
+- New API: `GET /api/closure_stats?days=7` — aggregated SL vs TP hit rates
+- `/api/live` extended with `recent_closures` (last 5, 24h) and `closure_stats` (7d)
+- New ATHENA dashboard **Closures** tab with color-coded SL/TP tags and summary stat tiles
+- `POSITION_MODIFIED` events categorized as TRADE in Activity panel (was hidden in SYSTEM)
+- AURUM context includes last 5 closures and 7d SL/TP hit rate stats
+- SCRIBE methods: `log_trade_closure()`, `get_recent_closures()`, `get_closure_stats()`, `get_open_positions_by_group()`
+- Tab bar compacted for 5-tab fit; group position grid boxes reduced
+- AURUM chat textarea auto-expands with word wrap (Shift+Enter for newlines)
+- Agent.md added (gitignored) for AI tool project context
+- Fixed pre-existing em-dash syntax error in scribe.py docstring
+- Fixed DDL string split that left component_heartbeats outside the DDL block
+
+### Documentation Updated
+- `SKILL.md` — closure queries, closure context in injected state
+- `SOUL.md` — trade closure detection knowledge, closure context awareness
+- `docs/CLI_API_CHEATSHEET.md` — /api/closures, /api/closure_stats curl examples, SCRIBE closure queries
+- `docs/SCRIBE_QUERY_EXAMPLES.md` — trade_closures table + 4 new example queries (#15–#18)
+- `docs/DATA_CONTRACT.md` — trade_closures in persistence layer
+- `CHANGELOG.md` — this entry
+
+---
+
 ## [1.3.0] — 2026-04-06
 
 ### AUTO_SCALPER Mode

@@ -25,6 +25,7 @@ ATHENA exposes **read-only** SQL: the body must be `{"sql": "SELECT ..."}`. Anyt
 | `news_events` | News guard / calendar context |
 | `aurum_conversations` | AURUM query/response log |
 | `component_heartbeats` | BRIDGE, LISTENER, FORGE, … liveness |
+| `trade_closures` | SL/TP hit logging — every position closure with inferred reason |
 
 ---
 
@@ -173,6 +174,54 @@ FROM signals_received sr
 LEFT JOIN trade_groups tg ON sr.trade_group_id = tg.id
 ORDER BY sr.id DESC
 LIMIT 30
+```
+
+### 15. Recent trade closures (SL/TP hits)
+
+```sql
+SELECT id, timestamp, ticket, trade_group_id, direction, close_reason, pnl, pips, close_price, session, mode
+FROM trade_closures
+ORDER BY id DESC
+LIMIT 20
+```
+
+### 16. SL vs TP hit rate (last 7 days)
+
+```sql
+SELECT
+    close_reason,
+    COUNT(*) AS count,
+    ROUND(SUM(pnl), 2) AS total_pnl,
+    ROUND(AVG(pnl), 2) AS avg_pnl,
+    ROUND(AVG(pips), 1) AS avg_pips
+FROM trade_closures
+WHERE timestamp >= datetime('now', '-7 days')
+GROUP BY close_reason
+ORDER BY count DESC
+```
+
+### 17. Closure breakdown by session
+
+```sql
+SELECT
+    session,
+    SUM(CASE WHEN close_reason = 'SL_HIT' THEN 1 ELSE 0 END) AS sl_hits,
+    SUM(CASE WHEN close_reason LIKE 'TP%' THEN 1 ELSE 0 END) AS tp_hits,
+    ROUND(SUM(pnl), 2) AS total_pnl,
+    COUNT(*) AS total
+FROM trade_closures
+WHERE timestamp >= datetime('now', '-7 days')
+GROUP BY session
+ORDER BY total DESC
+```
+
+### 18. Closures for a specific group
+
+```sql
+SELECT ticket, direction, close_reason, entry_price, close_price, pnl, pips, lot_size
+FROM trade_closures
+WHERE trade_group_id = 19
+ORDER BY id
 ```
 
 ---

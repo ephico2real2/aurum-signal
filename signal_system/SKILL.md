@@ -10,13 +10,19 @@ Direct answers from injected context (no tool call needed):
 - "Is SENTINEL active?" → from sentinel_status.json
 - "What's LENS showing?" → from lens_snapshot.json
 - "What are my open groups?" → from trade_groups context
+- "How many SL hits today?" → from trade_closures table
+- "What's my TP hit rate?" → from closure_stats (7d rolling)
+- "Show recent closures" → from trade_closures (last 24h in context)
 
 ### 2. Query SCRIBE History (SQL)
 I can query the SQLite database for historical analysis:
 ```
 scribe.get_performance(mode="SIGNAL", days=7)
 scribe.get_recent_signals(limit=20)
+scribe.get_recent_closures(limit=20, days=7)
+scribe.get_closure_stats(days=7)
 scribe.query("SELECT AVG(pips) FROM trade_positions WHERE mode='SIGNAL' AND close_time >= date('now','-30 days')")
+scribe.query("SELECT close_reason, COUNT(*) FROM trade_closures WHERE timestamp >= datetime('now','-7 days') GROUP BY close_reason")
 ```
 Example queries I respond to:
 - "What was my win rate last week?"
@@ -264,6 +270,13 @@ CONVERSATION HISTORY:
 
 PERFORMANCE (SCRIBE, 7d rolling):
   P&L, trades, win rate, avg pips
+
+RECENT CLOSURES (last 24h, from trade_closures):
+  [close_reason] ticket, group_id, direction, pnl, pips
+  close_reason: SL_HIT | TP1_HIT | TP2_HIT | TP3_HIT | MANUAL_CLOSE | RECONCILER
+
+CLOSURE STATS (7d rolling):
+  SL hit rate %, TP hit rate %, total, avg pnl, avg pips
 ```
 
 ---

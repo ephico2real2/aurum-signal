@@ -499,6 +499,39 @@ print('Command written — BRIDGE processes next tick (~5s)')
 "
 ```
 
+## Trade Closures (SL/TP Hits)
+
+Recent closures:
+```bash
+curl -s 'http://localhost:7842/api/closures?days=7&limit=20' | python3 -c "
+import sys, json
+for c in json.load(sys.stdin):
+    print(f'{c[\"timestamp\"][:19]} #{c[\"ticket\"]} G{c[\"trade_group_id\"]} {c[\"direction\"]} {c[\"close_reason\"]:12s} pnl=\${c[\"pnl\"]:+.2f} pips={c[\"pips\"]:+.1f}')
+"
+```
+
+Closure stats (SL vs TP hit rates):
+```bash
+curl -s 'http://localhost:7842/api/closure_stats?days=7' | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f'Total: {d[\"total\"]}  SL: {d[\"sl_hits\"]} ({d[\"sl_rate\"]}%)  TP1: {d[\"tp1_hits\"]}  TP2: {d[\"tp2_hits\"]}  Manual: {d[\"manual\"]}')
+print(f'P&L: \${d[\"total_pnl\"]:+.2f}  Avg: \${d[\"avg_pnl\"]:+.2f}  Avg pips: {d[\"avg_pips\"]:+.1f}')
+"
+```
+
+Query trade_closures directly via SCRIBE:
+```bash
+curl -s http://localhost:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql": "SELECT close_reason, COUNT(*) AS n, ROUND(SUM(pnl),2) AS total_pnl FROM trade_closures WHERE timestamp >= datetime(\"now\",\"-7 days\") GROUP BY close_reason ORDER BY n DESC"}' \
+  | python3 -c "
+import sys, json
+for r in json.load(sys.stdin)['rows']:
+    print(f'{r[\"close_reason\"]:15s} count={r[\"n\"]} pnl=\${r[\"total_pnl\"]:+.2f}')
+"
+```
+
 ## Performance
 
 ```bash

@@ -19,7 +19,7 @@ We maintain **one** HTTP contract: **OpenAPI**. We do **not** keep a parallel se
 
 | Layer | Role | Examples |
 |--------|------|----------|
-| **A. Persistence (SQLite)** | Long-lived truth for signals, groups, positions, events, heartbeats | `scribe.py` DDL |
+| **A. Persistence (SQLite)** | Long-lived truth for signals, groups, positions, events, heartbeats, trade closures | `scribe.py` DDL |
 | **B. File bus (JSON files)** | Real-time, process-local IPC between BRIDGE, FORGE, LISTENER, ATHENA, AURUM | `MT5/*.json`, `python/config/*.json` |
 | **C. HTTP API (ATHENA)** | Dashboard + optional external agents; mostly **read** SCRIBE/files, **write** a few command files | `GET /api/live`, `POST /api/mode` |
 
