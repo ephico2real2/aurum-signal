@@ -23,12 +23,35 @@ log = logging.getLogger("sentinel")
 STATUS_FILE   = os.environ.get("SENTINEL_STATUS", "config/sentinel_status.json")
 GUARD_MINUTES = int(os.environ.get("SENTINEL_GUARD_MIN", "30"))
 POLL_SECONDS  = int(os.environ.get("SENTINEL_POLL_SEC", "60"))
+# Post-event guard: instant data releases (NFP, CPI) settle fast; extended
+# events (speeches, press conferences, FOMC) keep moving markets for the
+# entire duration.  SENTINEL_POST_GUARD_MIN applies to instant events;
+# SENTINEL_EXTENDED_GUARD_MIN applies to speech/presser-type events.
+POST_GUARD_MIN        = int(os.environ.get("SENTINEL_POST_GUARD_MIN",       "5"))
+EXTENDED_GUARD_MIN    = int(os.environ.get("SENTINEL_EXTENDED_GUARD_MIN",   "60"))
 # Periodic event digest to Telegram
 EVENT_DIGEST_INTERVAL = int(os.environ.get("SENTINEL_DIGEST_INTERVAL_SEC", "600"))  # 10min default
 FF_URL        = "https://www.forexfactory.com/calendar"
 HEADERS       = {"User-Agent": "Mozilla/5.0 (compatible; SENTINEL/1.0)"}
 # Calendar rows: comma-separated ISO currency codes (ForexFactory column). Wider = more EU/Asia events.
 _DEFAULT_CAL_CURRENCIES = "USD,EUR,GBP,JPY,AUD,NZD,CAD,CHF"
+
+# ── Extended-event keyword detection ────────────────────────────────
+# Events whose names match these keywords last much longer than an instant
+# data release.  Guard stays up for EXTENDED_GUARD_MIN after start time.
+_EXTENDED_EVENT_KEYWORDS = (
+    "speaks", "speech", "press conference", "testimony",
+    "testifies", "conference", "presser", "hearing",
+    "fomc", "ecb press", "boj press", "boe press",
+    "rba press", "rbnz press", "summit", "address",
+    "statement", "remarks",
+)
+
+
+def _is_extended_event(event_name: str) -> bool:
+    """Return True if the event is a long-running speech/presser type."""
+    name_lower = event_name.lower()
+    return any(kw in name_lower for kw in _EXTENDED_EVENT_KEYWORDS)
 
 
 class Sentinel:
@@ -65,10 +88,12 @@ class Sentinel:
             if e["impact"] == "HIGH"
             and 0 <= e["minutes_away"] <= GUARD_MINUTES * 2
         ]
+        # Recent events: look back far enough to cover extended events
+        max_lookback = max(POST_GUARD_MIN, EXTENDED_GUARD_MIN)
         recent = [
             e for e in events
             if e["impact"] == "HIGH"
-            and -10 <= e["minutes_away"] < 0
+            and -max_lookback <= e["minutes_away"] < 0
         ]
 
         # Should guard be active?
@@ -76,13 +101,17 @@ class Sentinel:
             e["minutes_away"] >= 0 and e["minutes_away"] <= GUARD_MINUTES
             for e in upcoming
         )
-        # Also guard for 5 min after event (price spike settling)
-        guard_needed = guard_needed or any(
-            e["minutes_away"] >= -5 for e in recent
-        )
+        # Post-event guard: use extended window for speeches/pressers,
+        # short window for instant data releases (NFP, CPI, etc.)
+        for e in recent:
+            post_min = EXTENDED_GUARD_MIN if _is_extended_event(e["name"]) else POST_GUARD_MIN
+            if e["minutes_away"] >= -post_min:
+                guard_needed = True
+                break
 
         if guard_needed and not self.guard_active:
             trigger_event = (upcoming + recent)[0]
+            trigger_event["extended"] = _is_extended_event(trigger_event["name"])
             self._activate_guard(trigger_event, current_mode)
 
         elif not guard_needed and self.guard_active:
@@ -97,10 +126,16 @@ class Sentinel:
         if all_upcoming:
             next_event = all_upcoming[0]
 
+        _guarding_extended = (
+            self._guarding_event.get("extended", False) if self._guarding_event else False
+        )
+        _post_min = EXTENDED_GUARD_MIN if _guarding_extended else POST_GUARD_MIN
         status = {
             "active":        self.guard_active,
             "block_trading": self.guard_active,
             "event_name":    self._guarding_event.get("name") if self._guarding_event else None,
+            "extended_event": _guarding_extended,
+            "post_guard_min": _post_min if self.guard_active else POST_GUARD_MIN,
             "next_event":    next_event.get("name") if next_event else "None scheduled",
             "next_in_min":   next_event.get("minutes_away") if next_event else None,
             "next_time":     next_event.get("time_str") if next_event else None,
@@ -165,9 +200,12 @@ class Sentinel:
         return status
 
     def _activate_guard(self, event: dict, current_mode: str):
-        log.warning(f"SENTINEL GUARD ON — {event['name']} in {event['minutes_away']}min")
+        is_ext = event.get("extended", _is_extended_event(event["name"]))
+        post = EXTENDED_GUARD_MIN if is_ext else POST_GUARD_MIN
+        tag = f" [EXTENDED — guard holds {post}min post-start]" if is_ext else ""
+        log.warning(f"SENTINEL GUARD ON — {event['name']} in {event['minutes_away']}min{tag}")
         self.guard_active     = True
-        self._guarding_event  = event
+        self._guarding_event  = {**event, "extended": is_ext}
         self._event_id = self.scribe.log_news_event(
             event_name=event["name"],
             impact="HIGH",

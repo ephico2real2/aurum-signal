@@ -25,14 +25,30 @@ SENTINEL_CALENDAR_CURRENCIES=USD,EUR,GBP,JPY,CNY
 - ForexFactory uses **currency column** per row; only rows in this set are considered.
 - **Guard** still applies only to events classified **HIGH** impact in the HTML (red icon).
 
-Other env vars (unchanged):
+Other env vars:
 
 | Variable | Default | Role |
 |----------|---------|------|
 | `SENTINEL_GUARD_MIN` | `30` | Minutes **before** event to activate guard |
+| `SENTINEL_POST_GUARD_MIN` | `5` | Minutes **after** an instant data event (NFP, CPI) to keep guard up |
+| `SENTINEL_EXTENDED_GUARD_MIN` | `60` | Minutes **after** an extended event (speech, FOMC, press conference) to keep guard up |
 | `SENTINEL_POLL_SEC` | `60` | Standalone sentinel loop interval (if used) |
 | `BRIDGE_SENTINEL_SEC` | `60` | How often **BRIDGE** calls `Sentinel.check()` |
 | `SENTINEL_STATUS` / `SENTINEL_STATUS_FILE` | `python/config/sentinel_status.json` | Output JSON path |
+
+### Extended vs instant events
+
+ForexFactory only lists the **start time** of events. An NFP release is over in seconds, but a presidential speech or FOMC press conference can last 30–60+ minutes with markets moving throughout.
+
+SENTINEL auto-detects extended events by matching keywords in the event name:
+`speaks`, `speech`, `press conference`, `testimony`, `testifies`, `hearing`, `fomc`, `ecb press`, `boj press`, `summit`, `address`, `statement`, `remarks`
+
+When an extended event is detected:
+- Guard stays active for `SENTINEL_EXTENDED_GUARD_MIN` (default **60min**) after the scheduled start
+- `sentinel_status.json` shows `extended_event: true` and `post_guard_min: 60`
+- Log and Telegram notifications include an `[EXTENDED]` tag
+
+For instant events (everything else): guard lifts after `SENTINEL_POST_GUARD_MIN` (default **5min**).
 
 After edits, **`make restart`** (or restart **bridge**).
 
