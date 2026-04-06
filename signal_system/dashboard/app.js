@@ -125,7 +125,7 @@ function activityCategory(eventType){
   if(/^(MODE_|SESSION_|STARTUP|SHUTDOWN)/i.test(t)) return 'MODE';
   if(/CIRCUIT|NEWS_GUARD/i.test(t)) return 'RISK';
   if(/^AURUM_/.test(t)) return 'AURUM';
-  if(/TRADE_|SIGNAL_|CLOSE_ALL/.test(t)) return 'TRADE';
+  if(/TRADE_|SIGNAL_|CLOSE_ALL|POSITION_/.test(t)) return 'TRADE';
   return 'SYSTEM';
 }
 function activityLevelForEvent(eventType){
@@ -404,7 +404,7 @@ function aurumWelcome(d){
 function AurumChat({liveData}){
   const [msgs,setMsgs]=useState([]);
   const [inp,setInp]=useState('');const [loading,setLoading]=useState(false);
-  const ref=useRef(null);
+  const ref=useRef(null);const taRef=useRef(null);
   // Only set welcome message ONCE (not on every 3s poll)
   const welcomeSet=useRef(false);
   useEffect(()=>{
@@ -432,7 +432,8 @@ function AurumChat({liveData}){
     return`Mode:${liveData.mode} Session(UTC kill zones):${sess} Balance:$${a.balance?.toFixed(2)} SessionPnL:$${a.session_pnl?.toFixed(2)} Positions:${a.open_positions_count}\n${q}\nLENS (TV): RSI ${tv.rsi?.toFixed?.(1)??'—'} BB ${tv.bb_rating??'—'} ADX ${tv.adx?.toFixed?.(1)??'—'} snapshot age ${tvAge}\nSentinel:${s.active?'ACTIVE':'Clear'} Next:${s.next_event} in ${s.next_in_min}min\nSCRIBE ${PERF_ROLLING_DAYS}d (closed): PnL $${(p.total_pnl??0).toFixed(2)} WR:${wr} Trades:${p.total??0}`;};
   const send=async()=>{
     const text=inp.trim();if(!text||loading)return;
-    setInp('');const nm=[...msgs,{role:'user',text}];setMsgs(nm);setLoading(true);
+    setInp('');if(taRef.current)taRef.current.style.height='auto';
+    const nm=[...msgs,{role:'user',text}];setMsgs(nm);setLoading(true);
     try{
       let reply;
       try{const r=await fetch(`${API}/api/aurum/ask`,{method:'POST',
@@ -477,16 +478,18 @@ function AurumChat({liveData}){
         padding:'5px 9px',borderRadius:5}}>AURUM ◆ thinking…</div>}
       <div ref={ref}/>
     </div>
-    <div style={{display:'flex',gap:5}}>
-      <input value={inp} onChange={e=>setInp(e.target.value)}
-        onKeyDown={e=>e.key==='Enter'&&send()}
+    <div style={{display:'flex',gap:5,alignItems:'flex-end'}}>
+      <textarea ref={taRef} value={inp} onChange={e=>{setInp(e.target.value);e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,120)+'px';}}
+        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}}
         placeholder="Ask AURUM anything…"
+        rows={1}
         style={{flex:1,background:T.row,border:`1px solid ${T.border2}`,
-          borderRadius:4,padding:'5px 8px',color:T.textBB,fontSize:10,fontFamily:T.mono}}/>
+          borderRadius:4,padding:'5px 8px',color:T.textBB,fontSize:10,fontFamily:T.mono,
+          resize:'none',overflow:'hidden',lineHeight:1.5,minHeight:24,maxHeight:120}}/>
       <button onClick={send} disabled={loading} style={{background:T.goldBg,
         border:`1px solid ${T.goldBdr}`,color:T.gold,padding:'5px 10px',
         borderRadius:4,cursor:loading?'not-allowed':'pointer',
-        fontFamily:T.mono,fontSize:8}}>{loading?'…':'SEND'}</button>
+        fontFamily:T.mono,fontSize:8,alignSelf:'flex-end'}}>{loading?'…':'SEND'}</button>
     </div>
     <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,textAlign:'center'}}>
       Also on Telegram — same AURUM, same live context
@@ -786,14 +789,14 @@ function ATHENA(){
       {/* CENTER */}
       <div style={{display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}>
         <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
-          {[{id:'groups',label:'Groups'},{id:'activity',label:'Activity',badge:warnCount||null},
+          {[{id:'groups',label:'Groups'},{id:'closures',label:'Closures'},{id:'activity',label:'Activity',badge:warnCount||null},
             {id:'signals',label:'Signals'},{id:'perf',label:'Performance'}].map(t=>(
             <button key={t.id} type="button" data-testid={`tab-${t.id}`}
               onClick={()=>setTab(t.id)} style={{
-              padding:'6px 14px',background:'transparent',border:'none',
+              padding:'6px 10px',background:'transparent',border:'none',
               borderBottom:tab===t.id?`2px solid ${T.gold}`:'2px solid transparent',
-              color:tab===t.id?T.gold:T.text,fontFamily:T.mono,fontSize:8,
-              letterSpacing:1,cursor:'pointer',textTransform:'uppercase',
+              color:tab===t.id?T.gold:T.text,fontFamily:T.mono,fontSize:7,
+              letterSpacing:0.5,cursor:'pointer',textTransform:'uppercase',
               display:'flex',alignItems:'center',gap:5}}>
               {t.label}
               {t.badge&&<span style={{background:T.amberBg,color:T.amber,
@@ -848,9 +851,9 @@ function ATHENA(){
                     </div>
                   </div>
                   <div style={{display:'grid',gridTemplateColumns:`repeat(${tot},1fr)`,
-                    gap:3,marginBottom:8}}>
+                    gap:2,marginBottom:8}}>
                     {Array.from({length:tot}).map((_,i)=>{const isCl=i<cl;return(
-                      <div key={i} style={{height:18,borderRadius:2,
+                      <div key={i} style={{height:14,borderRadius:2,
                         background:isCl?(g.direction==='BUY'?T.greenBg:T.redBg)
                           :(g.direction==='BUY'?'rgba(16,185,129,0.2)':'rgba(239,68,68,0.2)'),
                         border:`1px solid ${isCl?T.border:(g.direction==='BUY'?T.green:T.red)}`,
@@ -890,6 +893,62 @@ function ATHENA(){
                 <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,
                   textAlign:'center',padding:40}}>No open groups</div>
               )}
+            </div>
+          )}
+
+          {tab==='closures'&&(
+            <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
+              {/* Closure stats summary */}
+              {D.closure_stats&&D.closure_stats.total>0&&(
+                <div style={{display:'flex',gap:12,marginBottom:12,flexWrap:'wrap'}}>
+                  {[['SL Hits',D.closure_stats.sl_hits,T.red,`${D.closure_stats.sl_rate}%`],
+                    ['TP1 Hits',D.closure_stats.tp1_hits,T.green,`${D.closure_stats.tp_rate}% TP`],
+                    ['TP2 Hits',D.closure_stats.tp2_hits,T.cyan,null],
+                    ['Manual',D.closure_stats.manual,T.amber,null],
+                    ['Total P&L',null,D.closure_stats.total_pnl>=0?T.green:T.red,`$${D.closure_stats.total_pnl.toFixed(2)}`],
+                  ].map(([label,count,color,extra])=>(
+                    <div key={label} style={{background:T.card,border:`1px solid ${T.border2}`,
+                      borderTop:`2px solid ${color}`,borderRadius:5,padding:'8px 12px',
+                      textAlign:'center',minWidth:70}}>
+                      {count!=null&&<div style={{fontFamily:T.mono,fontSize:16,color,fontWeight:700}}>{count}</div>}
+                      {extra&&<div style={{fontFamily:T.mono,fontSize:count!=null?8:14,color,fontWeight:count!=null?400:700}}>{extra}</div>}
+                      <div style={{fontSize:7,color:T.textD,marginTop:2}}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Recent closures list */}
+              {(D.recent_closures||[]).length>0?(
+                (D.recent_closures||[]).map((c,i)=>{
+                  const isSL=c.close_reason==='SL_HIT';
+                  const isTP=c.close_reason&&c.close_reason.startsWith('TP');
+                  const reasonColor=isSL?T.red:isTP?T.green:T.amber;
+                  return(
+                    <div key={c.id||i} className="fade" style={{display:'flex',alignItems:'center',
+                      gap:10,padding:'6px 10px',marginBottom:4,
+                      background:T.card,border:`1px solid ${T.border2}`,borderRadius:5,
+                      borderLeft:`3px solid ${reasonColor}`}}>
+                      <Tag lbl={c.close_reason||'?'} color={reasonColor}/>
+                      <Tag lbl={c.direction||'?'} color={c.direction==='BUY'?T.green:T.red} xs/>
+                      <span style={{fontFamily:T.mono,fontSize:9,color:T.textD}}>#{c.ticket}</span>
+                      <span style={{fontFamily:T.mono,fontSize:9,color:T.textD}}>G{c.trade_group_id}</span>
+                      <span style={{fontFamily:T.mono,fontSize:10,fontWeight:700,
+                        color:(c.pnl||0)>=0?T.green:T.red,marginLeft:'auto'}}>
+                        {(c.pnl||0)>=0?'+':''}{(c.pnl||0).toFixed(2)}</span>
+                      <span style={{fontFamily:T.mono,fontSize:8,color:T.textD}}>
+                        {(c.pips||0)>=0?'+':''}{(c.pips||0).toFixed(1)}p</span>
+                      <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
+                        {(c.timestamp||'').slice(11,19)}</span>
+                    </div>
+                  );
+                })
+              ):(
+                <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,
+                  textAlign:'center',padding:40}}>No closures recorded yet</div>
+              )}
+              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:8}}>
+                Showing last 24h · Full history: GET /api/closures?days=7
+              </div>
             </div>
           )}
 

@@ -499,6 +499,26 @@ class Aurum:
                      f"Win rate: {wr_s}  "
                      f"Avg pips: {perf.get('avg_pips',0):+.1f}")
 
+        # Recent closures (SL/TP hits)
+        try:
+            closures = self.scribe.get_recent_closures(limit=5, days=1)
+            if closures:
+                lines.append(f"\nRECENT CLOSURES (last 24h):")
+                for c in closures:
+                    lines.append(
+                        f"  [{c.get('close_reason','?')}] #{c.get('ticket','?')} "
+                        f"G{c.get('trade_group_id','?')} {c.get('direction','?')} "
+                        f"pnl=${c.get('pnl',0):+.2f} pips={c.get('pips',0):+.1f}")
+            cstats = self.scribe.get_closure_stats(days=7)
+            if cstats.get("total", 0) > 0:
+                lines.append(
+                    f"  7d stats: SL hit rate {cstats['sl_rate']}% "
+                    f"TP hit rate {cstats['tp_rate']}% "
+                    f"({cstats['sl_hits']} SL, {cstats['tp1_hits']} TP1, "
+                    f"{cstats['tp2_hits']} TP2, {cstats['manual']} manual)")
+        except Exception as e:
+            log.debug("AURUM closure context error: %s", e)
+
         return "\n".join(lines)
 
     # ── On-demand web search ──────────────────────────────────────

@@ -169,6 +169,25 @@ CREATE TABLE IF NOT EXISTS aurum_conversations (
     tokens_used INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS trade_closures (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL,
+    ticket          INTEGER,
+    trade_group_id  INTEGER,
+    direction       TEXT,
+    lot_size        REAL,
+    entry_price     REAL,
+    close_price     REAL,
+    sl              REAL,
+    tp              REAL,
+    close_reason    TEXT NOT NULL,
+    pnl             REAL,
+    pips            REAL,
+    duration_seconds INTEGER,
+    session         TEXT,
+    mode            TEXT
+);
+
 CREATE TABLE IF NOT EXISTS component_heartbeats (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp     TEXT NOT NULL,
@@ -212,7 +231,7 @@ class Scribe:
             self._migrate(c)
 
     def _migrate(self, conn):
-        """Additive migrations — safe to re-run."""
+        """Additive migrations -- safe to re-run."""
         # v1.2.4+: magic_number column on trade_groups
         cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
         if "magic_number" not in cols:
@@ -396,6 +415,80 @@ class Scribe:
                     close_reason=?, pnl=?, pips=?, tp_stage=?
                 WHERE ticket=?""",
                 (close_price, self._now(), close_reason, pnl, pips, tp_stage, ticket))
+
+    def log_trade_closure(self, ticket: int, trade_group_id: int,
+                          direction: str, lot_size: float,
+                          entry_price: float, close_price: float,
+                          sl: float, tp: float,
+                          close_reason: str, pnl: float, pips: float,
+                          duration_seconds: int = None,
+                          session: str = None, mode: str = None) -> int:
+        """Log a position closure to trade_closures table."""
+        with self._conn() as c:
+            cur = c.execute("""INSERT INTO trade_closures
+                (timestamp, ticket, trade_group_id, direction, lot_size,
+                 entry_price, close_price, sl, tp, close_reason,
+                 pnl, pips, duration_seconds, session, mode)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self._now(), ticket, trade_group_id, direction, lot_size,
+                 entry_price, close_price, sl, tp, close_reason,
+                 pnl, pips, duration_seconds, session, mode))
+            return cur.lastrowid
+
+    def get_recent_closures(self, limit: int = 20, days: int = 7) -> list:
+        """Return recent trade closures for ATHENA/AURUM."""
+        d = max(1, min(int(days), 366))
+        with self._conn() as c:
+            rows = c.execute("""
+                SELECT * FROM trade_closures
+                WHERE timestamp >= datetime('now', ?)
+                ORDER BY timestamp DESC LIMIT ?""",
+                (f"-{d} days", limit)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_closure_stats(self, days: int = 7) -> dict:
+        """Aggregated SL vs TP hit rates for ATHENA/AURUM."""
+        d = max(1, min(int(days), 366))
+        with self._conn() as c:
+            row = c.execute("""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN close_reason='SL_HIT' THEN 1 ELSE 0 END) AS sl_hits,
+                    SUM(CASE WHEN close_reason='TP1_HIT' THEN 1 ELSE 0 END) AS tp1_hits,
+                    SUM(CASE WHEN close_reason='TP2_HIT' THEN 1 ELSE 0 END) AS tp2_hits,
+                    SUM(CASE WHEN close_reason='TP3_HIT' THEN 1 ELSE 0 END) AS tp3_hits,
+                    SUM(CASE WHEN close_reason='MANUAL_CLOSE' THEN 1 ELSE 0 END) AS manual,
+                    COALESCE(SUM(pnl), 0) AS total_pnl,
+                    COALESCE(AVG(pnl), 0) AS avg_pnl,
+                    COALESCE(AVG(pips), 0) AS avg_pips,
+                    COALESCE(AVG(duration_seconds), 0) AS avg_duration_sec
+                FROM trade_closures
+                WHERE timestamp >= datetime('now', ?)""",
+                (f"-{d} days",)).fetchone()
+            total = row[0] or 1
+            return {
+                "total": row[0] or 0,
+                "sl_hits": row[1] or 0,
+                "tp1_hits": row[2] or 0,
+                "tp2_hits": row[3] or 0,
+                "tp3_hits": row[4] or 0,
+                "manual": row[5] or 0,
+                "sl_rate": round((row[1] or 0) / total * 100, 1),
+                "tp_rate": round(((row[2] or 0) + (row[3] or 0) + (row[4] or 0)) / total * 100, 1),
+                "total_pnl": round(row[6] or 0, 2),
+                "avg_pnl": round(row[7] or 0, 2),
+                "avg_pips": round(row[8] or 0, 1),
+                "avg_duration_sec": round(row[9] or 0, 0),
+            }
+
+    def get_open_positions_by_group(self, group_id: int) -> list:
+        """Return all OPEN positions for a given trade group."""
+        with self._conn() as c:
+            rows = c.execute("""
+                SELECT * FROM trade_positions
+                WHERE trade_group_id=? AND status='OPEN'""",
+                (group_id,)).fetchall()
+            return [dict(r) for r in rows]
 
     def log_news_event(self, event_name: str, impact: str, currency: str,
                        mode_before: str):

@@ -132,6 +132,19 @@ class Reconciler:
                 pnl=0.0,
                 pips=0.0,
             )
+            # Also log to trade_closures for audit trail
+            self.scribe.log_trade_closure(
+                ticket=int(ticket),
+                trade_group_id=r.get("trade_group_id") or 0,
+                direction=r.get("direction", "?"),
+                lot_size=r.get("lot_size", 0),
+                entry_price=r.get("entry_price", 0),
+                close_price=0.0,
+                sl=r.get("sl", 0), tp=r.get("tp", 0),
+                close_reason="RECONCILER",
+                pnl=0.0, pips=0.0,
+                mode="RECONCILER",
+            )
 
         # 2. Tickets MT5 has that SCRIBE doesn't know about
         # (manual trades opened directly in MT5 — not a problem but worth noting)

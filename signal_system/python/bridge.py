@@ -329,6 +329,8 @@ class Bridge:
                         "open_price": p.get("open_price"),
                         "last_profit": p.get("profit", 0),
                         "current_price": p.get("current_price"),
+                        "lot_size": p.get("lots", 0),
+                        "sl": p.get("sl"), "tp": p.get("tp"),
                     }
 
         for o in mt5.get("pending_orders") or []:
@@ -347,6 +349,48 @@ class Bridge:
         log.info("TRACKER seeded: %d positions, %d pendings from SCRIBE + market_data",
                  len(self._known_positions), len(self._known_pendings))
         self._tracker_seeded = True
+
+    def _infer_close_reason(self, close_price: float, sl: float, tp: float,
+                            direction: str, group_id: int) -> str:
+        """Infer SL_HIT / TP1_HIT / TP2_HIT / TP3_HIT / MANUAL_CLOSE
+        by comparing close_price to the position's SL and TP levels.
+        Tolerance: $0.50 (XAUUSD spread + slippage).
+        """
+        TOL = 0.50  # $0.50 tolerance for XAUUSD
+        if not close_price:
+            return "UNKNOWN"
+
+        # Check SL
+        if sl and abs(close_price - sl) <= TOL:
+            return "SL_HIT"
+
+        # Check TP — the position's TP field has the assigned target (TP1 or TP2)
+        if tp and abs(close_price - tp) <= TOL:
+            # Determine which TP stage by looking up the group's original targets
+            return self._match_tp_stage(close_price, group_id, TOL)
+
+        # Close price doesn't match SL or TP — manual or partial close
+        return "MANUAL_CLOSE"
+
+    def _match_tp_stage(self, close_price: float, group_id: int,
+                        tol: float) -> str:
+        """Match close_price to TP1/TP2/TP3 from the trade_group record."""
+        if group_id is None:
+            return "TP1_HIT"
+        try:
+            rows = self.scribe.query(
+                "SELECT tp1, tp2, tp3 FROM trade_groups WHERE id=?",
+                (group_id,))
+            if not rows:
+                return "TP1_HIT"
+            g = rows[0]
+            if g.get("tp3") and abs(close_price - g["tp3"]) <= tol:
+                return "TP3_HIT"
+            if g.get("tp2") and abs(close_price - g["tp2"]) <= tol:
+                return "TP2_HIT"
+            return "TP1_HIT"
+        except Exception:
+            return "TP1_HIT"
 
     def _sync_positions(self, mt5: dict) -> None:
         """Compare market_data.json positions/pendings against SCRIBE each tick.
@@ -450,6 +494,7 @@ class Bridge:
                 "group_id": gid, "magic": magic, "direction": direction,
                 "open_price": p.get("open_price"), "last_profit": p.get("profit", 0),
                 "current_price": p.get("current_price"),
+                "lot_size": p.get("lots", 0),
                 "sl": p.get("sl"), "tp": p.get("tp"),
             }
             log.info("TRACKER: new position ticket=%s G%s %s %.2flot @ %s",
@@ -503,27 +548,75 @@ class Bridge:
             pnl = snap.get("last_profit", 0)
             close_price = snap.get("current_price") or 0
             open_price = snap.get("open_price") or 0
+            direction = snap.get("direction", "?")
+            sl = snap.get("sl") or 0
+            tp = snap.get("tp") or 0
+            lot_size = snap.get("lot_size", 0)
             # Estimate pips (XAUUSD: 1 pip = $0.01)
             pips = 0.0
             if open_price and close_price:
                 raw = close_price - open_price
-                if snap.get("direction") == "SELL":
+                if direction == "SELL":
                     raw = -raw
                 pips = round(raw / 0.01, 1)  # XAUUSD pip
+
+            # ── Infer close reason from SL/TP proximity ────────────
+            close_reason = self._infer_close_reason(
+                close_price, sl, tp, direction, gid)
+
+            # Determine TP stage for SCRIBE trade_positions
+            tp_stage = None
+            if close_reason == "TP1_HIT":
+                tp_stage = 1
+            elif close_reason == "TP2_HIT":
+                tp_stage = 2
+            elif close_reason == "TP3_HIT":
+                tp_stage = 3
 
             self.scribe.close_trade_position(
                 ticket=ticket,
                 close_price=close_price,
-                close_reason="BROKER",  # SL/TP/manual — we don't know which
+                close_reason=close_reason,
                 pnl=pnl,
                 pips=pips,
+                tp_stage=tp_stage,
             )
+
+            # Log to trade_closures table
+            self.scribe.log_trade_closure(
+                ticket=ticket,
+                trade_group_id=gid,
+                direction=direction,
+                lot_size=lot_size,
+                entry_price=open_price,
+                close_price=close_price,
+                sl=sl, tp=tp,
+                close_reason=close_reason,
+                pnl=pnl, pips=pips,
+                session=_session(),
+                mode=mode,
+            )
+
             groups_touched.setdefault(gid, []).append(pnl)
-            log.info("TRACKER: position closed ticket=%s G%s pnl=%.2f pips=%.1f",
-                     ticket, gid, pnl, pips)
+            log.info("TRACKER: position closed ticket=%s G%s reason=%s pnl=%.2f pips=%.1f",
+                     ticket, gid, close_reason, pnl, pips)
             if pnl < 0:
                 self._last_loss_close_ts = time.time()
-            # Don't spam individual position alerts — batch at group level
+
+            # Herald notification per position
+            if close_reason == "SL_HIT":
+                self.herald.position_closed(ticket, direction, pnl, pips)
+            elif close_reason.startswith("TP"):
+                remaining = sum(
+                    1 for s in self._known_positions.values()
+                    if s.get("group_id") == gid
+                )
+                self.herald.tp_hit(
+                    str(gid), tp_stage or 1,
+                    closed_n=1, remaining_n=remaining,
+                    pips=pips, pnl=pnl,
+                    be_moved=False,
+                )
 
         # ── Disappeared pendings → filled or cancelled ────────────
         gone_pendings = set(self._known_pendings) - set(live_pendings)

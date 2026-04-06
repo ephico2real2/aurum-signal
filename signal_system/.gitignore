@@ -55,6 +55,9 @@ Thumbs.db
 # ── Rendered launchd plists (contain .env secrets) ─────────────
  services/macos/rendered/
 
+# ── Agent / AI context (local-only) ────────────────────────────────
+Agent.md
+
 # ── IDE ────────────────────────────────────────────────────────────
 .vscode/
 .idea/

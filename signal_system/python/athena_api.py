@@ -336,6 +336,10 @@ def api_live():
             "label": "Rolling 7 days (UTC), status=CLOSED in SCRIBE",
         },
 
+        # Recent closures (SL/TP hits) for real-time dashboard display
+        "recent_closures": scribe.get_recent_closures(limit=5, days=1),
+        "closure_stats": scribe.get_closure_stats(days=7),
+
         # AEGIS risk state
         "aegis": aegis_state,
 
@@ -840,7 +844,25 @@ def api_signals():
     return jsonify(signals)
 
 
-# ── Performance data ───────────────────────────────────────────────
+# ── Trade closures (SL/TP hits) ───────────────────────────────────
+@app.route("/api/closures")
+def api_closures():
+    """Recent trade closures with SL/TP reason."""
+    limit = max(1, min(int(request.args.get("limit", 50)), 500))
+    days = max(1, min(int(request.args.get("days", 7)), 366))
+    scribe = get_scribe()
+    return jsonify(scribe.get_recent_closures(limit=limit, days=days))
+
+
+@app.route("/api/closure_stats")
+def api_closure_stats():
+    """Aggregated SL vs TP hit rates."""
+    days = max(1, min(int(request.args.get("days", 7)), 366))
+    scribe = get_scribe()
+    return jsonify(scribe.get_closure_stats(days=days))
+
+
+# ── Performance data ─────────────────────────────────────────────
 @app.route("/api/performance")
 def api_performance():
     days = int(request.args.get("days", 7))
