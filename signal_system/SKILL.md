@@ -196,6 +196,15 @@ If the user asks for a trade: same rules as §5 — any executable **OPEN_GROUP*
 ### 7. Explain Any Component
 I can explain what any system component does, its current status, and its configuration.
 
+### 8. Native Scalper Awareness (FORGE v1.4.0)
+FORGE now has a native price action scalper that runs independently in MT5 (backtestable):
+- **BB Bounce** (ADX<20): Mean-reversion at BB bands + RSI oversold/overbought
+- **BB Breakout** (ADX>25): Trend-following on BB breakout + multi-TF confirmation
+- Config shared via `config/scalper_config.json` — same rules I use for AUTO_SCALPER decisions
+- Source: `FORGE_NATIVE_SCALP` in SCRIBE (distinct from my `AUTO_SCALPER` entries)
+- Controlled via `.env`: `FORGE_SCALPER_MODE=DUAL` (NONE|BB_BOUNCE|BB_BREAKOUT|DUAL)
+- Dashboard shows cyan `FORGE` badge on native scalper group tiles
+
 ---
 
 ### 8. Live Web Search (Google News RSS)

@@ -1,5 +1,48 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [1.4.0] — 2026-04-06
+
+### FORGE Native Scalper Engine
+- New `ScalperMode` input: `NONE` | `BB_BOUNCE` | `BB_BREAKOUT` | `DUAL`
+- **BB Bounce** (ADX<20): buy at BB lower + RSI<35, sell at BB upper + RSI>65, H1 trend filter
+- **BB Breakout** (ADX>25): breakout above/below BB + RSI + M5/M15 EMA alignment
+- ATR-based SL/TP (1.2x for bounce, 1.5x for breakout), multi-TP with partial closes
+- Safety guards: session filter (London+NY), spread<25pt, max 2 groups, loss cooldown
+- DD event TP tightening: reads sentinel_status.json, tight TP at 0.8x ATR near news
+- R:R minimum 1.2 enforced before every native entry
+- Writes `scalper_entry.json` for BRIDGE to log to SCRIBE
+- Fully backtestable in MT5 Strategy Tester
+- `FORGE_SCALPER_MODE` controllable via `.env` → config.json (no reattach needed)
+
+### Shared Scalper Config
+- New `config/scalper_config.json` — BB bounce + breakout rules, session filter, safety guards
+- Read by FORGE (MQL5) and AURUM (Python) for strategy consistency
+- `make scalper-config-sync` copies config to MT5 Common Files
+
+### AUTO_SCALPER Intelligence
+- `format_for_aurum()` now includes BB position %, EMA distance, RSI momentum hints
+- AUTO_SCALPER prompt includes decision framework (BUY/SELL/PASS criteria)
+- BB squeeze detection (M5 BB range < 1.5x ATR = breakout imminent)
+- AURUM context includes scalper_config.json parameters for consistency with FORGE
+
+### Live Floating P&L on Dashboard
+- Group tiles show real-time floating P&L from MT5 `open_positions[]` (3s refresh)
+- Individual position boxes show entry price + per-position P&L
+- Gold `LIVE` badge on groups with active MT5 positions
+- Source badges: cyan `FORGE` / gold `AURUM` / orange `SIGNAL`
+
+### BRIDGE Integration
+- `_check_forge_scalper_entry()` reads scalper_entry.json from FORGE
+- Native scalper trades logged to SCRIBE with `source=FORGE_NATIVE_SCALP`
+- Herald Telegram alerts for native scalper entries with setup type + indicators
+
+### Bug Fixes
+- AURUM welcome message no longer stuck on "waiting for live data" after page load
+- `_normalize_aurum_open_trade` method signature restored after edit corruption
+- `AUTO_SCALPER` added to `contracts/aurum_forge.py` VALID_MODES + JSON Schema
+
+---
+
 ## [1.3.1] — 2026-04-06
 
 ### SL/TP Hit Logging (trade_closures)

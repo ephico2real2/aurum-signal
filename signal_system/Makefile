@@ -299,6 +299,12 @@ setup-tests:
 check-tests:
 	@$(PYTHON) $(SCRIPTS)/setup_tests.py --check
 
+scalper-config-sync:
+	@echo "Syncing scalper_config.json → MT5 Common Files..."
+	@cp $(ROOT_DIR)/config/scalper_config.json "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/scalper_config.json" 2>/dev/null \
+		&& echo "  ✅ Synced" \
+		|| echo "  ⚠ Common Files path not found — copy manually"
+
 forge-ea:
 	@chmod +x $(SCRIPTS)/install_forge_ea_macos.sh
 	@$(SCRIPTS)/install_forge_ea_macos.sh

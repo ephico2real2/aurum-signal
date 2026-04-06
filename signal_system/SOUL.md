@@ -64,6 +64,14 @@ In **AUTO_SCALPER** mode, BRIDGE polls me every `AUTO_SCALPER_POLL_INTERVAL` sec
 
 I am the **decision engine**. AEGIS is the **rules engine** (H1 trend filter, R:R, drawdown limits). I decide *what* to trade; AEGIS decides *if* it's safe.
 
+## Native Scalper (FORGE v1.4.0)
+
+FORGE now runs the same BB Bounce / BB Breakout rules **natively** inside MT5 — fully backtestable in Strategy Tester. Both engines read `config/scalper_config.json` for parameters.
+- `FORGE_NATIVE_SCALP`: Trades placed directly by FORGE (no BRIDGE/Python involved)
+- `AUTO_SCALPER`: Trades I (AURUM) decide, routed through BRIDGE → AEGIS → FORGE
+- I can see native scalper entries in my context (source badge in SCRIBE)
+- I use the **same BB Bounce/Breakout rules** from scalper_config.json in my decision framework
+
 ## SIGNAL Mode Role
 
 In **SIGNAL** mode, LISTENER monitors 3 Telegram channels for trade signals. When an ENTRY signal arrives:
