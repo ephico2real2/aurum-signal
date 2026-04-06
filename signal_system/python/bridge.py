@@ -60,6 +60,8 @@ SIGNAL_FILE     = _under_python(os.environ.get("LISTENER_SIGNAL_FILE","config/pa
 MGMT_FILE       = _under_python(os.environ.get("LISTENER_MGMT_FILE",  "config/management_cmd.json"))
 SENTINEL_FILE   = _under_python(os.environ.get("SENTINEL_STATUS_FILE","config/sentinel_status.json"))
 AURUM_CMD_FILE  = _under_python(os.environ.get("AURUM_CMD_FILE",      "config/aurum_cmd.json"))
+SCALPER_ENTRY_FILE = _under_root(os.environ.get("SCALPER_ENTRY_FILE",  "MT5/scalper_entry.json"))
+SCALPER_CONFIG_FILE = os.path.join(_ROOT, "config", "scalper_config.json")
 
 # TP close percentages
 TP1_CLOSE_PCT   = float(os.environ.get("TP1_CLOSE_PCT", "70"))
@@ -943,8 +945,11 @@ class Bridge:
         # ── 4b. Open groups from SCRIBE (source of truth vs in-memory dict) ─
         self._sync_open_groups_from_scribe()
 
-        # ── 5. AURUM command check ────────────────────────────────
+        # ── 5. AURUM command check ──────────────────────────────
         self._check_aurum_command(mt5)
+
+        # ── 5c. FORGE native scalper entry detection ─────────────
+        self._check_forge_scalper_entry()
 
         # ── 5b. Management (ATHENA / Telegram LISTENER) — all modes incl. SCALPER/WATCH
         self._process_mgmt_command(mt5)
@@ -1681,18 +1686,75 @@ class Bridge:
                                   notes=json.dumps({"via": "AURUM"}, default=str))
             log.info("BRIDGE: AURUM CLOSE_LOSING")
 
-        else:
-            log.warning("BRIDGE: unknown AURUM action %r — ignored", action)
-
-        # Clear command after processing
+        # Consume the file so we don't reprocess
         try:
-            import os as _os
-            _os.remove(AURUM_CMD_FILE)
+            os.remove(AURUM_CMD_FILE)
         except:
             pass
 
+    def _check_forge_scalper_entry(self):
+        """Detect native FORGE scalper entries and log them to SCRIBE."""
+        entry = _read_json(SCALPER_ENTRY_FILE)
+        if not entry:
+            return
+        ts = entry.get("timestamp")
+        if ts == getattr(self, "_last_scalper_entry_ts", None):
+            return
+        self._last_scalper_entry_ts = ts
+
+        gid = entry.get("group_id")
+        magic = entry.get("magic")
+        direction = entry.get("direction", "?")
+        setup_type = entry.get("setup_type", "UNKNOWN")
+
+        # Log trade group to SCRIBE
+        group_data = {
+            "direction": direction,
+            "entry_low": entry.get("entry_price", 0),
+            "entry_high": entry.get("entry_price", 0),
+            "sl": entry.get("sl", 0),
+            "tp1": entry.get("tp1", 0),
+            "tp2": entry.get("tp2"),
+            "num_trades": entry.get("num_trades", 4),
+            "lot_per_trade": entry.get("lot_per_trade", 0.01),
+            "source": "FORGE_NATIVE_SCALP",
+            "signal_id": None,
+        }
+        scribe_gid = self.scribe.log_trade_group(
+            group_data, self._effective_mode(), magic_number=magic)
+        self._open_groups[scribe_gid] = {**group_data, "id": scribe_gid, "magic_number": magic}
+
+        self._bridge_activity(
+            "FORGE_SCALP_ENTRY",
+            reason=setup_type,
+            notes=json.dumps({
+                "forge_group_id": gid,
+                "scribe_group_id": scribe_gid,
+                "direction": direction,
+                "setup_type": setup_type,
+                "sl": entry.get("sl"),
+                "tp1": entry.get("tp1"),
+                "rsi": entry.get("m5_rsi"),
+                "adx": entry.get("m5_adx"),
+                "sentinel_tight": entry.get("sentinel_tight"),
+            }, default=str),
+        )
+
+        self.herald.send(
+            f"{'\U0001f7e2' if direction == 'BUY' else '\U0001f534'} "
+            f"<b>FORGE SCALP {setup_type}</b> -- {direction}\n"
+            f"SL: <code>{entry.get('sl')}</code> TP1: <code>{entry.get('tp1')}</code>\n"
+            f"RSI: {entry.get('m5_rsi')} ADX: {entry.get('m5_adx')} "
+            f"ATR: {entry.get('m5_atr')}\n"
+            f"{entry.get('num_trades')} x {entry.get('lot_per_trade')} lot"
+            + (" [TIGHT TP]" if entry.get("sentinel_tight") else ""))
+
+        log.info(
+            "BRIDGE: FORGE native scalp %s %s G%s (SCRIBE G%s) magic=%s",
+            setup_type, direction, gid, scribe_gid, magic)
+
     def _normalize_aurum_open_trade(self, cmd: dict) -> dict:
-        """Map legacy / LLM OPEN_TRADE shape → OPEN_GROUP fields FORGE understands."""
+        """Map legacy / LLM OPEN_TRADE shape -> OPEN_GROUP fields FORGE understands."""
         from contracts.aurum_forge import normalize_aurum_open_trade
 
         return normalize_aurum_open_trade(cmd, _read_json(MARKET_FILE))

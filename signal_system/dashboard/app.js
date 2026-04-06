@@ -837,6 +837,9 @@ function ATHENA(){
                         <Tag lbl={g.direction} color={g.direction==='BUY'?T.green:T.red}/>
                         <Tag lbl={`×${tot}`} color={T.text}/>
                         <Tag lbl={`${g.lot_per_trade}lot`} color={T.amber}/>
+                        {g.source==='FORGE_NATIVE_SCALP'&&<Tag lbl="FORGE" color={T.cyan}/>}
+                        {g.source==='AUTO_SCALPER'&&<Tag lbl="AURUM" color={T.gold}/>}
+                        {g.source==='SIGNAL'&&<Tag lbl="SIGNAL" color={T.orange}/>}
                       </div>
                       <div style={{fontSize:9,color:T.text,fontFamily:T.mono}}>
                         {g.entry_low}–{g.entry_high} · SL:{g.sl} · TP1:{g.tp1}

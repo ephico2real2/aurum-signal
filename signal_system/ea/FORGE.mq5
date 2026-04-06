@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
-//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor v1.3.0            |
-//|  Signal System  — XAUUSD Scalper                                |
+//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor v1.4.0            |
+//|  Signal System  — XAUUSD Scalper + Native Price Action          |
 //|  Build order: #2 — independent of Python, compiled in MT5       |
 //+------------------------------------------------------------------+
 //
@@ -60,6 +60,9 @@ input bool    EnableBacktest = false;        // Enable Strategy Tester mode
 input bool    LogTicks       = true;         // Log ticks in WATCH mode
 input string  InputMode      = "WATCH";      // Startup mode: OFF|WATCH|SIGNAL|SCALPER|HYBRID
 input int     BrokerInfoEveryCycles = 20;    // Re-write broker_info.json every N timer cycles (0=OnInit only)
+input string  ScalperMode    = "NONE";       // Native scalper: NONE|BB_BOUNCE|BB_BREAKOUT|DUAL
+input double  ScalperLot     = 0.01;         // Lot size per native scalper trade
+input int     ScalperTrades  = 4;            // Number of trades per native scalper group
 
 // ── GLOBALS ───────────────────────────────────────────────────────
 // CTrade: MQL5 trade execution helper (buy, sell, modify, close)
@@ -73,6 +76,53 @@ string g_last_cmd_ts  = "";
 int    g_cycle        = 0;
 int    g_cycles_since_broker = 0;
 double g_session_start_balance = 0;
+
+// ── NATIVE SCALPER STATE ──────────────────────────────────────────
+string g_scalper_mode = "NONE";  // NONE | BB_BOUNCE | BB_BREAKOUT | DUAL
+int    g_scalper_group_counter = 5000;  // native groups start at 5000+ to avoid BRIDGE collision
+int    g_scalper_session_trades = 0;
+datetime g_scalper_last_loss_time = 0;
+datetime g_scalper_last_entry_bar = 0;  // prevent multiple entries on same bar
+
+// Scalper config (from scalper_config.json or defaults)
+struct ScalperConfig {
+   // BB Bounce
+   bool   bounce_enabled;
+   double bounce_adx_max;
+   double bounce_rsi_buy_max;
+   double bounce_rsi_sell_min;
+   double bounce_bb_proximity_pct;
+   double bounce_sl_atr_mult;
+   double bounce_tp1_close_pct;
+   double bounce_tp2_close_pct;
+   // BB Breakout
+   bool   breakout_enabled;
+   double breakout_adx_min;
+   double breakout_rsi_buy_min;
+   double breakout_rsi_sell_max;
+   double breakout_sl_atr_mult;
+   double breakout_tp1_atr_mult;
+   double breakout_tp2_atr_mult;
+   double breakout_tp3_atr_mult;
+   double breakout_tp4_atr_mult;
+   double breakout_tp1_close_pct;
+   bool   breakout_require_m15;
+   bool   breakout_move_be;
+   // Safety
+   double max_spread_points;
+   int    max_open_groups;
+   int    max_trades_per_session;
+   int    loss_cooldown_sec;
+   // Session
+   int    london_start;
+   int    london_end;
+   int    ny_start;
+   int    ny_end;
+   // DD event
+   double dd_tight_tp_atr;
+   int    sentinel_min_threshold;
+};
+ScalperConfig g_sc;
 
 // H1 INDICATOR HANDLES — created once in EnsureIndicators(), read every OnTimer
 int g_h_rsi  = INVALID_HANDLE;
@@ -145,6 +195,10 @@ int OnInit() {
          " balance=",   AccountInfoDouble(ACCOUNT_BALANCE));
    WriteBrokerInfo();
    WriteMarketData();
+   InitScalperConfig();
+   g_scalper_mode = ScalperMode;
+   if(g_scalper_mode != "NONE")
+      Print("FORGE: Native scalper mode = ", g_scalper_mode);
    return INIT_SUCCEEDED;
 }
 
@@ -304,6 +358,8 @@ void OnTimer() {
    WriteMarketData();
    if(g_mode == "WATCH") WriteTickData();  // extra tick record
    WriteModeStatus();
+   // Reload scalper config every 20 cycles (hot-reload without recompile)
+   if(g_cycle % 20 == 0) ReadScalperConfig();
 }
 
 //+------------------------------------------------------------------+
@@ -313,6 +369,9 @@ void OnTick() {
    if(g_mode == "OFF") return;
    if(g_mode == "WATCH") { WriteTickData(); return; }
    ManageOpenGroups();
+   // Native scalper: check for setups on each tick
+   if(g_scalper_mode != "NONE" && g_mode != "WATCH" && g_mode != "OFF")
+      CheckNativeScalperSetups();
 }
 
 //+------------------------------------------------------------------+
@@ -725,7 +784,7 @@ void WriteMarketData() {
    string j = "{";
    j += "\"symbol\":\"" + JsonEscape(_Symbol) + "\",";
    j += "\"hermes_version\":\"FORGE_1.2\",";
-   j += "\"forge_version\":\"1.3.0\",";
+   j += "\"forge_version\":\"1.4.0\",";
    j += "\"timestamp_utc\":\"" + JsonEscape(TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS)) + "Z\",";
    j += "\"timestamp_unix\":" + IntegerToString((long)TimeGMT()) + ",";
    j += "\"server_time_unix\":" + IntegerToString((long)TimeCurrent()) + ",";
@@ -893,7 +952,8 @@ void WriteBrokerInfo() {
    j += "\"chart_symbol\":\"" + JsonEscape(_Symbol) + "\",";
    j += "\"requested_mode\":\"" + JsonEscape(InputMode) + "\",";
    j += "\"effective_mode\":\"" + g_mode + "\",";
-   j += "\"forge_version\":\"1.3.0\"";
+   j += "\"forge_version\":\"1.4.0\",";
+   j += "\"scalper_mode\":\"" + g_scalper_mode + "\"";
    j += "}";
    if(WriteJsonFileDual("broker_info.json", j))
       Print("FORGE: broker_info.json — ", acct_type, " @ ", AccountInfoString(ACCOUNT_SERVER));
@@ -911,6 +971,313 @@ string JsonEscape(const string s) {
       else out += StringSubstr(s, i, 1);
    }
    return out;
+}
+
+//+------------------------------------------------------------------+
+//| NATIVE SCALPER ENGINE                                             |
+//+------------------------------------------------------------------+
+void InitScalperConfig() {
+   // Set defaults (overridden by ReadScalperConfig if file exists)
+   g_sc.bounce_enabled = true;
+   g_sc.bounce_adx_max = 20;
+   g_sc.bounce_rsi_buy_max = 35;
+   g_sc.bounce_rsi_sell_min = 65;
+   g_sc.bounce_bb_proximity_pct = 20;
+   g_sc.bounce_sl_atr_mult = 1.2;
+   g_sc.bounce_tp1_close_pct = 40;
+   g_sc.bounce_tp2_close_pct = 30;
+   g_sc.breakout_enabled = true;
+   g_sc.breakout_adx_min = 25;
+   g_sc.breakout_rsi_buy_min = 55;
+   g_sc.breakout_rsi_sell_max = 45;
+   g_sc.breakout_sl_atr_mult = 1.5;
+   g_sc.breakout_tp1_atr_mult = 1.0;
+   g_sc.breakout_tp2_atr_mult = 1.5;
+   g_sc.breakout_tp3_atr_mult = 2.5;
+   g_sc.breakout_tp4_atr_mult = 4.0;
+   g_sc.breakout_tp1_close_pct = 40;
+   g_sc.breakout_require_m15 = true;
+   g_sc.breakout_move_be = true;
+   g_sc.max_spread_points = 25;
+   g_sc.max_open_groups = 2;
+   g_sc.max_trades_per_session = 3;
+   g_sc.loss_cooldown_sec = 300;
+   g_sc.london_start = 7;
+   g_sc.london_end = 12;
+   g_sc.ny_start = 12;
+   g_sc.ny_end = 20;
+   g_sc.dd_tight_tp_atr = 0.8;
+   g_sc.sentinel_min_threshold = 30;
+   ReadScalperConfig();
+}
+
+void ReadScalperConfig() {
+   string content = "";
+   if(!ReadTextFileDual("scalper_config.json", content)) return;
+   if(content == "") return;
+   // Parse config values (use defaults if key missing)
+   double v;
+   v = JsonGetDouble(content, "adx_max");       if(v > 0) g_sc.bounce_adx_max = v;
+   v = JsonGetDouble(content, "rsi_buy_max");    if(v > 0) g_sc.bounce_rsi_buy_max = v;
+   v = JsonGetDouble(content, "rsi_sell_min");   if(v > 0) g_sc.bounce_rsi_sell_min = v;
+   v = JsonGetDouble(content, "bb_proximity_pct");if(v > 0) g_sc.bounce_bb_proximity_pct = v;
+   v = JsonGetDouble(content, "adx_min");        if(v > 0) g_sc.breakout_adx_min = v;
+   v = JsonGetDouble(content, "rsi_buy_min");    if(v > 0) g_sc.breakout_rsi_buy_min = v;
+   v = JsonGetDouble(content, "rsi_sell_max");   if(v > 0) g_sc.breakout_rsi_sell_max = v;
+   v = JsonGetDouble(content, "max_spread_points");if(v > 0) g_sc.max_spread_points = v;
+   v = JsonGetDouble(content, "max_open_groups"); if(v > 0) g_sc.max_open_groups = (int)v;
+   v = JsonGetDouble(content, "max_trades_per_session"); if(v > 0) g_sc.max_trades_per_session = (int)v;
+   v = JsonGetDouble(content, "loss_cooldown_sec"); if(v > 0) g_sc.loss_cooldown_sec = (int)v;
+   v = JsonGetDouble(content, "tight_tp_atr_mult"); if(v > 0) g_sc.dd_tight_tp_atr = v;
+}
+
+bool ScalperSessionOK() {
+   MqlDateTime dt;
+   TimeGMT(dt);
+   int h = dt.hour;
+   return (h >= g_sc.london_start && h < g_sc.ny_end);
+}
+
+bool ScalperSpreadOK() {
+   double spread = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / _Point;
+   return spread <= g_sc.max_spread_points;
+}
+
+int ScalperOpenGroupCount() {
+   // Count FORGE-managed positions as proxy for open groups
+   int count = 0;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(g_pos.SelectByIndex(i) && ChartSymbolMatches(g_pos.Symbol())) {
+         int pm = (int)g_pos.Magic();
+         if(pm >= MagicNumber && pm < MagicNumber + 10000)
+            count++;
+      }
+   }
+   // Each group has ScalperTrades positions
+   return (ScalperTrades > 0) ? count / ScalperTrades : count;
+}
+
+bool ScalperCooldownOK() {
+   if(g_scalper_last_loss_time == 0) return true;
+   return (TimeGMT() - g_scalper_last_loss_time) >= g_sc.loss_cooldown_sec;
+}
+
+bool ScalperOnePerBar() {
+   // Prevent multiple entries on the same M5 bar
+   datetime bar_time = iTime(_Symbol, PERIOD_M5, 0);
+   if(bar_time == g_scalper_last_entry_bar) return false;
+   return true;
+}
+
+void CheckNativeScalperSetups() {
+   // Safety guards
+   if(!ScalperSessionOK()) return;
+   if(!ScalperSpreadOK()) return;
+   if(ScalperOpenGroupCount() >= g_sc.max_open_groups) return;
+   if(g_scalper_session_trades >= g_sc.max_trades_per_session) return;
+   if(!ScalperCooldownOK()) return;
+   if(!ScalperOnePerBar()) return;
+
+   // Read M5 indicators
+   double buf[1];
+   double m5_rsi  = (CopyBuffer(g_mtf[0].h_rsi, 0,0,1,buf)==1)  ? buf[0] : 0;
+   double m5_adx  = (CopyBuffer(g_mtf[0].h_adx, 0,0,1,buf)==1)  ? buf[0] : 0;
+   double m5_bb_m = (CopyBuffer(g_mtf[0].h_bb,  0,0,1,buf)==1)  ? buf[0] : 0;
+   double m5_bb_u = (CopyBuffer(g_mtf[0].h_bb,  1,0,1,buf)==1)  ? buf[0] : 0;
+   double m5_bb_l = (CopyBuffer(g_mtf[0].h_bb,  2,0,1,buf)==1)  ? buf[0] : 0;
+   double m5_atr  = (CopyBuffer(g_mtf[0].h_atr, 0,0,1,buf)==1)  ? buf[0] : 0;
+   double m5_ema20= (CopyBuffer(g_mtf[0].h_ma20,0,0,1,buf)==1)  ? buf[0] : 0;
+   double m5_ema50= (CopyBuffer(g_mtf[0].h_ma50,0,0,1,buf)==1)  ? buf[0] : 0;
+
+   // Read M15 indicators (for breakout confirmation)
+   double m15_ema20= (CopyBuffer(g_mtf[1].h_ma20,0,0,1,buf)==1) ? buf[0] : 0;
+   double m15_ema50= (CopyBuffer(g_mtf[1].h_ma50,0,0,1,buf)==1) ? buf[0] : 0;
+
+   // Read H1 trend (for direction filter)
+   double h1_ema20 = (CopyBuffer(g_h_ma20,0,0,1,buf)==1) ? buf[0] : 0;
+   double h1_ema50 = (CopyBuffer(g_h_ma50,0,0,1,buf)==1) ? buf[0] : 0;
+
+   if(m5_rsi == 0 || m5_atr == 0 || m5_bb_u == 0) return;  // indicators not ready
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double mid = (bid + ask) / 2.0;
+   double bb_range = m5_bb_u - m5_bb_l;
+   if(bb_range <= 0) return;
+
+   // H1 trend bias
+   bool h1_bull = (h1_ema20 - h1_ema50) > 1.0;
+   bool h1_bear = (h1_ema50 - h1_ema20) > 1.0;
+   bool h1_flat = !h1_bull && !h1_bear;
+
+   // Check sentinel (read sentinel_status.json for news guard)
+   bool sentinel_tight = false;
+   string sent_content = "";
+   if(ReadTextFileDual("sentinel_status.json", sent_content) && sent_content != "") {
+      string active = JsonGetString(sent_content, "active");
+      if(active == "true" || active == "True") return;  // sentinel active — no new trades
+      double mins = JsonGetDouble(sent_content, "next_in_min");
+      if(mins > 0 && mins <= g_sc.sentinel_min_threshold)
+         sentinel_tight = true;  // news approaching — tighten TP
+   }
+
+   string direction = "";
+   double sl = 0, tp1 = 0, tp2 = 0;
+   string setup_type = "";
+
+   // ── BB BOUNCE (Range Mode) ─────────────────────────────────
+   if((g_scalper_mode == "BB_BOUNCE" || g_scalper_mode == "DUAL")
+      && g_sc.bounce_enabled && m5_adx < g_sc.bounce_adx_max) {
+
+      double proximity = bb_range * g_sc.bounce_bb_proximity_pct / 100.0;
+
+      // BUY: price near BB lower + RSI oversold + H1 not bearish
+      if(mid <= m5_bb_l + proximity && m5_rsi < g_sc.bounce_rsi_buy_max
+         && (h1_bull || h1_flat)) {
+         direction = "BUY";
+         sl  = NormalizeDouble(bid - m5_atr * g_sc.bounce_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(m5_bb_m, _Digits);  // BB mid
+         tp2 = NormalizeDouble(m5_bb_u, _Digits);  // opposite BB band
+         setup_type = "BB_BOUNCE";
+      }
+      // SELL: price near BB upper + RSI overbought + H1 not bullish
+      else if(mid >= m5_bb_u - proximity && m5_rsi > g_sc.bounce_rsi_sell_min
+              && (h1_bear || h1_flat)) {
+         direction = "SELL";
+         sl  = NormalizeDouble(ask + m5_atr * g_sc.bounce_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(m5_bb_m, _Digits);
+         tp2 = NormalizeDouble(m5_bb_l, _Digits);
+         setup_type = "BB_BOUNCE";
+      }
+   }
+
+   // ── BB BREAKOUT (Trend Mode) ───────────────────────────────
+   if(direction == "" && (g_scalper_mode == "BB_BREAKOUT" || g_scalper_mode == "DUAL")
+      && g_sc.breakout_enabled && m5_adx >= g_sc.breakout_adx_min) {
+
+      bool m5_bull  = (m5_ema20 - m5_ema50) > 0.5;
+      bool m5_bear  = (m5_ema50 - m5_ema20) > 0.5;
+      bool m15_bull = (m15_ema20 - m15_ema50) > 0.5;
+      bool m15_bear = (m15_ema50 - m15_ema20) > 0.5;
+      bool m15_flat = !m15_bull && !m15_bear;
+      bool m15_ok_buy  = !g_sc.breakout_require_m15 || m15_bull || m15_flat;
+      bool m15_ok_sell = !g_sc.breakout_require_m15 || m15_bear || m15_flat;
+
+      // BUY breakout: close above upper BB + RSI strong + aligned
+      if(bid > m5_bb_u && m5_rsi > g_sc.breakout_rsi_buy_min
+         && m5_bull && m15_ok_buy && (h1_bull || h1_flat)) {
+         direction = "BUY";
+         sl  = NormalizeDouble(bid - m5_atr * g_sc.breakout_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
+         setup_type = "BB_BREAKOUT";
+      }
+      // SELL breakout
+      else if(ask < m5_bb_l && m5_rsi < g_sc.breakout_rsi_sell_max
+              && m5_bear && m15_ok_sell && (h1_bear || h1_flat)) {
+         direction = "SELL";
+         sl  = NormalizeDouble(ask + m5_atr * g_sc.breakout_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
+         setup_type = "BB_BREAKOUT";
+      }
+   }
+
+   if(direction == "") return;  // no setup
+
+   // DD event: tighten TP
+   if(sentinel_tight) {
+      if(direction == "BUY")
+         tp1 = NormalizeDouble(bid + m5_atr * g_sc.dd_tight_tp_atr, _Digits);
+      else
+         tp1 = NormalizeDouble(ask - m5_atr * g_sc.dd_tight_tp_atr, _Digits);
+      tp2 = 0;  // no runners during news
+   }
+
+   // R:R check (minimum 1.2)
+   double risk = MathAbs((direction == "BUY" ? ask : bid) - sl);
+   double reward = MathAbs(tp1 - (direction == "BUY" ? ask : bid));
+   if(risk <= 0 || reward / risk < 1.2) {
+      Print("FORGE SCALPER: ", setup_type, " ", direction, " skipped — R:R ",
+            DoubleToString(reward/risk, 2), " < 1.2");
+      return;
+   }
+
+   // Execute the native scalper trade group
+   g_scalper_group_counter++;
+   int group_id = g_scalper_group_counter;
+   int group_magic = MagicNumber + group_id;
+   g_trade.SetExpertMagicNumber(group_magic);
+
+   int n = ScalperTrades;
+   double lot = ScalperLot;
+   double tp2_price = (tp2 > 0) ? tp2 : tp1;
+   int tp1_count = (int)MathCeil(n * g_sc.bounce_tp1_close_pct / 100.0);
+   int opened = 0;
+
+   for(int i = 0; i < n; i++) {
+      double tp_for_this = (i < tp1_count) ? tp1 : tp2_price;
+      string tp_label = (i < tp1_count) ? "TP1" : "TP2";
+      string comment = "SCALP|" + setup_type + "|G" + IntegerToString(group_id) + "|" + tp_label;
+      bool ok = false;
+      if(direction == "BUY")
+         ok = g_trade.Buy(lot, _Symbol, ask, NormalizeDouble(sl, _Digits),
+                          NormalizeDouble(tp_for_this, _Digits), comment);
+      else
+         ok = g_trade.Sell(lot, _Symbol, bid, NormalizeDouble(sl, _Digits),
+                           NormalizeDouble(tp_for_this, _Digits), comment);
+      if(ok) opened++;
+      Sleep(50);
+   }
+
+   g_trade.SetExpertMagicNumber(MagicNumber);
+   g_scalper_session_trades++;
+   g_scalper_last_entry_bar = iTime(_Symbol, PERIOD_M5, 0);
+
+   // Register group for TP management
+   int gi = ArraySize(g_groups);
+   ArrayResize(g_groups, gi + 1);
+   g_groups[gi].id            = group_id;
+   g_groups[gi].direction     = direction;
+   g_groups[gi].tp1           = tp1;
+   g_groups[gi].tp2           = tp2;
+   g_groups[gi].tp3           = 0;
+   g_groups[gi].tp1_close_pct = g_sc.bounce_tp1_close_pct;
+   g_groups[gi].tp1_hit       = false;
+   g_groups[gi].be_moved      = false;
+   g_groups[gi].move_be_on_tp1 = g_sc.breakout_move_be;
+   g_groups[gi].magic_offset  = group_magic;
+
+   Print("FORGE SCALPER: ", setup_type, " ", direction, " G", group_id,
+         " — ", opened, "/", n, " trades @ ", DoubleToString(mid, 2),
+         " SL=", DoubleToString(sl, 2), " TP1=", DoubleToString(tp1, 2),
+         " TP2=", DoubleToString(tp2_price, 2),
+         " ATR=", DoubleToString(m5_atr, 2),
+         " RSI=", DoubleToString(m5_rsi, 1),
+         " ADX=", DoubleToString(m5_adx, 1),
+         sentinel_tight ? " [DD_TIGHT_TP]" : "");
+
+   // Write scalper_entry.json for BRIDGE to pick up and log to SCRIBE
+   string ej = "{";
+   ej += "\"action\":\"FORGE_NATIVE_SCALP\",";
+   ej += "\"setup_type\":\"" + setup_type + "\",";
+   ej += "\"group_id\":" + IntegerToString(group_id) + ",";
+   ej += "\"magic\":" + IntegerToString(group_magic) + ",";
+   ej += "\"direction\":\"" + direction + "\",";
+   ej += "\"entry_price\":" + DoubleToString(direction == "BUY" ? ask : bid, 2) + ",";
+   ej += "\"sl\":" + DoubleToString(sl, 2) + ",";
+   ej += "\"tp1\":" + DoubleToString(tp1, 2) + ",";
+   ej += "\"tp2\":" + DoubleToString(tp2_price, 2) + ",";
+   ej += "\"lot_per_trade\":" + DoubleToString(lot, 2) + ",";
+   ej += "\"num_trades\":" + IntegerToString(n) + ",";
+   ej += "\"trades_opened\":" + IntegerToString(opened) + ",";
+   ej += "\"m5_rsi\":" + DoubleToString(m5_rsi, 1) + ",";
+   ej += "\"m5_adx\":" + DoubleToString(m5_adx, 1) + ",";
+   ej += "\"m5_atr\":" + DoubleToString(m5_atr, 2) + ",";
+   ej += "\"sentinel_tight\":" + (sentinel_tight ? "true" : "false") + ",";
+   ej += "\"timestamp\":\"" + JsonEscape(TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS)) + "Z\"";
+   ej += "}";
+   WriteJsonFileDual("scalper_entry.json", ej);
 }
 
 //+------------------------------------------------------------------+

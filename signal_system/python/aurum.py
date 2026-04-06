@@ -55,6 +55,7 @@ LENS_FILE       = _py_rel(os.environ.get("LENS_SNAPSHOT_FILE","config/lens_snaps
 SENTINEL_FILE   = _py_rel(os.environ.get("SENTINEL_STATUS_FILE","config/sentinel_status.json"))
 SOUL_FILE       = _root_rel(os.environ.get("SOUL_FILE",         "SOUL.md"))
 SKILL_FILE      = _root_rel(os.environ.get("SKILL_FILE",        "SKILL.md"))
+SCALPER_CFG     = os.path.join(_ROOT, "config", "scalper_config.json")
 SESSION_FILE    = _py_rel(os.environ.get("TELEGRAM_SESSION_FILE", "config/aurum_session"))
 
 MAX_TOKENS      = int(os.environ.get("AURUM_MAX_TOKENS", "1000"))
@@ -498,6 +499,29 @@ class Aurum:
                      f"Trades: {perf.get('total',0)}  "
                      f"Win rate: {wr_s}  "
                      f"Avg pips: {perf.get('avg_pips',0):+.1f}")
+
+        # Scalper config (shared with FORGE native scalper)
+        try:
+            sc = _read_json(SCALPER_CFG)
+            if sc:
+                bounce = sc.get("bb_bounce", {})
+                breakout = sc.get("bb_breakout", {})
+                lines.append(f"\nSCALPER CONFIG (shared with FORGE native):")
+                lines.append(
+                    f"  BB Bounce (ADX<{bounce.get('adx_max',20)}): "
+                    f"BUY if RSI<{bounce.get('rsi_buy_max',35)} + near BB lower, "
+                    f"SELL if RSI>{bounce.get('rsi_sell_min',65)} + near BB upper. "
+                    f"SL: {bounce.get('sl_atr_mult',1.2)}x ATR. TP1: BB mid.")
+                lines.append(
+                    f"  BB Breakout (ADX>{breakout.get('adx_min',25)}): "
+                    f"BUY if RSI>{breakout.get('rsi_buy_min',55)} + close above BB upper + M5+M15 aligned. "
+                    f"SL: {breakout.get('sl_atr_mult',1.5)}x ATR. "
+                    f"TP: {breakout.get('tp1_atr_mult',1.0)}/{breakout.get('tp2_atr_mult',1.5)}/"
+                    f"{breakout.get('tp3_atr_mult',2.5)}/{breakout.get('tp4_atr_mult',4.0)}x ATR.")
+                lines.append(
+                    f"  Use these SAME rules for AUTO_SCALPER decisions (consistency with FORGE backtest).")
+        except Exception as e:
+            log.debug("AURUM scalper config context error: %s", e)
 
         # Recent closures (SL/TP hits)
         try:

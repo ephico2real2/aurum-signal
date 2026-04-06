@@ -1,0 +1,84 @@
+{
+  "version": "1.0",
+  "description": "Shared scalper strategy config — read by FORGE.mq5 (native) and AURUM (Python). Edit here, both engines pick it up.",
+
+  "bb_bounce": {
+    "enabled": true,
+    "description": "Mean-reversion: buy at BB lower, sell at BB upper in ranging markets",
+    "adx_max": 20,
+    "rsi_buy_max": 35,
+    "rsi_sell_min": 65,
+    "bb_proximity_pct": 20,
+    "sl_atr_mult": 1.2,
+    "tp1_target": "bb_mid",
+    "tp2_target": "bb_opposite",
+    "tp1_close_pct": 40,
+    "tp2_close_pct": 30,
+    "tp3_trailing_atr": 1.0
+  },
+
+  "bb_breakout": {
+    "enabled": true,
+    "description": "Trend-following: enter on BB breakout with momentum confirmation",
+    "adx_min": 25,
+    "rsi_buy_min": 55,
+    "rsi_sell_max": 45,
+    "require_m15_agree": true,
+    "sl_atr_mult": 1.5,
+    "tp1_atr_mult": 1.0,
+    "tp2_atr_mult": 1.5,
+    "tp3_atr_mult": 2.5,
+    "tp4_atr_mult": 4.0,
+    "tp1_close_pct": 40,
+    "tp2_close_pct": 30,
+    "tp3_close_pct": 20,
+    "tp4_close_pct": 10,
+    "move_be_on_tp1": true
+  },
+
+  "indicators": {
+    "bb_period": 20,
+    "bb_deviation": 2.0,
+    "rsi_period": 14,
+    "ema_fast": 20,
+    "ema_slow": 50,
+    "atr_period": 14,
+    "adx_period": 14,
+    "primary_tf": "M5",
+    "confirmation_tf": "M15",
+    "trend_tf": "H1"
+  },
+
+  "session_filter": {
+    "enabled": true,
+    "london_start_utc": 7,
+    "london_end_utc": 12,
+    "ny_start_utc": 12,
+    "ny_end_utc": 20,
+    "skip_asian": true
+  },
+
+  "safety": {
+    "max_spread_points": 25,
+    "max_open_groups": 2,
+    "max_trades_per_session": 3,
+    "loss_cooldown_sec": 300,
+    "news_post_guard_skip_min": 15,
+    "dd_equity_close_all_pct": 3.0
+  },
+
+  "dd_event_tp": {
+    "description": "Tighten TP when SENTINEL detects HIGH-impact event within threshold",
+    "enabled": true,
+    "sentinel_minutes_threshold": 30,
+    "tight_tp_atr_mult": 0.8,
+    "no_runners": true
+  },
+
+  "lot_sizing": {
+    "mode": "fixed",
+    "fixed_lot": 0.01,
+    "num_trades": 4,
+    "risk_pct": 2.0
+  }
+}
