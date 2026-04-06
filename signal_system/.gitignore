@@ -46,11 +46,14 @@ __pycache__/
 dist/
 build/
 
-# ── macOS ──────────────────────────────────────────────────────────
+# ── macOS ──────────────────────────────────────────────────
 .DS_Store
 .AppleDouble
 .LSOverride
 Thumbs.db
+
+# ── Rendered launchd plists (contain .env secrets) ─────────────
+ services/macos/rendered/
 
 # ── IDE ────────────────────────────────────────────────────────────
 .vscode/

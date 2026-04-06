@@ -120,15 +120,22 @@ def ensure_logs():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"✓ Logs directory: {LOGS_DIR}")
 
-# ── macOS launchd ─────────────────────────────────────────────────
+# ── macOS launchd ─────────────────────────────────────────────
+# Rendered plists live in services/macos/rendered/ (in-repo, git-visible).
+# ~/Library/LaunchAgents/ gets a SYMLINK → rendered file, so changes are
+# always traceable from the source base directory.
+RENDERED_DIR = PROJECT / "services" / "macos" / "rendered"
+
 def install_macos():
     MACOS_LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
+    RENDERED_DIR.mkdir(parents=True, exist_ok=True)
     src_dir = PROJECT / "services" / "macos"
     env_vars = load_env_vars()
 
     for svc in SERVICES:
         plist_name = f"com.signalsystem.{svc}.plist"
         src  = src_dir / plist_name
+        rendered = RENDERED_DIR / plist_name
         dest = MACOS_LAUNCH_AGENTS / plist_name
 
         if not src.exists():
@@ -146,11 +153,18 @@ def install_macos():
         content = replace_username(content)
         content = inject_signal_python(content, PROJECT)
         content = inject_env_vars(content, merged)
-        dest.write_text(content)
-        print(f"✓ Installed: {dest}")
+        rendered.write_text(content)
+        print(f"✓ Rendered: {rendered}")
 
-        # Unload first if already loaded
+        # Unload before re-linking
         run(f"launchctl unload {dest} 2>/dev/null", check=False)
+
+        # Replace copy/old-symlink with symlink → rendered file in repo
+        if dest.exists() or dest.is_symlink():
+            dest.unlink()
+        dest.symlink_to(rendered.resolve())
+        print(f"✓ Symlinked: {dest} → {rendered}")
+
         result = run(f"launchctl load {dest}")
         if result.returncode == 0:
             print(f"✓ Loaded: com.signalsystem.{svc}")
