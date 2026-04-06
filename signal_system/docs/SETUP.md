@@ -406,36 +406,52 @@ Claude Code handles this automatically as part of setup. Or run manually:
 
 ```bash
 cd signal_system
-python3 services/install_services.py
+make start
+# or: python3 services/install_services.py
 ```
 
-This detects macOS vs Linux, installs the right service files,
-replaces YOUR_USERNAME with your real username, and starts all 4 services.
+This:
+1. Renders plist templates with your `.env` values → `services/macos/rendered/`
+2. Creates **symlinks** from `~/Library/LaunchAgents/` → rendered files in the repo
+3. Loads all 4 services via `launchctl`
+
+Because LaunchAgents entries are **symlinks** (not copies), changes are always traceable from the source base directory.
 
 ### Check everything is running
 
 ```bash
-python3 services/install_services.py --status
+make status
+# or: python3 services/install_services.py --status
+```
+
+Verify symlinks:
+```bash
+ls -la ~/Library/LaunchAgents/com.signalsystem.*
+# Should show -> /path/to/signal_system/services/macos/rendered/*.plist
 ```
 
 ### View live logs
 
 ```bash
-# Follow bridge log in real-time
-python3 services/install_services.py --logs bridge
-
-# Or directly on macOS:
+make logs-bridge      # follow bridge log
+make logs-athena      # follow athena log
+# Or directly:
 tail -f ~/signal_system/logs/bridge.log
 ```
 
-### Stop / restart
-
-From repo root you can also use Make: `make stop`, `make restart`, `make start`.
+### Stop / restart / reload
 
 ```bash
-python3 services/install_services.py --stop
-python3 services/install_services.py --restart
+make stop             # unload all services
+make start            # render + symlink + load (full install)
+make restart          # stop + start (re-renders plists from .env)
+make reload           # hot-restart all Python processes (fast — no plist reinstall)
+make reload-bridge    # hot-restart BRIDGE only (picks up sentinel/aegis/aurum changes)
 ```
+
+**Use `make reload` after editing Python files** — it kills the running processes and launchd relaunches them with fresh code. Much faster than `make restart` (which re-renders plists from scratch).
+
+**Use `make restart` after editing `.env`** — env changes require re-rendering the plists.
 
 After this step your Mac will automatically start all 4 services on every login.
 If any service crashes it restarts itself after 10-15 seconds.

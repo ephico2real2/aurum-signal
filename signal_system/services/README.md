@@ -17,12 +17,20 @@ imported internally by bridge.py. They are not separate processes.
 ## Install (Claude Code runs this automatically)
 
 ```bash
-python3 services/install_services.py
+make start
+# or: python3 services/install_services.py
 ```
 
-**Python interpreter:** Plists/units use **`PROJECT/.venv/bin/python`** when that file exists (same deps as `make test-contracts` after `make venv`). Otherwise **`SIGNAL_PYTHON`** from the environment when you run the installer, or **`python3`** on `PATH`. Re-run **`python3 services/install_services.py`** (or **`make restart`**) after creating `.venv`.
+The installer:
+1. Renders plist templates (`services/macos/*.plist`) with `.env` values → `services/macos/rendered/`
+2. Creates **symlinks** from `~/Library/LaunchAgents/` → rendered files in the repo
+3. Loads all 4 services via `launchctl`
 
-**PATH (macOS):** LaunchAgents get a minimal environment. The installer injects a `PATH` that includes Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) plus the directory of your `node`/`npx` (required for LENS / TradingView MCP). If you use nvm, add `PATH=...` to `.env`; it is **prepended** to that base.
+Because LaunchAgents entries are **symlinks** (not copies), the running configuration is always traceable from the source base directory.
+
+**Python interpreter:** Plists use **`PROJECT/.venv/bin/python`** when that file exists. Otherwise **`SIGNAL_PYTHON`** from the environment, or **`python3`** on `PATH`. Re-run `make start` after creating `.venv`.
+
+**PATH (macOS):** The installer injects a `PATH` that includes Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) plus `node`/`npx` directories (required for LENS / TradingView MCP).
 
 Detects macOS vs Linux automatically. Replaces YOUR_USERNAME with
 your real username. Enables auto-start on login/boot.
@@ -30,25 +38,33 @@ your real username. Enables auto-start on login/boot.
 ## Commands
 
 ```bash
-# Check all services are running
-python3 services/install_services.py --status
+# Full install (render plists + symlink + load)
+make start
 
-# View logs for a service
-python3 services/install_services.py --logs bridge
-python3 services/install_services.py --logs listener
-python3 services/install_services.py --logs aurum
-python3 services/install_services.py --logs athena
+# Check all services are running
+make status
+
+# Hot-restart after editing Python code (fast — no plist re-render)
+make reload            # all 4 processes
+make reload-bridge     # just BRIDGE (sentinel/aegis/aurum changes)
+
+# Full restart after editing .env (re-renders plists)
+make restart
 
 # Stop everything
-python3 services/install_services.py --stop
+make stop
 
-# Restart everything
-python3 services/install_services.py --restart
+# View logs
+make logs-bridge
+make logs-athena
 ```
 
 ## macOS: manual launchctl commands
 
 ```bash
+# Verify symlinks (should show -> services/macos/rendered/...)
+ls -la ~/Library/LaunchAgents/com.signalsystem.*
+
 # Stop one service
 launchctl unload ~/Library/LaunchAgents/com.signalsystem.bridge.plist
 

@@ -17,35 +17,43 @@ Install path: `services/install_services.py` (see [SETUP.md](SETUP.md) STEP 10).
 
 ---
 
-## Restart everything (after code or `.env` changes)
+## After editing Python code (sentinel, aegis, bridge, etc.)
 
-From the **repo root** (`signal_system/`):
+Fastest path — hot-restart without re-rendering plists:
+
+```bash
+make reload           # kill + relaunch all 4 Python processes
+make reload-bridge    # just BRIDGE (sentinel/aegis/aurum changes)
+```
+
+Launchd auto-relaunches the killed processes with fresh code. Health check runs after.
+
+## After editing `.env` (full restart needed)
+
+Env changes require re-rendering the plist templates:
 
 ```bash
 make restart
+# or: python3 services/install_services.py --restart
 ```
 
-Equivalent:
+This re-renders `services/macos/rendered/*.plist` from templates + `.env`, then reloads launchd.
 
-```bash
-python3 services/install_services.py --restart
-```
+**How plists work:** Templates live at `services/macos/*.plist`. The installer renders them (injecting `.env` values) into `services/macos/rendered/`. `~/Library/LaunchAgents/` entries are **symlinks** to the rendered files — not copies — so changes are always traceable from the repo.
 
-**Interpreter:** If `.venv` exists at repo root, launchd/systemd uses `.venv/bin/python` automatically. Override with env `SIGNAL_PYTHON=/path/to/python` before install if needed.
+**Interpreter:** If `.venv` exists at repo root, launchd uses `.venv/bin/python` automatically. Override with env `SIGNAL_PYTHON=/path/to/python` before install if needed.
 
-**Needed on disk:** `.env` at repo root (API keys, Telegram, paths). Telethon / AURUM session files under `python/config/` as described in SETUP.
+**Risk gate:** Trade validation is **AEGIS** — see [AEGIS.md](AEGIS.md). Tuning is via **`AEGIS_*`** env vars; **bridge** must be restarted/reloaded to pick them up.
 
-**Risk gate:** Trade validation (**R:R**, SL distance, daily loss, group caps, slippage) is **AEGIS** — see [AEGIS.md](AEGIS.md). Tuning is via **`AEGIS_*`** env vars; **bridge** must be restarted to pick them up.
-
-**News / calendar:** **SENTINEL** — ForexFactory multi-currency calendar + free RSS (FXStreet, Google News, Investing.com forex, optional DailyFX/extras). See [SENTINEL.md](SENTINEL.md).
+**News / calendar:** **SENTINEL** — ForexFactory multi-currency calendar + free RSS (FXStreet, Google News, Investing.com forex, optional DailyFX/extras). Extended events (speeches, FOMC) hold the guard for 60min. See [SENTINEL.md](SENTINEL.md).
 
 ---
 
 ## Stop / start (full cycle)
 
 ```bash
-make stop    # services-stop
-make start   # services-install (install + load)
+make stop    # unload all services
+make start   # render plists + symlink + load (full install)
 ```
 
 ---
