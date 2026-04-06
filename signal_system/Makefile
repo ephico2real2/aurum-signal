@@ -91,7 +91,7 @@ status services-status:
 
 # ── Testing ───────────────────────────────────────────────────────
 .PHONY: verify verify-forge-bridge forge-verify-live forge-refresh-verify test test-api test-ui test-ui-silent test-ui-audit test-live \
-        test-components test-contracts test-contracts-venv venv sync-openapi-scribe test-report test-record claude-review-ui review-ui forge-ea forge-compile \
+        test-closures test-components test-contracts test-contracts-venv venv sync-openapi-scribe test-report test-record claude-review-ui review-ui forge-ea forge-compile \
         services-install services-stop services-restart forge-refresh
 
 verify-forge-bridge:
@@ -139,6 +139,9 @@ test-ui-silent:
 
 test-live:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file live
+
+test-closures:
+	@$(PYTHON) $(SCRIPTS)/test_api.py --file closures
 
 test-components:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file components

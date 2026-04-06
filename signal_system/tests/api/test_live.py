@@ -23,6 +23,7 @@ class TestLiveEndpoint:
                     "price", "chart_symbol", "execution", "tradingview", "mt5_quote_stale",
                     "lens", "sentinel", "open_groups", "open_groups_queued", "open_groups_policy",
                     "performance", "performance_window",
+                    "recent_closures", "closure_stats",
                     "mt5_connected", "pending_orders"]
         assert_keys(live_data, required, "/api/live")
 
