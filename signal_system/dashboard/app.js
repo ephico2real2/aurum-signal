@@ -405,10 +405,12 @@ function AurumChat({liveData}){
   const [msgs,setMsgs]=useState([]);
   const [inp,setInp]=useState('');const [loading,setLoading]=useState(false);
   const ref=useRef(null);const taRef=useRef(null);
-  // Only set welcome message ONCE (not on every 3s poll)
+  // Set welcome message once real data arrives (skip DISCONNECTED fallback)
   const welcomeSet=useRef(false);
   useEffect(()=>{
-    if(!liveData||welcomeSet.current)return;
+    if(!liveData)return;
+    if(liveData.mode==='DISCONNECTED')return;  // wait for real data
+    if(welcomeSet.current)return;
     setMsgs([{role:'assistant',text:aurumWelcome(liveData)}]);
     welcomeSet.current=true;
   },[liveData]);
