@@ -126,6 +126,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── Structured trade log ─────────────────────────────────────────
+# Format: [SOURCE|EVENT] G<id> #<ticket> detail
+# Source: SIGNAL, AURUM, SCALPER, FORGE_NATIVE, TRACKER, MGMT, SYSTEM
+# Grep-friendly: grep 'G20' or grep '\[TRACKER|CLOSE\]' or grep '#1122706681'
+def _tlog(source: str, event: str, msg: str,
+          group_id=None, ticket=None, level: str = "info"):
+    parts = [f"[{source}|{event}]"]
+    if group_id is not None:
+        parts.append(f"G{group_id}")
+    if ticket is not None:
+        parts.append(f"#{ticket}")
+    parts.append(msg)
+    line = " ".join(parts)
+    getattr(log, level, log.info)(line)
+
+
 def _forge_command_targets() -> list[str]:
     """Paths that receive BRIDGE → FORGE command.json (primary + optional mirror)."""
     paths: list[str] = [CMD_FILE_MT5]
@@ -466,7 +482,7 @@ class Bridge:
                         changes.append(f"SL {known_sl}→{live_sl}")
                     if tp_changed:
                         changes.append(f"TP {known_tp}→{live_tp}")
-                    log.info("TRACKER: SL/TP modified ticket=%s — %s", ticket, ", ".join(changes))
+                    _tlog("TRACKER", "SL_TP_MODIFIED", ", ".join(changes), group_id=self._known_positions[ticket].get("group_id"), ticket=ticket)
                     self._known_positions[ticket]["sl"] = live_sl
                     self._known_positions[ticket]["tp"] = live_tp
                     # Update SCRIBE so dashboard/AURUM show correct levels
@@ -522,8 +538,8 @@ class Bridge:
                 "lot_size": p.get("lots", 0),
                 "sl": p.get("sl"), "tp": p.get("tp"),
             }
-            log.info("TRACKER: new position ticket=%s G%s %s %.2flot @ %s",
-                     ticket, gid, direction, p.get("lots", 0), p.get("open_price"))
+            _tlog("TRACKER", "FILL", f"{direction} {p.get('lots',0):.2f}lot @ {p.get('open_price')} SL={p.get('sl')} TP={p.get('tp')}",
+                  group_id=gid, ticket=ticket)
 
         # ── New pending orders ─────────────────────────────────────
         for ticket, o in live_pendings.items():
@@ -623,8 +639,8 @@ class Bridge:
             )
 
             groups_touched.setdefault(gid, []).append(pnl)
-            log.info("TRACKER: position closed ticket=%s G%s reason=%s pnl=%.2f pips=%.1f",
-                     ticket, gid, close_reason, pnl, pips)
+            _tlog("TRACKER", "CLOSE", f"reason={close_reason} pnl=${pnl:+.2f} pips={pips:+.1f} close@{close_price} entry@{open_price} SL={sl} TP={tp}",
+                  group_id=gid, ticket=ticket)
             if pnl < 0:
                 self._last_loss_close_ts = time.time()
 
@@ -695,10 +711,8 @@ class Bridge:
                     trades_closed=trades_closed,
                     close_reason="ALL_CLOSED",
                 )
-                log.info(
-                    "TRACKER: group G%s fully closed — %d trades, pnl=%.2f, pips=%.1f",
-                    gid, trades_closed, total_pnl, total_pips,
-                )
+                _tlog("TRACKER", "GROUP_CLOSED", f"{trades_closed} trades pnl=${total_pnl:+.2f} pips={total_pips:+.1f}",
+                      group_id=gid)
                 self._bridge_activity(
                     "TRADE_GROUP_CLOSED",
                     reason="ALL_CLOSED",
@@ -1204,8 +1218,8 @@ class Bridge:
             ),
         )
         self.herald.trade_group_opened({**group_data, "id": group_id})
-        log.info(f"BRIDGE: Group {group_id} dispatched to FORGE "
-                 f"— {approval.num_trades}×{approval.lot_per_trade}lot")
+        _tlog("SIGNAL", "OPEN_GROUP", f"{signal['direction']} {approval.num_trades}x{approval.lot_per_trade}lot SL={signal['sl']} TP1={signal['tp1']}",
+              group_id=group_id)
 
     def _process_mgmt_command(self, mt5: dict):
         mgmt = _read_json(MGMT_FILE)
@@ -1218,7 +1232,7 @@ class Bridge:
         self._last_mgmt_ts = ts
 
         intent = mgmt.get("intent")
-        log.info(f"BRIDGE: Management command — {intent}")
+        _tlog("MGMT", intent, f"source={mgmt.get('source','?')} group={mgmt.get('group_id','all')}")
 
         # If LISTENER provided a group_id, use group-specific commands
         mgmt_gid = mgmt.get("group_id")
@@ -1346,7 +1360,7 @@ class Bridge:
             "signal_id": None,
             "source": "SCALPER",
         }
-        log.info(f"BRIDGE SCALPER: {direction} signal @ {entry:.2f}")
+        _tlog("SCALPER", "SETUP", f"{direction} @ {entry:.2f} SL={sl} TP1={tp1}")
         account = mt5.get("account", {}) if mt5 else {}
         account["open_groups_count"] = len(self._open_groups)
         approval = self.aegis.validate(signal, account, price, mt5_data=mt5)
@@ -1589,7 +1603,7 @@ class Bridge:
                 reason="AURUM",
                 notes=json.dumps({"via": "aurum_cmd.json"}, default=str),
             )
-            log.info("BRIDGE: AURUM requested CLOSE_ALL")
+            _tlog("AURUM", "CLOSE_ALL", "all groups closed in SCRIBE")
 
         elif action in ("OPEN_GROUP", "OPEN_TRADE"):
             if action == "OPEN_TRADE":
@@ -1752,9 +1766,8 @@ class Bridge:
             f"{entry.get('num_trades')} x {entry.get('lot_per_trade')} lot"
             + (" [TIGHT TP]" if entry.get("sentinel_tight") else ""))
 
-        log.info(
-            "BRIDGE: FORGE native scalp %s %s G%s (SCRIBE G%s) magic=%s",
-            setup_type, direction, gid, scribe_gid, magic)
+        _tlog("FORGE_NATIVE", setup_type, f"{direction} magic={magic} scribe_gid={scribe_gid}",
+              group_id=gid)
 
     def _normalize_aurum_open_trade(self, cmd: dict) -> dict:
         """Map legacy / LLM OPEN_TRADE shape -> OPEN_GROUP fields FORGE understands."""
@@ -1919,10 +1932,8 @@ class Bridge:
             ),
         )
         self.herald.trade_group_opened({**group_data, "id": gid})
-        log.info(
-            "BRIDGE: AURUM OPEN_GROUP #%s → FORGE (%s ×%s lot)",
-            gid, direction, lot_pt,
-        )
+        _tlog("AURUM", "OPEN_GROUP", f"{direction} x{lot_pt}lot SL={signal['sl']} TP1={signal['tp1']}",
+              group_id=gid)
 
     # ── Mode management ────────────────────────────────────────────
     def _effective_mode(self) -> str:
@@ -1946,7 +1957,7 @@ class Bridge:
         self._write_status()
         self.listener.set_mode(new_mode)
         self.aurum.set_mode(new_mode)
-        log.info(f"BRIDGE: Mode {prev} → {new_mode} (by {triggered_by})")
+        _tlog("SYSTEM", "MODE_CHANGE", f"{prev} -> {new_mode} (by {triggered_by})")
 
     # ── File writers ───────────────────────────────────────────────
     def _heartbeat_passive_components(self):
