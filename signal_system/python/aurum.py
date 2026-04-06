@@ -78,6 +78,11 @@ def _read_json(path: str) -> dict:
         return {}
 
 
+# Max conversation turns to send to Claude (user+assistant = 1 turn).
+# Higher = better continuity but more tokens per call.
+MAX_CONV_TURNS = int(os.environ.get("AURUM_MAX_CONV_TURNS", "10"))
+
+
 class Aurum:
     def __init__(self):
         self.scribe  = get_scribe()
@@ -86,6 +91,8 @@ class Aurum:
         self._soul   = _read_file(SOUL_FILE)
         self._skill  = _read_file(SKILL_FILE)
         self._mode   = "SIGNAL"
+        # Per-source conversation buffers: {source: [{role, content}, ...]}
+        self._conversations: dict[str, list[dict]] = {}
         if not self.claude:
             log.warning("AURUM: ANTHROPIC_API_KEY not set")
         log.info("AURUM initialised")
@@ -113,15 +120,21 @@ class Aurum:
         memory   = self._build_memory()
         system   = self._build_system_prompt(context, memory)
 
+        # Build multi-turn messages (user/assistant pairs for continuity)
+        messages = self._get_conversation_messages(query, source)
+
         try:
             resp = self.claude.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
                 system=system,
-                messages=[{"role": "user", "content": query}],
+                messages=messages,
             )
             answer = resp.content[0].text.strip()
             tokens = resp.usage.input_tokens + resp.usage.output_tokens
+
+            # Append assistant response to conversation buffer
+            self._append_to_conversation(source, "assistant", answer)
 
             # Log to SCRIBE
             self.scribe.log_aurum_conversation(
@@ -187,10 +200,69 @@ class Aurum:
         ]
         return "\n\n".join(parts)
 
+    # ── Conversation buffer (multi-turn continuity) ───────────────
+    def _get_conversation_messages(self, query: str, source: str) -> list[dict]:
+        """
+        Build the messages array for Claude with conversation history.
+        Appends the new user query and returns the full list.
+        On first call for a source, seeds from SCRIBE for restart continuity.
+        """
+        if source not in self._conversations:
+            self._seed_conversation_from_scribe(source)
+
+        # Append current user query
+        self._append_to_conversation(source, "user", query)
+
+        return list(self._conversations[source])
+
+    def _append_to_conversation(self, source: str, role: str, content: str):
+        """Append a message and trim to MAX_CONV_TURNS."""
+        if source not in self._conversations:
+            self._conversations[source] = []
+        self._conversations[source].append({"role": role, "content": content})
+        # Trim: keep last MAX_CONV_TURNS * 2 messages (user+assistant pairs)
+        max_msgs = MAX_CONV_TURNS * 2
+        if len(self._conversations[source]) > max_msgs:
+            self._conversations[source] = self._conversations[source][-max_msgs:]
+            # Ensure conversation starts with a user message (Claude requirement)
+            while (self._conversations[source]
+                   and self._conversations[source][0]["role"] != "user"):
+                self._conversations[source].pop(0)
+
+    def _seed_conversation_from_scribe(self, source: str):
+        """
+        On first call after restart, load recent conversations from SCRIBE
+        so AURUM remembers what was discussed before the restart.
+        """
+        self._conversations[source] = []
+        try:
+            rows = self.scribe.query(
+                """SELECT query, response FROM aurum_conversations
+                   WHERE source = ?
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (source, MAX_CONV_TURNS),
+            )
+        except Exception as e:
+            log.warning("AURUM conversation seed failed: %s", e)
+            return
+        if not rows:
+            return
+        # Reverse to chronological order
+        for r in reversed(rows):
+            q = r.get("query", "")
+            a = r.get("response", "")
+            if q:
+                self._conversations[source].append({"role": "user", "content": q})
+            if a:
+                self._conversations[source].append({"role": "assistant", "content": a})
+        log.info("AURUM: seeded %d messages for %s from SCRIBE",
+                 len(self._conversations[source]), source)
+
     def _build_memory(self) -> str:
         """
-        Pull last 5 conversations from SCRIBE aurum_conversations table.
-        Gives AURUM continuity across sessions — it remembers what you discussed.
+        Brief summary of recent conversation topics for the system prompt.
+        Full conversation history is now in the messages array; this is
+        a lightweight supplement for cross-source awareness.
         """
         try:
             rows = self.scribe.query(
@@ -206,7 +278,6 @@ class Aurum:
         if not rows:
             return ""
 
-        # Reverse to chronological order for natural reading
         rows = list(reversed(rows))
         lines = []
         for r in rows:
