@@ -132,13 +132,18 @@ def market_view_summary(view: dict) -> str:
 
 
 def format_for_aurum(view: dict) -> str:
-    """Format MarketView as text for AURUM's system prompt context."""
+    """Format MarketView as text for AURUM's system prompt context.
+
+    Includes price-relative analysis so AURUM can make better
+    scalping decisions without computing structure from raw numbers.
+    """
     lines = []
     p = view.get("price", {})
-    if p.get("mid"):
+    mid = p.get("mid")
+    if mid:
         lines.append(
             f"MT5 PRICE: bid ${p['bid']:.2f}  ask ${p['ask']:.2f}  "
-            f"mid ${p['mid']:.2f}  spread {p.get('spread', '?')}pt"
+            f"mid ${mid:.2f}  spread {p.get('spread', '?')}pt"
         )
 
     for tf_key, label in [("h1", "H1"), ("m30", "M30"), ("m15", "M15"), ("m5", "M5")]:
@@ -168,6 +173,37 @@ def format_for_aurum(view: dict) -> str:
         if bb_u and bb_m and bb_l:
             parts.append(f"BB [{bb_l:.2f}/{bb_m:.2f}/{bb_u:.2f}]")
         lines.append("  " + " | ".join(parts))
+
+        # Price-relative context (only for M5/M15 — scalping timeframes)
+        if mid and tf_key in ("m5", "m15") and bb_u and bb_m and bb_l and atr:
+            hints = []
+            bb_range = bb_u - bb_l
+            if bb_range > 0:
+                bb_pct = (mid - bb_l) / bb_range * 100
+                hints.append(f"price at {bb_pct:.0f}% of BB range")
+                if bb_pct < 20:
+                    hints.append("NEAR BB LOWER (bounce zone)")
+                elif bb_pct > 80:
+                    hints.append("NEAR BB UPPER (rejection zone)")
+            if ema20:
+                dist_ema20 = mid - ema20
+                if abs(dist_ema20) < atr * 0.3:
+                    hints.append(f"AT EMA20 (${dist_ema20:+.2f})")
+                elif dist_ema20 > 0:
+                    hints.append(f"${dist_ema20:.2f} ABOVE EMA20")
+                else:
+                    hints.append(f"${abs(dist_ema20):.2f} BELOW EMA20")
+            # RSI momentum hint
+            if rsi < 30:
+                hints.append("RSI OVERSOLD")
+            elif rsi > 70:
+                hints.append("RSI OVERBOUGHT")
+            elif rsi < 40:
+                hints.append("RSI weak")
+            elif rsi > 60:
+                hints.append("RSI strong")
+            if hints:
+                lines.append(f"    → {' | '.join(hints)}")
 
     tv = view.get("tv_recommend")
     if tv is not None:

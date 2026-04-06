@@ -1479,13 +1479,37 @@ class Bridge:
 
         # Build structured prompt for AURUM
         mtf_text = format_for_aurum(view)
+
+        # Price action context for better decision-making
+        m5 = view.get("m5", {})
+        m15 = view.get("m15", {})
+        h1 = view.get("h1", {})
+        price_mid = (view.get("price") or {}).get("mid", 0)
+        m5_atr = m5.get("atr_14", 0)
+        pa_hints = []
+        if m5.get("bb_lower") and m5.get("bb_upper") and price_mid:
+            bb_range = m5["bb_upper"] - m5["bb_lower"]
+            if bb_range > 0 and bb_range < m5_atr * 1.5:
+                pa_hints.append("M5 BB SQUEEZE — breakout imminent")
+        if h1.get("atr_14") and h1["atr_14"] > 0:
+            pa_hints.append(f"Use SL={h1['atr_14']*1.5:.2f} (1.5x H1 ATR), TP1 at nearest M5 BB band or EMA")
+
         prompt = (
             f"AUTO_SCALPER tick. H1 bias: {h1_bias}. "
             f"Only {h1_bias.replace('BULL','BUY').replace('BEAR','SELL')} trades allowed.\n"
             f"Constraints: lot_per_trade={AUTO_SCALPER_LOT_SIZE}, num_trades={AUTO_SCALPER_NUM_TRADES}\n"
-            f"\n{mtf_text}\n\n"
-            f"If you see a scalping opportunity aligned with H1 {h1_bias}, "
-            f"respond with ONE OPEN_GROUP json block (scalping SL/TP per SKILL rules). "
+            f"\n{mtf_text}\n"
+        )
+        if pa_hints:
+            prompt += "\nPrice action: " + " | ".join(pa_hints) + "\n"
+        prompt += (
+            f"\nDecision framework:\n"
+            f"- BUY if: price near M5 BB lower + RSI<40 + M15 not overbought\n"
+            f"- SELL if: price near M5 BB upper + RSI>60 + M15 not oversold\n"
+            f"- PASS if: price mid-BB (no edge), all RSIs neutral (45-55), or lower TFs conflict with H1\n"
+            f"- SL: 1-1.5x ATR from entry. TP1: nearest BB band/EMA. TP2: next TF structure.\n"
+            f"\nIf you see a scalping opportunity aligned with H1 {h1_bias}, "
+            f"respond with ONE OPEN_GROUP json block. "
             f"If no clear setup, respond: PASS: <one-line reason>"
         )
 
