@@ -20,6 +20,10 @@ imported internally by bridge.py. They are not separate processes.
 python3 services/install_services.py
 ```
 
+**Python interpreter:** Plists/units use **`PROJECT/.venv/bin/python`** when that file exists (same deps as `make test-contracts` after `make venv`). Otherwise **`SIGNAL_PYTHON`** from the environment when you run the installer, or **`python3`** on `PATH`. Re-run **`python3 services/install_services.py`** (or **`make restart`**) after creating `.venv`.
+
+**PATH (macOS):** LaunchAgents get a minimal environment. The installer injects a `PATH` that includes Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) plus the directory of your `node`/`npx` (required for LENS / TradingView MCP). If you use nvm, add `PATH=...` to `.env`; it is **prepended** to that base.
+
 Detects macOS vs Linux automatically. Replaces YOUR_USERNAME with
 your real username. Enables auto-start on login/boot.
 

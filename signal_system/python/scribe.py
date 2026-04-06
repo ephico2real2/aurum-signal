@@ -13,6 +13,9 @@ from contextlib import contextmanager
 log = logging.getLogger("scribe")
 
 DB_PATH = os.environ.get("SCRIBE_DB", "data/aurum_intelligence.db")
+_PY_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _PY_DIR.parent
+_DEFAULT_AUDIT_JSONL = _REPO_ROOT / "logs" / "audit" / "system_events.jsonl"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS system_events (
@@ -110,6 +113,7 @@ CREATE TABLE IF NOT EXISTS trade_groups (
     lens_rating    INTEGER,
     lens_rsi       REAL,
     lens_confirmed INTEGER,
+    magic_number   INTEGER,
     status         TEXT DEFAULT 'OPEN',
     closed_at      TEXT,
     close_reason   TEXT,
@@ -205,22 +209,64 @@ class Scribe:
     def _init_db(self):
         with self._conn() as c:
             c.executescript(DDL)
+            self._migrate(c)
+
+    def _migrate(self, conn):
+        """Additive migrations — safe to re-run."""
+        # v1.2.4+: magic_number column on trade_groups
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
+        if "magic_number" not in cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN magic_number INTEGER")
+            log.info("SCRIBE migration: added magic_number column to trade_groups")
 
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _audit_mirror_enabled(self) -> bool:
+        v = os.environ.get("SCRIBE_AUDIT_ENABLE", "1").strip().lower()
+        return v not in ("0", "false", "no", "off")
+
+    def _mirror_system_event_audit(self, row: dict) -> None:
+        """Append one NDJSON line for external audit / SIEM (never raises)."""
+        if not self._audit_mirror_enabled():
+            return
+        path = Path(os.environ.get("SCRIBE_AUDIT_JSONL", str(_DEFAULT_AUDIT_JSONL)))
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception as e:
+            log.warning("SCRIBE audit mirror write failed: %s", e)
 
     # ── Public write API ───────────────────────────────────────────
     def log_system_event(self, event_type: str, prev_mode: str = None,
                          new_mode: str = None, triggered_by: str = None,
                          reason: str = None, news_event: str = None,
                          session: str = None, notes: str = None):
+        ts = self._now()
         with self._conn() as c:
-            c.execute("""INSERT INTO system_events
+            cur = c.execute(
+                """INSERT INTO system_events
                 (timestamp,event_type,prev_mode,new_mode,triggered_by,reason,news_event,session,notes)
                 VALUES (?,?,?,?,?,?,?,?,?)""",
-                (self._now(),event_type,prev_mode,new_mode,triggered_by,
-                 reason,news_event,session,notes))
+                (ts, event_type, prev_mode, new_mode, triggered_by,
+                 reason, news_event, session, notes),
+            )
+            eid = cur.lastrowid
+        self._mirror_system_event_audit({
+            "id": eid,
+            "timestamp": ts,
+            "event_type": event_type,
+            "prev_mode": prev_mode,
+            "new_mode": new_mode,
+            "triggered_by": triggered_by,
+            "reason": reason,
+            "news_event": news_event,
+            "session": session,
+            "notes": notes,
+        })
 
     def log_market_snapshot(self, data: dict, mode: str, source: str):
         with self._conn() as c:
@@ -268,15 +314,16 @@ class Scribe:
                 SET action_taken=?, skip_reason=?, trade_group_id=?
                 WHERE id=?""", (action, skip_reason, group_id, signal_id))
 
-    def log_trade_group(self, data: dict, mode: str) -> int:
+    def log_trade_group(self, data: dict, mode: str,
+                        magic_number: int | None = None) -> int:
         with self._conn() as c:
             cur = c.execute("""INSERT INTO trade_groups
                 (timestamp,mode,source,signal_id,direction,
                  entry_low,entry_high,sl,tp1,tp2,tp3,
                  num_trades,lot_per_trade,risk_pct,account_balance,
                  lens_rating,lens_rsi,lens_confirmed,
-                 trades_opened,trades_closed)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 magic_number,trades_opened,trades_closed)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, data.get("source","SIGNAL"),
                  data.get("signal_id"), data.get("direction"),
                  data.get("entry_low"), data.get("entry_high"),
@@ -285,8 +332,24 @@ class Scribe:
                  data.get("risk_pct"), data.get("account_balance"),
                  data.get("lens_rating"), data.get("lens_rsi"),
                  data.get("lens_confirmed"),
+                 magic_number,
                  data.get("num_trades",8), 0))
             return cur.lastrowid
+
+    def update_trade_group_magic(self, group_id: int, magic_number: int):
+        """Set the magic_number for a trade group (called after SCRIBE assigns the id)."""
+        with self._conn() as c:
+            c.execute("UPDATE trade_groups SET magic_number=? WHERE id=?",
+                      (magic_number, group_id))
+
+    def get_in_use_magics(self) -> set[int]:
+        """Return magic numbers of all OPEN/PARTIAL groups."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT magic_number FROM trade_groups "
+                "WHERE status IN ('OPEN','PARTIAL') AND magic_number IS NOT NULL"
+            ).fetchall()
+            return {int(r[0]) for r in rows}
 
     def update_trade_group(self, group_id: int, status: str,
                            total_pnl: float = None, pips: float = None,
@@ -449,35 +512,101 @@ class Scribe:
                 WHERE status IN ('OPEN','PARTIAL') ORDER BY timestamp DESC""").fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_signals(self, limit: int = 20) -> list:
+    def get_recent_signals(self, limit: int = 20, within_days: int = None) -> list:
         with self._conn() as c:
-            rows = c.execute("""SELECT * FROM signals_received
-                ORDER BY timestamp DESC LIMIT ?""", (limit,)).fetchall()
+            if within_days is not None:
+                d = max(1, min(int(within_days), 366))
+                rows = c.execute(
+                    """SELECT * FROM signals_received
+                       WHERE timestamp >= datetime('now', ?)
+                       ORDER BY timestamp DESC LIMIT ?""",
+                    (f"-{d} days", limit),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    """SELECT * FROM signals_received
+                       ORDER BY timestamp DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_performance(self, mode: str = None, days: int = 7) -> dict:
-        since = datetime.now(timezone.utc).strftime(f"%Y-%m-%d")
+    def get_signals_stats(self, days: int = 7) -> dict:
+        d = max(1, min(int(days), 366))
         with self._conn() as c:
-            base = "WHERE close_time >= date('now','-7 days') AND status='CLOSED'"
+            row = c.execute(
+                """SELECT COUNT(*) AS received,
+                          COALESCE(SUM(CASE WHEN UPPER(TRIM(COALESCE(action_taken,'')))='EXECUTED'
+                              THEN 1 ELSE 0 END),0) AS executed,
+                          COALESCE(SUM(CASE WHEN UPPER(TRIM(COALESCE(action_taken,'')))='SKIPPED'
+                              THEN 1 ELSE 0 END),0) AS skipped,
+                          COALESCE(SUM(CASE WHEN UPPER(TRIM(COALESCE(action_taken,'')))='EXPIRED'
+                              THEN 1 ELSE 0 END),0) AS expired
+                   FROM signals_received
+                   WHERE timestamp >= datetime('now', ?)""",
+                (f"-{d} days",),
+            ).fetchone()
+        return {
+            "received": int(row[0] or 0),
+            "executed": int(row[1] or 0),
+            "skipped": int(row[2] or 0),
+            "expired": int(row[3] or 0),
+        }
+
+    def get_performance(self, mode: str = None, days: int = 7) -> dict:
+        d = max(1, min(int(days), 366))
+        with self._conn() as c:
+            base = (
+                "WHERE close_time >= datetime('now', '-' || ? || ' days') "
+                "AND status='CLOSED'"
+            )
+            params: list = [str(d)]
             if mode:
-                base += f" AND mode='{mode}'"
-            rows = c.execute(f"""SELECT COUNT(*) total,
-                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) wins,
-                COALESCE(SUM(pnl),0) total_pnl,
-                COALESCE(AVG(pips),0) avg_pips
-                FROM trade_positions {base}""").fetchone()
-            total = rows[0] or 1
+                base += " AND mode=?"
+                params.append(mode)
+            rows = c.execute(
+                f"""SELECT COUNT(*) total,
+                    SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) wins,
+                    COALESCE(SUM(pnl),0) total_pnl,
+                    COALESCE(AVG(pips),0) avg_pips
+                    FROM trade_positions {base}""",
+                tuple(params),
+            ).fetchone()
+            total_n = int(rows[0] or 0)
+            wins = int(rows[1] or 0)
             return {
-                "total": rows[0], "wins": rows[1] or 0,
-                "win_rate": round((rows[1] or 0)/total*100, 1),
-                "total_pnl": round(rows[2], 2),
-                "avg_pips": round(rows[3], 1),
+                "total": total_n,
+                "wins": wins,
+                "win_rate": round(wins / total_n * 100, 1) if total_n else None,
+                "total_pnl": round(rows[2] or 0, 2),
+                "avg_pips": round(rows[3] or 0, 1),
             }
 
     def query(self, sql: str, params: tuple = ()) -> list:
         with self._conn() as c:
             rows = c.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
+
+    def query_limited(
+        self,
+        sql: str,
+        params: tuple = (),
+        max_rows: int = 500,
+        busy_timeout_ms: int = 5000,
+    ) -> tuple[list, bool]:
+        """
+        Run a SELECT; return at most max_rows rows. truncated=True if more rows existed.
+        Sets SQLite busy_timeout on this connection only.
+        """
+        max_rows = max(1, min(int(max_rows), 50_000))
+        busy_timeout_ms = max(0, min(int(busy_timeout_ms), 120_000))
+        with self._conn() as c:
+            if busy_timeout_ms:
+                c.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+            cur = c.execute(sql, params)
+            batch = cur.fetchmany(max_rows + 1)
+            truncated = len(batch) > max_rows
+            batch = batch[:max_rows]
+            return [dict(r) for r in batch], truncated
 
     def export_csv(self, table: str, mode: str = None, path: str = None) -> str:
         import csv

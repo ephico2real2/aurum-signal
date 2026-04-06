@@ -17,9 +17,32 @@ Usage:
 import os, sys, shutil, subprocess, platform
 from pathlib import Path
 
+
+def resolve_signal_python(project: Path) -> str:
+    """
+    Interpreter for launchd/systemd: .venv if present, else SIGNAL_PYTHON env, else python3 on PATH.
+    """
+    override = (os.environ.get("SIGNAL_PYTHON") or "").strip()
+    if override:
+        return str(Path(override).expanduser().resolve())
+    venv_py = project / ".venv" / "bin" / "python"
+    if venv_py.is_file():
+        return str(venv_py.resolve())
+    w = shutil.which("python3")
+    return w or "/usr/bin/python3"
+
+
+def inject_signal_python(content: str, project: Path) -> str:
+    return content.replace("__SIGNAL_PYTHON__", resolve_signal_python(project))
+
 USERNAME  = os.environ.get("USER") or os.environ.get("USERNAME") or os.popen("whoami").read().strip()
 HOME      = Path.home()
-PROJECT   = HOME / "signal_system"
+# Repo root: this file lives at <root>/services/install_services.py
+_PROJECT_FROM_SCRIPT = Path(__file__).resolve().parent.parent
+if (_PROJECT_FROM_SCRIPT / "python" / "bridge.py").is_file():
+    PROJECT = _PROJECT_FROM_SCRIPT
+else:
+    PROJECT = HOME / "signal_system"
 LOGS_DIR  = PROJECT / "logs"
 SERVICES  = ["bridge", "listener", "aurum", "athena"]
 IS_MACOS  = platform.system() == "Darwin"
@@ -40,8 +63,34 @@ def run(cmd, check=True):
 def replace_username(text):
     return text.replace("YOUR_USERNAME", USERNAME)
 
+def default_launchd_path() -> str:
+    """
+    PATH for launchd jobs: Homebrew (Apple Silicon + Intel), common Node locations,
+    then system paths. LENS MCP needs node/npx in PATH.
+    """
+    parts: list[str] = []
+    for cmd in ("npx", "node", "npm"):
+        w = shutil.which(cmd)
+        if w:
+            d = str(Path(w).resolve().parent)
+            if d not in parts:
+                parts.append(d)
+    for d in (
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        str(HOME / ".local" / "bin"),
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ):
+        if d not in parts:
+            parts.append(d)
+    return ":".join(parts)
+
+
 def load_env_vars():
-    """Parse ~/signal_system/.env and return dict of key=value pairs."""
+    """Parse <PROJECT>/.env and return dict of key=value pairs."""
     env_file = PROJECT / ".env"
     env = {}
     if not env_file.exists():
@@ -86,9 +135,17 @@ def install_macos():
             print(f"  ✗ Missing: {src}")
             continue
 
+        merged = dict(env_vars)
+        base_p = default_launchd_path()
+        if "PATH" in merged and merged["PATH"].strip():
+            merged["PATH"] = base_p + ":" + merged["PATH"].strip()
+        else:
+            merged["PATH"] = base_p
+
         content = src.read_text()
         content = replace_username(content)
-        content = inject_env_vars(content, env_vars)
+        content = inject_signal_python(content, PROJECT)
+        content = inject_env_vars(content, merged)
         dest.write_text(content)
         print(f"✓ Installed: {dest}")
 
@@ -140,6 +197,7 @@ def install_linux():
 
         content = src.read_text()
         content = replace_username(content)
+        content = inject_signal_python(content, PROJECT)
 
         # Write to systemd (needs sudo)
         tmp = PROJECT / "services" / "linux" / f"_{unit_name}"
@@ -183,6 +241,7 @@ def main():
 
     if arg == "--install":
         print("Installing services...\n")
+        print(f"  Python for services: {resolve_signal_python(PROJECT)}\n")
         if IS_MACOS:   install_macos()
         elif IS_LINUX: install_linux()
         else: print("Unsupported platform"); sys.exit(1)
@@ -211,6 +270,7 @@ def main():
 
     elif arg == "--restart":
         print("Restarting services...\n")
+        print(f"  Python for services: {resolve_signal_python(PROJECT)}\n")
         if IS_MACOS:
             stop_macos()
             import time; time.sleep(2)

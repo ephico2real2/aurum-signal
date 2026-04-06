@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://signal-system.local/schemas/files/forge_command.schema.json",
+  "title": "MT5/command.json (FORGE input)",
+  "description": "BRIDGE writes; FORGE EA reads. Matches ea/FORGE.mq5 ReadCommandFile.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["action", "timestamp"],
+      "properties": {
+        "action": { "const": "CLOSE_ALL" },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": [
+        "action",
+        "group_id",
+        "direction",
+        "lot_per_trade",
+        "sl",
+        "tp1",
+        "tp1_close_pct",
+        "move_be_on_tp1",
+        "timestamp"
+      ],
+      "properties": {
+        "action": { "const": "OPEN_GROUP" },
+        "group_id": { "type": "integer", "minimum": 1 },
+        "direction": { "type": "string", "enum": ["BUY", "SELL"] },
+        "entry_ladder": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 1
+        },
+        "entry_low": { "type": "number" },
+        "lot_per_trade": { "type": "number", "exclusiveMinimum": 0 },
+        "sl": { "type": "number", "exclusiveMinimum": 0 },
+        "tp1": { "type": "number", "exclusiveMinimum": 0 },
+        "tp2": {},
+        "tp3": {},
+        "tp1_close_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "move_be_on_tp1": { "type": ["boolean", "string"] },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

@@ -3,19 +3,20 @@ lens.py — LENS TradingView MCP Market Intelligence
 ===================================================
 Build order: #5 — depends on SCRIBE.
 Wraps the LewisWJackson/tradingview-mcp-jackson MCP server.
-Caches results 5 min. Validates signal entries. Checks TP1 momentum.
+Caches results for LENS_CACHE_SEC (default 60s). Validates signal entries. Checks TP1 momentum.
 """
 
-import os, json, logging, subprocess, time
+import os, json, logging, shutil, subprocess, time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from scribe import get_scribe
+from status_report import report_component_status
 
 log = logging.getLogger("lens")
 
 SNAPSHOT_FILE  = os.environ.get("LENS_SNAPSHOT", "config/lens_snapshot.json")
-CACHE_SECONDS  = int(os.environ.get("LENS_CACHE_SEC", "300"))
+CACHE_SECONDS  = int(os.environ.get("LENS_CACHE_SEC", "60"))
 MCP_SERVER_CMD = os.environ.get(
     "LENS_MCP_CMD",
     "npx tradingview-mcp-jackson"
@@ -166,12 +167,12 @@ class Lens:
             self.scribe.log_market_snapshot(d, mode, "LENS_MCP")
             log.debug(f"LENS fresh: RSI={snap.rsi:.1f} BB={snap.bb_rating} ADX={snap.adx:.1f}")
             try:
-                self.scribe.heartbeat(
-                    component   = "LENS",
-                    status      = "OK",
-                    mode        = mode,
-                    note        = f"RSI={snap.rsi:.1f} BB={snap.bb_rating:+d}",
-                    last_action = f"fetched {snap.timeframe} from TradingView",
+                report_component_status(
+                    "LENS",
+                    "OK",
+                    mode=mode,
+                    note=f"RSI={snap.rsi:.1f} BB={snap.bb_rating:+d}",
+                    last_action=f"fetched {snap.timeframe} from TradingView",
                 )
             except Exception as _he:
                 log.debug(f"LENS heartbeat error: {_he}")
@@ -179,23 +180,32 @@ class Lens:
         except Exception as e:
             log.error(f"LENS fetch error: {e}")
             try:
-                self.scribe.heartbeat(
-                    component = "LENS",
-                    status    = "ERROR",
-                    error_msg = str(e)[:200],
-                    note      = "MCP fetch failed",
+                report_component_status(
+                    "LENS",
+                    "ERROR",
+                    error_msg=str(e)[:200],
+                    note="MCP fetch failed",
                 )
-            except: pass
+            except Exception:
+                pass
             return self._cache
+
+    def _mcp_argv(self) -> list:
+        """Resolve npx/node to absolute paths when possible (launchd-safe)."""
+        parts = MCP_SERVER_CMD.split()
+        if not parts:
+            return parts
+        exe = shutil.which(parts[0]) or parts[0]
+        return [exe] + parts[1:]
 
     def _run_mcp(self, tool: str) -> dict:
         """Spawn MCP server, send one request, read response, kill process."""
-        import threading
         req = {"jsonrpc":"2.0","id":1,"method":"tools/call",
                "params":{"name": tool, "arguments":{}}}
         proc = subprocess.Popen(
-            MCP_SERVER_CMD.split(),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            self._mcp_argv(),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=os.environ.copy(),
         )
         proc.stdin.write((json.dumps(req) + "\n").encode())
         proc.stdin.flush()

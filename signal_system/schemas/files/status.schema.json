@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://signal-system.local/schemas/files/status.schema.json",
+  "title": "python/config/status.json",
+  "description": "BRIDGE writes; ATHENA reads for /api/live aggregation.",
+  "type": "object",
+  "required": ["mode", "effective_mode", "timestamp"],
+  "properties": {
+    "mode": { "type": "string" },
+    "effective_mode": { "type": "string" },
+    "sentinel_active": { "type": "boolean" },
+    "circuit_breaker": { "type": "boolean" },
+    "mt5_fresh": { "type": "boolean" },
+    "session": { "type": "string" },
+    "session_utc": { "type": "string" },
+    "session_id": { "type": ["integer", "null"] },
+    "cycle": { "type": "integer" },
+    "timestamp": { "type": "string" },
+    "version": { "type": "string" },
+    "account_type": { "type": "string" },
+    "broker": { "type": "string" },
+    "account": { "type": "object" },
+    "open_groups": { "type": "integer" },
+    "lens": { "type": "object" }
+  },
+  "additionalProperties": true
+}

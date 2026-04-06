@@ -1,0 +1,897 @@
+openapi: 3.0.3
+info:
+  title: ATHENA API
+  description: |
+    HTTP surface for the Signal System dashboard and agents.
+
+    **Not covered here (file bus, not REST):** `MT5/command.json`, `MT5/market_data.json`,
+    `python/config/aurum_cmd.json`, `python/config/status.json` — see `docs/DATA_CONTRACT.md`
+    and `schemas/files/*.schema.json`.
+
+    **SCRIBE ad-hoc SQL:** see `docs/SCRIBE_QUERY_EXAMPLES.md` and the **Examples** on `POST /api/scribe/query`.
+
+    Bundle version aligns with `schemas/manifest.json` (HTTP portion only).
+  version: 1.3.0
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:7842
+    description: Local default (ATHENA_PORT)
+  - url: "{scheme}://{host}:{port}"
+    description: Tunable
+    variables:
+      scheme:
+        default: http
+        enum: [http, https]
+      host:
+        default: localhost
+      port:
+        default: "7842"
+
+tags:
+  - name: health
+    description: Liveness
+  - name: live
+    description: Aggregated dashboard payload
+  - name: components
+    description: Component heartbeats
+  - name: trading
+    description: Mode, signals, performance
+  - name: aurum
+    description: AURUM chat (may enqueue aurum_cmd.json via BRIDGE)
+  - name: scribe
+    description: SQLite-backed queries and events
+  - name: meta
+    description: OpenAPI document
+
+paths:
+  /api/health:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/live:
+    get:
+      tags: [live]
+      summary: Live dashboard aggregate
+      description: Status, MT5, LENS/TV, SCRIBE performance, AEGIS, components map, etc.
+      operationId: getLive
+      responses:
+        "200":
+          description: Large JSON document consumed by ATHENA React app
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveResponse"
+
+  /api/components:
+    get:
+      tags: [components]
+      summary: Component grid (synthetic FORGE row from market_data.json)
+      operationId: getComponents
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentsResponse"
+
+  /api/components/heartbeat:
+    get:
+      tags: [components]
+      summary: Heartbeat endpoint help (browser-safe JSON)
+      description: |
+        **GET** returns JSON explaining that **POST** is required. Opening this URL in a tab avoids a blank page.
+      operationId: getComponentHeartbeatHelp
+      responses:
+        "200":
+          description: How to POST a heartbeat
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatHelpResponse"
+    post:
+      tags: [components]
+      summary: Ingest heartbeat (same persistence as internal reporters)
+      operationId: postComponentHeartbeat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+            examples:
+              bridge_ok:
+                summary: BRIDGE OK
+                value:
+                  component: BRIDGE
+                  status: OK
+                  note: manual check
+              scribe_warn:
+                summary: SCRIBE warning
+                value:
+                  component: SCRIBE
+                  status: WARN
+                  note: high write latency
+      responses:
+        "200":
+          description: Ack
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  component: { type: string }
+                  timestamp: { type: string }
+        "400":
+          description: Unknown component
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+
+  /api/reconciler:
+    get:
+      tags: [trading]
+      summary: Last reconciler result (from reconciler_last.json)
+      operationId: getReconciler
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/management:
+    post:
+      tags: [trading]
+      summary: Queue management commands for BRIDGE → FORGE
+      description: |
+        Intents: CLOSE_ALL, MOVE_BE, CLOSE_PCT, CLOSE_GROUP, CLOSE_GROUP_PCT,
+        CLOSE_PROFITABLE, CLOSE_LOSING, MODIFY_SL, MODIFY_TP.
+        Group-targeted commands require `group_id`. BRIDGE forwards to `MT5/command.json`.
+      operationId: postManagement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagementRequest"
+            examples:
+              close_all:
+                value: { intent: CLOSE_ALL }
+              move_be:
+                value: { intent: MOVE_BE }
+              close_70:
+                value: { intent: CLOSE_PCT, pct: 70 }
+              close_group:
+                value: { intent: CLOSE_GROUP, group_id: 9 }
+              close_group_pct:
+                value: { intent: CLOSE_GROUP_PCT, group_id: 9, pct: 70 }
+              close_profitable:
+                value: { intent: CLOSE_PROFITABLE }
+              close_losing:
+                value: { intent: CLOSE_LOSING }
+              modify_sl:
+                value: { intent: MODIFY_SL, sl: 4660 }
+              modify_tp:
+                value: { intent: MODIFY_TP, tp: 4680 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  intent: { type: string }
+                  pct: {}
+                  file: { type: string }
+                  hint: { type: string }
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+
+  /api/mode:
+    get:
+      tags: [trading]
+      summary: Read current mode from bridge status file
+      description: Same `mode` / `effective_mode` source as `GET /api/live`. Does not change mode.
+      operationId: getMode
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModeReadResponse"
+    post:
+      tags: [trading]
+      summary: Queue MODE_CHANGE via aurum_cmd.json for BRIDGE
+      operationId: postMode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModeRequest"
+            examples:
+              watch:
+                summary: Switch to WATCH
+                value:
+                  mode: WATCH
+              signal:
+                summary: Switch to SIGNAL
+                value:
+                  mode: SIGNAL
+              off:
+                summary: Switch OFF
+                value:
+                  mode: OFF
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  new_mode: { type: string }
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+
+  /api/aurum/ask:
+    post:
+      tags: [aurum]
+      summary: AURUM chat (may write fenced JSON to aurum_cmd.json)
+      operationId: postAurumAsk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AurumAskRequest"
+      responses:
+        "200":
+          description: Reply payload (shape from aurum.flask_ask)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response: { type: string }
+                  timestamp: { type: string }
+                additionalProperties: true
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+
+  /api/sessions:
+    get:
+      tags: [trading]
+      summary: Trading session history
+      operationId: getSessions
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object, additionalProperties: true }
+
+  /api/sessions/current:
+    get:
+      tags: [trading]
+      summary: Current open trading_sessions row
+      operationId: getSessionCurrent
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    nullable: true
+                    type: object
+                    additionalProperties: true
+
+  /api/channels:
+    get:
+      tags: [trading]
+      summary: Configured Telegram channels with names and signal stats
+      operationId: getChannels
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured_ids: { type: array, items: { type: string } }
+                  channels: { type: array, items: { type: object } }
+                  total_configured: { type: integer }
+
+  /api/channels/messages:
+    get:
+      tags: [trading]
+      summary: Recent messages from configured Telegram channels (cached by LISTENER)
+      operationId: getChannelMessages
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        messages: { type: array, items: { type: object } }
+
+  /api/signals/parse:
+    post:
+      tags: [trading]
+      summary: Test the Claude Haiku signal parser without Telegram
+      operationId: postSignalsParse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, description: "Raw Telegram message text to parse" }
+            examples:
+              sell_signal:
+                value: { text: "SELL Gold @4691-4701 SL:4706 TP1:4687 TP2:4681" }
+              management:
+                value: { text: "TP1 hit. Secure 70% profit. Hold 30% with breakeven!" }
+              modify_sl:
+                value: { text: "Move SL to 4660 for safety" }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  input: { type: string }
+                  parsed: { type: object, additionalProperties: true }
+
+  /api/sentinel/override:
+    post:
+      tags: [trading]
+      summary: Temporarily bypass sentinel news guard
+      operationId: postSentinelOverride
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                duration: { type: integer, description: "Override duration in seconds (60-3600)", default: 600 }
+                reason: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  duration: { type: integer }
+                  reverts_at: { type: string }
+                  hint: { type: string }
+
+  /api/sentinel/digest:
+    post:
+      tags: [trading]
+      summary: Override sentinel event digest interval (for testing)
+      operationId: postSentinelDigest
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                interval: { type: integer, description: "Digest interval in seconds (30-3600)", default: 600 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  interval: { type: integer }
+
+  /api/channel_performance:
+    get:
+      tags: [trading]
+      operationId: getChannelPerformance
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 30 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channels: { type: array, items: { type: object } }
+                  days: { type: integer }
+
+  /api/aegis_state:
+    get:
+      tags: [trading]
+      operationId: getAegisState
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/signals:
+    get:
+      tags: [trading]
+      operationId: getSignals
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: days
+          in: query
+          schema: { type: integer }
+        - name: stats
+          in: query
+          description: "1 to include stats object"
+          schema: { type: string, enum: ["0", "1"] }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: { type: object, additionalProperties: true }
+                  - type: object
+                    properties:
+                      signals: { type: array }
+                      stats: { type: object }
+
+  /api/performance:
+    get:
+      tags: [trading]
+      operationId: getPerformance
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 7 }
+        - name: mode
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/pnl_curve:
+    get:
+      tags: [trading]
+      operationId: getPnlCurve
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 1, minimum: 1, maximum: 366 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  /api/scribe/query:
+    post:
+      tags: [scribe]
+      summary: Run SELECT only against SCRIBE SQLite
+      description: |
+        Full table reference and prose: **`docs/SCRIBE_QUERY_EXAMPLES.md`**. Machine list: **`schemas/scribe_query_examples.json`**.
+        Regenerate Swagger examples: **`make sync-openapi-scribe`** (do not hand-edit the block between markers).
+
+        Optional env: **`ATHENA_SCRIBE_QUERY_SECRET`** — if set, send `Authorization: Bearer <secret>` or header **`X-ATHENA-SCRIBE-TOKEN`**. Limits: **`SCRIBE_QUERY_MAX_ROWS`** (default 500), **`SCRIBE_QUERY_BUSY_MS`** (SQLite busy_timeout, default 5000).
+      operationId: postScribeQuery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScribeQueryRequest"
+            # --BEGIN_SCRIBE_OPENAPI_EXAMPLES--
+            examples:
+              ping:
+                summary: "1 · Connectivity — returns one row"
+                value:
+                  sql: "SELECT 1 AS ok"
+              system_events_recent:
+                summary: "2 · Latest audit rows (all event types)"
+                value:
+                  sql: "SELECT id, timestamp, event_type, prev_mode, new_mode, triggered_by, reason FROM system_events ORDER BY id DESC LIMIT 20"
+              system_events_mode_changes:
+                summary: "3 · Mode transitions only"
+                value:
+                  sql: "SELECT timestamp, prev_mode, new_mode, triggered_by, reason, session FROM system_events WHERE event_type = 'MODE_CHANGE' ORDER BY id DESC LIMIT 50"
+              component_heartbeats_recent:
+                summary: "4 · Latest heartbeat per ingestion order"
+                value:
+                  sql: "SELECT component, status, timestamp, note, last_action, cycle FROM component_heartbeats ORDER BY id DESC LIMIT 30"
+              signals_recent:
+                summary: "5 · Recent parsed signals"
+                value:
+                  sql: "SELECT id, timestamp, mode, channel_name, direction, action_taken, skip_reason, trade_group_id FROM signals_received ORDER BY id DESC LIMIT 25"
+              signals_by_action:
+                summary: "6 · Counts by disposition (last 7 days)"
+                value:
+                  sql: "SELECT action_taken, COUNT(*) AS n FROM signals_received WHERE timestamp >= datetime('now', '-7 days') GROUP BY action_taken ORDER BY n DESC"
+              trade_groups_open:
+                summary: "7 · Open trade groups"
+                value:
+                  sql: "SELECT id, timestamp, direction, status, num_trades, total_pnl, pips_captured FROM trade_groups WHERE status = 'OPEN' ORDER BY id DESC"
+              trade_positions_open:
+                summary: "8 · Open legs with group id"
+                value:
+                  sql: "SELECT tp.id, tp.trade_group_id, tp.ticket, tp.direction, tp.lot_size, tp.entry_price, tp.status FROM trade_positions tp WHERE tp.status = 'OPEN' ORDER BY tp.id DESC"
+              closed_pnl_recent:
+                summary: "9 · Closed positions with P&L (7 days)"
+                value:
+                  sql: "SELECT id, trade_group_id, ticket, direction, pnl, pips, close_time, close_reason FROM trade_positions WHERE status = 'CLOSED' AND close_time >= datetime('now', '-7 days') ORDER BY close_time DESC LIMIT 50"
+              trading_sessions_recent:
+                summary: "10 · Recent trading session records"
+                value:
+                  sql: "SELECT id, session_name, session_date, open_time, close_time, mode_at_open, total_pnl, win_rate FROM trading_sessions ORDER BY id DESC LIMIT 15"
+              aurum_conversations_recent:
+                summary: "11 · Recent AURUM Q&A rows"
+                value:
+                  sql: "SELECT id, timestamp, mode, source, substr(query, 1, 120) AS query_preview, substr(response, 1, 120) AS response_preview, tokens_used FROM aurum_conversations ORDER BY id DESC LIMIT 15"
+              news_events_recent:
+                summary: "12 · News guard / calendar rows"
+                value:
+                  sql: "SELECT id, timestamp, event_name, impact, currency, guard_start, guard_end, mode_before FROM news_events ORDER BY id DESC LIMIT 15"
+              market_snapshots_recent:
+                summary: "13 · Recent indicator snapshots (if logged)"
+                value:
+                  sql: "SELECT id, timestamp, mode, source, symbol, bid, ask, rsi_14, macd_hist, session FROM market_snapshots ORDER BY id DESC LIMIT 10"
+              join_signals_groups:
+                summary: "14 · Signals linked to trade groups (mid — join)"
+                value:
+                  sql: "SELECT sr.id AS signal_id, sr.timestamp, sr.channel_name, sr.action_taken, tg.id AS group_id, tg.status AS group_status, tg.total_pnl FROM signals_received sr LEFT JOIN trade_groups tg ON sr.trade_group_id = tg.id ORDER BY sr.id DESC LIMIT 30"
+            # --END_SCRIBE_OPENAPI_EXAMPLES--
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rows: { type: array }
+                  count: { type: integer }
+                  truncated: { type: boolean, description: True if more rows matched than returned }
+                  max_rows: { type: integer, description: Applied row cap from SCRIBE_QUERY_MAX_ROWS }
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+        "401":
+          description: Set when ATHENA_SCRIBE_QUERY_SECRET is configured and request is not authorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+
+  /api/events:
+    get:
+      tags: [scribe]
+      operationId: getEvents
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200, maximum: 2000 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  /api/events/export:
+    get:
+      tags: [scribe]
+      summary: NDJSON download of system_events
+      operationId: getEventsExport
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 5000, maximum: 50000 }
+      responses:
+        "200":
+          description: application/x-ndjson stream
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                format: binary
+
+  /api/openapi.yaml:
+    get:
+      tags: [meta]
+      summary: This OpenAPI document (YAML)
+      operationId: getOpenApiYaml
+      responses:
+        "200":
+          content:
+            application/vnd.oai.openapi:
+              schema:
+                type: string
+            text/yaml:
+              schema:
+                type: string
+
+  /api/docs:
+    get:
+      tags: [meta]
+      summary: Swagger UI (interactive HTML)
+      description: |
+        Served by **flask-swagger-ui**. Browser loads **`/api/openapi.yaml`** (try `/api/docs/` if redirect).
+        This entry documents discoverability; response is HTML, not JSON.
+      operationId: getSwaggerUi
+      responses:
+        "200":
+          description: Swagger UI HTML shell
+          content:
+            text/html:
+              schema:
+                type: string
+
+components:
+  schemas:
+    ErrorBody:
+      type: object
+      properties:
+        error: { type: string }
+        allowed:
+          type: array
+          items: { type: string }
+
+    HealthResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status: { type: string, example: ok }
+        timestamp: { type: string, format: date-time }
+        mt5_connected: { type: boolean }
+        bridge_running: { type: boolean }
+        session_utc: { type: string }
+        pnl_day_reset_hour_utc: { type: integer }
+        scribe_query:
+          type: object
+          description: Live caps for POST /api/scribe/query (absent if ATHENA predates this field — restart)
+          properties:
+            max_rows: { type: integer }
+            busy_timeout_ms: { type: integer }
+            auth_required: { type: boolean }
+
+    ExecutionQuote:
+      type: object
+      required: [usable, stale]
+      properties:
+        usable: { type: boolean }
+        stale: { type: boolean }
+        bid: {}
+        ask: {}
+        mid: {}
+        symbol: { type: string }
+        spread_usd: {}
+        age_sec: {}
+        stale_reason: {}
+      additionalProperties: true
+
+    LiveResponse:
+      type: object
+      required:
+        - timestamp
+        - mode
+        - effective_mode
+        - execution
+        - tradingview
+        - account
+        - sentinel
+        - open_groups
+        - performance
+      properties:
+        timestamp: { type: string }
+        mode: { type: string }
+        effective_mode: { type: string }
+        session: { type: string }
+        session_utc: { type: string }
+        session_id: {}
+        cycle: { type: integer }
+        version: { type: string }
+        sentinel_active: { type: boolean }
+        circuit_breaker: { type: boolean }
+        mt5_fresh: { type: boolean }
+        mt5_quote_stale: { type: boolean }
+        mt5_connected: { type: boolean }
+        account_type: { type: string }
+        broker: { type: string }
+        server: { type: string }
+        currency: { type: string }
+        account: { type: object, additionalProperties: true }
+        price: { type: object, additionalProperties: true }
+        chart_symbol: {}
+        execution:
+          $ref: "#/components/schemas/ExecutionQuote"
+        tradingview: { type: object, additionalProperties: true }
+        lens: { type: object, additionalProperties: true }
+        sentinel: { type: object, additionalProperties: true }
+        open_groups:
+          type: array
+          description: SCRIBE groups confirmed on MT5 (FORGE magic on position or pending)
+        open_groups_queued:
+          type: array
+          description: SCRIBE OPEN/PARTIAL rows not yet visible on MT5 file (no matching magic)
+        open_groups_policy:
+          type: string
+          description: How open_groups vs open_groups_queued are derived
+        pending_orders:
+          type: array
+          description: Resting limits/stops from market_data.json (FORGE)
+        performance: { type: object, additionalProperties: true }
+        performance_window: { type: object }
+        aegis: { type: object, additionalProperties: true }
+        components: { type: object, additionalProperties: true }
+        reconciler: {}
+        indicators_h1: { type: object }
+        open_positions: { type: array }
+      additionalProperties: true
+
+    ComponentsResponse:
+      type: object
+      required: [components, total, healthy, timestamp]
+      properties:
+        components:
+          type: array
+          items:
+            type: object
+            required: [name, status, ok]
+            properties:
+              name: { type: string }
+              status: { type: string }
+              ok: { type: boolean }
+              timestamp: {}
+              note: {}
+              last_action: {}
+              error_msg: {}
+              mode: {}
+        total: { type: integer }
+        healthy: { type: integer }
+        timestamp: { type: string }
+
+    HeartbeatRequest:
+      type: object
+      required: [component]
+      properties:
+        component: { type: string }
+        status: { type: string, enum: [OK, WARN, ERROR, UNKNOWN] }
+        mode: {}
+        note: {}
+        last_action: {}
+        error_msg: {}
+        session: {}
+        cycle: { type: integer }
+
+    ManagementRequest:
+      type: object
+      required: [intent]
+      properties:
+        intent:
+          type: string
+          enum: [CLOSE_ALL, MOVE_BE, CLOSE_PCT]
+        pct:
+          type: number
+          description: Required semantics for CLOSE_PCT (default 70)
+
+    ModeRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [OFF, WATCH, SIGNAL, SCALPER, HYBRID]
+
+    AurumAskRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+
+    HeartbeatHelpResponse:
+      type: object
+      properties:
+        message: { type: string }
+        post_url: { type: string }
+        content_type: { type: string }
+        swagger_ui: { type: string }
+        example_body: { type: object, additionalProperties: true }
+        allowed_components:
+          type: array
+          items: { type: string }
+        optional_fields:
+          type: array
+          items: { type: string }
+
+    ModeReadResponse:
+      type: object
+      properties:
+        mode: { type: string }
+        effective_mode: { type: string }
+        timestamp: {}
+        session: {}
+        session_id: {}
+        cycle: { type: integer }
+        hint: { type: string }
+
+    ScribeQueryRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql:
+          type: string
+          description: Must start with SELECT (case-insensitive after trim)
+          example: "SELECT 1 AS ok"

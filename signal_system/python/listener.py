@@ -16,6 +16,7 @@ from telethon import TelegramClient, events
 
 from scribe import get_scribe
 from herald import get_herald
+from status_report import report_component_status
 
 log = logging.getLogger("listener")
 
@@ -23,7 +24,14 @@ log = logging.getLogger("listener")
 API_ID       = int(os.environ.get("TELEGRAM_API_ID", "0"))
 API_HASH     = os.environ.get("TELEGRAM_API_HASH", "")
 PHONE        = os.environ.get("TELEGRAM_PHONE", "")
-CHANNELS     = [c.strip() for c in os.environ.get("TELEGRAM_CHANNELS", "").split(",") if c.strip()]
+# Channel IDs must be integers for Telethon
+_raw_channels = [c.strip() for c in os.environ.get("TELEGRAM_CHANNELS", "").split(",") if c.strip()]
+CHANNELS = []
+for _ch in _raw_channels:
+    try:
+        CHANNELS.append(int(_ch))
+    except ValueError:
+        CHANNELS.append(_ch)  # keep as string for username-style channels
 ANTHROPIC_KEY= os.environ.get("ANTHROPIC_API_KEY", "")
 
 SIGNAL_FILE  = os.environ.get("LISTENER_SIGNAL_FILE", "config/parsed_signal.json")
@@ -50,12 +58,14 @@ For ENTRY signals, return:
   "tp3_open": true if TP3 is "open" or not specified
 }
 
-For MANAGEMENT messages (close, breakeven, TP hit updates), return:
+For MANAGEMENT messages (close, breakeven, TP hit updates, SL/TP changes), return:
 {
   "type": "MANAGEMENT",
-  "intent": "CLOSE_ALL" | "MOVE_BE" | "CLOSE_PCT" | "TP_HIT" | "HOLD" | "UPDATE",
+  "intent": "CLOSE_ALL" | "MOVE_BE" | "CLOSE_PCT" | "TP_HIT" | "HOLD" | "UPDATE" | "MODIFY_SL" | "MODIFY_TP",
   "pct": number or null (e.g. 70 for "close 70%"),
-  "tp_stage": 1 or 2 or 3 or null
+  "tp_stage": 1 or 2 or 3 or null,
+  "sl": number or null (new SL price for MODIFY_SL),
+  "tp": number or null (new TP price for MODIFY_TP)
 }
 
 For unrecognised messages, return:
@@ -69,6 +79,8 @@ Rules:
 - "Move to BE" / "breakeven" → MOVE_BE
 - "Secure 70%" / "close 70%" → CLOSE_PCT with pct=70
 - "TP1 hit" / "TP1 done" → TP_HIT with tp_stage=1
+- "Move SL to 4660" / "SL now 4660" → MODIFY_SL with sl=4660
+- "Move TP to 4680" / "TP now 4680" / "new TP 4680" → MODIFY_TP with tp=4680
 - Currency must be gold/XAUUSD — ignore other instruments"""
 
 
@@ -87,14 +99,91 @@ class Listener:
         self._mode = mode
 
     # ── Telegram client ────────────────────────────────────────────
+    async def _refresh_message_cache(self, client):
+        """Periodically refresh cached messages for ATHENA API."""
+        interval = int(os.environ.get("LISTENER_CACHE_REFRESH_SEC", "300"))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                recent = {}
+                for ch_id in CHANNELS:
+                    msgs = await client.get_messages(ch_id, limit=10)
+                    recent[str(ch_id)] = [
+                        {"date": str(m.date)[:19], "text": (m.message or "(media)")[:200], "id": m.id}
+                        for m in msgs
+                    ]
+                with open("config/channel_messages.json", "w") as f:
+                    json.dump(recent, f, indent=2)
+            except Exception:
+                pass
+
+    async def _idle_heartbeat_loop(self):
+        interval = int(os.environ.get("LISTENER_HEARTBEAT_SEC", "120"))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                report_component_status(
+                    "LISTENER",
+                    "OK",
+                    mode=self._mode,
+                    note=f"monitoring {len(CHANNELS)} channels",
+                    last_action=f"idle heartbeat ({interval}s)",
+                )
+            except Exception:
+                pass
+
     async def start(self):
         if not all([API_ID, API_HASH, PHONE]):
             log.error("LISTENER: Telegram credentials not configured")
+            report_component_status(
+                "LISTENER",
+                "ERROR",
+                note="Telegram credentials missing",
+                last_action="set TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE",
+            )
             return
 
         client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
         await client.start(phone=PHONE)
         log.info("LISTENER: Telegram connected")
+
+        # Resolve channel names and write to file for ATHENA API
+        try:
+            names = {}
+            for ch_id in CHANNELS:
+                entity = await client.get_entity(ch_id)
+                name = getattr(entity, 'title', str(ch_id))
+                names[str(ch_id)] = name
+                log.info(f"LISTENER: channel {ch_id} = {name}")
+            with open("config/channel_names.json", "w") as f:
+                json.dump(names, f, indent=2)
+        except Exception as e:
+            log.warning(f"LISTENER: channel name resolution failed: {e}")
+
+        # Cache recent messages for ATHENA API
+        try:
+            recent = {}
+            for ch_id in CHANNELS:
+                msgs = await client.get_messages(ch_id, limit=10)
+                recent[str(ch_id)] = [
+                    {"date": str(m.date)[:19], "text": (m.message or "(media)")[:200], "id": m.id}
+                    for m in msgs
+                ]
+            with open("config/channel_messages.json", "w") as f:
+                json.dump(recent, f, indent=2)
+            log.info("LISTENER: cached recent messages for %d channels", len(recent))
+        except Exception as e:
+            log.warning(f"LISTENER: message cache failed: {e}")
+
+        report_component_status(
+            "LISTENER",
+            "OK",
+            mode=self._mode,
+            note=f"monitoring {len(CHANNELS)} channels",
+            last_action="Telegram connected",
+        )
+        asyncio.create_task(self._idle_heartbeat_loop())
+        asyncio.create_task(self._refresh_message_cache(client))
 
         @client.on(events.NewMessage(chats=CHANNELS))
         async def on_message(event):
@@ -133,18 +222,17 @@ class Listener:
             channel=channel, msg_id=msg.id
         )
 
-        # In WATCH/OFF — log only
-        if self._mode in ("OFF", "WATCH"):
+        # In non-trading modes — log only, don't dispatch to BRIDGE
+        if self._mode not in ("SIGNAL", "HYBRID"):
             self.scribe.update_signal_action(signal_id, "LOGGED_ONLY")
             log.info(f"LISTENER [{self._mode}]: logged signal, not dispatching")
             try:
-                from scribe import get_scribe
-                get_scribe().heartbeat(
-                    component   = "LISTENER",
-                    status      = "OK",
-                    mode        = self._mode,
-                    note        = f"monitoring {len(CHANNELS)} channels",
-                    last_action = f"[{self._mode}] received msg from {channel}",
+                report_component_status(
+                    "LISTENER",
+                    "OK",
+                    mode=self._mode,
+                    note=f"monitoring {len(CHANNELS)} channels",
+                    last_action=f"[{self._mode}] received msg from {channel}",
                 )
             except Exception as _he:
                 log.debug(f"LISTENER heartbeat error: {_he}")
@@ -160,22 +248,38 @@ class Listener:
             log.info(f"LISTENER → parsed_signal.json: {parsed.get('direction')} "
                      f"@ {parsed.get('entry_low')}–{parsed.get('entry_high')}")
             try:
-                from scribe import get_scribe
-                get_scribe().heartbeat(
-                    component   = "LISTENER",
-                    status      = "OK",
-                    mode        = self._mode,
-                    note        = f"monitoring {len(CHANNELS)} channels",
-                    last_action = f"parsed {parsed.get('type','?')} {parsed.get('direction','')} from {channel}",
+                report_component_status(
+                    "LISTENER",
+                    "OK",
+                    mode=self._mode,
+                    note=f"monitoring {len(CHANNELS)} channels",
+                    last_action=f"parsed {parsed.get('type','?')} {parsed.get('direction','')} from {channel}",
                 )
             except Exception as _he:
                 log.debug(f"LISTENER heartbeat error: {_he}")
 
         elif parsed["type"] == "MANAGEMENT":
             parsed["signal_id"]  = signal_id
+            parsed["channel"]    = channel
             parsed["timestamp"]  = datetime.now(timezone.utc).isoformat()
+
+            # Find the most recent OPEN group from this channel
+            try:
+                rows = self.scribe.query(
+                    """SELECT tg.id FROM trade_groups tg
+                       JOIN signals_received sr ON sr.trade_group_id = tg.id
+                       WHERE sr.channel_name = ? AND tg.status IN ('OPEN','PARTIAL')
+                       ORDER BY tg.id DESC LIMIT 1""",
+                    (channel,)
+                )
+                if rows:
+                    parsed["group_id"] = rows[0]["id"]
+                    log.info(f"LISTENER: MGMT from {channel} targets G{parsed['group_id']}")
+            except Exception as e:
+                log.warning(f"LISTENER: channel group lookup failed: {e}")
+
             self._write_mgmt(parsed)
-            log.info(f"LISTENER → management_cmd.json: {parsed.get('intent')}")
+            log.info(f"LISTENER → management_cmd.json: {parsed.get('intent')} (group={parsed.get('group_id','ALL')})")
 
     async def _parse(self, text: str) -> dict | None:
         if not self.claude:

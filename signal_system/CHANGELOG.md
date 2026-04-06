@@ -1,5 +1,175 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [1.3.0] — 2026-04-06
+
+### AUTO_SCALPER Mode
+- New `AUTO_SCALPER` mode — AURUM (Claude) as autonomous decision engine
+- BRIDGE polls AURUM every `AUTO_SCALPER_POLL_INTERVAL` (default 120s) with structured multi-TF prompt
+- Pre-filters: H1 direction gate, RSI neutral screen, sentinel/max groups, loss cooldown
+- AURUM responds with `OPEN_GROUP` JSON or `PASS: <reason>`
+- Configurable: `AUTO_SCALPER_LOT_SIZE`, `AUTO_SCALPER_NUM_TRADES`, `AUTO_SCALPER_POLL_INTERVAL`, `AUTO_SCALPER_MAX_GROUPS`
+- Dashboard mode button (green, "AURUM auto")
+
+### Multi-Timeframe Indicators (FORGE)
+- FORGE now exports `indicators_m5`, `indicators_m15`, `indicators_m30` alongside `indicators_h1`
+- Each timeframe: RSI(14), EMA20, EMA50, ATR(14), BB upper/mid/lower, MACD histogram, ADX
+- H1 expanded: added BB bands, MACD histogram, ADX (previously only RSI/EMA/ATR)
+- New `market_view.py` module — unified MarketView combining FORGE + LENS data
+- AURUM context now includes full multi-TF data with bias labels (BULL/BEAR/FLAT)
+
+### Position Tracker (BRIDGE)
+- BRIDGE now tracks individual position fills and closes from `market_data.json`
+- New positions → `scribe.log_trade_position()` with ticket, magic, direction, lots, entry, SL/TP
+- Disappeared positions → `scribe.close_trade_position()` with last-known P&L and estimated pips
+- Group auto-rollup: when all positions/pendings gone → `update_trade_group()` with totals
+- Seed from SCRIBE on startup to prevent duplicate logging after restarts
+- Dedup guard: checks SCRIBE for existing ticket before inserting
+
+### Drawdown Protection
+- **Equity DD breaker** (BRIDGE): tracks session peak equity, CLOSE ALL + force WATCH if equity drops `DD_EQUITY_CLOSE_ALL_PCT` (default 3%) from peak. Telegram alert.
+- **Floating P&L guard** (AEGIS): blocks new groups if floating loss ≥ `DD_FLOATING_BLOCK_PCT` (default 2%) of balance
+- **Loss cooldown** (AUTO_SCALPER): pauses `DD_LOSS_COOLDOWN_SEC` (default 300s) after any position closes at a loss
+
+### AEGIS Enhancements
+- **H1 trend hard filter**: rejects BUY when H1 EMA20 < EMA50 (bearish), SELL when bullish. `AEGIS_H1_TREND_FILTER=true`
+- **Per-signal `num_trades` override**: signals can include `num_trades` or `trades` (1–20) to override default 8
+- **Lot override for AURUM/AUTO_SCALPER**: uses signal's `lot_per_trade` directly instead of risk-based sizing
+- All previously hardcoded values now configurable: `AEGIS_MIN_LOT`, `AEGIS_PIP_VALUE_PER_LOT`, `AEGIS_MIN_SL_PIPS`
+- `mt5_data` parameter added to `validate()` for H1 trend + floating DD checks
+
+### Explicit Magic Number (SCRIBE)
+- `magic_number` column added to `trade_groups` table
+- BRIDGE stores `FORGE_MAGIC_BASE + group_id` explicitly (single source of truth)
+- Reconciler and ATHENA read stored magic instead of computing `base + id`
+- Auto-migration for existing databases
+- `update_trade_group_magic()` method added to SCRIBE
+
+### FORGE Bug Fixes
+- `ExecuteCloseAll()` now cancels pending orders (limits/stops) in addition to closing filled positions
+- Previously only iterated `PositionsTotal()`, missed `OrdersTotal()`
+
+### BRIDGE Bug Fixes
+- AURUM CLOSE_ALL now updates SCRIBE groups + clears cache (was missing, only wrote FORGE command)
+- `num_trades`/`trades` from AURUM commands now passed through to AEGIS (was silently ignored)
+- AURUM dispatch now accepts AUTO_SCALPER as valid effective_mode
+
+### Reconciler Improvements
+- FORGE version guard: skips stale-group close if `forge_version` < 1.2.4 (pending_orders not exported before that)
+- Uses stored `magic_number` from SCRIBE instead of computing `base + id`
+
+### AURUM Enhancements
+- Context now includes full multi-TF indicators (M5/M15/M30/H1) with BB bands, MACD, ADX, EMA levels
+- Context includes MT5 H1 ATR with sizing guidance ("use 1.5×ATR for SL")
+- SKILL.md: scalping TP distance rules ($2–$5 for TP1, $5–$10 for TP2, never $10+ for scalps)
+- SKILL.md: H1 alignment rule (never scalp against H1 EMA direction)
+- SKILL.md: AUTO_SCALPER tick response format
+- SOUL.md: AUTO_SCALPER role section (decision engine vs rules engine)
+- Hot-reload: AURUM re-reads SKILL.md + SOUL.md from disk on every query (no restart needed)
+
+### New Files
+- `python/market_view.py` — unified FORGE + LENS market data object
+- `docs/CLI_API_CHEATSHEET.md` — curl + python one-liners for all API endpoints
+
+### Mode Persistence Across Restarts
+- BRIDGE now restores previous mode from `status.json` on restart (default: enabled)
+- `RESTORE_MODE_ON_RESTART=true` (default) — reads saved mode from status.json
+- `RESTORE_MODE_ON_RESTART=false` — uses FORGE `requested_mode` or `DEFAULT_MODE` from .env
+- Mode changes via API (`POST /api/mode`) write directly to status.json for immediate persistence
+- CLI `--mode` from launchd plist only used as fallback when no saved state exists
+
+### TP Split at Order Placement
+- FORGE now splits TP targets at open: 75% of positions get TP1, 25% get TP2
+- Split ratio controlled by `TP1_CLOSE_PCT` (default 70%)
+- When TP1 hits (broker-side): 75% close automatically, remaining positions get SL→BE + TP→TP2
+- Comment field shows TP target: `FORGE|G14|0|TP1` or `FORGE|G14|3|TP2`
+- No more "all positions close at TP1" problem
+
+### Signal Parser API
+- New `POST /api/signals/parse` — test Claude Haiku parser via API without Telegram
+- Input: `{"text": "SELL Gold @4691-4701 SL:4706 TP1:4687"}` → returns structured JSON
+- Supports ENTRY, MANAGEMENT (CLOSE_ALL, CLOSE_PCT, MODIFY_SL, MODIFY_TP, TP_HIT), and IGNORE
+
+### OpenAPI Spec v1.3.0
+- 7 new endpoints added to `schemas/openapi.yaml`
+- Management examples expanded with all 9 intents
+- Swagger UI at `/api/docs/` fully updated
+
+### Signal Lifecycle (Scalping)
+- Signal expiry: `SIGNAL_EXPIRY_SEC=60` — stale signals rejected as EXPIRED
+- Pending order timeout: `PENDING_ORDER_TIMEOUT_SEC=120` — unfilled limit orders auto-cancelled after 2min
+- Telegram alert `⏰ PENDING EXPIRED` sent when orders timeout
+- Full lifecycle: signal → AEGIS → FORGE → fill/timeout → SL/TP → SCRIBE → Telegram close alert
+
+### Scalping-Aware Trend Cascade
+- AEGIS trend filter now source-aware with multi-TF cascade
+- **SIGNAL source** (channel scalps): M5 → M15 → H1. M5 is primary — if M5 agrees (or is FLAT), trade passes even if H1 disagrees
+- **AURUM/AUTO_SCALPER**: H1 → M15 cascade (conservative)
+- **SCALPER** (BRIDGE): H1 only (strictest)
+- FLAT (EMA20 ≈ EMA50 within $1) counts as agreement — allows entry in either direction
+- Replaces the old single-H1 filter that was too strict for scalping signals
+
+### FORGE Reload Make Target
+- New `make forge-reload` — compile + restart MT5 + auto-detect if EA loaded
+- If FORGE auto-loads: prints ✅ and version. If not: prints reattach instructions
+- Note: MT5 on Wine/macOS does NOT reliably auto-restore EAs after restart
+- Manual reattach still required in most cases (Wine limitation)
+
+### FORGE Architecture Comments
+- Comprehensive architecture overview added to FORGE.mq5 header (50+ lines)
+- Documents: data flow, command actions, market data output, TP split, magic numbers
+- Section comments on: input parameters, globals, indicator handles, group tracking, symbol matching
+
+### Sentinel Pre-Alert
+- New Telegram warning when HIGH-impact event is ≤35min away but guard not yet active
+- Message: `⚠️ Guard activating soon! {event} in {min}min`
+- Fires with the 10-min adaptive digest cycle
+
+### Sentinel Event Digest (Adaptive)
+- SENTINEL sends upcoming HIGH-impact events to Telegram with adaptive timing
+- **> 30 min away**: digest every 30 min. **≤ 30 min**: every 10 min. **Guard active**: immediate alerts
+- Shows event name, currency, minutes away, and guard status
+- Only sends when HIGH-impact events are within 4 hours
+- Override interval via `POST /api/sentinel/digest {"interval": 30}` (reverts on restart)
+
+### Telegram Close Alerts
+- HERALD now sends `GROUP CLOSED` notifications with P&L summary when groups close
+- Fires from both paths: position tracker (SL/TP) and management commands (manual close)
+- `trade_group_closed()` and `position_closed()` templates added to HERALD
+
+### Sentinel Override
+- New `POST /api/sentinel/override` endpoint — temporarily bypass sentinel news guard
+- Configurable duration (60s–3600s), defaults to `SENTINEL_OVERRIDE_DURATION_SEC=600`
+- Auto-reverts after timeout — logged as `SENTINEL_OVERRIDE_EXPIRED` in SCRIBE
+- BRIDGE handles `SENTINEL_OVERRIDE` action via aurum_cmd.json
+- Telegram alert on override and expiry
+
+### Smart Position Closing
+- New FORGE commands: `CLOSE_GROUP`, `CLOSE_GROUP_PCT`, `CLOSE_PROFITABLE`, `CLOSE_LOSING`
+- Group-targeted: close/partial-close only one group's positions by magic number
+- Profit/loss filtering: close only winners or only losers across all groups
+- BRIDGE resolves group_id → magic_number via SCRIBE for all group commands
+- `POST /api/management` now accepts `group_id` parameter for group-targeted commands
+- Dashboard group tile buttons now group-specific (Close Group / Close 70% target the specific group, not all)
+
+### Signal Channels (LISTENER)
+- Fixed: channel IDs parsed as integers (was strings → Telethon `ValueError`)
+- Signals now logged to SCRIBE in ALL modes (not just SIGNAL/HYBRID) — only dispatch is gated
+- New `GET /api/channels` endpoint — configured channels with Telethon-resolved names + signal stats
+- New `GET /api/channels/messages` endpoint — recent messages from all channels (cached by LISTENER)
+- LISTENER resolves channel names on connect → writes `config/channel_names.json`
+- LISTENER caches last 10 messages per channel → `config/channel_messages.json` (refreshes every 5min)
+- Dashboard signals tab redesigned: channel name badge on each row, channel filter strip, two-line card layout
+
+### Documentation Updated
+- `SOUL.md` — AUTO_SCALPER role, multi-TF context, drawdown protection
+- `SKILL.md` — complete context spec, scalping rules, AUTO_SCALPER tick format
+- `docs/AEGIS.md` — new guards table, per-signal overrides, DD env vars
+- `docs/FORGE_BRIDGE.md` — multi-TF indicators, position tracker, CLI cheat sheet link
+- `docs/CLI_API_CHEATSHEET.md` — channel polling commands, all curl examples
+- `CHANGELOG.md` — this entry
+
+---
+
 ## [1.2.0] — 2026-04-05
 
 ### Architecture: API-First Dashboard

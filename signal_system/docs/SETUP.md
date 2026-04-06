@@ -203,6 +203,8 @@ TP1_CLOSE_PCT=70
 MOVE_BE_ON_TP1=true
 ```
 
+**Risk gate (AEGIS):** `AEGIS_*` variables control min R:R, daily loss cap, max open groups, slippage, and lot scaling. Full decision order, formulas, and defaults are in **[docs/AEGIS.md](AEGIS.md)**. Restart **bridge** (or `make restart`) after changing them.
+
 ---
 
 ## STEP 5 — Install Python dependencies
@@ -227,8 +229,12 @@ In MT5: **File → Open Data Folder** → navigate to `MQL5/Files/`
 Copy the full path. It looks like:
 `/Users/YOUR_USERNAME/Library/Application Support/MetaQuotes/Terminal/HASH/MQL5/Files/`
 
+**Official MetaTrader 5 for Mac (Wine):** data lives under  
+`~/Library/Application Support/net.metaquotes.wine.metatrader5/`.  
+Use **Terminal → Common → Files** for JSON when `FilesPath` is left blank (FORGE uses `FILE_COMMON`). From the repo root you can run **`make forge-ea`** to copy `FORGE.mq5` into `MQL5/Experts/` and (re)create the `MT5` symlink to Common/Files when missing.
+
 ### Install FORGE EA
-1. Copy `signal_system/ea/FORGE.mq5` → your MT5 `MQL5/Experts/` folder
+1. Copy `signal_system/ea/FORGE.mq5` → your MT5 `MQL5/Experts/` folder (or run **`make forge-ea`** on macOS Wine)
 2. MT5: **Tools → MetaEditor** (F4) → open `FORGE.mq5` → **F7** to compile
 3. Confirm: `0 errors, 0 warnings`
 4. MT5: open XAUUSD chart → Navigator (Ctrl+N) → Expert Advisors → drag **FORGE** onto chart
@@ -249,6 +255,8 @@ Verify:
 ls MT5/
 # After 10 seconds: market_data.json should appear
 ```
+
+**Wine gotcha:** MetaTrader may use `…/users/user/…` or `…/users/<mac_username>/…` under the Wine prefix. FORGE must write to the same **Terminal → Common → Files** folder your **`MT5`** symlink points to. If JSON never updates, check both paths under `~/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/` and repoint the symlink. **`python/MT5`** should be a symlink to **`../MT5`**, not a separate folder (`make forge-ea` fixes that).
 
 ---
 
@@ -392,6 +400,8 @@ python3 -c "import anthropic; c=anthropic.Anthropic(); print('API key OK')"
 
 ## STEP 10 — Install as background services (auto-start on login)
 
+Day-to-day **restart, health checks, and an AURUM bootstrap prompt** are in [OPERATIONS.md](OPERATIONS.md).
+
 Claude Code handles this automatically as part of setup. Or run manually:
 
 ```bash
@@ -419,6 +429,8 @@ tail -f ~/signal_system/logs/bridge.log
 ```
 
 ### Stop / restart
+
+From repo root you can also use Make: `make stop`, `make restart`, `make start`.
 
 ```bash
 python3 services/install_services.py --stop

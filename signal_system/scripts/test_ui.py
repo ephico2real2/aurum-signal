@@ -8,8 +8,9 @@ Usage:
   python3 scripts/test_ui.py --record         # record new tests by clicking
   python3 scripts/test_ui.py --report         # open last HTML report
   python3 scripts/test_ui.py --file dashboard # run one spec file
-  python3 scripts/test_ui.py --grep "AURUM"   # run tests matching pattern
-  python3 scripts/test_ui.py --slow 500       # slow motion ms
+        python3 scripts/test_ui.py --grep "AURUM"   # run tests matching pattern
+        python3 scripts/test_ui.py --slow 500       # slow motion ms
+        python3 scripts/test_ui.py --audit        # full tab walk + screenshots + results JSON
 
 Requires: ATHENA dashboard running at localhost:7842
           npm install && npx playwright install chromium
@@ -24,11 +25,31 @@ TESTS_DIR = ROOT / "tests"
 ATHENA_URL = os.environ.get("ATHENA_URL", "http://localhost:7842")
 
 
+def playwright_subprocess_env() -> dict:
+    """
+    Env for npx/playwright child processes — avoids noisy warnings from inherited
+    shell/IDE variables (npm unknown config; Node NO_COLOR vs FORCE_COLOR).
+    """
+    env = os.environ.copy()
+    # npm 10+ warns: Unknown env config "devdir" (often NPM_CONFIG_DEVDIR from Homebrew/tools)
+    for key in list(env):
+        if key.upper() == "NPM_CONFIG_DEVDIR" or key.lower() == "npm_config_devdir":
+            env.pop(key, None)
+    # Node warns when both env vars exist; FORCE_COLOR wins — drop NO_COLOR for the child.
+    # (Cursor/CI often set FORCE_COLOR to values outside "1"/"true"/"2"/"3".)
+    if "FORCE_COLOR" in env and "NO_COLOR" in env:
+        env.pop("NO_COLOR", None)
+    elif env.get("NO_COLOR", "").strip():
+        env.pop("FORCE_COLOR", None)
+    return env
+
+
 def check_playwright():
     result = subprocess.run(
         ["npx", "playwright", "--version"],
         cwd=str(TESTS_DIR),
-        capture_output=True, text=True
+        capture_output=True, text=True,
+        env=playwright_subprocess_env(),
     )
     return result.returncode == 0
 
@@ -50,7 +71,8 @@ def run(args):
     if args.report:
         subprocess.run(
             ["npx", "playwright", "show-report"],
-            cwd=str(TESTS_DIR)
+            cwd=str(TESTS_DIR),
+            env=playwright_subprocess_env(),
         )
         return
 
@@ -58,7 +80,8 @@ def run(args):
         print(f"🎥 Recording mode — interact with Chrome to generate tests")
         subprocess.run(
             ["npx", "playwright", "codegen", ATHENA_URL],
-            cwd=str(TESTS_DIR)
+            cwd=str(TESTS_DIR),
+            env=playwright_subprocess_env(),
         )
         return
 
@@ -98,7 +121,7 @@ def run(args):
     print(f"   Target: {ATHENA_URL}")
     print(f"   Command: {' '.join(cmd)}\n")
 
-    result = subprocess.run(cmd, cwd=str(TESTS_DIR))
+    result = subprocess.run(cmd, cwd=str(TESTS_DIR), env=playwright_subprocess_env())
 
     if result.returncode == 0:
         print("\n✅ All UI tests passed")
@@ -126,4 +149,9 @@ if __name__ == "__main__":
                         help="Run tests matching pattern")
     parser.add_argument("--slow",   type=int,
                         help="Slow motion in ms (e.g. --slow 500)")
-    run(parser.parse_args())
+    parser.add_argument("--audit", action="store_true",
+                        help="Run ATHENA full UI audit (tabs + screenshots + results JSON)")
+    args = parser.parse_args()
+    if args.audit:
+        args.file = "athena_audit"
+    run(args)

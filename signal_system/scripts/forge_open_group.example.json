@@ -1,0 +1,17 @@
+{
+  "action": "OPEN_GROUP",
+  "group_id": 99001,
+  "direction": "SELL",
+  "entry_ladder": [
+    2650.42
+  ],
+  "lot_per_trade": 0.01,
+  "sl": 2665.42,
+  "tp1": 2635.42,
+  "tp2": null,
+  "tp3": null,
+  "tp1_close_pct": 70,
+  "tp2_close_pct": 20,
+  "move_be_on_tp1": true,
+  "timestamp": "2026-04-06T12:00:00.000000+00:00"
+}

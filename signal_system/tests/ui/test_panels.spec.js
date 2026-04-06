@@ -21,6 +21,20 @@ test.describe('ATHENA Panel Interactions', () => {
     await expect(page.locator('text=INFO').first()).toBeVisible();
   });
 
+  test('Activity pause toggles live tail (button + footer)', async ({ page }) => {
+    await page.locator('text=Activity').first().click();
+    await page.waitForTimeout(400);
+    const pauseBtn = page.getByRole('button', { name: '⏸ PAUSE' });
+    await expect(pauseBtn).toBeVisible();
+    await expect(page.locator('text=LIVE — SCRIBE').first()).toBeVisible();
+    await pauseBtn.click();
+    await expect(page.getByRole('button', { name: '▶ RESUME' })).toBeVisible();
+    await expect(page.locator('text=PAUSED').first()).toBeVisible();
+    await page.getByRole('button', { name: '▶ RESUME' }).click();
+    await expect(page.getByRole('button', { name: '⏸ PAUSE' })).toBeVisible();
+    await expect(page.locator('text=LIVE — SCRIBE').first()).toBeVisible();
+  });
+
   test('Mode control buttons are clickable', async ({ page }) => {
     // Click WATCH mode button
     const watchBtn = page.locator('text=WATCH').first();

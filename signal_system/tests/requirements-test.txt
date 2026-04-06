@@ -1,5 +1,13 @@
+# Test stack for Signal System — install: pip install -r tests/requirements-test.txt
+#
+# Covers:
+#   • /api/live — execution, open_groups (MT5-confirmed), open_groups_queued, pending_orders
+#   • POST /api/management — ATHENA → config/management_cmd.json → BRIDGE → FORGE
+#   • partition_open_groups_for_athena — no SCRIBE-only false positives on group tiles
+#   • Contracts, SCRIBE query limits, bridge AURUM cmd (see Makefile test-contracts / test-api)
 pytest>=7.0.0
 pytest-html>=3.0.0
 pytest-cov>=4.0.0
 requests>=2.28.0
 python-dotenv>=1.0.0
+jsonschema>=4.0.0

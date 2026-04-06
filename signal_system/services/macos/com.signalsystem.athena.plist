@@ -8,7 +8,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/python3</string>
+        <string>__SIGNAL_PYTHON__</string>
         <string>/Users/YOUR_USERNAME/signal_system/python/athena_api.py</string>
     </array>
 

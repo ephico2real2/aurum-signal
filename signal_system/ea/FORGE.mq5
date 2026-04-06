@@ -1,14 +1,50 @@
 //+------------------------------------------------------------------+
-//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor                   |
-//|  Signal System v1.0  — XAUUSD Scalper                           |
+//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor v1.3.0            |
+//|  Signal System  — XAUUSD Scalper                                |
 //|  Build order: #2 — independent of Python, compiled in MT5       |
 //+------------------------------------------------------------------+
-//  Modes:  OFF | WATCH | SIGNAL | SCALPER | HYBRID
-//  Input:  MT5/config.json   (BRIDGE writes)
-//  Input:  MT5/command.json  (BRIDGE writes)
-//  Output: MT5/market_data.json  (BRIDGE + ATHENA read)
-//  Output: MT5/tick_data.json    (WATCH mode — ML dataset)
-//  Output: MT5/mode_status.json  (ATHENA read)
+//
+//  ARCHITECTURE OVERVIEW:
+//  FORGE is the MT5-side execution engine. It runs on the XAUUSD chart
+//  and communicates with Python (BRIDGE) via JSON files in Common Files.
+//  There is NO HTTP — everything is file-based polling.
+//
+//  DATA FLOW:
+//    BRIDGE writes → command.json  → FORGE reads + executes
+//    BRIDGE writes → config.json   → FORGE reads (mode, settings)
+//    FORGE writes  → market_data.json → BRIDGE + ATHENA read
+//    FORGE writes  → broker_info.json  → ATHENA reads (account type)
+//    FORGE writes  → mode_status.json  → ATHENA reads
+//
+//  COMMAND ACTIONS (from command.json):
+//    OPEN_GROUP      — place N trades across entry ladder with TP split
+//    CLOSE_ALL       — close all positions + cancel all pending orders
+//    CLOSE_PCT       — close N% of all positions
+//    CLOSE_GROUP     — close positions + pendings for specific magic number
+//    CLOSE_GROUP_PCT — close N% of positions for specific magic number
+//    CLOSE_PROFITABLE— close only positions in profit
+//    CLOSE_LOSING    — close only positions in loss
+//    MOVE_BE_ALL     — move all SL to breakeven
+//    MODIFY_SL       — change SL on all positions + pendings to price
+//    MODIFY_TP       — change TP on all positions + pendings to price
+//
+//  MARKET DATA OUTPUT (every 3s via OnTimer):
+//    - price: bid/ask/spread
+//    - account: balance/equity/margin/floating PnL
+//    - indicators_h1: RSI, EMA20/50, ATR, BB, MACD, ADX
+//    - indicators_m5/m15/m30: same indicators for scalping timeframes
+//    - open_positions[]: ticket, type, lots, price, SL, TP, profit, magic
+//    - pending_orders[]: ticket, type, volume, price, SL, TP, magic
+//
+//  TP SPLIT (v1.3.0):
+//    When opening a group, 70% of positions get TP1, 30% get TP2.
+//    When TP1 hits, ManageOpenGroups moves remaining SL to BE + TP to TP2.
+//
+//  MAGIC NUMBERS:
+//    Each group gets magic = MagicNumber + group_id (from BRIDGE)
+//    Range check: [MagicNumber, MagicNumber + 10000)
+//
+//  Modes:  OFF | WATCH | SIGNAL | SCALPER | HYBRID | AUTO_SCALPER
 //+------------------------------------------------------------------+
 
 #property strict
@@ -16,15 +52,18 @@
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-// ── Input parameters ──────────────────────────────────────────────
+// ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
 input int     MagicNumber    = 202401;       // EA magic number
 input int     TimerSeconds   = 3;            // OnTimer interval (seconds)
 input bool    EnableBacktest = false;        // Enable Strategy Tester mode
 input bool    LogTicks       = true;         // Log ticks in WATCH mode
 input string  InputMode      = "WATCH";      // Startup mode: OFF|WATCH|SIGNAL|SCALPER|HYBRID
+input int     BrokerInfoEveryCycles = 20;    // Re-write broker_info.json every N timer cycles (0=OnInit only)
 
-// ── Globals ───────────────────────────────────────────────────────
+// ── GLOBALS ───────────────────────────────────────────────────────
+// CTrade: MQL5 trade execution helper (buy, sell, modify, close)
+// CPositionInfo: MQL5 position info reader (ticket, price, profit)
 CTrade     g_trade;
 CPositionInfo g_pos;
 
@@ -32,15 +71,28 @@ string g_mode         = "SIGNAL";
 string g_files_path   = "";
 string g_last_cmd_ts  = "";
 int    g_cycle        = 0;
+int    g_cycles_since_broker = 0;
 double g_session_start_balance = 0;
 
-// Indicator handles (H1)
+// H1 INDICATOR HANDLES — created once in EnsureIndicators(), read every OnTimer
 int g_h_rsi  = INVALID_HANDLE;
 int g_h_ma20 = INVALID_HANDLE;
 int g_h_ma50 = INVALID_HANDLE;
 int g_h_atr  = INVALID_HANDLE;
+int g_h_bb   = INVALID_HANDLE;
+int g_h_macd = INVALID_HANDLE;
+int g_h_adx  = INVALID_HANDLE;
 
-// Group tracking
+// MULTI-TIMEFRAME INDICATORS (M5, M15, M30) — for AURUM scalping context
+struct TFIndicators {
+   ENUM_TIMEFRAMES tf;
+   string          label;
+   int h_rsi, h_ma20, h_ma50, h_atr, h_bb, h_macd, h_adx;
+};
+TFIndicators g_mtf[3];  // M5, M15, M30
+
+// GROUP TRACKING — in-memory state for TP1 partial close + BE move
+// Each group has a unique magic = MagicNumber + group_id
 struct TradeGroup {
    int    id;
    string direction;
@@ -48,9 +100,28 @@ struct TradeGroup {
    double tp1_close_pct;
    bool   tp1_hit;
    bool   be_moved;
+   bool   move_be_on_tp1;
    int    magic_offset;  // magic + id to differentiate groups
 };
 TradeGroup g_groups[];
+
+string JsonEscape(const string s);
+
+// SYMBOL MATCHING — handles broker suffixes (XAUUSD vs XAUUSDm vs XAUUSD.r)
+// Used to filter positions/orders to only those on the chart symbol
+bool ChartSymbolMatches(const string sym) {
+   if(sym == _Symbol) return true;
+   int i = StringFind(sym, ".");
+   string s2 = (i > 0) ? StringSubstr(sym, 0, i) : sym;
+   i = StringFind(_Symbol, ".");
+   string c2 = (i > 0) ? StringSubstr(_Symbol, 0, i) : _Symbol;
+   if(s2 == c2) return true;
+   // Broker suffix without dot: XAUUSDm, EURUSD.pro
+   const int MIN_PREFIX = 5;
+   if(StringLen(c2) >= MIN_PREFIX && StringFind(s2, c2) == 0) return true;
+   if(StringLen(s2) >= MIN_PREFIX && StringFind(c2, s2) == 0) return true;
+   return false;
+}
 
 //+------------------------------------------------------------------+
 //| Expert initialisation                                             |
@@ -58,14 +129,13 @@ TradeGroup g_groups[];
 int OnInit() {
    g_files_path = (FilesPath == "") ? "" : FilesPath;
    g_session_start_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   ApplyStartupMode();
    g_trade.SetExpertMagicNumber(MagicNumber);
    g_trade.SetDeviationInPoints(30);
    g_trade.SetTypeFilling(ORDER_FILLING_IOC);
    EventSetTimer(TimerSeconds);
-   g_h_rsi  = iRSI(_Symbol, PERIOD_H1, 14, PRICE_CLOSE);
-   g_h_ma20 = iMA(_Symbol, PERIOD_H1, 20, 0, MODE_EMA, PRICE_CLOSE);
-   g_h_ma50 = iMA(_Symbol, PERIOD_H1, 50, 0, MODE_EMA, PRICE_CLOSE);
-   g_h_atr  = iATR(_Symbol, PERIOD_H1, 14);
+   EnsureIndicators();
+   EnsureMTFIndicators();
    if(g_h_rsi==INVALID_HANDLE || g_h_ma20==INVALID_HANDLE || g_h_ma50==INVALID_HANDLE || g_h_atr==INVALID_HANDLE)
       Print("FORGE: indicator handles unavailable (market closed?) — will retry on timer");
    // Print all path info for diagnostics
@@ -84,7 +154,135 @@ void OnDeinit(const int reason) {
    IndicatorRelease(g_h_ma20);
    IndicatorRelease(g_h_ma50);
    IndicatorRelease(g_h_atr);
+   IndicatorRelease(g_h_bb);
+   IndicatorRelease(g_h_macd);
+   IndicatorRelease(g_h_adx);
+   for(int i = 0; i < 3; i++) {
+      IndicatorRelease(g_mtf[i].h_rsi);
+      IndicatorRelease(g_mtf[i].h_ma20);
+      IndicatorRelease(g_mtf[i].h_ma50);
+      IndicatorRelease(g_mtf[i].h_atr);
+      IndicatorRelease(g_mtf[i].h_bb);
+      IndicatorRelease(g_mtf[i].h_macd);
+      IndicatorRelease(g_mtf[i].h_adx);
+   }
    Print("FORGE deinitialised — reason=", reason);
+}
+
+void ApplyStartupMode() {
+   string m = InputMode;
+   StringTrimLeft(m);
+   StringTrimRight(m);
+   if(m == "OFF" || m == "WATCH" || m == "SIGNAL" || m == "SCALPER" || m == "HYBRID")
+      g_mode = m;
+   else {
+      Print("FORGE: unknown InputMode '", InputMode, "' — using SIGNAL");
+      g_mode = "SIGNAL";
+   }
+}
+
+void EnsureIndicators() {
+   if(g_h_rsi != INVALID_HANDLE && g_h_ma20 != INVALID_HANDLE && g_h_ma50 != INVALID_HANDLE
+      && g_h_atr != INVALID_HANDLE && g_h_bb != INVALID_HANDLE && g_h_macd != INVALID_HANDLE
+      && g_h_adx != INVALID_HANDLE)
+      return;
+   IndicatorRelease(g_h_rsi);  g_h_rsi = INVALID_HANDLE;
+   IndicatorRelease(g_h_ma20); g_h_ma20 = INVALID_HANDLE;
+   IndicatorRelease(g_h_ma50); g_h_ma50 = INVALID_HANDLE;
+   IndicatorRelease(g_h_atr);  g_h_atr = INVALID_HANDLE;
+   IndicatorRelease(g_h_bb);   g_h_bb = INVALID_HANDLE;
+   IndicatorRelease(g_h_macd); g_h_macd = INVALID_HANDLE;
+   IndicatorRelease(g_h_adx);  g_h_adx = INVALID_HANDLE;
+   g_h_rsi  = iRSI(_Symbol, PERIOD_H1, 14, PRICE_CLOSE);
+   g_h_ma20 = iMA(_Symbol, PERIOD_H1, 20, 0, MODE_EMA, PRICE_CLOSE);
+   g_h_ma50 = iMA(_Symbol, PERIOD_H1, 50, 0, MODE_EMA, PRICE_CLOSE);
+   g_h_atr  = iATR(_Symbol, PERIOD_H1, 14);
+   g_h_bb   = iBands(_Symbol, PERIOD_H1, 20, 0, 2.0, PRICE_CLOSE);
+   g_h_macd = iMACD(_Symbol, PERIOD_H1, 12, 26, 9, PRICE_CLOSE);
+   g_h_adx  = iADX(_Symbol, PERIOD_H1, 14);
+}
+
+void EnsureMTFIndicators() {
+   g_mtf[0].tf = PERIOD_M5;  g_mtf[0].label = "m5";
+   g_mtf[1].tf = PERIOD_M15; g_mtf[1].label = "m15";
+   g_mtf[2].tf = PERIOD_M30; g_mtf[2].label = "m30";
+   for(int i = 0; i < 3; i++) {
+      if(g_mtf[i].h_rsi > 0) continue;  // already initialised (0 = uninitialised, INVALID_HANDLE = -1)
+      g_mtf[i].h_rsi  = iRSI(_Symbol, g_mtf[i].tf, 14, PRICE_CLOSE);
+      g_mtf[i].h_ma20 = iMA(_Symbol, g_mtf[i].tf, 20, 0, MODE_EMA, PRICE_CLOSE);
+      g_mtf[i].h_ma50 = iMA(_Symbol, g_mtf[i].tf, 50, 0, MODE_EMA, PRICE_CLOSE);
+      g_mtf[i].h_atr  = iATR(_Symbol, g_mtf[i].tf, 14);
+      g_mtf[i].h_bb   = iBands(_Symbol, g_mtf[i].tf, 20, 0, 2.0, PRICE_CLOSE);
+      g_mtf[i].h_macd = iMACD(_Symbol, g_mtf[i].tf, 12, 26, 9, PRICE_CLOSE);
+      g_mtf[i].h_adx  = iADX(_Symbol, g_mtf[i].tf, 14);
+   }
+}
+
+string WriteMTFBlock(int idx) {
+   double buf[1];
+   double rsi  = (CopyBuffer(g_mtf[idx].h_rsi, 0,0,1,buf)==1)  ? buf[0] : 0;
+   double ma20 = (CopyBuffer(g_mtf[idx].h_ma20,0,0,1,buf)==1)  ? buf[0] : 0;
+   double ma50 = (CopyBuffer(g_mtf[idx].h_ma50,0,0,1,buf)==1)  ? buf[0] : 0;
+   double atr  = (CopyBuffer(g_mtf[idx].h_atr, 0,0,1,buf)==1)  ? buf[0] : 0;
+   double bb_m = (CopyBuffer(g_mtf[idx].h_bb,  0,0,1,buf)==1)  ? buf[0] : 0;
+   double bb_u = (CopyBuffer(g_mtf[idx].h_bb,  1,0,1,buf)==1)  ? buf[0] : 0;
+   double bb_l = (CopyBuffer(g_mtf[idx].h_bb,  2,0,1,buf)==1)  ? buf[0] : 0;
+   double macd = (CopyBuffer(g_mtf[idx].h_macd,2,0,1,buf)==1)  ? buf[0] : 0;  // buffer 2 = histogram
+   double adx  = (CopyBuffer(g_mtf[idx].h_adx, 0,0,1,buf)==1)  ? buf[0] : 0;  // buffer 0 = ADX main
+   string j = "{";
+   j += "\"rsi_14\":" + DoubleToString(rsi, 1) + ",";
+   j += "\"ema_20\":" + DoubleToString(ma20, 2) + ",";
+   j += "\"ema_50\":" + DoubleToString(ma50, 2) + ",";
+   j += "\"atr_14\":" + DoubleToString(atr, 2) + ",";
+   j += "\"bb_upper\":" + DoubleToString(bb_u, 2) + ",";
+   j += "\"bb_mid\":" + DoubleToString(bb_m, 2) + ",";
+   j += "\"bb_lower\":" + DoubleToString(bb_l, 2) + ",";
+   j += "\"macd_hist\":" + DoubleToString(macd, 5) + ",";
+   j += "\"adx\":" + DoubleToString(adx, 1);
+   j += "}";
+   return j;
+}
+
+// Read JSON sibling to WriteJsonFileDual: Common Files first, then terminal-local Files.
+bool ReadTextFileDual(const string rel_path, string &out_body) {
+   out_body = "";
+   string path = g_files_path + rel_path;
+   int fh = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(fh != INVALID_HANDLE) {
+      while(!FileIsEnding(fh)) out_body += FileReadString(fh);
+      FileClose(fh);
+      return true;
+   }
+   int err_c = GetLastError();
+   fh = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI);
+   if(fh != INVALID_HANDLE) {
+      while(!FileIsEnding(fh)) out_body += FileReadString(fh);
+      FileClose(fh);
+      Print("FORGE: read ", rel_path, " from terminal Files (COMMON open err=", err_c, ")");
+      return true;
+   }
+   return false;
+}
+
+bool WriteJsonFileDual(const string filename, const string body) {
+   int fh = FileOpen(filename, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(fh != INVALID_HANDLE) {
+      FileWriteString(fh, body);
+      FileFlush(fh);
+      FileClose(fh);
+      return true;
+   }
+   int err1 = GetLastError();
+   fh = FileOpen(filename, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(fh != INVALID_HANDLE) {
+      FileWriteString(fh, body);
+      FileFlush(fh);
+      FileClose(fh);
+      Print("FORGE: ", filename, " via local Files (common err=", err1, ")");
+      return true;
+   }
+   Print("FORGE: WRITE FAILED ", filename, " common=", err1, " local=", GetLastError());
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -92,7 +290,15 @@ void OnDeinit(const int reason) {
 //+------------------------------------------------------------------+
 void OnTimer() {
    g_cycle++;
+   EnsureIndicators();
    ReadConfig();
+   if(BrokerInfoEveryCycles > 0) {
+      g_cycles_since_broker++;
+      if(g_cycles_since_broker >= BrokerInfoEveryCycles) {
+         g_cycles_since_broker = 0;
+         WriteBrokerInfo();
+      }
+   }
    if(g_mode == "OFF") { WriteMarketData(); return; }
    ReadAndExecuteCommand();
    WriteMarketData();
@@ -113,12 +319,8 @@ void OnTick() {
 //| Config reader                                                      |
 //+------------------------------------------------------------------+
 void ReadConfig() {
-   string path = g_files_path + "config.json";
-   int fh = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
-   if(fh == INVALID_HANDLE) return;
    string content = "";
-   while(!FileIsEnding(fh)) content += FileReadString(fh);
-   FileClose(fh);
+   if(!ReadTextFileDual("config.json", content)) return;
    // Parse mode
    string mode = JsonGetString(content, "effective_mode");
    if(mode != "" && mode != g_mode) {
@@ -131,16 +333,20 @@ void ReadConfig() {
 //| Command reader + executor                                          |
 //+------------------------------------------------------------------+
 void ReadAndExecuteCommand() {
-   string path = g_files_path + "command.json";
-   int fh = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
-   if(fh == INVALID_HANDLE) return;
    string content = "";
-   while(!FileIsEnding(fh)) content += FileReadString(fh);
-   FileClose(fh);
+   if(!ReadTextFileDual("command.json", content)) {
+      if(g_cycle % 20 == 0)
+         Print("FORGE: cannot read command.json (FILE_COMMON + terminal Files). ",
+               "BRIDGE must write to the same folder FORGE uses. FilesPath=\"", g_files_path,
+               "\" common=\"", TerminalInfoString(TERMINAL_COMMONDATA_PATH), "\"");
+      return;
+   }
    if(content == "") return;
 
    string ts = JsonGetString(content, "timestamp");
-   if(ts == g_last_cmd_ts) return;
+   // Pretty-printed JSON from Python uses ": " — if timestamp parse failed, ts is empty;
+   // never treat "" == "" as "already processed" (that skipped all commands before v1.2.2).
+   if(ts != "" && ts == g_last_cmd_ts) return;
    g_last_cmd_ts = ts;
 
    string action = JsonGetString(content, "action");
@@ -150,6 +356,12 @@ void ReadAndExecuteCommand() {
    else if(action == "CLOSE_ALL")   ExecuteCloseAll();
    else if(action == "CLOSE_PCT")   ExecuteClosePct(content);
    else if(action == "MOVE_BE_ALL") ExecuteMoveBeAll();
+   else if(action == "MODIFY_SL")   ExecuteModifySL(content);
+   else if(action == "MODIFY_TP")   ExecuteModifyTP(content);
+   else if(action == "CLOSE_GROUP")     ExecuteCloseGroup(content);
+   else if(action == "CLOSE_GROUP_PCT") ExecuteCloseGroupPct(content);
+   else if(action == "CLOSE_PROFITABLE") ExecuteCloseProfitable();
+   else if(action == "CLOSE_LOSING")    ExecuteCloseLosing();
    else Print("FORGE: Unknown action — ", action);
 }
 
@@ -165,7 +377,10 @@ void ExecuteOpenGroup(const string &json) {
    double tp2           = JsonGetDouble(json,  "tp2");
    double tp1_close_pct = JsonGetDouble(json,  "tp1_close_pct");
    if(tp1_close_pct == 0) tp1_close_pct = 70;
-   bool   move_be       = (JsonGetString(json, "move_be_on_tp1") == "true");
+   string mbe = JsonGetString(json, "move_be_on_tp1");
+   bool   move_be = true;
+   if(mbe == "false" || mbe == "0") move_be = false;
+   else if(mbe == "true" || mbe == "1") move_be = true;
 
    // Parse entry ladder
    double entries[];
@@ -173,38 +388,52 @@ void ExecuteOpenGroup(const string &json) {
    int n = ArraySize(entries);
    if(n == 0) {
       double single_entry = JsonGetDouble(json, "entry_low");
-      if(single_entry == 0) return;
+      if(single_entry == 0) {
+         Print("FORGE: OPEN_GROUP aborted — entry_ladder empty and no entry_low (check JSON indent / parser)");
+         return;
+      }
       ArrayResize(entries, 1);
       entries[0] = single_entry;
       n = 1;
+   }
+   if(direction != "BUY" && direction != "SELL") {
+      Print("FORGE: OPEN_GROUP aborted — bad direction '", direction, "'");
+      return;
    }
 
    int opened = 0;
    int group_magic = MagicNumber + group_id;
    g_trade.SetExpertMagicNumber(group_magic);
 
+   // Split TP targets: first tp1_close_pct% get TP1, remainder get TP2 (or TP1 if no TP2)
+   int tp1_count = (int)MathCeil(n * tp1_close_pct / 100.0);  // e.g. 3 of 4 at 70%
+   double tp2_price = (tp2 > 0) ? tp2 : tp1;  // fallback to TP1 if no TP2
+
    for(int i = 0; i < n; i++) {
       double entry = entries[i];
-      string comment = "FORGE|G" + IntegerToString(group_id) + "|" + IntegerToString(i);
+      double tp_for_this = (i < tp1_count) ? tp1 : tp2_price;  // first N get TP1, rest get TP2
+      string tp_label = (i < tp1_count) ? "TP1" : "TP2";
+      string comment = "FORGE|G" + IntegerToString(group_id) + "|" + IntegerToString(i) + "|" + tp_label;
       bool ok = false;
       if(direction == "BUY") {
          double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         // Use limit order if entry below current ask, else market
          if(entry < ask - 5)
-            ok = g_trade.BuyLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp1, _Digits), ORDER_TIME_GTC, 0, comment);
+            ok = g_trade.BuyLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
          else
-            ok = g_trade.Buy(lot_per_trade, _Symbol, ask, NormalizeDouble(sl, _Digits), NormalizeDouble(tp1, _Digits), comment);
+            ok = g_trade.Buy(lot_per_trade, _Symbol, ask, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
       } else {
          double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          if(entry > bid + 5)
-            ok = g_trade.SellLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp1, _Digits), ORDER_TIME_GTC, 0, comment);
+            ok = g_trade.SellLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
          else
-            ok = g_trade.Sell(lot_per_trade, _Symbol, bid, NormalizeDouble(sl, _Digits), NormalizeDouble(tp1, _Digits), comment);
+            ok = g_trade.Sell(lot_per_trade, _Symbol, bid, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
       }
-      if(ok) { opened++; Print("FORGE: Opened trade ", i+1, "/", n, " ticket=", g_trade.ResultOrder()); }
+      if(ok) { opened++; Print("FORGE: Opened trade ", i+1, "/", n, " ", tp_label, "=", DoubleToString(tp_for_this,2), " ticket=", g_trade.ResultOrder()); }
       else Print("FORGE: Failed trade ", i+1, " error=", g_trade.ResultRetcode());
-      Sleep(100);  // small delay between entries
+      Sleep(100);
    }
+   Print("FORGE: Group ", group_id, " TP split: ", tp1_count, " at TP1=", DoubleToString(tp1,2),
+         ", ", n-tp1_count, " at TP2=", DoubleToString(tp2_price,2));
 
    // Register group
    int gi = ArraySize(g_groups);
@@ -217,6 +446,7 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].tp1_close_pct = tp1_close_pct;
    g_groups[gi].tp1_hit       = false;
    g_groups[gi].be_moved      = false;
+   g_groups[gi].move_be_on_tp1 = move_be;
    g_groups[gi].magic_offset  = group_magic;
 
    Print("FORGE: Group ", group_id, " opened — ", opened, "/", n, " trades");
@@ -252,15 +482,20 @@ void ManageOpenGroups() {
       g_groups[gi].tp1_hit = true;
       Print("FORGE: Group ", g_groups[gi].id, " TP1 — closed ", closed, "/", total);
 
-      // Move remaining SL to breakeven
-      GetGroupPositions(gm, positions);  // refresh after closes
-      for(int j = 0; j < ArraySize(positions); j++) {
-         if(g_pos.SelectByTicket(positions[j])) {
-            double be = g_pos.PriceOpen();
-            g_trade.PositionModify(positions[j], NormalizeDouble(be, _Digits), g_pos.TakeProfit());
+      if(g_groups[gi].move_be_on_tp1) {
+         GetGroupPositions(gm, positions);  // refresh after closes
+         double remaining_tp = (g_groups[gi].tp2 > 0) ? g_groups[gi].tp2 : tp1;
+         for(int j = 0; j < ArraySize(positions); j++) {
+            if(g_pos.SelectByTicket(positions[j])) {
+               double be = g_pos.PriceOpen();
+               // Move SL to breakeven + set TP to TP2 for remaining runners
+               g_trade.PositionModify(positions[j], NormalizeDouble(be, _Digits), NormalizeDouble(remaining_tp, _Digits));
+            }
          }
+         g_groups[gi].be_moved = true;
+         Print("FORGE: Group ", g_groups[gi].id, " remaining ", ArraySize(positions),
+               " trades: SL→BE, TP→", DoubleToString(remaining_tp, 2));
       }
-      g_groups[gi].be_moved = true;
    }
 }
 
@@ -268,18 +503,30 @@ void ManageOpenGroups() {
 //| Close all EA positions                                             |
 //+------------------------------------------------------------------+
 void ExecuteCloseAll() {
+   // 1. Close filled positions
    int closed = 0;
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
-         // Check it's one of our magic numbers
          int pm = (int)g_pos.Magic();
          if(pm >= MagicNumber && pm < MagicNumber + 10000) {
             if(g_trade.PositionClose(g_pos.Ticket())) closed++;
          }
       }
    }
+   // 2. Cancel pending orders (limits/stops)
+   int cancelled = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0) continue;
+      if(!OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      long om = OrderGetInteger(ORDER_MAGIC);
+      if(om >= MagicNumber && om < MagicNumber + 10000) {
+         if(g_trade.OrderDelete(ot)) cancelled++;
+      }
+   }
    ArrayResize(g_groups, 0);
-   Print("FORGE: CLOSE_ALL — closed ", closed, " positions");
+   Print("FORGE: CLOSE_ALL — closed ", closed, " positions, cancelled ", cancelled, " pending orders");
 }
 
 //+------------------------------------------------------------------+
@@ -325,15 +572,168 @@ void ExecuteMoveBeAll() {
 }
 
 //+------------------------------------------------------------------+
-//| Write market_data.json                                             |
+//| Close all positions + pending orders for a specific group (magic)  |
+//+------------------------------------------------------------------+
+void ExecuteCloseGroup(const string &json) {
+   int target_magic = (int)JsonGetDouble(json, "magic");
+   if(target_magic <= 0) { Print("FORGE: CLOSE_GROUP aborted — invalid magic"); return; }
+   int closed = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && (int)g_pos.Magic() == target_magic) {
+         if(g_trade.PositionClose(g_pos.Ticket())) closed++;
+      }
+   }
+   int cancelled = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) == target_magic) {
+         if(g_trade.OrderDelete(ot)) cancelled++;
+      }
+   }
+   Print("FORGE: CLOSE_GROUP magic=", target_magic, " — closed ", closed, " positions, cancelled ", cancelled, " pending");
+}
+
+//+------------------------------------------------------------------+
+//| Close N% of positions in a specific group                          |
+//+------------------------------------------------------------------+
+void ExecuteCloseGroupPct(const string &json) {
+   int target_magic = (int)JsonGetDouble(json, "magic");
+   double pct = JsonGetDouble(json, "pct");
+   if(target_magic <= 0) { Print("FORGE: CLOSE_GROUP_PCT aborted — invalid magic"); return; }
+   if(pct <= 0 || pct > 100) pct = 70;
+   int tickets[];
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && (int)g_pos.Magic() == target_magic) {
+         int sz = ArraySize(tickets);
+         ArrayResize(tickets, sz+1);
+         tickets[sz] = (int)g_pos.Ticket();
+      }
+   }
+   int n = ArraySize(tickets);
+   int to_close = (int)MathCeil(n * pct / 100.0);
+   int closed = 0;
+   for(int i = 0; i < n && closed < to_close; i++) {
+      if(g_trade.PositionClose(tickets[i])) closed++;
+   }
+   Print("FORGE: CLOSE_GROUP_PCT magic=", target_magic, " ", pct, "% — closed ", closed, "/", n);
+}
+
+//+------------------------------------------------------------------+
+//| Close only positions currently in profit                           |
+//+------------------------------------------------------------------+
+void ExecuteCloseProfitable() {
+   int closed = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
+         int pm = (int)g_pos.Magic();
+         if(pm >= MagicNumber && pm < MagicNumber + 10000) {
+            if(g_pos.Profit() + g_pos.Swap() + g_pos.Commission() > 0) {
+               if(g_trade.PositionClose(g_pos.Ticket())) closed++;
+            }
+         }
+      }
+   }
+   Print("FORGE: CLOSE_PROFITABLE — closed ", closed, " winning positions");
+}
+
+//+------------------------------------------------------------------+
+//| Close only positions currently in loss                             |
+//+------------------------------------------------------------------+
+void ExecuteCloseLosing() {
+   int closed = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--) {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
+         int pm = (int)g_pos.Magic();
+         if(pm >= MagicNumber && pm < MagicNumber + 10000) {
+            if(g_pos.Profit() + g_pos.Swap() + g_pos.Commission() < 0) {
+               if(g_trade.PositionClose(g_pos.Ticket())) closed++;
+            }
+         }
+      }
+   }
+   Print("FORGE: CLOSE_LOSING — closed ", closed, " losing positions");
+}
+
+//+------------------------------------------------------------------+
+//| Modify SL on all EA positions to a specific price                  |
+//+------------------------------------------------------------------+
+void ExecuteModifySL(const string &json) {
+   double new_sl = JsonGetDouble(json, "sl");
+   if(new_sl <= 0) { Print("FORGE: MODIFY_SL aborted — invalid sl"); return; }
+   int modified = 0;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
+         int pm = (int)g_pos.Magic();
+         if(pm >= MagicNumber && pm < MagicNumber + 10000) {
+            if(g_trade.PositionModify(g_pos.Ticket(), NormalizeDouble(new_sl, _Digits), g_pos.TakeProfit()))
+               modified++;
+         }
+      }
+   }
+   // Also modify pending orders
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      long om = OrderGetInteger(ORDER_MAGIC);
+      if(om >= MagicNumber && om < MagicNumber + 10000) {
+         g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
+            NormalizeDouble(new_sl, _Digits), OrderGetDouble(ORDER_TP),
+            ORDER_TIME_GTC, 0);
+      }
+   }
+   Print("FORGE: MODIFY_SL to ", DoubleToString(new_sl, _Digits), " — ", modified, " positions modified");
+}
+
+//+------------------------------------------------------------------+
+//| Modify TP on all EA positions to a specific price                  |
+//+------------------------------------------------------------------+
+void ExecuteModifyTP(const string &json) {
+   double new_tp = JsonGetDouble(json, "tp");
+   if(new_tp <= 0) { Print("FORGE: MODIFY_TP aborted — invalid tp"); return; }
+   int modified = 0;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
+         int pm = (int)g_pos.Magic();
+         if(pm >= MagicNumber && pm < MagicNumber + 10000) {
+            if(g_trade.PositionModify(g_pos.Ticket(), g_pos.StopLoss(), NormalizeDouble(new_tp, _Digits)))
+               modified++;
+         }
+      }
+   }
+   // Also modify pending orders
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      long om = OrderGetInteger(ORDER_MAGIC);
+      if(om >= MagicNumber && om < MagicNumber + 10000) {
+         g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
+            OrderGetDouble(ORDER_SL), NormalizeDouble(new_tp, _Digits),
+            ORDER_TIME_GTC, 0);
+      }
+   }
+   Print("FORGE: MODIFY_TP to ", DoubleToString(new_tp, _Digits), " — ", modified, " positions modified");
+}
+
+//+------------------------------------------------------------------+
+//| Write market_data.json
 //+------------------------------------------------------------------+
 void WriteMarketData() {
-   string path = g_files_path + "market_data.json";
    string j = "{";
-   j += "\"symbol\":\"" + _Symbol + "\",";
-   j += "\"hermes_version\":\"FORGE_1.0\",";
-   j += "\"timestamp_utc\":\"" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
-   j += "\"timestamp_unix\":" + IntegerToString(TimeCurrent()) + ",";
+   j += "\"symbol\":\"" + JsonEscape(_Symbol) + "\",";
+   j += "\"hermes_version\":\"FORGE_1.2\",";
+   j += "\"forge_version\":\"1.3.0\",";
+   j += "\"timestamp_utc\":\"" + JsonEscape(TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS)) + "Z\",";
+   j += "\"timestamp_unix\":" + IntegerToString((long)TimeGMT()) + ",";
+   j += "\"server_time_unix\":" + IntegerToString((long)TimeCurrent()) + ",";
+   j += "\"terminal_connected\":" + IntegerToString((int)TerminalInfoInteger(TERMINAL_CONNECTED)) + ",";
+   j += "\"trade_allowed\":" + IntegerToString((int)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) + ",";
+   j += "\"symbol_trade_mode\":" + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE)) + ",";
+   j += "\"digits\":" + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)) + ",";
+   j += "\"ea_cycle\":" + IntegerToString(g_cycle) + ",";
    j += "\"mode\":\"" + g_mode + "\",";
    j += "\"price\":{";
    j += "\"bid\":" + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), 2) + ",";
@@ -349,7 +749,10 @@ void WriteMarketData() {
    j += "\"margin_level\":"  + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),1) + ",";
    j += "\"open_positions_count\":" + IntegerToString(PositionsTotal()) + ",";
    double fp = 0;
-   for(int i=0;i<PositionsTotal();i++){if(g_pos.SelectByIndex(i)&&g_pos.Symbol()==_Symbol)fp+=g_pos.Profit();}
+   for(int i=0;i<PositionsTotal();i++) {
+      if(g_pos.SelectByIndex(i) && ChartSymbolMatches(g_pos.Symbol()))
+         fp += g_pos.Profit() + g_pos.Swap() + g_pos.Commission();
+   }
    j += "\"total_floating_pnl\":" + DoubleToString(fp,2) + ",";
    j += "\"session_start_balance\":" + DoubleToString(g_session_start_balance,2) + ",";
    j += "\"session_pnl\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE)-g_session_start_balance,2);
@@ -361,16 +764,30 @@ void WriteMarketData() {
    double ma20_val = (CopyBuffer(g_h_ma20,0,0,1,ma20_buf)==1) ? ma20_buf[0] : 0;
    double ma50_val = (CopyBuffer(g_h_ma50,0,0,1,ma50_buf)==1) ? ma50_buf[0] : 0;
    double atr_val  = (CopyBuffer(g_h_atr, 0,0,1,atr_buf)==1)  ? atr_buf[0]  : 0;
+   double h1_bb_m  = (CopyBuffer(g_h_bb, 0,0,1,rsi_buf)==1)   ? rsi_buf[0]  : 0;
+   double h1_bb_u  = (CopyBuffer(g_h_bb, 1,0,1,rsi_buf)==1)   ? rsi_buf[0]  : 0;
+   double h1_bb_l  = (CopyBuffer(g_h_bb, 2,0,1,rsi_buf)==1)   ? rsi_buf[0]  : 0;
+   double h1_macd  = (CopyBuffer(g_h_macd,2,0,1,rsi_buf)==1)  ? rsi_buf[0]  : 0;
+   double h1_adx   = (CopyBuffer(g_h_adx, 0,0,1,rsi_buf)==1)  ? rsi_buf[0]  : 0;
    j += "\"rsi_14\":" + DoubleToString(rsi_val,1)  + ",";
-   j += "\"ma_20\":"  + DoubleToString(ma20_val,2) + ",";
-   j += "\"ma_50\":"  + DoubleToString(ma50_val,2) + ",";
-   j += "\"atr_14\":" + DoubleToString(atr_val,2);
+   j += "\"ema_20\":"  + DoubleToString(ma20_val,2) + ",";
+   j += "\"ema_50\":"  + DoubleToString(ma50_val,2) + ",";
+   j += "\"atr_14\":" + DoubleToString(atr_val,2) + ",";
+   j += "\"bb_upper\":" + DoubleToString(h1_bb_u,2) + ",";
+   j += "\"bb_mid\":" + DoubleToString(h1_bb_m,2) + ",";
+   j += "\"bb_lower\":" + DoubleToString(h1_bb_l,2) + ",";
+   j += "\"macd_hist\":" + DoubleToString(h1_macd,5) + ",";
+   j += "\"adx\":" + DoubleToString(h1_adx,1);
    j += "},";
+   // Multi-timeframe indicators (M5, M15, M30)
+   for(int ti = 0; ti < 3; ti++) {
+      j += "\"indicators_" + g_mtf[ti].label + "\":" + WriteMTFBlock(ti) + ",";
+   }
    // Open positions
    j += "\"open_positions\":[";
    bool first = true;
    for(int i=0;i<PositionsTotal();i++) {
-      if(!g_pos.SelectByIndex(i) || g_pos.Symbol()!=_Symbol) continue;
+      if(!g_pos.SelectByIndex(i) || !ChartSymbolMatches(g_pos.Symbol())) continue;
       if(!first) j += ","; first=false;
       j += "{";
       j += "\"ticket\":"       + IntegerToString(g_pos.Ticket()) + ",";
@@ -380,21 +797,54 @@ void WriteMarketData() {
       j += "\"current_price\":" + DoubleToString(g_pos.PriceCurrent(),2) + ",";
       j += "\"sl\":"           + DoubleToString(g_pos.StopLoss(),2) + ",";
       j += "\"tp\":"           + DoubleToString(g_pos.TakeProfit(),2) + ",";
-      j += "\"profit\":"       + DoubleToString(g_pos.Profit(),2) + ",";
+      j += "\"profit\":"       + DoubleToString(g_pos.Profit()+g_pos.Swap()+g_pos.Commission(),2) + ",";
       j += "\"magic\":"        + IntegerToString(g_pos.Magic());
       j += "}";
    }
-   j += "]}";
-
-   // Try FILE_COMMON first, fall back to local MQL5/Files
-   int fh = FileOpen("market_data.json", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(fh != INVALID_HANDLE) { FileWriteString(fh, j); FileClose(fh); }
-   else {
-      int err1 = GetLastError();
-      fh = FileOpen("market_data.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
-      if(fh != INVALID_HANDLE) { FileWriteString(fh, j); FileClose(fh); Print("FORGE: wrote via local path (err_common=",err1,")"); }
-      else Print("FORGE: WRITE FAILED both paths err_common=",err1," err_local=",GetLastError());
+   j += "],";
+   // Pending orders: ALL limits/stops on this chart symbol (ATHENA). Previously we filtered
+   // by FORGE magic only — that hid broker magic=0 or non-standard magics from the dashboard.
+   j += "\"pending_orders\":[";
+   first = true;
+   int noc = (int)OrdersTotal();
+   int pendForge = 0;
+   for(int i = 0; i < noc; i++) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0) continue;
+      if(!OrderSelect(ot)) continue;
+      string osym = OrderGetString(ORDER_SYMBOL);
+      if(!ChartSymbolMatches(osym)) continue;
+      long om = OrderGetInteger(ORDER_MAGIC);
+      bool forgeManaged = (om >= MagicNumber && om < MagicNumber + 10000);
+      if(forgeManaged) pendForge++;
+      if(!first) j += ","; first = false;
+      long otyp = OrderGetInteger(ORDER_TYPE);
+      string otn = "OTHER";
+      if(otyp == ORDER_TYPE_BUY_LIMIT) otn = "BUY_LIMIT";
+      else if(otyp == ORDER_TYPE_SELL_LIMIT) otn = "SELL_LIMIT";
+      else if(otyp == ORDER_TYPE_BUY_STOP) otn = "BUY_STOP";
+      else if(otyp == ORDER_TYPE_SELL_STOP) otn = "SELL_STOP";
+      else if(otyp == ORDER_TYPE_BUY_STOP_LIMIT) otn = "BUY_STOPLIMIT";
+      else if(otyp == ORDER_TYPE_SELL_STOP_LIMIT) otn = "SELL_STOPLIMIT";
+      j += "{";
+      j += "\"ticket\":" + IntegerToString((long)ot) + ",";
+      j += "\"symbol\":\"" + JsonEscape(osym) + "\",";
+      j += "\"order_type\":\"" + otn + "\",";
+      j += "\"volume\":" + DoubleToString(OrderGetDouble(ORDER_VOLUME_INITIAL),2) + ",";
+      j += "\"price\":" + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN),_Digits) + ",";
+      j += "\"sl\":" + DoubleToString(OrderGetDouble(ORDER_SL),_Digits) + ",";
+      j += "\"tp\":" + DoubleToString(OrderGetDouble(ORDER_TP),_Digits) + ",";
+      j += "\"magic\":" + IntegerToString((int)om) + ",";
+      j += "\"forge_managed\":";
+      j += forgeManaged ? "true" : "false";
+      j += ",";
+      j += "\"comment\":\"" + JsonEscape(OrderGetString(ORDER_COMMENT)) + "\"";
+      j += "}";
    }
+   j += "],\"pending_orders_forge_count\":" + IntegerToString(pendForge);
+   j += "}";
+
+   WriteJsonFileDual("market_data.json", j);
 }
 
 //+------------------------------------------------------------------+
@@ -402,57 +852,65 @@ void WriteMarketData() {
 //+------------------------------------------------------------------+
 void WriteTickData() {
    if(!LogTicks) return;
-   string path = g_files_path + "tick_data.json";
    string j = "{";
-   j += "\"timestamp_unix\":" + IntegerToString(TimeCurrent()) + ",";
+   j += "\"timestamp_unix\":" + IntegerToString((long)TimeGMT()) + ",";
    j += "\"mode\":\"" + g_mode + "\",";
+   j += "\"symbol\":\"" + JsonEscape(_Symbol) + "\",";
    j += "\"bid\":"  + DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_BID),2) + ",";
    j += "\"ask\":"  + DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_ASK),2) + ",";
    j += "\"spread\":" + DoubleToString((SymbolInfoDouble(_Symbol,SYMBOL_ASK)-SymbolInfoDouble(_Symbol,SYMBOL_BID))/_Point,1);
    j += "}";
-   int fh = FileOpen(path, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
-   if(fh != INVALID_HANDLE) { FileWriteString(fh, j); FileClose(fh); }
+   WriteJsonFileDual("tick_data.json", j);
 }
 
 //+------------------------------------------------------------------+
 //| Write mode_status.json (ATHENA)                                   |
 //+------------------------------------------------------------------+
 void WriteModeStatus() {
-   string path = g_files_path + "mode_status.json";
    string j = "{\"mode\":\"" + g_mode + "\",";
    j += "\"cycle\":" + IntegerToString(g_cycle) + ",";
    j += "\"open_groups\":" + IntegerToString(ArraySize(g_groups)) + ",";
-   j += "\"timestamp\":\"" + TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS) + "\"}";
-   int fh = FileOpen(path, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
-   if(fh != INVALID_HANDLE) { FileWriteString(fh, j); FileClose(fh); }
+   j += "\"timestamp\":\"" + JsonEscape(TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)) + "Z\"}";
+   WriteJsonFileDual("mode_status.json", j);
 }
 
 //+------------------------------------------------------------------+
 //| Write broker_info.json — account type, broker, server time       |
 //+------------------------------------------------------------------+
 void WriteBrokerInfo() {
-   string path = g_files_path + "broker_info.json";
    string acct_type = AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO
                       ? "DEMO" : "LIVE";
    string j = "{";
    j += "\"account_type\":\"" + acct_type + "\",";
-   j += "\"broker\":\"" + AccountInfoString(ACCOUNT_COMPANY) + "\",";
-   j += "\"server\":\"" + AccountInfoString(ACCOUNT_SERVER) + "\",";
+   j += "\"broker\":\"" + JsonEscape(AccountInfoString(ACCOUNT_COMPANY)) + "\",";
+   j += "\"server\":\"" + JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\",";
    j += "\"account_login\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + ",";
-   j += "\"currency\":\"" + AccountInfoString(ACCOUNT_CURRENCY) + "\",";
+   j += "\"currency\":\"" + JsonEscape(AccountInfoString(ACCOUNT_CURRENCY)) + "\",";
    j += "\"leverage\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LEVERAGE)) + ",";
-   j += "\"server_time\":\"" + TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS) + "\",";
-   j += "\"requested_mode\":\"" + InputMode + "\",";
-   j += "\"forge_version\":\"1.1.0\"";
+   j += "\"server_time\":\"" + JsonEscape(TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)) + "\",";
+   j += "\"server_time_unix\":" + IntegerToString((long)TimeCurrent()) + ",";
+   j += "\"gmt_time\":\"" + JsonEscape(TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)) + "Z\",";
+   j += "\"chart_symbol\":\"" + JsonEscape(_Symbol) + "\",";
+   j += "\"requested_mode\":\"" + JsonEscape(InputMode) + "\",";
+   j += "\"effective_mode\":\"" + g_mode + "\",";
+   j += "\"forge_version\":\"1.3.0\"";
    j += "}";
-   int fh = FileOpen("broker_info.json", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(fh != INVALID_HANDLE) { FileWriteString(fh, j); FileClose(fh); Print("FORGE: broker_info.json written — ", acct_type, " @ ", AccountInfoString(ACCOUNT_SERVER)); }
-   else {
-      int err1 = GetLastError();
-      fh = FileOpen("broker_info.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
-      if(fh != INVALID_HANDLE) { FileWriteString(fh, j); FileClose(fh); Print("FORGE: broker_info.json via local path (err_common=",err1,")"); }
-      else Print("FORGE: broker_info.json WRITE FAILED err_common=",err1," err_local=",GetLastError());
+   if(WriteJsonFileDual("broker_info.json", j))
+      Print("FORGE: broker_info.json — ", acct_type, " @ ", AccountInfoString(ACCOUNT_SERVER));
+}
+
+//+------------------------------------------------------------------+
+string JsonEscape(const string s) {
+   string out = "";
+   int n = StringLen(s);
+   for(int i = 0; i < n; i++) {
+      ushort ch = StringGetCharacter(s, i);
+      if(ch == '\\') out += "\\\\";
+      else if(ch == '\"') out += "\\\"";
+      else if(ch == '\r' || ch == '\n' || ch == '\t') out += " ";
+      else out += StringSubstr(s, i, 1);
    }
+   return out;
 }
 
 //+------------------------------------------------------------------+
@@ -467,37 +925,64 @@ void GetGroupPositions(int magic, int &tickets[]) {
    }
 }
 
+// Tolerant of Python json.dump(indent=2): space after colon, newlines inside arrays.
 string JsonGetString(const string &json, const string &key) {
-   string search = "\"" + key + "\":\"";
-   int start = StringFind(json, search);
-   if(start < 0) return "";
-   start += StringLen(search);
-   int end = StringFind(json, "\"", start);
-   if(end < 0) return "";
-   return StringSubstr(json, start, end - start);
+   string search = "\"" + key + "\"";
+   int kpos = StringFind(json, search);
+   if(kpos < 0) return "";
+   int p = kpos + StringLen(search);
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json, p) != ':') return "";
+   p++;
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json, p) != '"') return "";
+   p++;
+   int endq = StringFind(json, "\"", p);
+   if(endq < 0) return "";
+   return StringSubstr(json, p, endq - p);
 }
 
 double JsonGetDouble(const string &json, const string &key) {
-   string search = "\"" + key + "\":";
-   int start = StringFind(json, search);
-   if(start < 0) return 0;
-   start += StringLen(search);
-   int end = start;
-   while(end < StringLen(json) && (StringSubstr(json,end,1)!=","&&StringSubstr(json,end,1)!="}")) end++;
-   return StringToDouble(StringSubstr(json, start, end - start));
+   string search = "\"" + key + "\"";
+   int kpos = StringFind(json, search);
+   if(kpos < 0) return 0;
+   int p = kpos + StringLen(search);
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json, p) != ':') return 0;
+   p++;
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   int end = p;
+   while(end < StringLen(json)) {
+      ushort c = StringGetCharacter(json, end);
+      if(c == ',' || c == '}' || c == ']' || c == '\r' || c == '\n') break;
+      end++;
+   }
+   return StringToDouble(StringSubstr(json, p, end - p));
 }
 
 void ParseDoubleArray(const string &json, const string &key, double &arr[]) {
-   string search = "\"" + key + "\":[";
-   int start = StringFind(json, search);
-   if(start < 0) { ArrayResize(arr,0); return; }
-   start += StringLen(search);
-   int end = StringFind(json, "]", start);
-   if(end < 0) { ArrayResize(arr,0); return; }
-   string content = StringSubstr(json, start, end - start);
+   ArrayResize(arr, 0);
+   string search = "\"" + key + "\"";
+   int kpos = StringFind(json, search);
+   if(kpos < 0) return;
+   int p = kpos + StringLen(search);
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json, p) != ':') return;
+   p++;
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json, p) != '[') return;
+   p++;
+   int close = StringFind(json, "]", p);
+   if(close < 0) return;
+   string body = StringSubstr(json, p, close - p);
    string parts[];
-   int n = StringSplit(content, ',', parts);
+   int n = StringSplit(body, ',', parts);
    ArrayResize(arr, n);
-   for(int i=0;i<n;i++) arr[i] = StringToDouble(parts[i]);
+   for(int i = 0; i < n; i++) {
+      string s = parts[i];
+      StringTrimLeft(s);
+      StringTrimRight(s);
+      arr[i] = StringToDouble(s);
+   }
 }
 //+------------------------------------------------------------------+

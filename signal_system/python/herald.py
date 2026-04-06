@@ -8,6 +8,9 @@ Send-only bot. Other components call herald.send() for alerts.
 import os, logging, asyncio
 from datetime import datetime, timezone
 
+from status_report import report_component_status
+from trading_session import get_trading_session_utc
+
 log = logging.getLogger("herald")
 
 BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -34,21 +37,20 @@ class Herald:
             log.warning(f"HERALD (no token): {text[:60]}")
             return False
         try:
-            loop = asyncio.new_event_loop()
-            result = loop.run_until_complete(self._async_send(text, parse_mode))
-            loop.close()
+            result = asyncio.run(self._async_send(text, parse_mode))
+            self._bot = None
             try:
-                from scribe import get_scribe
-                get_scribe().heartbeat(
-                    component   = "HERALD",
-                    status      = "OK" if result else "WARN",
-                    note        = "bot active" if self.token else "no token configured",
-                    last_action = f"sent: {text[:80]}",
+                report_component_status(
+                    "HERALD",
+                    "OK" if result else "WARN",
+                    note="bot active" if self.token else "no token configured",
+                    last_action=f"sent: {text[:80]}",
                 )
             except Exception as _he:
                 log.debug(f"HERALD heartbeat error: {_he}")
             return result
         except Exception as e:
+            self._bot = None
             log.error(f"HERALD send error: {e}")
             return False
 
@@ -81,6 +83,23 @@ class Herald:
             f"🛑 SL: <code>{sl:.2f}</code>\n"
             f"🎯 TP1: <code>{tp1:.2f}</code>  TP2: <code>{tp2}</code>  TP3: <code>{tp3}</code>\n"
             f"📦 {n} trades × {lot} lot"
+        )
+
+    def trade_group_closed(self, group_id: int, direction: str, trades: int,
+                           total_pnl: float, pips: float, reason: str):
+        emoji = "✅" if total_pnl >= 0 else "❌"
+        self.send(
+            f"{emoji} <b>GROUP CLOSED</b> — G{group_id} {direction}\n"
+            f"💰 P&L: <code>${total_pnl:+.2f}</code>  Pips: {pips:+.1f}\n"
+            f"📦 {trades} trades closed\n"
+            f"Reason: {reason}"
+        )
+
+    def position_closed(self, ticket: int, direction: str, pnl: float, pips: float):
+        emoji = "💚" if pnl >= 0 else "💔"
+        self.send(
+            f"{emoji} Position #{ticket} {direction} closed\n"
+            f"P&L: ${pnl:+.2f}  Pips: {pips:+.1f}"
         )
 
     def tp_hit(self, group_id: str, tp_stage: int, closed_n: int,
@@ -118,6 +137,20 @@ class Herald:
             f"Reason: {reason}"
         )
 
+    def upcoming_events(self, events: list, guard_active: bool):
+        if not events:
+            self.send("📅 <b>SENTINEL</b> — No high-impact events upcoming")
+            return
+        lines = ["📅 <b>SENTINEL — Upcoming Events</b>"]
+        if guard_active:
+            lines.append("⚠️ NEWS GUARD ACTIVE — trading paused")
+        for e in events[:5]:
+            icon = "🔴" if e.get("impact") == "HIGH" else "🟡"
+            lines.append(
+                f"{icon} {e.get('name','?')} ({e.get('currency','?')}) "
+                f"in {e.get('minutes_away','?')}min — {e.get('time_str','?')}")
+        self.send("\n".join(lines))
+
     def daily_summary(self, stats: dict):
         self.send(
             f"📊 <b>DAILY SUMMARY</b>\n"
@@ -132,11 +165,13 @@ class Herald:
     def error(self, component: str, msg: str):
         self.send(f"🚨 <b>{component} ERROR</b>\n{msg}")
 
-    def system_start(self, mode: str, version: str = "1.0"):
+    def system_start(self, mode: str, version: str = "1.0", restored: bool = False):
+        tag = " (restored)" if restored else ""
         self.send(
             f"🚀 <b>SIGNAL SYSTEM STARTED</b>\n"
-            f"Version: {version}  Mode: <b>{mode}</b>\n"
-            f"Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+            f"Version: {version}  Mode: <b>{mode}</b>{tag}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}  "
+            f"Kill zone: <b>{get_trading_session_utc()}</b>"
         )
 
 

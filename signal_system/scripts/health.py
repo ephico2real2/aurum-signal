@@ -45,7 +45,7 @@ def check_live():
         r = requests.get(f"{ATHENA_URL}/api/live", timeout=5)
         d = r.json()
         missing = []
-        required = ["mode","session","components","aegis",
+        required = ["mode","session","session_utc","components","aegis",
                     "circuit_breaker","account_type","broker",
                     "mt5_connected","open_groups","performance"]
         for k in required:
@@ -53,15 +53,28 @@ def check_live():
                 missing.append(k)
         if missing:
             return "WARN", f"Missing keys: {missing}"
-        return "OK", {
+        sess_br = d.get("session")
+        sess_clk = d.get("session_utc")
+        mismatch = (
+            sess_br and sess_clk and sess_br != sess_clk
+            and sess_br not in ("UNKNOWN", "DISCONNECTED")
+        )
+        detail = {
             "mode":         d.get("mode"),
-            "session":      d.get("session"),
+            "session":      sess_br,
+            "session_utc":  sess_clk,
             "account_type": d.get("account_type"),
             "broker":       d.get("broker"),
             "mt5":          d.get("mt5_connected"),
             "circuit_br":   d.get("circuit_breaker"),
             "components":   len(d.get("components", {})),
         }
+        aegis = d.get("aegis") or {}
+        if isinstance(aegis, dict) and "pnl_day_reset_hour_utc" in aegis:
+            detail["pnl_roll_utc_h"] = aegis.get("pnl_day_reset_hour_utc")
+        if mismatch:
+            return "WARN", f"session {sess_br!r} vs session_utc {sess_clk!r} (BRIDGE tick may not have run yet) | {detail}"
+        return "OK", detail
     except Exception as e:
         return "ERROR", str(e)
 
@@ -106,13 +119,19 @@ def check_mt5():
     try:
         with open(mt5_file) as f:
             d = json.load(f)
-        age = time.time() - d.get("timestamp_unix", 0)
+        ts = d.get("timestamp_unix")
+        if ts is None or ts == 0:
+            return "WARN", "market_data.json missing timestamp_unix (FORGE not updating?)"
+        age = time.time() - float(ts)
         bal = d.get("account", {}).get("balance")
+        detail_bal = f", balance=${bal:,.2f}" if bal is not None else ""
+        if age < 0:
+            return "WARN", f"timestamp_unix is in the future{detail_bal}"
         if age > 300:
-            return "ERROR", f"Stale: {age:.0f}s old"
+            return "WARN", f"Stale: {age:.0f}s old{detail_bal}"
         if age > 120:
-            return "WARN", f"Age: {age:.0f}s, balance=${bal:,.2f}" if bal else f"Age: {age:.0f}s"
-        return "OK", f"Age: {age:.0f}s, balance=${bal:,.2f}" if bal else f"Age: {age:.0f}s"
+            return "WARN", f"Age: {age:.0f}s{detail_bal}"
+        return "OK", f"Age: {age:.0f}s{detail_bal}"
     except FileNotFoundError:
         return "WARN", "market_data.json not found (FORGE not running?)"
     except Exception as e:

@@ -42,6 +42,22 @@ class TestEventsEndpoint:
         data = api.get(f"{base_url}/api/events", timeout=TIMEOUT).json()
         assert isinstance(data, list)
 
+    def test_events_newest_first_when_multiple(self, api, base_url):
+        """
+        Matches athena_api /api/events: ORDER BY timestamp DESC.
+        Dashboard reverses for display (oldest top, newest bottom); API contract stays DESC.
+        """
+        data = api.get(f"{base_url}/api/events?limit=100", timeout=TIMEOUT).json()
+        assert isinstance(data, list)
+        if len(data) < 2:
+            pytest.skip("fewer than 2 events in SCRIBE — cannot assert sort order")
+        for i in range(len(data) - 1):
+            a = data[i].get("timestamp")
+            b = data[i + 1].get("timestamp")
+            if not a or not b:
+                pytest.skip("events missing timestamp — cannot assert sort order")
+            assert a >= b, f"row {i} should be >= row {i+1} for DESC: {a!r} vs {b!r}"
+
 
 class TestPerformanceEndpoint:
 

@@ -64,6 +64,7 @@ def setup(check_only=False):
         ("dotenv",       "python-dotenv"),
         ("pytest_html",  "pytest-html"),
         ("pytest_cov",   "pytest-cov"),
+        ("jsonschema",   "jsonschema"),
     ]
     for module, package in py_deps:
         ok, ver = check_installed(module)

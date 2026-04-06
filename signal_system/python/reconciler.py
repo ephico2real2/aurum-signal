@@ -18,13 +18,30 @@ from pathlib import Path
 
 from scribe import get_scribe
 from herald import get_herald
+from status_report import report_component_status
 
 log = logging.getLogger("reconciler")
 
-MARKET_FILE     = os.environ.get("MT5_MARKET_FILE", "MT5/market_data.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.normpath(os.path.join(_HERE, ".."))
+
+
+def _resolved_market_file() -> str:
+    rel = os.environ.get("MT5_MARKET_FILE", "MT5/market_data.json")
+    if os.path.isabs(rel):
+        return rel
+    return os.path.join(_ROOT, rel)
+
+
 RECON_INTERVAL  = int(os.environ.get("RECON_INTERVAL_SEC", "3600"))   # 1 hour
 # Tolerance: ignore differences below this $ amount (swap/commission noise)
 PNL_TOLERANCE   = float(os.environ.get("RECON_PNL_TOLERANCE", "1.0"))
+# Fallback for legacy rows missing magic_number column
+FORGE_MAGIC_BASE = int(os.environ.get("FORGE_MAGIC_NUMBER", "202401"))
+# Close SCRIBE trade_groups OPEN/PARTIAL when no MT5 position or pending shares that magic
+RECON_CLOSE_STALE_GROUPS = os.environ.get("RECON_CLOSE_STALE_GROUPS", "true").lower() == "true"
+# Minimum FORGE version that exports pending_orders (skip stale-group check if older)
+FORGE_MIN_PENDING_VERSION = "1.2.4"
 
 
 def _read_json(path: str) -> dict:
@@ -49,9 +66,19 @@ class Reconciler:
         Run a single reconciliation check.
         Returns summary dict with any discrepancies found.
         """
-        mt5_data = _read_json(MARKET_FILE)
+        mt5_data = _read_json(_resolved_market_file())
         if not mt5_data:
             log.warning("RECONCILER: MT5 market_data.json not found — skipping")
+            try:
+                report_component_status(
+                    "RECONCILER",
+                    "WARN",
+                    note="SKIPPED — no MT5 JSON",
+                    last_action="run_once: empty or missing market_data",
+                    error_msg="MT5 data unavailable",
+                )
+            except Exception:
+                pass
             return {"status":"SKIPPED","reason":"MT5 data unavailable",
                     "issue_count":0,"mt5_open_count":0,"scribe_open_count":0}
 
@@ -60,6 +87,17 @@ class Reconciler:
             str(p["ticket"]): p
             for p in mt5_data.get("open_positions", [])
         }
+        magics_live: set[int] = set()
+        for p in mt5_data.get("open_positions", []):
+            try:
+                magics_live.add(int(p["magic"]))
+            except (TypeError, ValueError, KeyError):
+                pass
+        for o in mt5_data.get("pending_orders", []) or []:
+            try:
+                magics_live.add(int(o["magic"]))
+            except (TypeError, ValueError, KeyError):
+                pass
 
         # ── What SCRIBE thinks is open ────────────────────────────
         scribe_open = self.scribe.query(
@@ -128,6 +166,46 @@ class Reconciler:
                 "severity":"LOW",
             })
 
+        # 4. SCRIBE trade_groups still OPEN but FORGE has no position/pending for that magic
+        forge_version = mt5_data.get("forge_version", "")
+        pending_reliable = forge_version >= FORGE_MIN_PENDING_VERSION
+        if RECON_CLOSE_STALE_GROUPS:
+            if not pending_reliable:
+                log.info(
+                    "RECONCILER: forge_version=%s < %s — skipping stale-group "
+                    "check (pending_orders not exported by old FORGE)",
+                    forge_version, FORGE_MIN_PENDING_VERSION,
+                )
+            else:
+                for g in scribe_groups:
+                    gid = g.get("id")
+                    if gid is None:
+                        continue
+                    # Use stored magic_number; fall back to base+id for legacy rows
+                    exp_magic = g.get("magic_number")
+                    if exp_magic is None:
+                        exp_magic = FORGE_MAGIC_BASE + int(gid)
+                    else:
+                        exp_magic = int(exp_magic)
+                    if exp_magic not in magics_live:
+                        issues.append({
+                            "type":    "STALE_TRADE_GROUP",
+                            "ticket":  None,
+                            "detail":  f"SCRIBE group {gid} OPEN but MT5 has no FORGE position/pending "
+                                       f"with magic {exp_magic} — marking CLOSED in SCRIBE",
+                            "severity":"MEDIUM",
+                        })
+                        log.warning(
+                            "RECONCILER: stale trade_group %s — no MT5 magic %s",
+                            gid,
+                            exp_magic,
+                        )
+                        self.scribe.update_trade_group(
+                            int(gid),
+                            "CLOSED",
+                            close_reason="RECONCILER_NO_MT5_EXPOSURE",
+                        )
+
         # ── Build result ───────────────────────────────────────────
         result = {
             "status":          "CLEAN" if not issues else "MISMATCH",
@@ -172,12 +250,12 @@ class Reconciler:
                      f"floating=${mt5_floating:.2f}")
 
         try:
-            self.scribe.heartbeat(
-                component   = "RECONCILER",
-                status      = "WARN" if issues else "OK",
-                note        = f"{result['status']} mt5={result['mt5_open_count']} scribe={result['scribe_open_count']}",
-                last_action = f"checked {result['timestamp'][:16] if result.get('timestamp') else 'now'}",
-                error_msg   = issues[0].get('detail') if issues else None,
+            report_component_status(
+                "RECONCILER",
+                "WARN" if issues else "OK",
+                note=f"{result['status']} mt5={result['mt5_open_count']} scribe={result['scribe_open_count']}",
+                last_action=f"checked {result['timestamp'][:16] if result.get('timestamp') else 'now'}",
+                error_msg=issues[0].get("detail") if issues else None,
             )
         except Exception as e:
             log.debug(f"RECONCILER heartbeat error: {e}")

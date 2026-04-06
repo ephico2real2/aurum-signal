@@ -1,0 +1,75 @@
+{
+  "description": "Example SELECT statements for POST /api/scribe/query (SCRIBE SQLite). Loaded by tests; human doc: docs/SCRIBE_QUERY_EXAMPLES.md",
+  "examples": [
+    {
+      "id": "ping",
+      "summary": "Connectivity — returns one row",
+      "sql": "SELECT 1 AS ok"
+    },
+    {
+      "id": "system_events_recent",
+      "summary": "Latest audit rows (all event types)",
+      "sql": "SELECT id, timestamp, event_type, prev_mode, new_mode, triggered_by, reason FROM system_events ORDER BY id DESC LIMIT 20"
+    },
+    {
+      "id": "system_events_mode_changes",
+      "summary": "Mode transitions only",
+      "sql": "SELECT timestamp, prev_mode, new_mode, triggered_by, reason, session FROM system_events WHERE event_type = 'MODE_CHANGE' ORDER BY id DESC LIMIT 50"
+    },
+    {
+      "id": "component_heartbeats_recent",
+      "summary": "Latest heartbeat per ingestion order",
+      "sql": "SELECT component, status, timestamp, note, last_action, cycle FROM component_heartbeats ORDER BY id DESC LIMIT 30"
+    },
+    {
+      "id": "signals_recent",
+      "summary": "Recent parsed signals",
+      "sql": "SELECT id, timestamp, mode, channel_name, direction, action_taken, skip_reason, trade_group_id FROM signals_received ORDER BY id DESC LIMIT 25"
+    },
+    {
+      "id": "signals_by_action",
+      "summary": "Counts by disposition (last 7 days)",
+      "sql": "SELECT action_taken, COUNT(*) AS n FROM signals_received WHERE timestamp >= datetime('now', '-7 days') GROUP BY action_taken ORDER BY n DESC"
+    },
+    {
+      "id": "trade_groups_open",
+      "summary": "Open trade groups",
+      "sql": "SELECT id, timestamp, direction, status, num_trades, total_pnl, pips_captured FROM trade_groups WHERE status = 'OPEN' ORDER BY id DESC"
+    },
+    {
+      "id": "trade_positions_open",
+      "summary": "Open legs with group id",
+      "sql": "SELECT tp.id, tp.trade_group_id, tp.ticket, tp.direction, tp.lot_size, tp.entry_price, tp.status FROM trade_positions tp WHERE tp.status = 'OPEN' ORDER BY tp.id DESC"
+    },
+    {
+      "id": "closed_pnl_recent",
+      "summary": "Closed positions with P&L (7 days)",
+      "sql": "SELECT id, trade_group_id, ticket, direction, pnl, pips, close_time, close_reason FROM trade_positions WHERE status = 'CLOSED' AND close_time >= datetime('now', '-7 days') ORDER BY close_time DESC LIMIT 50"
+    },
+    {
+      "id": "trading_sessions_recent",
+      "summary": "Recent trading session records",
+      "sql": "SELECT id, session_name, session_date, open_time, close_time, mode_at_open, total_pnl, win_rate FROM trading_sessions ORDER BY id DESC LIMIT 15"
+    },
+    {
+      "id": "aurum_conversations_recent",
+      "summary": "Recent AURUM Q&A rows",
+      "sql": "SELECT id, timestamp, mode, source, substr(query, 1, 120) AS query_preview, substr(response, 1, 120) AS response_preview, tokens_used FROM aurum_conversations ORDER BY id DESC LIMIT 15"
+    },
+    {
+      "id": "news_events_recent",
+      "summary": "News guard / calendar rows",
+      "sql": "SELECT id, timestamp, event_name, impact, currency, guard_start, guard_end, mode_before FROM news_events ORDER BY id DESC LIMIT 15"
+    },
+    {
+      "id": "market_snapshots_recent",
+      "summary": "Recent indicator snapshots (if logged)",
+      "sql": "SELECT id, timestamp, mode, source, symbol, bid, ask, rsi_14, macd_hist, session FROM market_snapshots ORDER BY id DESC LIMIT 10"
+    },
+    {
+      "id": "join_signals_groups",
+      "summary": "Signals linked to trade groups (mid — join)",
+      "sql": "SELECT sr.id AS signal_id, sr.timestamp, sr.channel_name, sr.action_taken, tg.id AS group_id, tg.status AS group_status, tg.total_pnl FROM signals_received sr LEFT JOIN trade_groups tg ON sr.trade_group_id = tg.id ORDER BY sr.id DESC LIMIT 30"
+    }
+  ]
+}

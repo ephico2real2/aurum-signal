@@ -66,3 +66,26 @@ class TestComponentsEndpoint:
         data = api.get(f"{base_url}/api/reconciler", timeout=TIMEOUT).json()
         assert "status" in data
         assert "issue_count" in data or "issues" in data
+
+    def test_heartbeat_post_rejects_unknown_component(self, api, base_url):
+        r = api.post(
+            f"{base_url}/api/components/heartbeat",
+            json={"component": "NOPE"},
+            timeout=TIMEOUT,
+        )
+        assert r.status_code == 400
+        assert "allowed" in r.json()
+
+    def test_heartbeat_post_accepts_scribe(self, api, base_url):
+        r = api.post(
+            f"{base_url}/api/components/heartbeat",
+            json={
+                "component": "SCRIBE",
+                "status": "OK",
+                "note": "pytest",
+                "last_action": "test_components.test_heartbeat_post_accepts_scribe",
+            },
+            timeout=TIMEOUT,
+        )
+        assert r.status_code == 200
+        assert r.json().get("ok") is True

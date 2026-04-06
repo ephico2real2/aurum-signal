@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://signal-system.local/schemas/files/aurum_cmd.schema.json",
+  "title": "python/config/aurum_cmd.json",
+  "description": "AURUM or ATHENA writes; BRIDGE consumes and deletes. BRIDGE dedupes on timestamp.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["action", "new_mode", "timestamp"],
+      "properties": {
+        "action": { "const": "MODE_CHANGE" },
+        "new_mode": {
+          "type": "string",
+          "enum": ["OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID"]
+        },
+        "reason": { "type": "string" },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["action", "timestamp"],
+      "properties": {
+        "action": { "const": "CLOSE_ALL" },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["action", "direction", "entry_low", "sl", "tp1", "timestamp"],
+      "properties": {
+        "action": { "type": "string", "enum": ["OPEN_GROUP", "OPEN_TRADE"] },
+        "direction": { "type": "string", "enum": ["BUY", "SELL", "buy", "sell"] },
+        "entry_low": { "type": "number", "exclusiveMinimum": 0 },
+        "entry_high": { "type": "number", "exclusiveMinimum": 0 },
+        "sl": { "type": "number", "exclusiveMinimum": 0 },
+        "tp1": { "type": "number", "exclusiveMinimum": 0 },
+        "tp2": {},
+        "tp3": {},
+        "lot_per_trade": { "type": "number" },
+        "lots": { "type": "number" },
+        "entry": {},
+        "tp": {},
+        "timestamp": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

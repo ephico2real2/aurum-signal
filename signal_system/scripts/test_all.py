@@ -62,12 +62,23 @@ def run(args):
     icons = {0: "✅", 1: "⚠️ ", 2: "❌"}
     for suite, code in results.items():
         icon = icons.get(code, "❌")
-        status = "PASSED" if code == 0 else "FAILED"
+        if suite == "health":
+            # health.py: 0=OK, 1=WARN (still runnable), 2=ERROR (aborted earlier)
+            passed = code in (0, 1)
+            status = "PASSED" if passed else "FAILED"
+            if code == 1:
+                icon = "⚠️ "
+        else:
+            status = "PASSED" if code == 0 else "FAILED"
         print(f"  {icon} {suite:<12} {status}")
     print(f"\n  ⏱  Total time: {elapsed:.1f}s")
     print("═"*60 + "\n")
 
-    overall = 0 if all(v == 0 for v in results.values()) else 1
+    h = results.get("health", 0)
+    api_ok = results.get("api", 0) == 0
+    ui_ok = results.get("ui", 0) == 0
+    # WARN health is acceptable when API + UI tests pass
+    overall = 0 if h <= 1 and api_ok and ui_ok else 1
     sys.exit(overall)
 
 

@@ -8,9 +8,10 @@ Type=simple
 User=YOUR_USERNAME
 WorkingDirectory=/home/YOUR_USERNAME/signal_system/python
 EnvironmentFile=/home/YOUR_USERNAME/signal_system/.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONPATH=/home/YOUR_USERNAME/signal_system/python
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/YOUR_USERNAME/signal_system/python/athena_api.py
+ExecStart=__SIGNAL_PYTHON__ /home/YOUR_USERNAME/signal_system/python/athena_api.py
 Restart=on-failure
 RestartSec=10s
 StandardOutput=journal

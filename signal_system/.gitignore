@@ -36,6 +36,7 @@ tests/test-results/
 tests/.cache/
 
 # ── Python ─────────────────────────────────────────────────────────
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -56,6 +57,9 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# ── Playwright UI audit screenshots (regeneratable) ──────────────
+tests/results/athena-ui/screens/
 
 # ── Test artifacts ─────────────────────────────────────────────────
 .pytest_cache/
