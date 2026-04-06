@@ -405,11 +405,20 @@ function AurumChat({liveData}){
   const [msgs,setMsgs]=useState([]);
   const [inp,setInp]=useState('');const [loading,setLoading]=useState(false);
   const ref=useRef(null);
+  // Only set welcome message ONCE (not on every 3s poll)
+  const welcomeSet=useRef(false);
   useEffect(()=>{
-    if(!liveData)return;
-    setMsgs(m=>(m.length>1?m:[{role:'assistant',text:aurumWelcome(liveData)}]));
+    if(!liveData||welcomeSet.current)return;
+    setMsgs([{role:'assistant',text:aurumWelcome(liveData)}]);
+    welcomeSet.current=true;
   },[liveData]);
-  useEffect(()=>{ref.current?.scrollIntoView({behavior:'smooth'});},[msgs]);
+  // Only scroll when USER sends a message or AURUM replies (not on data poll)
+  const lastMsgCount=useRef(0);
+  useEffect(()=>{
+    if(msgs.length>lastMsgCount.current&&msgs.length>1){
+      ref.current?.scrollIntoView({behavior:'smooth'});}
+    lastMsgCount.current=msgs.length;
+  },[msgs]);
   const ctx=()=>{if(!liveData)return'No live data.';
     const a=liveData.account||{},s=liveData.sentinel||{},p=liveData.performance||{};
     const ex=liveData.execution||{},tv=liveData.tradingview||{};
@@ -1035,9 +1044,11 @@ function ATHENA(){
         </div>
       </div>
 
-      {/* RIGHT */}
-      <div style={{borderLeft:`1px solid ${T.border}`,padding:'12px 10px',
-        overflowY:'auto',display:'flex',flexDirection:'column',gap:14}}>
+      {/* RIGHT — split into fixed header (quotes/indicators) + scrollable AURUM chat */}
+      <div style={{borderLeft:`1px solid ${T.border}`,display:'flex',flexDirection:'column',
+        overflow:'hidden',minHeight:0}}>
+      <div style={{padding:'12px 10px',overflowY:'auto',overscrollBehavior:'contain',
+        display:'flex',flexDirection:'column',gap:14}}>
         <div>
           <PT ch="◆ FORGE · execution quote" color={T.amber}/>
           {ex.usable?(
@@ -1120,7 +1131,9 @@ function ATHENA(){
               TV suggest: {tv.tv_recommend??'—'}</span>
           </div>
         </div>
-        <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:260}}>
+        </div>
+        <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:260,
+          borderTop:`1px solid ${T.border}`,padding:'8px 10px'}}>
           <AurumChat liveData={D}/>
         </div>
       </div>
