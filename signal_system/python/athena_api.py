@@ -957,9 +957,7 @@ def api_search():
         return jsonify({"error": "missing ?q= parameter"}), 400
     n = max(1, min(int(request.args.get("n", "5")), 10))
     try:
-        from web_search import search, is_configured
-        if not is_configured():
-            return jsonify({"error": "GOOGLE_SEARCH_API_KEY or GOOGLE_SEARCH_CX not set"}), 503
+        from web_search import search
         result = search(q, num_results=n)
         return jsonify(result)
     except Exception as e:

@@ -62,8 +62,14 @@ def _cache_key(query: str) -> str:
 
 # ── Public API ──────────────────────────────────────────────────────
 def is_configured() -> bool:
-    """True if API credentials are set."""
+    """True if Google CSE API credentials are set.  Web search still works
+    without them via Google News RSS fallback (free, no key)."""
     return bool(GOOGLE_API_KEY and GOOGLE_CX)
+
+
+def is_available() -> bool:
+    """True if web search can work (CSE configured OR RSS fallback)."""
+    return True  # RSS fallback always available
 
 
 def needs_search(query: str) -> bool:
@@ -74,13 +80,13 @@ def needs_search(query: str) -> bool:
 
 def search(query: str, num_results: int | None = None, use_cache: bool = True) -> dict:
     """
-    Search Google Custom Search API.  Returns dict with keys:
-      query, fetched_at, results[], cached, error (optional)
+    Search for recent results.  Tries Google CSE first; falls back to
+    Google News RSS (free, no API key) if CSE is not configured.
+    Returns dict with keys: query, fetched_at, results[], cached, error (optional)
     Each result: {title, snippet, link, published}
     """
     if not is_configured():
-        return {"error": "GOOGLE_SEARCH_API_KEY or GOOGLE_SEARCH_CX not set in .env",
-                "query": query, "results": []}
+        return _search_google_news_rss(query, num_results or MAX_RESULTS, use_cache)
 
     # Check cache
     key = _cache_key(query)
@@ -105,12 +111,13 @@ def search(query: str, num_results: int | None = None, use_cache: bool = True) -
         resp.raise_for_status()
         data = resp.json()
     except requests.HTTPError as e:
-        err = f"HTTP {e.response.status_code}: {e.response.text[:200]}" if e.response else str(e)
-        log.warning("web_search HTTP error: %s", err)
-        return {"error": err, "query": query, "results": []}
+        code = e.response.status_code if e.response else 0
+        err = f"HTTP {code}: {e.response.text[:200]}" if e.response else str(e)
+        log.warning("web_search CSE error (HTTP %s) — falling back to RSS: %s", code, err[:100])
+        return _search_google_news_rss(query, n, use_cache)
     except Exception as e:
-        log.warning("web_search error: %s", e)
-        return {"error": str(e)[:200], "query": query, "results": []}
+        log.warning("web_search CSE error — falling back to RSS: %s", e)
+        return _search_google_news_rss(query, n, use_cache)
 
     items = data.get("items", [])
     results = []
@@ -135,6 +142,69 @@ def search(query: str, num_results: int | None = None, use_cache: bool = True) -
     # Store in cache
     _cache[key] = (result, time.time())
     log.info("web_search: %d results for %r", len(results), query)
+    return result
+
+
+# ── Google News RSS fallback (free, no API key) ───────────────────
+def _search_google_news_rss(query: str, num_results: int, use_cache: bool) -> dict:
+    """
+    Free fallback: Google News RSS search.  No API key needed.
+    Returns same shape as CSE search() for interchangeability.
+    """
+    from urllib.parse import quote_plus
+    import xml.etree.ElementTree as ET
+
+    key = _cache_key(query)
+    if use_cache and key in _cache:
+        result, ts = _cache[key]
+        if time.time() - ts < CACHE_TTL:
+            return {**result, "cached": True}
+
+    url = (
+        "https://news.google.com/rss/search?q="
+        + quote_plus(query)
+        + "&hl=en&gl=US&ceid=US:en"
+    )
+    try:
+        resp = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        }, timeout=TIMEOUT)
+        resp.raise_for_status()
+    except Exception as e:
+        log.warning("web_search RSS fallback error: %s", e)
+        return {"error": str(e)[:200], "query": query, "results": [], "source": "google_news_rss"}
+
+    results = []
+    try:
+        root = ET.fromstring(resp.text)
+        channel = root.find("channel")
+        items = (channel.findall("item") if channel is not None
+                 else root.findall(".//item"))
+        for item in items[:num_results]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            desc = (item.findtext("description") or "").strip()
+            if title:
+                results.append({
+                    "title": title,
+                    "snippet": desc[:200] if desc else "",
+                    "link": link,
+                    "published": pub or None,
+                })
+    except ET.ParseError as e:
+        log.debug("web_search RSS XML parse error: %s", e)
+
+    result = {
+        "query": query,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "results": results,
+        "cached": False,
+        "source": "google_news_rss",
+    }
+    _cache[key] = (result, time.time())
+    log.info("web_search (RSS fallback): %d results for %r", len(results), query)
     return result
 
 

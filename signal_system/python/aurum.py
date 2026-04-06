@@ -431,10 +431,10 @@ class Aurum:
         run a live web search and return formatted context. Otherwise None.
         """
         try:
-            from web_search import needs_search, is_configured, search_and_format
+            from web_search import needs_search, is_available, search_and_format
         except ImportError:
             return None
-        if not is_configured() or not needs_search(query):
+        if not is_available() or not needs_search(query):
             return None
         try:
             return search_and_format(query, num_results=3)
