@@ -648,35 +648,87 @@ class Aurum:
         except Exception as e:
             log.error(f"AURUM write command error: {e}")
 
-    # ── Telegram bot handler ───────────────────────────────────
+    # ── Telegram bot handler ───────────────────────────────
     async def start_telegram(self):
-        """Start Telegram bot that listens for messages in your personal chat."""
-        if not all([API_ID, API_HASH]):
-            log.warning("AURUM: Telegram not configured")
-            return
+        """Start Telegram bot listener.
 
+        Uses Bot API (python-telegram-bot) so users message the bot directly.
+        Only responds to messages from TELEGRAM_CHAT_ID (your user ID).
+        Falls back to Telethon user client if Bot API fails.
+        """
+        # Try Bot API first (preferred — users message the bot directly)
+        if BOT_TOKEN and AURUM_CHAT_ID:
+            try:
+                await self._start_bot_api()
+                return  # Bot API running — don't start Telethon
+            except Exception as e:
+                log.warning("AURUM: Bot API failed (%s), falling back to Telethon", e)
+
+        # Fallback: Telethon user client (message yourself in Saved Messages)
+        if not all([API_ID, API_HASH]):
+            log.warning("AURUM: Telegram not configured (no bot token or API credentials)")
+            return
+        await self._start_telethon()
+
+    async def _start_bot_api(self):
+        """Listen for messages via Bot API — user messages the bot directly."""
+        from telegram import Update, Bot
+        from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+
+        allowed_chat = int(AURUM_CHAT_ID)
+
+        async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+            # Only respond to YOUR messages (security)
+            if update.message.chat_id != allowed_chat:
+                log.warning("AURUM bot: rejected message from chat %s (allowed: %s)",
+                            update.message.chat_id, allowed_chat)
+                return
+            text = update.message.text.strip()
+            if not text or text.startswith("/system"):
+                return
+            log.info(f"AURUM query from Telegram (bot): {text[:60]}")
+            reply = self.ask(text, source="TELEGRAM")
+            await update.message.reply_text(reply)
+
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        log.info("AURUM: Bot API listening (message the bot directly in Telegram)")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        # Keep running until stopped
+        import asyncio
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+
+    async def _start_telethon(self):
+        """Fallback: Telethon user client (listen on Saved Messages)."""
         client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
         await client.start(phone=PHONE)
 
-        # Resolve who we are and the target chat
         me = await client.get_me()
         my_id = me.id
         target_chat = int(AURUM_CHAT_ID) if AURUM_CHAT_ID else None
-        log.info(f"AURUM: logged in as user {my_id}, listening on chat {target_chat}")
+        log.info(f"AURUM: Telethon fallback — logged in as user {my_id}, listening on chat {target_chat}")
 
         @client.on(events.NewMessage(chats=target_chat))
         async def on_message(event):
-            # Only respond to messages FROM us (not bot replies)
             if event.message.sender_id != my_id:
                 return
             text = event.message.message or ""
             if not text.strip() or text.startswith("/system"):
                 return
-            log.info(f"AURUM query from Telegram: {text[:60]}")
+            log.info(f"AURUM query from Telegram (telethon): {text[:60]}")
             reply = self.ask(text, source="TELEGRAM")
             await event.respond(reply)
 
-        log.info("AURUM Telegram bot listening")
+        log.info("AURUM Telegram (Telethon) listening")
         await client.run_until_disconnected()
 
     # ── Flask API endpoint (called by ATHENA) ─────────────────────
