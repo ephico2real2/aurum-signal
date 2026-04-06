@@ -11,7 +11,7 @@
         "action": { "const": "MODE_CHANGE" },
         "new_mode": {
           "type": "string",
-          "enum": ["OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID"]
+          "enum": ["OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID", "AUTO_SCALPER"]
         },
         "reason": { "type": "string" },
         "timestamp": { "type": "string", "minLength": 1 }

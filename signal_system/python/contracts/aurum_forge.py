@@ -14,7 +14,7 @@ import math
 from typing import Any
 
 # Keep in sync with bridge.VALID_MODES
-VALID_MODES = frozenset({"OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID"})
+VALID_MODES = frozenset({"OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID", "AUTO_SCALPER"})
 
 FORGE_OPEN_GROUP_KEYS = frozenset({
     "action",
