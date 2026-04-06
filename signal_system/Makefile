@@ -50,8 +50,9 @@ help:
 	@echo "  make start             Install/load all services (same as services-install)"
 	@echo "  make stop              Unload/stop all (same as services-stop)"
 	@echo "  make restart           Full reinstall + reload all services"
-	@echo "  make reload            Hot-restart all Python processes (fast — launchd relaunches)"
+	@echo "  make reload            Hot-restart all Python processes (fast — launchd unload/load)"
 	@echo "  make reload-bridge     Hot-restart BRIDGE only (sentinel/aegis/aurum changes)"
+	@echo "  make reload-athena     Hot-restart ATHENA only (API/dashboard changes)"
 	@echo "                         Use reload after editing python/*.py — faster than restart."
 	@echo "  make services-install  chmod +x installer, then --install"
 	@echo "  make services-stop     chmod +x installer, then --stop"
@@ -209,7 +210,7 @@ logs-errors:
 
 # ── Services ──────────────────────────────────────────────────────
 # install_services.py is chmod +x before each run so ./services/install_services.py works.
-.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-all
+.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-athena reload-all
 
 services-install:
 	@chmod +x $(INSTALL_SVC)
@@ -229,44 +230,62 @@ stop: services-stop
 
 restart: services-restart
 
-# ── Hot reload (kill → launchd/systemd auto-relaunches with fresh code) ─
-# Use after editing python/*.py — faster than `make restart` (no plist reinstall).
+# ── Hot reload (unload → load via launchctl for reliable restart) ────
+# Use after editing python/*.py — faster than `make restart` (no plist re-render).
+# Uses launchctl unload/load (not kill) because KeepAlive.Crashed doesn't
+# relaunch on clean SIGTERM exits.
+LAUNCH_AGENTS = $(HOME)/Library/LaunchAgents
+
 reload reload-all:
 	@echo "Reloading all Signal System Python processes..."
-	@for proc in bridge.py athena_api.py listener.py aurum.py; do \
-		PIDS=$$(pgrep -f "python.*$$proc" 2>/dev/null); \
-		if [ -n "$$PIDS" ]; then \
-			echo "  Killing $$proc (PID $$PIDS)"; \
-			kill $$PIDS 2>/dev/null || true; \
+	@for svc in bridge listener aurum athena; do \
+		PLIST=$(LAUNCH_AGENTS)/com.signalsystem.$$svc.plist; \
+		if [ -f "$$PLIST" ] || [ -L "$$PLIST" ]; then \
+			launchctl unload "$$PLIST" 2>/dev/null; \
+			launchctl load "$$PLIST" 2>/dev/null; \
+			echo "  ✓ Reloaded com.signalsystem.$$svc"; \
 		else \
-			echo "  $$proc not running"; \
+			echo "  ✗ $$PLIST not found — run: make start"; \
 		fi; \
 	done
-	@echo "Waiting 5s for launchd/systemd to relaunch..."
-	@sleep 5
-	@echo "Health check:"
+	@echo "Waiting 8s for processes to start..."
+	@sleep 8
 	@$(PYTHON) $(SCRIPTS)/health.py 2>/dev/null || echo "(health script unavailable)"
 	@echo ""
-	@echo "✅ Reload complete — all processes relaunched with fresh code."
+	@echo "✅ Reload complete."
 
 reload-bridge:
 	@echo "Reloading BRIDGE (sentinel/aegis/aurum changes take effect)..."
-	@PIDS=$$(pgrep -f "python.*bridge.py" 2>/dev/null); \
-	if [ -n "$$PIDS" ]; then \
-		echo "  Killing bridge.py (PID $$PIDS)"; \
-		kill $$PIDS 2>/dev/null || true; \
+	@PLIST=$(LAUNCH_AGENTS)/com.signalsystem.bridge.plist; \
+	if [ -f "$$PLIST" ] || [ -L "$$PLIST" ]; then \
+		launchctl unload "$$PLIST" 2>/dev/null; \
+		launchctl load "$$PLIST" 2>/dev/null; \
+		echo "  ✓ Reloaded com.signalsystem.bridge"; \
 	else \
-		echo "  bridge.py not running — starting via services"; \
-		$(MAKE) services-install; \
+		echo "  ✗ plist not found — run: make start"; \
+		exit 1; \
 	fi
-	@echo "Waiting 5s for relaunch..."
+	@echo "Waiting 5s for BRIDGE to start..."
 	@sleep 5
 	@PIDS=$$(pgrep -f "python.*bridge.py" 2>/dev/null); \
 	if [ -n "$$PIDS" ]; then \
-		echo "✅ BRIDGE relaunched (PID $$PIDS)"; \
+		echo "✅ BRIDGE running (PID $$PIDS)"; \
 	else \
-		echo "⚠️  BRIDGE not running — run: make start"; \
+		echo "⚠️  BRIDGE not running — check: tail -20 logs/bridge.log"; \
 	fi
+
+reload-athena:
+	@echo "Reloading ATHENA..."
+	@PLIST=$(LAUNCH_AGENTS)/com.signalsystem.athena.plist; \
+	if [ -f "$$PLIST" ] || [ -L "$$PLIST" ]; then \
+		launchctl unload "$$PLIST" 2>/dev/null; \
+		launchctl load "$$PLIST" 2>/dev/null; \
+		echo "  ✓ Reloaded com.signalsystem.athena"; \
+	else \
+		echo "  ✗ plist not found — run: make start"; \
+	fi
+	@sleep 8
+	@curl -sf http://localhost:7842/api/health > /dev/null 2>&1 && echo "✅ ATHENA up" || echo "⚠️  ATHENA not responding"
 
 # ── Setup ─────────────────────────────────────────────────────────
 .PHONY: setup-tests check-tests
