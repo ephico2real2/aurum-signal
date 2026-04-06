@@ -671,16 +671,22 @@ class Aurum:
         await self._start_telethon()
 
     async def _start_bot_api(self):
-        """Listen for messages via Bot API — user messages the bot directly."""
+        """Listen for messages via Bot API — user messages the bot directly.
+
+        Messages are queued and processed sequentially (FIFO) so responses
+        always arrive in the same order they were sent. A typing indicator
+        is shown while AURUM thinks.
+        """
         from telegram import Update, Bot
         from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+        import asyncio as _aio
 
         allowed_chat = int(AURUM_CHAT_ID)
+        msg_queue: _aio.Queue = _aio.Queue()
 
         async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not update.message or not update.message.text:
                 return
-            # Only respond to YOUR messages (security)
             if update.message.chat_id != allowed_chat:
                 log.warning("AURUM bot: rejected message from chat %s (allowed: %s)",
                             update.message.chat_id, allowed_chat)
@@ -688,21 +694,47 @@ class Aurum:
             text = update.message.text.strip()
             if not text or text.startswith("/system"):
                 return
-            log.info(f"AURUM query from Telegram (bot): {text[:60]}")
-            reply = self.ask(text, source="TELEGRAM")
-            await update.message.reply_text(reply)
+            # Queue the message for sequential processing
+            await msg_queue.put((update, text))
+
+        async def process_queue():
+            """Process messages one at a time in FIFO order."""
+            while True:
+                update, text = await msg_queue.get()
+                try:
+                    log.info(f"AURUM query from Telegram (bot): {text[:60]}")
+                    # Show typing indicator while thinking
+                    await update.message.chat.send_action("typing")
+                    reply = self.ask(text, source="TELEGRAM")
+                    # Telegram has 4096 char limit per message
+                    if len(reply) <= 4096:
+                        await update.message.reply_text(reply)
+                    else:
+                        # Split long replies
+                        for i in range(0, len(reply), 4096):
+                            await update.message.reply_text(reply[i:i+4096])
+                except Exception as e:
+                    log.error("AURUM bot message handler error: %s", e)
+                    try:
+                        await update.message.reply_text(f"AURUM error: {str(e)[:200]}")
+                    except Exception:
+                        pass
+                finally:
+                    msg_queue.task_done()
 
         app = ApplicationBuilder().token(BOT_TOKEN).build()
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        log.info("AURUM: Bot API listening (message the bot directly in Telegram)")
+        log.info("AURUM: Bot API listening (message the bot directly in Telegram, queued FIFO)")
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
-        # Keep running until stopped
+        # Start the sequential queue processor
         import asyncio
+        queue_task = asyncio.create_task(process_queue())
         try:
             await asyncio.Event().wait()
         finally:
+            queue_task.cancel()
             await app.updater.stop()
             await app.stop()
             await app.shutdown()
