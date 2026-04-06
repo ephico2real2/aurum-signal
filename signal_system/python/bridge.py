@@ -299,7 +299,7 @@ class Bridge:
         # Seed from SCRIBE OPEN positions
         try:
             open_pos = self.scribe.query(
-                "SELECT ticket, trade_group_id, magic_number, direction, entry_price "
+                "SELECT ticket, trade_group_id, magic_number, direction, entry_price, sl, tp "
                 "FROM trade_positions WHERE status='OPEN' AND ticket IS NOT NULL"
             )
             for r in open_pos:
@@ -311,6 +311,7 @@ class Bridge:
                     "open_price": r["entry_price"],
                     "last_profit": 0,
                     "current_price": r["entry_price"],
+                    "sl": r.get("sl"), "tp": r.get("tp"),
                 }
         except Exception as e:
             log.warning("TRACKER seed from SCRIBE failed: %s", e)
@@ -381,6 +382,40 @@ class Bridge:
                 # Update last-known profit for close detection
                 self._known_positions[ticket]["last_profit"] = p.get("profit", 0)
                 self._known_positions[ticket]["current_price"] = p.get("current_price")
+                # ── SL/TP drift detection: catch manual MT5 modifications ──
+                live_sl = p.get("sl")
+                live_tp = p.get("tp")
+                known_sl = self._known_positions[ticket].get("sl")
+                known_tp = self._known_positions[ticket].get("tp")
+                sl_changed = (live_sl is not None and known_sl is not None
+                              and abs(float(live_sl) - float(known_sl)) > 0.005)
+                tp_changed = (live_tp is not None and known_tp is not None
+                              and abs(float(live_tp) - float(known_tp)) > 0.005)
+                if sl_changed or tp_changed:
+                    changes = []
+                    if sl_changed:
+                        changes.append(f"SL {known_sl}→{live_sl}")
+                    if tp_changed:
+                        changes.append(f"TP {known_tp}→{live_tp}")
+                    log.info("TRACKER: SL/TP modified ticket=%s — %s", ticket, ", ".join(changes))
+                    self._known_positions[ticket]["sl"] = live_sl
+                    self._known_positions[ticket]["tp"] = live_tp
+                    # Update SCRIBE so dashboard/AURUM show correct levels
+                    try:
+                        self.scribe.update_position_sl_tp(ticket, sl=live_sl, tp=live_tp)
+                    except Exception as e:
+                        log.debug("TRACKER: SCRIBE SL/TP update failed: %s", e)
+                    # Log as system event for audit
+                    gid = self._known_positions[ticket].get("group_id")
+                    self._bridge_activity(
+                        "POSITION_MODIFIED",
+                        reason="SL/TP changed (manual or FORGE)",
+                        notes=json.dumps({
+                            "ticket": ticket, "group_id": gid,
+                            "old_sl": known_sl, "new_sl": live_sl,
+                            "old_tp": known_tp, "new_tp": live_tp,
+                        }, default=str),
+                    )
                 continue
             # New position appeared — log to SCRIBE (guard against duplicates)
             magic = p.get("magic", 0)
@@ -398,6 +433,7 @@ class Bridge:
                     "open_price": p.get("open_price"),
                     "last_profit": p.get("profit", 0),
                     "current_price": p.get("current_price"),
+                    "sl": p.get("sl"), "tp": p.get("tp"),
                 }
                 continue
             direction = p.get("type", "SELL")  # FORGE writes "BUY"/"SELL"
@@ -414,6 +450,7 @@ class Bridge:
                 "group_id": gid, "magic": magic, "direction": direction,
                 "open_price": p.get("open_price"), "last_profit": p.get("profit", 0),
                 "current_price": p.get("current_price"),
+                "sl": p.get("sl"), "tp": p.get("tp"),
             }
             log.info("TRACKER: new position ticket=%s G%s %s %.2flot @ %s",
                      ticket, gid, direction, p.get("lots", 0), p.get("open_price"))

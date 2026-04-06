@@ -374,6 +374,19 @@ class Scribe:
                  data.get("entry_price"), data.get("sl"), data.get("tp")))
             return cur.lastrowid
 
+    def update_position_sl_tp(self, ticket: int, sl: float = None, tp: float = None):
+        """Update SL/TP on an open position (manual MT5 modification detected by tracker)."""
+        with self._conn() as c:
+            if sl is not None and tp is not None:
+                c.execute("UPDATE trade_positions SET sl=?, tp=? WHERE ticket=? AND status='OPEN'",
+                          (sl, tp, ticket))
+            elif sl is not None:
+                c.execute("UPDATE trade_positions SET sl=? WHERE ticket=? AND status='OPEN'",
+                          (sl, ticket))
+            elif tp is not None:
+                c.execute("UPDATE trade_positions SET tp=? WHERE ticket=? AND status='OPEN'",
+                          (tp, ticket))
+
     def close_trade_position(self, ticket: int, close_price: float,
                               close_reason: str, pnl: float, pips: float,
                               tp_stage: int = None):
