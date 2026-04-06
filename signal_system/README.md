@@ -7,11 +7,14 @@
 
 ## Architecture
 
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for full ASCII diagrams: system overview, trade lifecycle, closure detection flow, file bus, safety layers, and API surface.
+
 ```
 LISTENER · LENS · SENTINEL          ← Signal Intake + Protection
-         BRIDGE                     ← Orchestration
+         BRIDGE                     ← Orchestration + Closure Detection
    AEGIS · FORGE · SCRIBE           ← Risk + Execution + Data
  ATHENA · HERALD · AURUM            ← Interface + Notifications + AI
+         RECONCILER                 ← Hourly Position Audit
 ```
 
 ## Components
@@ -57,7 +60,7 @@ From Telegram:
 
 ## Data Schema (SCRIBE)
 
-7 SQLite tables, every row tagged with `mode`:
+9 SQLite tables, every row tagged with `mode`:
 - `system_events` — mode switches, startups, shutdowns
 - `market_snapshots` — OHLCV + indicators (LENS + MT5)
 - `signals_received` — every Telegram signal + parse result
@@ -65,6 +68,8 @@ From Telegram:
 - `trade_positions` — individual MT5 trade tickets
 - `news_events` — SENTINEL guard events + market moves
 - `aurum_conversations` — all AURUM queries + responses
+- `trade_closures` — SL/TP hit log with inferred close reason
+- `component_heartbeats` — per-component liveness
 
 ## License
 
