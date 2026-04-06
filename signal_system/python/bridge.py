@@ -741,7 +741,11 @@ class Bridge:
                 self._sentinel_override = False
             elif sent_status["block_trading"] and not self._sentinel_override:
                 self._sentinel_override = True
-                log.warning("BRIDGE: Sentinel override ACTIVE")
+                is_ext = sent_status.get("extended_event", False)
+                post_min = sent_status.get("post_guard_min", 5)
+                tag = f" [EXTENDED — holds {post_min}min]" if is_ext else ""
+                log.warning("BRIDGE: Sentinel override ACTIVE%s — %s",
+                            tag, sent_status.get("event_name", "?"))
             elif not sent_status["block_trading"] and self._sentinel_override:
                 self._sentinel_override = False
                 log.info("BRIDGE: Sentinel override LIFTED")

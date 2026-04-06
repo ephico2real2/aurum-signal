@@ -111,16 +111,27 @@ class Herald:
             + ("  ✓ SL → Breakeven" if be_moved else "")
         )
 
-    def news_guard_on(self, event: str, minutes: int, prev_mode: str):
-        self.send(
-            f"⚠️ <b>NEWS GUARD ACTIVE</b>\n"
-            f"📰 {event} in {minutes} min\n"
-            f"Trading paused — Mode: {prev_mode} → WATCH"
-        )
+    def news_guard_on(self, event: str, minutes: int, prev_mode: str,
+                      extended: bool = False, post_guard_min: int = 5):
+        if extended:
+            self.send(
+                f"🔴 <b>NEWS GUARD ACTIVE [EXTENDED]</b>\n"
+                f"📰 {event} in {minutes} min\n"
+                f"⏳ Guard holds <b>{post_guard_min}min</b> after start (speech/presser)\n"
+                f"Trading paused — Mode: {prev_mode} → WATCH"
+            )
+        else:
+            self.send(
+                f"⚠️ <b>NEWS GUARD ACTIVE</b>\n"
+                f"📰 {event} in {minutes} min\n"
+                f"Trading paused — Mode: {prev_mode} → WATCH"
+            )
 
-    def news_guard_off(self, event: str, mode_restored: str):
+    def news_guard_off(self, event: str, mode_restored: str,
+                       extended: bool = False):
+        tag = " [EXTENDED]" if extended else ""
         self.send(
-            f"✅ <b>NEWS GUARD LIFTED</b>\n"
+            f"✅ <b>NEWS GUARD LIFTED</b>{tag}\n"
             f"📰 {event} passed\n"
             f"Resuming → {mode_restored}"
         )

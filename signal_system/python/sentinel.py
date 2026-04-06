@@ -213,26 +213,31 @@ class Sentinel:
             mode_before=current_mode,
         )
         from herald import get_herald
-        get_herald().news_guard_on(event["name"], event["minutes_away"], current_mode)
+        get_herald().news_guard_on(
+            event["name"], event["minutes_away"], current_mode,
+            extended=is_ext, post_guard_min=post,
+        )
         self.scribe.log_system_event(
             "NEWS_FILTER_ON", new_mode="WATCH",
             triggered_by="SENTINEL", reason=event["name"],
             news_event=event["name"],
+            notes=f"extended={is_ext} post_guard={post}min",
         )
 
     def _deactivate_guard(self, current_mode: str):
-        log.info(f"SENTINEL GUARD OFF — resuming {current_mode}")
+        was_extended = self._guarding_event.get("extended", False) if self._guarding_event else False
+        event_name = self._guarding_event.get("name", "Event") if self._guarding_event else "Event"
+        tag = " [EXTENDED]" if was_extended else ""
+        log.info(f"SENTINEL GUARD OFF{tag} — resuming {current_mode}")
         self.guard_active = False
         if self._event_id:
             self.scribe.close_news_event(self._event_id, current_mode)
         from herald import get_herald
-        get_herald().news_guard_off(
-            self._guarding_event.get("name","Event") if self._guarding_event else "Event",
-            current_mode
-        )
+        get_herald().news_guard_off(event_name, current_mode, extended=was_extended)
         self.scribe.log_system_event(
             "NEWS_FILTER_OFF", prev_mode="WATCH", new_mode=current_mode,
             triggered_by="SENTINEL",
+            notes=f"extended={was_extended}" if was_extended else None,
         )
         self._guarding_event = None
         self._event_id = None
