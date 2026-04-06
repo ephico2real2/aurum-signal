@@ -693,22 +693,25 @@ class Bridge:
             )
         _log_mt5_forge_integration_hint()
 
-        # ── CRITICAL: Clear stale command files on startup ─────────
-        # command.json persists on disk. If FORGE restarts (g_last_cmd_ts
-        # resets to ""), it re-executes whatever is in command.json.
-        # A stale CLOSE_ALL would kill all open trades on restart.
-        # Clear it NOW before FORGE's next OnTimer poll (~3s).
+        # ── CRITICAL: Clear ALL stale command files on startup ────
+        # These files persist on disk. On restart, dedup timestamps
+        # (_last_mgmt_ts, _last_signal_id, _last_aurum_ts) reset to
+        # None, so BRIDGE re-executes stale commands. A leftover
+        # CLOSE_ALL would kill all open trades.
+        # Clear everything NOW before the first tick.
         for cmd_path in _forge_command_targets():
             try:
                 _write_json(cmd_path, {})
             except Exception:
                 pass
-        log.info("BRIDGE: cleared stale command.json on startup (prevents re-execution)")
-        # Also clear aurum_cmd.json to prevent re-processing stale AURUM commands
-        try:
-            os.remove(AURUM_CMD_FILE)
-        except OSError:
-            pass
+        for stale_file in (AURUM_CMD_FILE, MGMT_FILE, SIGNAL_FILE):
+            try:
+                os.remove(stale_file)
+            except OSError:
+                pass
+        log.info(
+            "BRIDGE: cleared stale command files on startup "
+            "(command.json, aurum_cmd, management_cmd, parsed_signal)")
 
         self.scribe.log_system_event("STARTUP", new_mode=self._mode,
                                       triggered_by="USER")
