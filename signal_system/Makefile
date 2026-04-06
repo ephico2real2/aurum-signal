@@ -49,8 +49,10 @@ help:
 	@echo "  SERVICES (install_services.py — macOS: launchd; Linux: sudo systemctl)"
 	@echo "  make start             Install/load all services (same as services-install)"
 	@echo "  make stop              Unload/stop all (same as services-stop)"
-	@echo "  make restart           Reload all (same as services-restart)"
-	@echo "                         After editing python/*.py used by services, run restart so launchd/systemd reloads."
+	@echo "  make restart           Full reinstall + reload all services"
+	@echo "  make reload            Hot-restart all Python processes (fast — launchd relaunches)"
+	@echo "  make reload-bridge     Hot-restart BRIDGE only (sentinel/aegis/aurum changes)"
+	@echo "                         Use reload after editing python/*.py — faster than restart."
 	@echo "  make services-install  chmod +x installer, then --install"
 	@echo "  make services-stop     chmod +x installer, then --stop"
 	@echo "  make services-restart  chmod +x installer, then --restart"
@@ -207,7 +209,7 @@ logs-errors:
 
 # ── Services ──────────────────────────────────────────────────────
 # install_services.py is chmod +x before each run so ./services/install_services.py works.
-.PHONY: start stop restart services-install services-stop services-restart
+.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-all
 
 services-install:
 	@chmod +x $(INSTALL_SVC)
@@ -226,6 +228,45 @@ start: services-install
 stop: services-stop
 
 restart: services-restart
+
+# ── Hot reload (kill → launchd/systemd auto-relaunches with fresh code) ─
+# Use after editing python/*.py — faster than `make restart` (no plist reinstall).
+reload reload-all:
+	@echo "Reloading all Signal System Python processes..."
+	@for proc in bridge.py athena_api.py listener.py aurum.py; do \
+		PIDS=$$(pgrep -f "python.*$$proc" 2>/dev/null); \
+		if [ -n "$$PIDS" ]; then \
+			echo "  Killing $$proc (PID $$PIDS)"; \
+			kill $$PIDS 2>/dev/null || true; \
+		else \
+			echo "  $$proc not running"; \
+		fi; \
+	done
+	@echo "Waiting 5s for launchd/systemd to relaunch..."
+	@sleep 5
+	@echo "Health check:"
+	@$(PYTHON) $(SCRIPTS)/health.py 2>/dev/null || echo "(health script unavailable)"
+	@echo ""
+	@echo "✅ Reload complete — all processes relaunched with fresh code."
+
+reload-bridge:
+	@echo "Reloading BRIDGE (sentinel/aegis/aurum changes take effect)..."
+	@PIDS=$$(pgrep -f "python.*bridge.py" 2>/dev/null); \
+	if [ -n "$$PIDS" ]; then \
+		echo "  Killing bridge.py (PID $$PIDS)"; \
+		kill $$PIDS 2>/dev/null || true; \
+	else \
+		echo "  bridge.py not running — starting via services"; \
+		$(MAKE) services-install; \
+	fi
+	@echo "Waiting 5s for relaunch..."
+	@sleep 5
+	@PIDS=$$(pgrep -f "python.*bridge.py" 2>/dev/null); \
+	if [ -n "$$PIDS" ]; then \
+		echo "✅ BRIDGE relaunched (PID $$PIDS)"; \
+	else \
+		echo "⚠️  BRIDGE not running — run: make start"; \
+	fi
 
 # ── Setup ─────────────────────────────────────────────────────────
 .PHONY: setup-tests check-tests
