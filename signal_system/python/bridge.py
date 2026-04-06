@@ -95,6 +95,9 @@ RESTORE_MODE_ON_RESTART = os.environ.get("RESTORE_MODE_ON_RESTART", "true").lowe
 # Sentinel override
 SENTINEL_OVERRIDE_DURATION = int(os.environ.get("SENTINEL_OVERRIDE_DURATION_SEC", "600"))  # 10min default
 
+# Native scalper mode (passed to FORGE via config.json)
+FORGE_SCALPER_MODE = os.environ.get("FORGE_SCALPER_MODE", "NONE").upper()
+
 # Drawdown protection
 DD_EQUITY_CLOSE_ALL_PCT  = float(os.environ.get("DD_EQUITY_CLOSE_ALL_PCT",  "3.0"))
 DD_FLOATING_BLOCK_PCT    = float(os.environ.get("DD_FLOATING_BLOCK_PCT",    "2.0"))   # block new groups if floating loss exceeds this % of balance
@@ -1987,6 +1990,7 @@ class Bridge:
             "tp1_close_pct":   TP1_CLOSE_PCT,
             "tp2_close_pct":   TP2_CLOSE_PCT,
             "move_be_on_tp1":  MOVE_BE_ON_TP1,
+            "scalper_mode":    FORGE_SCALPER_MODE,
             "timestamp":       _now(),
         }
         for pth in _forge_config_targets():

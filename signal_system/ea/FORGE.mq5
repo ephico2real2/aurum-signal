@@ -383,8 +383,18 @@ void ReadConfig() {
    // Parse mode
    string mode = JsonGetString(content, "effective_mode");
    if(mode != "" && mode != g_mode) {
-      Print("FORGE mode: ", g_mode, " → ", mode);
+      Print("FORGE mode: ", g_mode, " -> ", mode);
       g_mode = mode;
+   }
+   // Parse scalper_mode from BRIDGE (set via FORGE_SCALPER_MODE in .env)
+   string sm = JsonGetString(content, "scalper_mode");
+   if(sm != "") {
+      if(sm == "NONE" || sm == "BB_BOUNCE" || sm == "BB_BREAKOUT" || sm == "DUAL") {
+         if(sm != g_scalper_mode) {
+            Print("FORGE scalper: ", g_scalper_mode, " -> ", sm, " (from config.json)");
+            g_scalper_mode = sm;
+         }
+      }
    }
 }
 
