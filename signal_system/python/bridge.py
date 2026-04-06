@@ -1866,9 +1866,12 @@ class Bridge:
                     default=str,
                 ),
             )
+            _tlog("AURUM", "REJECTED", f"AEGIS: {approval.reject_reason}", level="warning")
             try:
+                # Use plain text — HTML entities in reject_reason can break Telegram
                 self.herald.send(
-                    f"⚠️ <b>AURUM trade blocked</b>\nAEGIS: {approval.reject_reason}"
+                    f"⚠️ AURUM trade blocked\nAEGIS: {approval.reject_reason}",
+                    parse_mode=None,
                 )
             except Exception:
                 pass
