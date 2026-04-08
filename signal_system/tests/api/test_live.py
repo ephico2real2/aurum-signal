@@ -56,7 +56,7 @@ class TestLiveEndpoint:
 
     def test_live_mode_valid(self, live_data):
         valid = {"OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID",
-                 "UNKNOWN", "DISCONNECTED"}
+                 "AUTO_SCALPER", "UNKNOWN", "DISCONNECTED"}
         assert live_data.get("mode") in valid, \
             f"Invalid mode: {live_data.get('mode')}"
 

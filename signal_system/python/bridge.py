@@ -1221,6 +1221,24 @@ class Bridge:
         _tlog("SIGNAL", "OPEN_GROUP", f"{signal['direction']} {approval.num_trades}x{approval.lot_per_trade}lot SL={signal['sl']} TP1={signal['tp1']}",
               group_id=group_id)
 
+    def _resolve_channel_group(self, mgmt: dict) -> int | None:
+        """Find the most recent SIGNAL-source open group from a channel.
+        Channel management commands should only affect their own group."""
+        channel = mgmt.get("channel") or ""
+        sig_id = mgmt.get("signal_id")
+        # If LISTENER provided a signal_id, find the group it created
+        if sig_id:
+            rows = self.scribe.query(
+                "SELECT trade_group_id FROM signals_received WHERE id=? AND trade_group_id IS NOT NULL",
+                (sig_id,))
+            if rows and rows[0].get("trade_group_id"):
+                return int(rows[0]["trade_group_id"])
+        # Fallback: most recent open SIGNAL group
+        for gid, g in sorted(self._open_groups.items(), reverse=True):
+            if g.get("source") == "SIGNAL":
+                return int(gid)
+        return None
+
     def _process_mgmt_command(self, mt5: dict):
         mgmt = _read_json(MGMT_FILE)
         if not mgmt:
@@ -1232,22 +1250,28 @@ class Bridge:
         self._last_mgmt_ts = ts
 
         intent = mgmt.get("intent")
-        _tlog("MGMT", intent, f"source={mgmt.get('source','?')} group={mgmt.get('group_id','all')}")
+        mgmt_source = mgmt.get("source", "?")  # ATHENA, LISTENER, etc.
+        is_channel = mgmt_source not in ("ATHENA", "AURUM")  # Channel/LISTENER commands
 
-        # If LISTENER provided a group_id, use group-specific commands
+        # If LISTENER provided a group_id, use it; otherwise resolve from channel
         mgmt_gid = mgmt.get("group_id")
+        if not mgmt_gid and is_channel:
+            mgmt_gid = self._resolve_channel_group(mgmt)
+
+        _tlog("MGMT", intent, f"source={mgmt_source} channel={mgmt.get('channel','-')} group={mgmt_gid or 'all'}"
+              + (" [SCOPED TO SIGNAL GROUP]" if mgmt_gid and is_channel else ""))
 
         cmd = None
         if intent == "CLOSE_ALL":
             if mgmt_gid:
                 # Channel said "close all" but we scope it to their group
-                intent = "CLOSE_GROUP"
                 magic = self._lookup_group_magic(int(mgmt_gid))
                 if magic:
                     cmd = {"action": "CLOSE_GROUP", "magic": magic, "timestamp": _now()}
-                    self.scribe.update_trade_group(int(mgmt_gid), "CLOSED", close_reason="CHANNEL_CLOSE")
-                    self.herald.trade_group_closed(int(mgmt_gid), "?", 0, 0, 0, f"CHANNEL_CLOSE ({mgmt.get('channel','')})")
-            else:
+                    self.scribe.update_trade_group(int(mgmt_gid), "CLOSED", close_reason=f"CHANNEL_CLOSE ({mgmt.get('channel','')})")
+                    _tlog("MGMT", "CLOSE_GROUP", f"scoped to G{mgmt_gid} (channel: {mgmt.get('channel','')})", group_id=mgmt_gid)
+            elif mgmt_source == "ATHENA":
+                # Dashboard CLOSE_ALL is intentional — close everything
                 cmd = {"action": "CLOSE_ALL", "timestamp": _now()}
                 for g in self.scribe.get_open_groups():
                     gid = g.get("id")
@@ -1256,9 +1280,47 @@ class Bridge:
                             int(gid), "CLOSED_ALL", close_reason="MGMT_CLOSE_ALL"
                         )
                 self._open_groups.clear()
+            else:
+                # Channel CLOSE_ALL without group_id — only close SIGNAL groups
+                _tlog("MGMT", "CLOSE_ALL_SIGNAL_ONLY", f"channel {mgmt.get('channel','')} — only closing SIGNAL-source groups", level="warning")
+                for gid, g in list(self._open_groups.items()):
+                    if g.get("source") == "SIGNAL":
+                        magic = self._lookup_group_magic(int(gid))
+                        if magic:
+                            _write_forge_command({"action": "CLOSE_GROUP", "magic": magic, "timestamp": _now()})
+                            self.scribe.update_trade_group(int(gid), "CLOSED", close_reason=f"CHANNEL_CLOSE_ALL ({mgmt.get('channel','')})")
+                            _tlog("MGMT", "CLOSE_GROUP", f"channel CLOSE_ALL scoped to SIGNAL group", group_id=gid)
+                return  # Don't send global CLOSE_ALL
 
         elif intent == "MOVE_BE":
-            cmd = {"action": "MOVE_BE_ALL", "timestamp": _now()}
+            if mgmt_gid:
+                # Scope to specific group
+                magic = self._lookup_group_magic(int(mgmt_gid))
+                if magic:
+                    # FORGE MOVE_BE_ALL affects all — but we can MODIFY_SL per group
+                    # Get entry prices for this group and set SL to entry
+                    positions = self.scribe.get_open_positions_by_group(int(mgmt_gid))
+                    for pos in positions:
+                        ep = pos.get("entry_price")
+                        if ep and ep > 100:
+                            cmd = {"action": "MODIFY_SL", "sl": float(ep), "timestamp": _now()}
+                    _tlog("MGMT", "MOVE_BE", f"scoped to G{mgmt_gid}", group_id=mgmt_gid)
+            elif mgmt_source == "ATHENA":
+                cmd = {"action": "MOVE_BE_ALL", "timestamp": _now()}
+            else:
+                # Channel MOVE_BE — only affect SIGNAL groups
+                _tlog("MGMT", "MOVE_BE_SIGNAL_ONLY", f"channel {mgmt.get('channel','')} — skipping non-SIGNAL positions", level="warning")
+                for gid, g in self._open_groups.items():
+                    if g.get("source") == "SIGNAL":
+                        magic = self._lookup_group_magic(int(gid))
+                        if magic:
+                            positions = self.scribe.get_open_positions_by_group(int(gid))
+                            for pos in positions:
+                                ep = pos.get("entry_price")
+                                if ep and ep > 100:
+                                    _write_forge_command({"action": "MODIFY_SL", "sl": float(ep), "timestamp": _now()})
+                            _tlog("MGMT", "MOVE_BE", f"channel scoped to SIGNAL group", group_id=gid)
+                return  # Don't send global MOVE_BE_ALL
 
         elif intent == "CLOSE_PCT":
             pct = mgmt.get("pct", TP1_CLOSE_PCT)
@@ -1266,8 +1328,16 @@ class Bridge:
                 magic = self._lookup_group_magic(int(mgmt_gid))
                 if magic:
                     cmd = {"action": "CLOSE_GROUP_PCT", "magic": magic, "pct": float(pct), "timestamp": _now()}
-            else:
+            elif mgmt_source == "ATHENA":
                 cmd = {"action": "CLOSE_PCT", "pct": pct, "timestamp": _now()}
+            else:
+                # Channel CLOSE_PCT — scope to SIGNAL groups
+                for gid, g in self._open_groups.items():
+                    if g.get("source") == "SIGNAL":
+                        magic = self._lookup_group_magic(int(gid))
+                        if magic:
+                            _write_forge_command({"action": "CLOSE_GROUP_PCT", "magic": magic, "pct": float(pct), "timestamp": _now()})
+                return
 
         elif intent == "MODIFY_SL":
             sl = mgmt.get("sl")
