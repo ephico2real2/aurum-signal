@@ -143,11 +143,15 @@ test-live:
 test-closures:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file closures
 
+test-mgmt-scoping:
+	@$(PYTHON) -m pytest $(ROOT_DIR)/tests/api/test_mgmt_channel_scoping.py -v -m unit --tb=short
+
 test-components:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file components
 
 test-contracts:
-	@$(PYTHON) -m pytest $(ROOT_DIR)/tests/api/test_aurum_forge_contract.py \
+	@$(PYTHON) -m pytest $(ROOT_DIR)/tests/api/test_mgmt_channel_scoping.py \
+		$(ROOT_DIR)/tests/api/test_aurum_forge_contract.py \
 		$(ROOT_DIR)/tests/api/test_schema_bundle_integrity.py \
 		$(ROOT_DIR)/tests/api/test_swagger_ui.py \
 		$(ROOT_DIR)/tests/api/test_scribe_query_examples.py \
