@@ -1,7 +1,6 @@
 {
   "version": "1.0",
-  "description": "Shared scalper strategy config — read by FORGE.mq5 (native) and AURUM (Python). Edit here, both engines pick it up.",
-
+  "description": "Shared scalper strategy config \u2014 read by FORGE.mq5 (native) and AURUM (Python). Edit here, both engines pick it up.",
   "bb_bounce": {
     "enabled": true,
     "description": "Mean-reversion: buy at BB lower, sell at BB upper in ranging markets",
@@ -16,7 +15,6 @@
     "tp2_close_pct": 30,
     "tp3_trailing_atr": 1.0
   },
-
   "bb_breakout": {
     "enabled": true,
     "description": "Trend-following: enter on BB breakout with momentum confirmation",
@@ -35,7 +33,6 @@
     "tp4_close_pct": 10,
     "move_be_on_tp1": true
   },
-
   "indicators": {
     "bb_period": 20,
     "bb_deviation": 2.0,
@@ -48,7 +45,6 @@
     "confirmation_tf": "M15",
     "trend_tf": "H1"
   },
-
   "session_filter": {
     "enabled": true,
     "london_start_utc": 7,
@@ -57,7 +53,6 @@
     "ny_end_utc": 20,
     "skip_asian": true
   },
-
   "safety": {
     "max_spread_points": 25,
     "max_open_groups": 2,
@@ -66,7 +61,6 @@
     "news_post_guard_skip_min": 15,
     "dd_equity_close_all_pct": 3.0
   },
-
   "dd_event_tp": {
     "description": "Tighten TP when SENTINEL detects HIGH-impact event within threshold",
     "enabled": true,
@@ -74,7 +68,6 @@
     "tight_tp_atr_mult": 0.8,
     "no_runners": true
   },
-
   "lot_sizing": {
     "mode": "fixed",
     "fixed_lot": 0.01,
