@@ -101,6 +101,9 @@ SENTINEL_OVERRIDE_DURATION = int(os.environ.get("SENTINEL_OVERRIDE_DURATION_SEC"
 
 # Native scalper mode (passed to FORGE via config.json)
 FORGE_SCALPER_MODE = os.environ.get("FORGE_SCALPER_MODE", "NONE").upper()
+FORGE_PENDING_ENTRY_THRESHOLD_POINTS = float(os.environ.get("FORGE_PENDING_ENTRY_THRESHOLD_POINTS", "50"))
+FORGE_TREND_STRENGTH_ATR_THRESHOLD = float(os.environ.get("FORGE_TREND_STRENGTH_ATR_THRESHOLD", "0.20"))
+FORGE_BREAKOUT_BUFFER_POINTS = float(os.environ.get("FORGE_BREAKOUT_BUFFER_POINTS", "10"))
 SYDNEY_OPEN_ALERT_ENABLED = os.environ.get("SYDNEY_OPEN_ALERT_ENABLED", "true").lower() == "true"
 
 # Drawdown protection
@@ -264,6 +267,24 @@ def _resolve_forge_scalper_mode(mode: str) -> str:
     return FORGE_SCALPER_MODE if mode in ("SCALPER", "HYBRID") else "NONE"
 
 
+def _extract_forge_thresholds(mt5_data: dict) -> dict:
+    cfg = (mt5_data or {}).get("forge_config") or {}
+    return {
+        "pending_entry_threshold_points": cfg.get(
+            "pending_entry_threshold_points",
+            (mt5_data or {}).get("pending_entry_threshold_points"),
+        ),
+        "trend_strength_atr_threshold": cfg.get(
+            "trend_strength_atr_threshold",
+            (mt5_data or {}).get("trend_strength_atr_threshold"),
+        ),
+        "breakout_buffer_points": cfg.get(
+            "breakout_buffer_points",
+            (mt5_data or {}).get("breakout_buffer_points"),
+        ),
+    }
+
+
 def _build_entry_ladder(entry_low: float, entry_high: float, trades: int) -> list[float]:
     trades = max(1, int(trades))
     lo = float(entry_low)
@@ -388,6 +409,9 @@ class Bridge:
         self._current_session    = "OFF_HOURS"
         self._current_session_id = None    # SCRIBE trading_sessions row id
         self._broker_info        = {}      # from FORGE broker_info.json
+        self._pending_entry_threshold_points = FORGE_PENDING_ENTRY_THRESHOLD_POINTS
+        self._trend_strength_atr_threshold = FORGE_TREND_STRENGTH_ATR_THRESHOLD
+        self._breakout_buffer_points = FORGE_BREAKOUT_BUFFER_POINTS
     def _pinned_mode(self) -> str | None:
         if BRIDGE_PIN_MODE in VALID_MODES:
             return BRIDGE_PIN_MODE
@@ -1298,6 +1322,8 @@ class Bridge:
     def _tick(self):
         now = time.time()
         mt5 = _read_json(MARKET_FILE)
+        if mt5:
+            mt5.update(_extract_forge_thresholds(mt5))
         mt5_age = now - mt5.get("timestamp_unix", 0) if mt5 else 9999
         mt5_fresh = mt5 and mt5_age < MT5_STALE_SEC
 
@@ -2300,6 +2326,9 @@ class Bridge:
             "lot_per_trade": entry.get("lot_per_trade", 0.01),
             "source": "FORGE_NATIVE_SCALP",
             "signal_id": None,
+            "pending_entry_threshold_points": entry.get("pending_entry_threshold_points"),
+            "trend_strength_atr_threshold": entry.get("trend_strength_atr_threshold"),
+            "breakout_buffer_points": entry.get("breakout_buffer_points"),
         }
         scribe_gid = self.scribe.log_trade_group(
             group_data, self._effective_mode(), magic_number=magic)
@@ -2318,6 +2347,9 @@ class Bridge:
                 "rsi": entry.get("m5_rsi"),
                 "adx": entry.get("m5_adx"),
                 "sentinel_tight": entry.get("sentinel_tight"),
+                "pending_entry_threshold_points": entry.get("pending_entry_threshold_points"),
+                "trend_strength_atr_threshold": entry.get("trend_strength_atr_threshold"),
+                "breakout_buffer_points": entry.get("breakout_buffer_points"),
             }, default=str),
         )
 
@@ -2598,6 +2630,9 @@ class Bridge:
             "tp2_close_pct":   TP2_CLOSE_PCT,
             "move_be_on_tp1":  MOVE_BE_ON_TP1,
             "scalper_mode":    scalper_mode,
+            "pending_entry_threshold_points": self._pending_entry_threshold_points,
+            "trend_strength_atr_threshold": self._trend_strength_atr_threshold,
+            "breakout_buffer_points": self._breakout_buffer_points,
             "timestamp":       _now(),
         }
         for pth in _forge_config_targets():

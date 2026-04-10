@@ -57,6 +57,26 @@ make stop    # unload all services
 make start   # render plists + symlink + load (full install)
 ```
 
+## Full stack one-command orchestration
+
+Use these when you want all major runtime dependencies handled in order.
+
+```bash
+make system-up
+make system-down
+```
+
+Dependency order:
+- `system-up`: TradingView CDP → MetaTrader 5 app → Python services (`bridge`, `listener`, `aurum`, `athena`)
+- `system-down`: Python services → TradingView → MetaTrader 5
+
+Individual app controls:
+
+```bash
+make mt5-start
+make mt5-stop
+```
+
 ---
 
 ## Verify after restart
@@ -78,6 +98,48 @@ Logs:
 make logs-athena
 make logs-aurum
 make logs-bridge
+```
+
+## Market-hours note (fills vs queued requests)
+
+- If `status.json` / ATHENA shows `session=OFF_HOURS` and MT5 quotes are flat (bid/ask not moving), requests can be queued but not filled until market reopen.
+- Friday US close through Sunday Asia open is expected low/no-fill window for XAUUSD.
+- Treat this as market-state behavior, not automatically as BRIDGE/FORGE failure.
+
+## SCRIBE database GUI (macOS)
+
+Install once:
+
+```bash
+brew install --cask db-browser-for-sqlite
+```
+
+Open SCRIBE DB:
+
+```bash
+make scribe-gui
+```
+
+Database file:
+
+```text
+python/data/aurum_intelligence.db
+```
+
+Quick query checks for threshold-hardening fields:
+
+```sql
+SELECT id, source, pending_entry_threshold_points, trend_strength_atr_threshold, breakout_buffer_points
+FROM trade_groups
+ORDER BY id DESC
+LIMIT 10;
+```
+
+```sql
+SELECT id, source, pending_entry_threshold_points, trend_strength_atr_threshold, breakout_buffer_points
+FROM market_snapshots
+ORDER BY id DESC
+LIMIT 10;
 ```
 
 Signal-room media replay/back-analysis:

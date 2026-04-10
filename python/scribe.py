@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     bb_upper REAL, bb_mid REAL, bb_lower REAL, bb_width REAL,
     adx REAL, tv_rating INTEGER, timeframe TEXT,
     session TEXT, news_guard_active INTEGER DEFAULT 0,
+    pending_entry_threshold_points REAL,
+    trend_strength_atr_threshold REAL,
+    breakout_buffer_points REAL,
     outcome_label TEXT, label_filled INTEGER DEFAULT 0
 );
 
@@ -122,6 +125,9 @@ CREATE TABLE IF NOT EXISTS trade_groups (
     lens_rating    INTEGER,
     lens_rsi       REAL,
     lens_confirmed INTEGER,
+    pending_entry_threshold_points REAL,
+    trend_strength_atr_threshold REAL,
+    breakout_buffer_points REAL,
     magic_number   INTEGER,
     status         TEXT DEFAULT 'OPEN',
     closed_at      TEXT,
@@ -281,6 +287,26 @@ class Scribe:
         if "vision_confidence" not in sig_cols:
             conn.execute("ALTER TABLE signals_received ADD COLUMN vision_confidence TEXT")
             log.info("SCRIBE migration: added vision_confidence to signals_received")
+        ms_cols = [r[1] for r in conn.execute("PRAGMA table_info(market_snapshots)").fetchall()]
+        if "pending_entry_threshold_points" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN pending_entry_threshold_points REAL")
+            log.info("SCRIBE migration: added pending_entry_threshold_points to market_snapshots")
+        if "trend_strength_atr_threshold" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN trend_strength_atr_threshold REAL")
+            log.info("SCRIBE migration: added trend_strength_atr_threshold to market_snapshots")
+        if "breakout_buffer_points" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN breakout_buffer_points REAL")
+            log.info("SCRIBE migration: added breakout_buffer_points to market_snapshots")
+        tg_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
+        if "pending_entry_threshold_points" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN pending_entry_threshold_points REAL")
+            log.info("SCRIBE migration: added pending_entry_threshold_points to trade_groups")
+        if "trend_strength_atr_threshold" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN trend_strength_atr_threshold REAL")
+            log.info("SCRIBE migration: added trend_strength_atr_threshold to trade_groups")
+        if "breakout_buffer_points" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN breakout_buffer_points REAL")
+            log.info("SCRIBE migration: added breakout_buffer_points to trade_groups")
 
     @staticmethod
     def _now() -> str:
@@ -337,8 +363,9 @@ class Scribe:
                 (timestamp,mode,source,symbol,bid,ask,spread,
                  open_m1,high_m1,low_m1,close_m1,volume_m1,
                  rsi_14,macd_hist,ema_20,ema_50,bb_upper,bb_mid,bb_lower,bb_width,
-                 adx,tv_rating,timeframe,session,news_guard_active)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 adx,tv_rating,timeframe,session,news_guard_active,
+                 pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, source,
                  data.get("symbol","XAUUSD"),
                  data.get("bid"), data.get("ask"), data.get("spread"),
@@ -350,7 +377,10 @@ class Scribe:
                  data.get("bb_lower"), data.get("bb_width"),
                  data.get("adx"), data.get("tv_rating"),
                  data.get("timeframe","M1"),
-                 data.get("session"), int(data.get("news_guard",False))))
+                 data.get("session"), int(data.get("news_guard",False)),
+                 data.get("pending_entry_threshold_points"),
+                 data.get("trend_strength_atr_threshold"),
+                 data.get("breakout_buffer_points")))
 
     def log_signal(self, raw: str, parsed: dict, mode: str,
                    channel: str = None, msg_id: int = None,
@@ -431,8 +461,9 @@ class Scribe:
                  entry_low,entry_high,sl,tp1,tp2,tp3,
                  num_trades,lot_per_trade,risk_pct,account_balance,
                  lens_rating,lens_rsi,lens_confirmed,
+                 pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points,
                  magic_number,trades_opened,trades_closed)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, data.get("source","SIGNAL"),
                  data.get("signal_id"), data.get("direction"),
                  data.get("entry_low"), data.get("entry_high"),
@@ -441,6 +472,9 @@ class Scribe:
                  data.get("risk_pct"), data.get("account_balance"),
                  data.get("lens_rating"), data.get("lens_rsi"),
                  data.get("lens_confirmed"),
+                 data.get("pending_entry_threshold_points"),
+                 data.get("trend_strength_atr_threshold"),
+                 data.get("breakout_buffer_points"),
                  magic_number,
                  data.get("num_trades",8), 0))
             return cur.lastrowid

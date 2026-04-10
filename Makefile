@@ -62,7 +62,9 @@ help:
 	@echo "  SETUP & OPS"
 	@echo "  make setup-tests     Install all test dependencies"
 	@echo "  make start-tradingview  Launch TradingView Desktop with CDP (required by LENS)"
-	@echo "  make stop-tradingview   Kill TradingView Desktop"
+	@echo "  make stop-tradingview   Force-kill TradingView Desktop completely"
+	@echo "  make mt5-start          Open MetaTrader 5 app"
+	@echo "  make mt5-stop           Close MetaTrader 5 app"
 	@echo "  make check-tradingview  Check if TradingView CDP is running"
 	@echo "  make setup-indicators  Add all required indicators to TradingView chart"
 	@echo "  make check-indicators  Verify indicators are present (no changes)"
@@ -76,6 +78,9 @@ help:
 	@echo "  make forge-ea        Copy FORGE.mq5 into Wine MT5 Experts (macOS)"
 	@echo "  make forge-compile   Copy + compile FORGE.mq5 → FORGE.ex5 (MetaEditor CLI)"
 	@echo "  make forge-refresh   forge-compile + open MetaTrader 5 (re-attach FORGE on chart)"
+	@echo "  make scribe-gui      Open SCRIBE DB in DB Browser for SQLite (macOS)"
+	@echo "  make system-up       Start TradingView + MetaTrader 5 + Python services"
+	@echo "  make system-down     Stop Python services + TradingView + MetaTrader 5"
 	@echo "  make forge-verify-live  poll MT5/market_data.json until forge_version matches ea/FORGE.mq5"
 	@echo "  make forge-refresh-verify  forge-compile + open MT5 + poll (180s) — reattach FORGE if needed"
 	@echo ""
@@ -304,7 +309,7 @@ reload-athena:
 LENS_MCP_DIR = $(HOME)/tradingview-mcp-jackson
 LENS_RULES_CANONICAL = $(ROOT_DIR)/config/tradingview_rules.json
 
-.PHONY: start-tradingview stop-tradingview check-tradingview update-lens-mcp
+.PHONY: start-tradingview stop-tradingview mt5-start mt5-stop check-tradingview update-lens-mcp system-up system-down
 
 start-tradingview:
 	@chmod +x $(SCRIPTS)/start_tradingview_cdp.sh
@@ -312,7 +317,16 @@ start-tradingview:
 
 stop-tradingview:
 	@echo "Stopping TradingView Desktop..."
-	@pkill -f "TradingView" 2>/dev/null && echo "✅ TradingView stopped" || echo "  TradingView was not running"
+	@pkill -9 -f "TradingView" 2>/dev/null && echo "✅ TradingView force-stopped" || echo "  TradingView was not running"
+	@pgrep -fal "TradingView" >/dev/null 2>&1 && echo "⚠️  TradingView process still detected" || echo "✅ TradingView fully terminated"
+
+mt5-start:
+	@echo "Starting MetaTrader 5..."
+	@open -a "MetaTrader 5" && echo "✅ MetaTrader 5 started" || echo "⚠️  MetaTrader 5 not found in /Applications"
+
+mt5-stop:
+	@echo "Stopping MetaTrader 5..."
+	@pkill -f "terminal64.exe" 2>/dev/null && echo "✅ MetaTrader 5 stopped" || echo "  MetaTrader 5 was not running"
 
 check-tradingview:
 	@if curl -s "http://localhost:9222/json/version" > /dev/null 2>&1; then \
@@ -361,14 +375,35 @@ print(','.join((json.loads(p.read_text()).get('watchlist') or [])) if p.exists()
 	@echo ""
 	@echo "✅ LENS MCP updated. BRIDGE picks up changes on next LENS fetch cycle."
 
+# ── Full system lifecycle (dependency-ordered) ───────────────────────
+# system-up order:
+#   1) TradingView CDP (required by LENS)
+#   2) MetaTrader 5 app (required by FORGE market_data feed)
+#   3) Python services (BRIDGE/LISTENER/AURUM/ATHENA)
+system-up: start-tradingview mt5-start start
+	@echo ""
+	@echo "✅ System startup sequence complete."
+	@echo "   Next checks: make check-tradingview && make health"
+
+# system-down order:
+#   1) Python services (stop writers/consumers first)
+#   2) TradingView
+#   3) MetaTrader 5
+system-down: stop stop-tradingview mt5-stop
+	@echo ""
+	@echo "✅ System shutdown sequence complete."
+
 # ── Setup ─────────────────────────────────────────────────────────
-.PHONY: setup-tests check-tests
+.PHONY: setup-tests check-tests scribe-gui
 
 setup-tests:
 	@$(PYTHON) $(SCRIPTS)/setup_tests.py
 
 check-tests:
 	@$(PYTHON) $(SCRIPTS)/setup_tests.py --check
+
+scribe-gui:
+	@open -a "DB Browser for SQLite" "$(ROOT_DIR)/python/data/aurum_intelligence.db"
 
 scalper-config-sync:
 	@echo "Syncing scalper_config.json → MT5 Common Files..."

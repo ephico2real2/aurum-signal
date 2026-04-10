@@ -194,6 +194,9 @@ class Lens:
                     "open_m1": mt5_data.get("open_m1"),
                     "close_m1": mt5_data.get("close_m1"),
                     "session": mt5_data.get("session"),
+                    "pending_entry_threshold_points": mt5_data.get("pending_entry_threshold_points"),
+                    "trend_strength_atr_threshold": mt5_data.get("trend_strength_atr_threshold"),
+                    "breakout_buffer_points": mt5_data.get("breakout_buffer_points"),
                 })
             self.scribe.log_market_snapshot(d, mode, "LENS_MCP")
             log.debug(f"LENS fresh: RSI={snap.rsi:.1f} BB={snap.bb_rating} ADX={snap.adx:.1f}")

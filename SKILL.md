@@ -247,6 +247,14 @@ FORGE now has a native price action scalper that runs independently in MT5 (back
 - Source: `FORGE_NATIVE_SCALP` in SCRIBE (distinct from my `AUTO_SCALPER` entries)
 - Controlled via `.env`: `FORGE_SCALPER_MODE=DUAL` (NONE|BB_BOUNCE|BB_BREAKOUT|DUAL)
 - Dashboard shows cyan `FORGE` badge on native scalper group tiles
+- Threshold-hardening parameters are now runtime-configurable:
+  - `pending_entry_threshold_points`
+  - `trend_strength_atr_threshold`
+  - `breakout_buffer_points`
+- Threshold values persist in SCRIBE for analytics:
+  - `trade_groups` (native scalp entries)
+  - `market_snapshots` (LENS snapshot rows)
+- Live execution caveat: if market is in weekend/off-hours (flat quotes, no ticks), requests may queue but not fill until session reopen.
 
 ---
 
@@ -304,6 +312,7 @@ OPEN_GROUPS (from SCRIBE, confirmed against MT5 magic numbers):
 
 MT5 EXECUTION (FORGE, always authoritative for price):
   bid / ask / mid / spread for XAUUSD
+  forge_config thresholds: pending_entry_threshold_points, trend_strength_atr_threshold, breakout_buffer_points
 
 MT5 MULTI-TIMEFRAME INDICATORS (FORGE, 3s refresh):
   H1:  RSI, MACD hist, ADX, EMA20, EMA50, ATR, BB upper/mid/lower

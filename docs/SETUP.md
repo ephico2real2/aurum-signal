@@ -291,6 +291,43 @@ pip3 install -r requirements.txt
 pip3 install -r requirements.txt --break-system-packages
 ```
 
+### Optional: Install SCRIBE DB GUI (macOS)
+
+To inspect SCRIBE data visually, install **DB Browser for SQLite**:
+
+```bash
+brew install --cask db-browser-for-sqlite
+```
+
+Open the database:
+
+```bash
+open -a "DB Browser for SQLite" /Users/YOUR_USERNAME/signal_system/python/data/aurum_intelligence.db
+```
+
+Or from repo root:
+
+```bash
+make scribe-gui
+```
+
+Quick enhancement verification (threshold-hardening fields):
+
+```sql
+SELECT id, source, pending_entry_threshold_points, trend_strength_atr_threshold, breakout_buffer_points
+FROM trade_groups
+WHERE source='FORGE_NATIVE_SCALP'
+ORDER BY id DESC
+LIMIT 10;
+```
+
+```sql
+SELECT id, source, pending_entry_threshold_points, trend_strength_atr_threshold, breakout_buffer_points
+FROM market_snapshots
+ORDER BY id DESC
+LIMIT 10;
+```
+
 ---
 
 ## STEP 6 — Setup MetaTrader 5

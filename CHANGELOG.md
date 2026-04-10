@@ -1,4 +1,55 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.4.1] — 2026-04-10
+
+### FORGE Threshold Hardening
+- Added configurable runtime threshold parameters:
+  - `pending_entry_threshold_points`
+  - `trend_strength_atr_threshold`
+  - `breakout_buffer_points`
+- Native scalper logic hardened:
+  - breakout trigger now uses previous M5 close + configurable breakout buffer
+  - EMA trend filters normalized by ATR
+  - TP split bug fixed (`BB_BREAKOUT` now uses breakout TP split config)
+  - stop-level validation + lot normalization enforced before placement
+  - spread-aware breakeven logic
+  - cooldown timestamp updates on realized losses
+  - startup rebuild of in-memory FORGE groups from open positions
+- Added threshold + decision-metric telemetry into `market_data.json`, `mode_status.json`, and `scalper_entry.json`.
+
+### BRIDGE + SCRIBE Persistence
+- BRIDGE now writes threshold overrides into `MT5/config.json`.
+- BRIDGE forwards native scalper threshold fields into SCRIBE `trade_groups`.
+- LENS snapshot logging path now includes threshold fields from MT5 payload.
+- SCRIBE schema/migrations extended with threshold fields in:
+  - `market_snapshots`
+  - `trade_groups`
+
+### Tests and Verification
+- Added `tests/api/test_threshold_persistence.py`:
+  - migration checks on legacy DB shape
+  - persistence checks for snapshot/group threshold fields
+  - bridge forwarding checks for native scalper entries
+- Verified with targeted and full API suite passes.
+
+### Operations Improvements
+- Added full lifecycle commands:
+  - `make system-up` (TradingView → MetaTrader 5 → Python services)
+  - `make system-down` (Python services → TradingView → MetaTrader 5)
+- Added MT5 controls:
+  - `make mt5-start`
+  - `make mt5-stop`
+- Hardened TradingView shutdown:
+  - `make stop-tradingview` now force-kills and verifies termination.
+- Added SCRIBE GUI helper:
+  - `make scribe-gui` opens DB Browser for SQLite on `python/data/aurum_intelligence.db`.
+
+### Documentation Updates
+- Updated `docs/FORGE_BRIDGE.md` for threshold-hardening behavior and OFF_HOURS no-fill guidance.
+- Updated `docs/DATA_CONTRACT.md` for `forge_config` threshold contract and `scalper_entry.json` metrics.
+- Updated `docs/SETUP.md` + `docs/OPERATIONS.md` for SQLite GUI workflow and system lifecycle commands.
+- Updated `SKILL.md` + `SOUL.md` for threshold-awareness and weekend/off-hours execution behavior.
+
+---
 
 ## [1.4.0] — 2026-04-06
 

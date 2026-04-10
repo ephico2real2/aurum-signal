@@ -117,7 +117,58 @@ These update every 3 seconds (OnTimer). Python reads them via `market_view.py` (
 
 **Note:** After recompiling FORGE, you must **reattach** the EA in MT5 for new indicators to appear. If `indicators_m5` shows all zeros, the old .ex5 is still loaded.
 
-## 7. Position tracker
+## 8. Threshold hardening (v1.4.0+)
+
+FORGE native execution now supports threshold-hardening parameters that are runtime-configurable and persisted downstream:
+
+- `pending_entry_threshold_points`
+- `trend_strength_atr_threshold`
+- `breakout_buffer_points`
+
+### Where values come from
+
+1. FORGE defaults (`input` values in `FORGE.mq5`)
+2. `scalper_config.json` overrides (hot-reloaded)
+3. BRIDGE `config.json` overrides (`MT5/config.json`)
+
+### Where values appear
+
+- `MT5/market_data.json` → top-level `forge_config` object
+- `MT5/mode_status.json` → threshold fields for quick status reads
+- `MT5/scalper_entry.json` (native entries) → threshold fields + derived metrics
+- SCRIBE persistence:
+  - `trade_groups.pending_entry_threshold_points`
+  - `trade_groups.trend_strength_atr_threshold`
+  - `trade_groups.breakout_buffer_points`
+  - `market_snapshots.pending_entry_threshold_points`
+  - `market_snapshots.trend_strength_atr_threshold`
+  - `market_snapshots.breakout_buffer_points`
+
+### Quick verification
+
+```sql
+SELECT id,timestamp,source,direction,pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points
+FROM trade_groups
+WHERE source='FORGE_NATIVE_SCALP'
+ORDER BY id DESC
+LIMIT 10;
+```
+
+```sql
+SELECT id,timestamp,source,pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points
+FROM market_snapshots
+ORDER BY id DESC
+LIMIT 10;
+```
+
+If older rows show `NULL`, that usually means they were written before BRIDGE/SCRIBE was reloaded with the threshold-forwarding code.
+
+## 9. Weekend / OFF_HOURS behavior
+
+If `status.json` shows `session=OFF_HOURS` and MT5 quotes are flat (bid/ask not moving), orders may queue but not fill until market reopen.
+Treat this as market-state behavior, not automatically as FORGE/BRIDGE failure.
+
+## 10. Position tracker
 
 BRIDGE tracks individual position fills and closes by diffing `open_positions` and `pending_orders` against SCRIBE each tick.
 - `forge_managed=true` positions follow standard strategy lifecycle:

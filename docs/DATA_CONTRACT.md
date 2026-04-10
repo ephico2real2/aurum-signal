@@ -85,6 +85,15 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 - `account.open_positions_count` is account-wide.
 - `open_positions[]` exports all account positions and includes `forge_managed` (`true` for FORGE magic-range positions, `false` for manual/non-FORGE).
 - `pending_orders[]` exports symbol-scope pending orders and includes `forge_managed`.
+- `forge_config` exports active threshold-hardening values:
+  - `pending_entry_threshold_points`
+  - `trend_strength_atr_threshold`
+  - `breakout_buffer_points`
+
+`MT5/scalper_entry.json` semantics (native FORGE scalper):
+- emitted by FORGE on native setup trigger (`FORGE_NATIVE_SCALP`)
+- consumed by BRIDGE and persisted into SCRIBE `trade_groups`
+- includes threshold-hardening fields above plus derived decision metrics (`h1_trend_strength`, `prev_close`, `m5_bb_upper`, `m5_bb_lower`)
 
 BRIDGE tracker semantics:
 - `forge_managed=true` positions follow standard strategy trade-group lifecycle.
