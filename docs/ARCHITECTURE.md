@@ -1,6 +1,6 @@
 # SIGNAL SYSTEM — Architecture & Data Flow
 
-> v1.3.1 · 11 components · 6 operating modes · XAUUSD scalping
+> Current runtime architecture · 11 components + shared VISION module · 6 operating modes · XAUUSD scalping
 
 ---
 
@@ -19,6 +19,9 @@
 │       │                │                │                                   │
 │       │ parsed_        │ lens_          │ sentinel_                         │
 │       │ signal.json    │ snapshot.json  │ status.json                      │
+│       │                │                │                                   │
+│       │ media + text   │                │                                   │
+│       └──────► VISION module (shared by LISTENER + AURUM)                  │
 └───────┼────────────────┼────────────────┼───────────────────────────────────┘
         │                │                │
         ▼                ▼                ▼
@@ -62,7 +65,8 @@
 │                              │                                             │
 │                     market_data.json (every 3s)                            │
 │                     • price, account, indicators                           │
-│                     • open_positions[], pending_orders[]                   │
+│                     • open_positions[] (all account positions + forge_managed) │
+│                     • pending_orders[] (symbol pendings + forge_managed)       │
 └──────────────────────────────┼─────────────────────────────────────────────┘
                                │
               ┌────────────────┼────────────────┐
@@ -86,18 +90,35 @@
 
 ---
 
-## Trade Lifecycle (Signal → Execution → Closure)
+## Trade Lifecycle (Signal → VISION/Parse → Execution → Closure)
 
 ```
                     SIGNAL ENTRY
                     ============
 
   Telegram Channel ──► LISTENER ──► Claude Haiku parse
+        │                   │              │
+        │             (if media)           │
+        │                   ▼              │
+        │                VISION ───────────┘
+        │                   │
+        │      room-priority gate (SIGNAL_TRADE_ROOMS)
+        │      non-priority -> WATCH_ONLY (logged), no dispatch
+        │
+        │      media archive (LISTENER_SIGNAL_MEDIA_ARCHIVE_*)
+        │      -> python/data/signal_media_archive/<channel>/*.img + *.img.json
+        │
+        │      Telegram summary to operator bot chat
+        │      -> SIGNAL_CHART_SUMMARY_SENT / FAILED
+        │
+        │      SCRIBE.vision_extractions + signals_received linkage
         │                                  │
         │                          parsed_signal.json
         │                                  │
         ▼                                  ▼
-  AURUM (manual) ──► aurum_cmd.json ──► BRIDGE
+  AURUM (manual/chat) ──► aurum_cmd.json ──► BRIDGE
+        │
+        └─ direct image upload ─► VISION ─► SCRIBE.vision_extractions
                                           │
                                     ┌─────┴──────┐
                                     │   AEGIS     │
@@ -135,6 +156,14 @@
            trade_positions         POSITION_MODIFIED
            (ticket, entry,         (old→new SL/TP)
             SL, TP, lots)
+                  │
+                  ▼
+      unmanaged/manual position?
+                  │
+                  ▼
+      SCRIBE synthetic lifecycle
+      source=MANUAL_MT5
+      + UNMANAGED_POSITION_OPEN/CLOSED
 
 
                     CLOSURE DETECTION
@@ -218,7 +247,7 @@
 
 ---
 
-## SCRIBE Database Schema (9 tables)
+## SCRIBE Database Schema (11 tables)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -230,8 +259,11 @@
 │ trading_sessions    │ Session windows (ASIAN/LONDON/NY)     │
 │                     │ with rolled-up P&L on close           │
 ├─────────────────────┼───────────────────────────────────────┤
-│ signals_received    │ Every Telegram signal + parse result  │
+│ signals_received    │ Every Telegram signal + parse result   │
+│                     │ + source_type + vision_extraction_id   │
 │                     │ + disposition (EXECUTED/SKIPPED)       │
+├─────────────────────┼───────────────────────────────────────┤
+│ market_snapshots    │ LENS + MT5 indicator snapshots        │
 ├─────────────────────┼───────────────────────────────────────┤
 │ trade_groups        │ N-trade groups: entry zone, SL, TP,   │
 │                     │ status, total P&L, magic_number       │
@@ -250,14 +282,48 @@
 │                     │ + token usage                          │
 ├─────────────────────┼───────────────────────────────────────┤
 │ component_heartbeats│ Per-component liveness (upserted)     │
+├─────────────────────┼───────────────────────────────────────┤
+│ vision_extractions  │ Every VISION trigger result            │
+│                     │ (caller, confidence, structured_data,  │
+│                     │ downstream_result, linked_signal_id)   │
 └─────────────────────┴───────────────────────────────────────┘
 
-Every record carries: timestamp (UTC ISO) + mode
+Every record carries: timestamp (UTC ISO) + mode where applicable.
+
+---
+
+## VISION Invocation Paths & Runtime Behavior
+
+```
+1) LISTENER channel message
+   NewMessage/Edit -> has_media?
+      -> Vision.extract(image, caption, context_hint="SIGNAL", caller="LISTENER")
+      -> SCRIBE.log_vision_extraction(caller=LISTENER, source_channel=<channel>)
+      -> merge structured_data into parsed signal (when text is incomplete/ignore)
+      -> signals_received.vision_extraction_id links signal row to vision_extractions.id
+
+2) AURUM direct bot image
+   Telegram bot image -> Aurum._reply_with_optional_image(...)
+      -> Vision.extract(image, context_hint=<chat intent>, caller="HERALD")
+      -> SCRIBE.log_vision_extraction(caller=HERALD, source_channel="direct")
+      -> high confidence: context injected into AURUM answer
+      -> low confidence: user gets clarification / resend request
+```
+
+Failure handling and resilience:
+- VISION is a shared module, not a separate service process.
+- Validation failures, unreadable images, or model errors return a safe LOW-confidence result instead of crashing caller flows.
+- LISTENER can hold LOW-confidence image signals when `VISION_LOW_CONFIDENCE_HOLD=true`.
+- Runtime service reliability depends on launchd using the project `.venv` interpreter so PIL/OpenCV/tesseract bindings are available.
 ```
 
 ---
 
 ## Operating Modes
+Dedicated mode architecture (ownership, gating, and per-mode workflows):
+- **[docs/MODES_ARCHITECTURE.md](MODES_ARCHITECTURE.md)**
+Scalper threshold meaning, fast/strict profile values, and rollback commands:
+- **[docs/FORGE_TRADING_RULES.md](FORGE_TRADING_RULES.md)**
 
 ```
 ┌────────┬───────────────────────────────────────────────────────┐
@@ -269,10 +335,10 @@ Every record carries: timestamp (UTC ISO) + mode
 │ SIGNAL │ Executes Telegram channel signals only.              │
 │        │ LISTENER → Claude parse → AEGIS → FORGE.            │
 ├────────┼───────────────────────────────────────────────────────┤
-│SCALPER │ BRIDGE's own LENS-driven entries (ADX>20 gate).      │
-│        │ No Telegram dependency.                               │
+│SCALPER │ BRIDGE scalper + FORGE native scalper are active.     │
+│        │ BRIDGE scalper path is direct; FORGE native is EA-side│
 ├────────┼───────────────────────────────────────────────────────┤
-│ HYBRID │ SIGNAL + SCALPER both active. Max opportunity.       │
+│ HYBRID │ SIGNAL + SCALPER active (includes FORGE native mode).│
 ├────────┼───────────────────────────────────────────────────────┤
 │ AUTO_  │ AURUM (Claude) as autonomous decision engine.        │
 │SCALPER │ BRIDGE polls every 120s with multi-TF prompt.        │
@@ -282,6 +348,7 @@ Mode overrides:
   SENTINEL active  → effective_mode = WATCH (auto-resume)
   MT5 data stale   → CIRCUIT BREAKER → WATCH (auto-resume)
   Equity DD > 3%   → CLOSE ALL + WATCH (manual resume)
+  BRIDGE_PIN_MODE  → blocks mode changes away from pinned mode (logs MODE_CHANGE_BLOCKED)
 ```
 
 ---
@@ -345,7 +412,7 @@ READ
   GET  /api/mode              Current mode
 
 WRITE
-  POST /api/mode              Queue mode change → BRIDGE
+  POST /api/mode              Queue mode change request → BRIDGE (BRIDGE is source-of-truth; pin may block)
   POST /api/management        CLOSE_ALL, MOVE_BE, etc → FORGE
   POST /api/aurum/ask         Chat with AURUM (Claude)
   POST /api/scribe/query      Read-only SQL against SCRIBE
@@ -355,3 +422,14 @@ DOCS
   GET  /api/docs/             Swagger UI
   GET  /api/openapi.yaml      OpenAPI spec
 ```
+
+Performance tab metric contract:
+- Window: **Rolling 7 days (UTC)**
+- Source: SCRIBE `trade_positions` with `status='CLOSED'`
+- Metrics: Win Rate, Avg Pips, Total P&L, Trades, Wins, Losses
+
+`GET /api/mode` includes:
+- `mode`: current requested mode from BRIDGE status
+- `effective_mode`: runtime mode after sentinel/circuit-breaker overrides
+- `requested_mode`: last queued dashboard mode request (if any)
+- `mode_pin`: configured `BRIDGE_PIN_MODE` (if set)

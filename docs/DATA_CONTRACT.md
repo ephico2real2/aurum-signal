@@ -81,6 +81,14 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 | `MT5/market_data.json` | FORGE | BRIDGE, ATHENA | `schemas/files/market_data.schema.json` |
 | `python/config/parsed_signal.json` | LISTENER | BRIDGE | *(documented in LISTENER prompt; extend schema when stable)* |
 | `python/config/lens_snapshot.json` | LENS MCP (via `lens.py`) | BRIDGE, ATHENA | *(partial; TV snapshot fields)* |
+`MT5/market_data.json` semantics (current runtime):
+- `account.open_positions_count` is account-wide.
+- `open_positions[]` exports all account positions and includes `forge_managed` (`true` for FORGE magic-range positions, `false` for manual/non-FORGE).
+- `pending_orders[]` exports symbol-scope pending orders and includes `forge_managed`.
+
+BRIDGE tracker semantics:
+- `forge_managed=true` positions follow standard strategy trade-group lifecycle.
+- `forge_managed=false` positions are persisted as synthetic manual groups (`trade_groups.source='MANUAL_MT5'`) with `trade_positions`/`trade_closures` rows and audit events `UNMANAGED_POSITION_OPEN` / `UNMANAGED_POSITION_CLOSED`.
 
 **Ephemeral queue:** `aurum_cmd.json` is a **drop box**, not a status file. BRIDGE **removes** it after handling. If the mode already changed, the file is often **gone** — that is **normal**.
 

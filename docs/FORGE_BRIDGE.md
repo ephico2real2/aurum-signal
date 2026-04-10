@@ -119,7 +119,15 @@ These update every 3 seconds (OnTimer). Python reads them via `market_view.py` (
 
 ## 7. Position tracker
 
-BRIDGE tracks individual position fills and closes by diffing `open_positions` and `pending_orders` against SCRIBE each tick. New tickets → `log_trade_position()`. Disappeared tickets → `close_trade_position()` with P&L. Group totals auto-rollup when all exposure is gone.
+BRIDGE tracks individual position fills and closes by diffing `open_positions` and `pending_orders` against SCRIBE each tick.
+- `forge_managed=true` positions follow standard strategy lifecycle:
+  - New tickets → `log_trade_position()`
+  - Disappeared tickets → `close_trade_position()` with inferred close reason
+  - Group totals auto-rollup when all exposure is gone
+- `forge_managed=false` positions (manual/non-FORGE) are still logged:
+  - synthetic `trade_groups.source='MANUAL_MT5'`
+  - `trade_positions` + `trade_closures` rows
+  - `UNMANAGED_POSITION_OPEN` / `UNMANAGED_POSITION_CLOSED` audit events in `system_events`
 
 ## Related
 

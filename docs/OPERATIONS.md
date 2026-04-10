@@ -44,6 +44,7 @@ This re-renders `services/macos/rendered/*.plist` from templates + `.env`, then 
 **Interpreter:** If `.venv` exists at repo root, launchd uses `.venv/bin/python` automatically. Override with env `SIGNAL_PYTHON=/path/to/python` before install if needed.
 
 **Risk gate:** Trade validation is **AEGIS** — see [AEGIS.md](AEGIS.md). Tuning is via **`AEGIS_*`** env vars; **bridge** must be restarted/reloaded to pick them up.
+**Execution latency + mode stability:** `BRIDGE_LOOP_SEC` controls BRIDGE tick frequency (lower = faster signal consumption), and `BRIDGE_PIN_MODE` can lock runtime mode (for example `HYBRID`) to prevent accidental drift.
 
 **News / calendar:** **SENTINEL** — ForexFactory multi-currency calendar + free RSS (FXStreet, Google News, Investing.com forex, optional DailyFX/extras). Extended events (speeches, FOMC) hold the guard for 60min. See [SENTINEL.md](SENTINEL.md).
 
@@ -78,6 +79,22 @@ make logs-athena
 make logs-aurum
 make logs-bridge
 ```
+
+Signal-room media replay/back-analysis:
+
+```bash
+python3 scripts/replay_signal_uploads.py --limit 5
+python3 scripts/replay_signal_uploads.py --channel "FLAIR FX" --limit 10
+python3 scripts/replay_signal_uploads.py --limit 5 --notify
+```
+
+Evidence events to monitor in SCRIBE `system_events`:
+- `SIGNAL_CHART_RECEIVED`
+- `SIGNAL_CHART_SUMMARY_SENT` / `SIGNAL_CHART_SUMMARY_FAILED`
+- `SIGNAL_CHART_ARCHIVED`
+- `SIGNAL_CHART_REPLAYED`
+- `UNMANAGED_POSITION_OPEN`
+- `UNMANAGED_POSITION_CLOSED`
 
 ---
 

@@ -2,6 +2,8 @@
 
 Base URL: `http://localhost:7842`
 Swagger UI: `http://localhost:7842/api/docs/`
+Replay workflow: `docs/VISION_CLI_RUNBOOK.md#cli-signal-replay-runbook-execute-a-historical-signal-now`
+Signal-room media replay: `python3 scripts/replay_signal_uploads.py --limit 5`
 
 ---
 
@@ -34,6 +36,123 @@ print('Signal written — BRIDGE processes on next tick (~5s)')
 print('Uses SIGNAL_LOT_SIZE + SIGNAL_NUM_TRADES from .env')
 "
 ```
+
+## Ask AURUM: “what passes AEGIS now?”
+
+Send directly to AURUM via API:
+```bash
+curl -sS -X POST http://localhost:7842/api/aurum/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Based on current /api/live market state, what trade setup is most likely to pass AEGIS right now? Return direction, entry zone, SL, TP1, and why it passes trend/risk gates."}'
+```
+
+Recommended Telegram message to AURUM:
+```text
+Based on live market state right now, give me ONE setup most likely to pass AEGIS.
+Include:
+- direction (BUY/SELL)
+- entry range
+- SL
+- TP1
+- short gate check (trend alignment + risk notes)
+If nothing is safe, reply PASS with the exact blocker.
+```
+
+Optional: include live context in the same query
+```bash
+curl -sS http://localhost:7842/api/live | python3 -m json.tool
+```
+Then send a follow-up:
+```text
+Using this live snapshot, propose only an AEGIS-pass setup for source=SIGNAL.
+If it would fail, explain exact reject reason format (e.g., TREND_CONFLICT...).
+```
+## How to pass AEGIS decision engine (CLI playbook)
+Use this sequence before replaying or sending a live signal.
+### 1) Confirm BRIDGE is in executable mode
+```bash
+curl -sS http://127.0.0.1:7842/api/mode
+```
+If needed:
+```bash
+curl -sS -X POST http://127.0.0.1:7842/api/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"SIGNAL"}'
+sleep 6
+curl -sS http://127.0.0.1:7842/api/mode
+```
+Pass condition:
+- `effective_mode` is `SIGNAL` (or `HYBRID` for signal+scalper runs).
+### 2) Check live market + guard state
+```bash
+curl -sS http://127.0.0.1:7842/api/live | python3 -m json.tool
+```
+Pass conditions:
+- `sentinel_active=false`
+- `circuit_breaker=false`
+- `mt5_connected=true`
+- `mt5_fresh=true`
+### 3) Pre-check trend alignment for SIGNAL source (M5 → M15 → H1 cascade)
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+d = json.loads(Path('MT5/market_data.json').read_text())
+def bias(tf):
+    e20 = (tf or {}).get('ema_20') or (tf or {}).get('ma_20')
+    e50 = (tf or {}).get('ema_50') or (tf or {}).get('ma_50')
+    if e20 is None or e50 is None: return 'FLAT'
+    diff = float(e20) - float(e50)
+    if diff > 1: return 'BULL'
+    if diff < -1: return 'BEAR'
+    return 'FLAT'
+for key,name in [('indicators_m5','M5'),('indicators_m15','M15'),('indicators_h1','H1')]:
+    print(name, bias(d.get(key, {})))
+PY
+```
+Pass heuristic:
+- For `BUY`: prefer `M5` or `M15` as `BULL/FLAT`
+- For `SELL`: prefer `M5` or `M15` as `BEAR/FLAT`
+- If both M5 and M15 oppose your direction, expect `TREND_CONFLICT` skip.
+### 4) Ensure SL/TP is likely to satisfy AEGIS R:R
+AEGIS rejects low R:R (`LOW_RR`). Keep TP1 far enough vs SL distance.
+- Rule of thumb: TP1 distance should be at least ~1.2× SL distance.
+- If borderline, either tighten SL or widen TP1.
+### 5) Ask AURUM for a pass-oriented setup (optional but recommended)
+```bash
+curl -sS -X POST http://127.0.0.1:7842/api/aurum/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Give one setup most likely to pass AEGIS for source=SIGNAL now. Include direction, entry_low, entry_high, sl, tp1, and gate-check summary. If unsafe, reply PASS with exact blocker."}'
+```
+### 6) Replay/submit and verify decision immediately
+After writing `python/config/parsed_signal.json`, check:
+```bash
+tail -n 50 logs/bridge.log | grep -iE 'New signal|APPROVED|REJECTED|SKIPPED|TREND_CONFLICT|LOW_RR|OPEN_GROUP'
+```
+```bash
+curl -sS http://127.0.0.1:7842/api/live
+```
+If rejected, use `skip_reason` as the exact fix target for the next attempt.
+### Common AEGIS reject reasons → what to change
+- `TREND_CONFLICT:M5=..._M15=..._vs_<DIRECTION>(scalp_cascade)`
+  - Change direction to match M5/M15 bias, or wait for M5/M15 to realign.
+  - For SIGNAL source, if both M5 and M15 oppose your direction, it will be skipped.
+- `LOW_RR:<value><1.2`
+  - Tighten SL or widen TP1 so TP1 distance is at least ~1.2× SL distance.
+- `SL_TOO_TIGHT:<value><MIN_SL_PIPS`
+  - Increase SL distance from entry so it exceeds minimum SL pips threshold.
+- `INVALID_SL:SL_BEYOND_ENTRY` / `INVALID_TP1:TP_BEYOND_ENTRY`
+  - Fix directional math:
+    - BUY: `sl < entry` and `tp1 > entry`
+    - SELL: `sl > entry` and `tp1 < entry`
+- `MAX_GROUPS:<open>/<limit>`
+  - Close or reduce existing open groups, then retry.
+- `DAILY_LOSS_LIMIT:$x/$y`
+  - Wait for next session reset or lower risk/exposure before retrying.
+- `FLOATING_DD:<pct>%>=<limit>%`
+  - Reduce current drawdown (close/reduce losing exposure) before opening new group.
+- `SLIPPAGE:<value>><max>`
+  - Re-issue with a closer/current entry zone; avoid stale entries.
 
 Simulate a MODIFY_TP management command (moves TP on all open positions):
 ```bash
@@ -381,6 +500,53 @@ for r in json.load(sys.stdin)['rows']:
 "
 ```
 
+## Manual / Unmanaged MT5 Trades (`MANUAL_MT5`)
+
+Latest synthetic manual groups:
+```bash
+curl -s http://localhost:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql": "SELECT id, timestamp, status, direction, magic_number, total_pnl, close_reason FROM trade_groups WHERE source='\''MANUAL_MT5'\'' ORDER BY id DESC LIMIT 15"}' \
+  | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['rows']
+for r in rows:
+    print(f'G{r[\"id\"]} MANUAL_MT5 {r[\"direction\"] or \"?\":4s} {r[\"status\"]:8s} magic={r[\"magic_number\"]} pnl={r[\"total_pnl\"]} reason={r[\"close_reason\"] or \"-\"}')
+if not rows:
+    print('No MANUAL_MT5 groups found')
+"
+```
+
+Open manual positions currently tracked in SCRIBE:
+```bash
+curl -s http://localhost:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql": "SELECT p.ticket, p.trade_group_id, p.magic_number, p.direction, p.lot_size, p.entry_price, p.status, g.source FROM trade_positions p JOIN trade_groups g ON g.id=p.trade_group_id WHERE g.source='\''MANUAL_MT5'\'' AND p.status='\''OPEN'\'' ORDER BY p.id DESC LIMIT 20"}' \
+  | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['rows']
+for r in rows:
+    print(f'#{r[\"ticket\"]} G{r[\"trade_group_id\"]} {r[\"direction\"]} {r[\"lot_size\"]}lot entry={r[\"entry_price\"]} magic={r[\"magic_number\"]} {r[\"status\"]}')
+if not rows:
+    print('No OPEN MANUAL_MT5 positions')
+"
+```
+
+Unmanaged lifecycle audit events:
+```bash
+curl -s http://localhost:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql": "SELECT timestamp, event_type, reason, notes FROM system_events WHERE event_type IN ('\''UNMANAGED_POSITION_OPEN'\'','\''UNMANAGED_POSITION_CLOSED'\'') ORDER BY id DESC LIMIT 25"}' \
+  | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)['rows']
+for r in rows:
+    ts = (r['timestamp'] or '')[:19]
+    print(f'{ts} | {r[\"event_type\"]:27s} | {r.get(\"reason\") or \"-\"}')
+if not rows:
+    print('No unmanaged lifecycle events yet')
+"
+```
 ## System Events Log
 
 Recent events:
@@ -540,6 +706,25 @@ import sys, json
 d = json.load(sys.stdin)
 print(f'Trades: {d[\"total\"]}  Wins: {d[\"wins\"]}  Win rate: {d.get(\"win_rate\",\"n/a\")}%')
 print(f'Total P&L: \${d[\"total_pnl\"]:+.2f}  Avg pips: {d[\"avg_pips\"]:+.1f}')
+"
+```
+Performance tab accuracy contract:
+- Window: **Rolling 7 days (UTC)**
+- Source rows: `trade_positions` where `status='CLOSED'` in SCRIBE
+- Metrics shown:
+  - Win Rate
+  - Avg Pips
+  - Total P&L
+  - Trades
+  - Wins
+  - Losses
+Validation tip:
+```bash
+curl -s http://localhost:7842/api/live | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('performance_window'))
+print({k:d.get('performance',{}).get(k) for k in ['total','wins','win_rate','avg_pips','total_pnl']})
 "
 ```
 
@@ -933,6 +1118,17 @@ curl -s -X POST http://localhost:7842/api/aurum/ask \
 
 Trigger keywords: news, speaking, live, right now, trump, powell, fomc, breaking, latest, etc.
 
+## TradingView Brief (full payload)
+
+```bash
+# Full persisted brief payload from LENS
+curl -s http://localhost:7842/api/brief | python3 -m json.tool
+
+# If unavailable, force one fresh LENS cycle then retry
+python3 python/lens.py
+curl -s http://localhost:7842/api/brief | python3 -m json.tool
+```
+
 ## Useful Make Targets
 
 ```bash
@@ -946,6 +1142,10 @@ make forge-refresh        # compile + open MT5 (manual reattach)
 make forge-verify-live    # poll until forge_version matches source
 make forge-refresh-verify # compile + open MT5 + poll 180s
 make verify-forge-bridge  # check file bus paths
+make start-tradingview    # launch TradingView Desktop with CDP
+make check-tradingview    # verify CDP is reachable on :9222
+make setup-indicators     # add/repair required TV indicators (including ADX+DI)
+make check-indicators     # verify required indicators exist
 ```
 
 **Note on EA reattach (macOS Wine limitation):**

@@ -8,6 +8,12 @@
 ## Architecture
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for full ASCII diagrams: system overview, trade lifecycle, closure detection flow, file bus, safety layers, and API surface.
+See **[docs/MODES_ARCHITECTURE.md](docs/MODES_ARCHITECTURE.md)** for mode-by-mode ownership and execution workflows (OFF/WATCH/SIGNAL/SCALPER/HYBRID/AUTO_SCALPER).
+For scalper threshold tuning, fast/strict profiles, and rollback commands, see **[docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)**.
+For image-extraction validation commands and SCRIBE proof queries, see **[docs/VISION_CLI_RUNBOOK.md](docs/VISION_CLI_RUNBOOK.md)**.
+For room-priority execution (trade selected channels, watch-only others), see **[docs/SIGNAL_ROOM_POLICY.md](docs/SIGNAL_ROOM_POLICY.md)**.
+Signal-room media uploads are now archived and replayable (`scripts/replay_signal_uploads.py`) with channel-aware summary notifications to your Telegram bot chat.
+FORGE market export now includes all account positions with `forge_managed=true/false`, and BRIDGE logs unmanaged/manual MT5 positions into SCRIBE as `MANUAL_MT5` lifecycle records.
 
 ```
 LISTENER · LENS · SENTINEL          ← Signal Intake + Protection
@@ -37,8 +43,8 @@ LISTENER · LENS · SENTINEL          ← Signal Intake + Protection
 - **OFF** — Completely dormant
 - **WATCH** — Records data only, no trades (ML collection)
 - **SIGNAL** — Executes Telegram signals only
-- **SCALPER** — EA's own LENS-driven entries
-- **HYBRID** — Both SIGNAL + SCALPER active
+- **SCALPER** — BRIDGE scalper + FORGE native scalper
+- **HYBRID** — SIGNAL + SCALPER combined
 
 ## Quick Start
 
