@@ -6,21 +6,28 @@ Wraps the LewisWJackson/tradingview-mcp-jackson MCP server.
 Caches results for LENS_CACHE_SEC (default 60s). Validates signal entries. Checks TP1 momentum.
 """
 
-import os, json, logging, shutil, subprocess, time
+import os, json, logging, shutil, subprocess, time, shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
 from scribe import get_scribe
 from status_report import report_component_status
+from mcp_client import MCPSession
 
 log = logging.getLogger("lens")
 
-SNAPSHOT_FILE  = os.environ.get("LENS_SNAPSHOT", "config/lens_snapshot.json")
+SNAPSHOT_FILE  = os.environ.get(
+    "LENS_SNAPSHOT_FILE",
+    os.environ.get("LENS_SNAPSHOT", "config/lens_snapshot.json"),
+)
+BRIEF_FILE     = os.environ.get("LENS_BRIEF_FILE", "config/lens_brief.json")
 CACHE_SECONDS  = int(os.environ.get("LENS_CACHE_SEC", "60"))
 MCP_SERVER_CMD = os.environ.get(
     "LENS_MCP_CMD",
     "npx tradingview-mcp-jackson"
 )
+ENABLE_TV_BRIEF = os.environ.get("LENS_ENABLE_TV_BRIEF", "true").lower() in ("1", "true", "yes")
+TV_BRIEF_INTERVAL_SEC = int(os.environ.get("LENS_TV_BRIEF_INTERVAL_SEC", "1800"))
 SYMBOL         = os.environ.get("LENS_SYMBOL", "XAUUSD")
 EXCHANGE       = os.environ.get("LENS_EXCHANGE", "FX_IDC")
 TIMEFRAMES     = os.environ.get("LENS_TIMEFRAMES", "1m,5m,1h").split(",")
@@ -45,9 +52,20 @@ class LensSnapshot:
         self.bb_lower     = data.get("BB.lower", 0)
         self.bb_width     = (self.bb_upper - self.bb_lower) / self.bb_mid if self.bb_mid else 0
         self.adx          = data.get("ADX", 0)
+        self.di_plus      = data.get("DI.plus", 0)
+        self.di_minus     = data.get("DI.minus", 0)
+        self.dmi_present  = bool(data.get("DMI.present", False))
+        self.dmi_study    = data.get("DMI.study")
         self.ema_20       = data.get("EMA20", 0)
         self.ema_50       = data.get("EMA50", 0)
-        self.tv_recommend = data.get("Recommend.All", 0)
+        self.order_block_present = bool(data.get("OrderBlock.present", False))
+        self.order_block_study   = data.get("OrderBlock.study")
+        self.order_block_values  = data.get("OrderBlock.values", {}) or {}
+        self.tv_recommend = data.get("Recommend.All")
+        self.tv_recommend_source = data.get("Recommend.Source", "UNAVAILABLE")
+        self.tv_brief = data.get("TV.Brief")
+        self.tv_brief_source = data.get("TV.Brief.Source")
+        self.tv_brief_timestamp = data.get("TV.Brief.Timestamp")
         self.timeframe    = data.get("timeframe", "5m")
 
         # Derived
@@ -81,8 +99,18 @@ class LensSnapshot:
             "bb_upper": self.bb_upper, "bb_mid": self.bb_mid,
             "bb_lower": self.bb_lower, "bb_width": round(self.bb_width, 5),
             "bb_rating": self.bb_rating, "bb_squeeze": self.bb_squeeze,
-            "adx": self.adx, "ema_20": self.ema_20, "ema_50": self.ema_50,
-            "tv_recommend": self.tv_recommend, "timeframe": self.timeframe,
+            "adx": self.adx, "di_plus": self.di_plus, "di_minus": self.di_minus,
+            "dmi_present": self.dmi_present, "dmi_study": self.dmi_study,
+            "ema_20": self.ema_20, "ema_50": self.ema_50,
+            "order_block_present": self.order_block_present,
+            "order_block_study": self.order_block_study,
+            "order_block_values": self.order_block_values,
+            "tv_recommend": self.tv_recommend,
+            "tv_recommend_source": self.tv_recommend_source,
+            "tv_brief": self.tv_brief,
+            "tv_brief_source": self.tv_brief_source,
+            "tv_brief_timestamp": self.tv_brief_timestamp,
+            "timeframe": self.timeframe,
             "timestamp": self.timestamp, "age_seconds": round(self.age_seconds, 1),
         }
 
@@ -134,7 +162,10 @@ class Lens:
         self.scribe    = get_scribe()
         self._cache:   LensSnapshot | None = None
         self._cache_ts: float = 0
+        self._last_tv_brief_ts: float = 0
+        self._last_tv_brief: dict | None = None
         Path(SNAPSHOT_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(BRIEF_FILE).parent.mkdir(parents=True, exist_ok=True)
         log.info("LENS initialised")
 
     def get(self, mode: str, mt5_data: dict = None) -> LensSnapshot | None:
@@ -192,16 +223,17 @@ class Lens:
 
     def _mcp_argv(self) -> list:
         """Resolve npx/node to absolute paths when possible (launchd-safe)."""
-        parts = MCP_SERVER_CMD.split()
+        cmd = (MCP_SERVER_CMD or "").strip().strip('"').strip("'")
+        parts = shlex.split(cmd)
         if not parts:
             return parts
         exe = shutil.which(parts[0]) or parts[0]
         return [exe] + parts[1:]
 
-    def _run_mcp(self, tool: str) -> dict:
+    def _run_mcp(self, tool: str, arguments: dict | None = None) -> dict:
         """Spawn MCP server, send one request, read response, kill process."""
         req = {"jsonrpc":"2.0","id":1,"method":"tools/call",
-               "params":{"name": tool, "arguments":{}}}
+               "params":{"name": tool, "arguments": arguments or {}}}
         proc = subprocess.Popen(
             self._mcp_argv(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -237,12 +269,110 @@ class Lens:
             pass
         return result
 
+    def _tv_brief_due(self) -> bool:
+        return ENABLE_TV_BRIEF and (
+            self._last_tv_brief is None or
+            (time.time() - self._last_tv_brief_ts) >= TV_BRIEF_INTERVAL_SEC
+        )
+
+    def _tv_brief_from_cli(self) -> dict | None:
+        tv = shutil.which("tv")
+        if not tv:
+            return None
+        try:
+            proc = subprocess.run(
+                [tv, "brief", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=40,
+                env=os.environ.copy(),
+            )
+            if proc.returncode != 0:
+                return None
+            payload = (proc.stdout or "").strip()
+            if not payload:
+                return None
+            try:
+                return json.loads(payload)
+            except Exception:
+                # Non-JSON CLI output fallback
+                return {"summary": payload[:1500]}
+        except Exception:
+            return None
+
+    def _extract_tv_brief(self, resp: dict | None, source: str) -> dict | None:
+        if not isinstance(resp, dict) or not resp:
+            return None
+        out = {
+            "source": source,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        for k in ("bias", "summary", "session_bias", "overall", "market_bias"):
+            if k in resp and resp.get(k) not in (None, ""):
+                out["bias"] = resp.get(k)
+                break
+        for k in ("brief", "notes", "analysis", "message", "report"):
+            if k in resp and resp.get(k) not in (None, ""):
+                v = resp.get(k)
+                out["summary"] = v if isinstance(v, str) else str(v)
+                break
+        # keep compact raw for debugging/use by UI/AURUM if needed
+        out["raw"] = resp
+        return out
+
+    def _write_tv_brief(self, brief: dict):
+        try:
+            with open(BRIEF_FILE, "w") as f:
+                json.dump(brief, f, indent=2)
+        except Exception as e:
+            log.error(f"LENS brief write error: {e}")
+
     def _call_mcp(self) -> dict | None:
         """Fetch price + indicator data from TradingView via MCP."""
         try:
-            quote        = self._run_mcp("quote_get")
-            studies_resp = self._run_mcp("data_get_study_values")
-            studies = studies_resp.get("studies", [])
+            # Preferred path: proper MCP initialize/initialized handshake + persistent session.
+            quote = {}
+            studies_resp = {}
+            chart_state = {}
+            ob_boxes_resp = {}
+            tv_brief_obj = self._last_tv_brief
+            try:
+                with MCPSession(timeout=30) as session:
+                    quote = session.call("quote_get", {})
+                    studies_resp = session.call("data_get_study_values", {})
+                    chart_state = session.call("chart_get_state", {})
+                    ob_boxes_resp = session.call(
+                        "data_get_pine_boxes",
+                        {"study_filter": "Order Block Detector", "verbose": False},
+                    )
+                    if self._tv_brief_due():
+                        brief_resp = session.call("morning_brief", {})
+                        tv_brief_obj = self._extract_tv_brief(brief_resp, "MCP_TOOL")
+                        if tv_brief_obj:
+                            self._last_tv_brief = tv_brief_obj
+                            self._last_tv_brief_ts = time.time()
+                            self._write_tv_brief(tv_brief_obj)
+            except Exception as e:
+                log.warning(f"LENS MCP session path failed, falling back to legacy one-shot calls: {e}")
+                quote = self._run_mcp("quote_get")
+                studies_resp = self._run_mcp("data_get_study_values")
+                chart_state = self._run_mcp("chart_get_state")
+                ob_boxes_resp = self._run_mcp(
+                    "data_get_pine_boxes",
+                    {"study_filter": "Order Block Detector", "verbose": False},
+                )
+                if self._tv_brief_due():
+                    brief_resp = self._run_mcp("morning_brief")
+                    tv_brief_obj = self._extract_tv_brief(brief_resp, "MCP_TOOL_LEGACY")
+                    if not tv_brief_obj:
+                        tv_brief_obj = self._extract_tv_brief(self._tv_brief_from_cli(), "TV_CLI")
+                    if tv_brief_obj:
+                        self._last_tv_brief = tv_brief_obj
+                        self._last_tv_brief_ts = time.time()
+                        self._write_tv_brief(tv_brief_obj)
+
+            studies = studies_resp.get("studies", []) if isinstance(studies_resp, dict) else []
+            chart_studies = chart_state.get("studies", []) if isinstance(chart_state, dict) else []
 
             # 3. Parse studies — values is a dict of {label: "string_value"}
             def to_float(v):
@@ -250,6 +380,48 @@ class Lens:
                     return float(str(v).replace(",","").replace("\u2212","-").replace("−","-"))
                 except:
                     return 0.0
+            def norm_key(v: str) -> str:
+                s = str(v).lower().replace("+", "plus").replace("-", "minus")
+                return "".join(ch for ch in s if ch.isalnum())
+
+            def find_study_by_fragments(fragments: list[str]):
+                for frag in fragments:
+                    frag_l = frag.lower()
+                    for s in studies:
+                        if frag_l in s.get("name", "").lower():
+                            return s
+                return None
+
+            def find_value_from_study(study: dict | None, key_candidates: list[str]) -> float:
+                if not study:
+                    return 0.0
+                vals = study.get("values", {}) or {}
+                norm_vals = {norm_key(k): v for k, v in vals.items()}
+                for cand in key_candidates:
+                    nk = norm_key(cand)
+                    if nk in norm_vals:
+                        return to_float(norm_vals[nk])
+                for cand in key_candidates:
+                    nk = norm_key(cand)
+                    for k, v in norm_vals.items():
+                        if nk in k:
+                            return to_float(v)
+                return 0.0
+            def find_value_with_presence(study: dict | None, key_candidates: list[str]) -> tuple[bool, float]:
+                if not study:
+                    return False, 0.0
+                vals = study.get("values", {}) or {}
+                norm_vals = {norm_key(k): v for k, v in vals.items()}
+                for cand in key_candidates:
+                    nk = norm_key(cand)
+                    if nk in norm_vals:
+                        return True, to_float(norm_vals[nk])
+                for cand in key_candidates:
+                    nk = norm_key(cand)
+                    for k, v in norm_vals.items():
+                        if nk in k:
+                            return True, to_float(v)
+                return False, 0.0
 
             def find_study(name_fragment, value_key):
                 for s in studies:
@@ -264,18 +436,99 @@ class Lens:
             ema_vals = [to_float(list(s["values"].values())[0])
                         for s in studies
                         if "exponential" in s.get("name","").lower() and s.get("values")]
+            close = to_float(quote.get("last", quote.get("close", 0)) if isinstance(quote, dict) else 0)
+            if close <= 0:
+                log.warning("LENS MCP returned invalid quote payload (close<=0)")
+                return None
+            if len(studies) == 0:
+                log.warning("LENS MCP returned quote but no studies; keeping previous snapshot")
+                return None
+            dmi_study = find_study_by_fragments(
+                ["adx and di", "directional movement index", "directional movement"]
+            )
+            dmi_name = dmi_study.get("name") if dmi_study else None
+            adx = find_value_from_study(dmi_study, ["ADX"])
+            di_plus = find_value_from_study(dmi_study, ["DI+", "+DI", "Plus DI", "PlusDI"])
+            di_minus = find_value_from_study(dmi_study, ["DI-", "-DI", "Minus DI", "MinusDI"])
+
+            ob_name = None
+            for s in chart_studies:
+                nm = s.get("name", "")
+                if "order block detector" in nm.lower():
+                    ob_name = nm
+                    break
+
+            ob_values = {}
+            ob_data_study = find_study_by_fragments(["order block detector"])
+            if ob_data_study:
+                raw_vals = ob_data_study.get("values", {}) or {}
+                ob_values = {k: to_float(v) for k, v in raw_vals.items()}
+            ob_studies = ob_boxes_resp.get("studies", []) if isinstance(ob_boxes_resp, dict) else []
+            ob_zones = []
+            if ob_studies:
+                try:
+                    for s in ob_studies:
+                        for z in s.get("zones", []) or []:
+                            hi = to_float(z.get("high"))
+                            lo = to_float(z.get("low"))
+                            if hi > 0 and lo > 0:
+                                ob_zones.append({"high": round(hi, 2), "low": round(lo, 2)})
+                except Exception:
+                    pass
+            if ob_zones:
+                # Keep a compact payload for API/UI
+                ob_values = {
+                    "zone_count": len(ob_zones),
+                    "zones": ob_zones[:6],
+                }
+            tv_recommend = None
+            tv_recommend_source = "UNAVAILABLE"
+            # Try to extract a native recommendation value if available on-chart
+            rec_study = find_study_by_fragments(["technical ratings", "recommend"])
+            if rec_study:
+                rec_found, rec_val = find_value_with_presence(
+                    rec_study,
+                    ["Recommend.All", "Recommendation", "recommendall", "all"],
+                )
+                if rec_found:
+                    tv_recommend = rec_val
+                    tv_recommend_source = "TECHNICAL_RATINGS"
+            if tv_recommend is None:
+                # Fallback: derive a compact directional score from available indicators.
+                score = 0.0
+                score += 0.35 if (ema_vals[0] if len(ema_vals) > 0 else 0.0) > (ema_vals[1] if len(ema_vals) > 1 else 0.0) else -0.35
+                score += 0.25 if find_study("MACD", "Histogram") > 0 else -0.25
+                score += 0.25 if di_plus > di_minus else -0.25
+                rsi_now = find_study("Relative Strength", "RSI")
+                if rsi_now > 55:
+                    score += 0.15
+                elif rsi_now < 45:
+                    score -= 0.15
+                tv_recommend = round(max(-1.0, min(1.0, score)), 2)
+                tv_recommend_source = "DERIVED_FROM_INDICATORS"
 
             data = {
-                "close":         quote.get("last", quote.get("close", 0)),
+                "close":         close,
                 "RSI":           find_study("Relative Strength", "RSI"),
                 "MACD.hist":     find_study("MACD", "Histogram"),
                 "BB.upper":      find_study("Bollinger", "Upper"),
                 "BB.basis":      find_study("Bollinger", "Basis"),
                 "BB.lower":      find_study("Bollinger", "Lower"),
-                "ADX":           find_study("ADX", "ADX"),
+                "ADX":           adx,
+                "DI.plus":       di_plus,
+                "DI.minus":      di_minus,
+                "DMI.present":   bool(dmi_study),
+                "DMI.study":     dmi_name,
                 "EMA20":         ema_vals[0] if len(ema_vals) > 0 else 0.0,
                 "EMA50":         ema_vals[1] if len(ema_vals) > 1 else 0.0,
-                "Recommend.All": 0.0,
+                "OrderBlock.present": bool(ob_name),
+                "OrderBlock.study":   ob_name,
+                "OrderBlock.values":  ob_values,
+                "Recommend.All": tv_recommend,
+                "Recommend.Source": tv_recommend_source,
+                "TV.Brief": (tv_brief_obj or {}).get("summary"),
+                "TV.Brief.Source": (tv_brief_obj or {}).get("source"),
+                "TV.Brief.Timestamp": (tv_brief_obj or {}).get("timestamp"),
                 "timeframe":     TIMEFRAMES[0],
                 "timestamp":     datetime.now(timezone.utc).isoformat(),
             }

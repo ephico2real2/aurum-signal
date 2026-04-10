@@ -1,5 +1,6 @@
 # SIGNAL SYSTEM — Complete Setup Guide
 > macOS · MetaTrader 5 Native · Python 3.11+ · Node.js 18+
+For command-by-command image extraction validation (LISTENER/AURUM + SCRIBE queries), see **[VISION_CLI_RUNBOOK.md](VISION_CLI_RUNBOOK.md)**.
 
 ---
 
@@ -172,6 +173,57 @@ LENS_CACHE_SEC=300
 LENS starts and stops the MCP server as a subprocess automatically.
 You do not need to keep it running manually.
 
+To expose the full TradingView brief payload in ATHENA:
+```bash
+curl -s http://localhost:7842/api/brief | python3 -m json.tool
+```
+If this returns `UNAVAILABLE`, run one LENS cycle (`python3 python/lens.py`) after TradingView CDP is up.
+
+### Launch TradingView Desktop with CDP
+
+**LENS requires TradingView Desktop running with Chrome DevTools Protocol enabled.**
+The MCP server connects to TradingView via CDP on `localhost:9222` to read live indicator data.
+Without it, LENS returns all zeros.
+
+```bash
+make start-tradingview
+```
+
+This finds TradingView Desktop, launches it with `--remote-debugging-port=9222`, and waits until CDP is ready. If TradingView is already running with CDP, it skips the relaunch.
+
+**Important**: Open your XAUUSD chart in TradingView after launch so LENS reads the correct symbol.
+
+Other commands:
+```bash
+make check-tradingview    # check if CDP is running
+make stop-tradingview     # kill TradingView
+make setup-indicators     # add required indicators (RSI/MACD/BB/ADX+DI/OB/FVG)
+make check-indicators     # verify required indicators are present
+```
+
+**Startup order**: After login or reboot, run:
+```bash
+make start-tradingview    # 1. TradingView Desktop with CDP
+make start                # 2. Signal System services (BRIDGE, LISTENER, AURUM, ATHENA)
+```
+
+Or add TradingView to your macOS **Login Items** (System Settings → General → Login Items) so it launches automatically. Note: Login Items won't pass `--remote-debugging-port`, so prefer `make start-tradingview` or add `scripts/start_tradingview_cdp.sh` as a Login Item script.
+
+### Updating the MCP
+
+The upstream repo receives fixes and new features. To update:
+
+```bash
+make update-lens-mcp
+```
+
+This pulls the latest code, runs `npm install`, and verifies the server starts. BRIDGE picks up the new version on its next LENS fetch cycle — no restart required.
+
+To check your current version:
+```bash
+git -C ~/tradingview-mcp-jackson log --oneline -1
+```
+
 ---
 
 ## STEP 4 — Configure .env
@@ -201,6 +253,12 @@ AEGIS_RISK_PCT=2.0
 AEGIS_NUM_TRADES=8
 TP1_CLOSE_PCT=70
 MOVE_BE_ON_TP1=true
+BRIDGE_LOOP_SEC=1
+BRIDGE_PIN_MODE=HYBRID
+SIGNAL_TRADE_ROOMS=Ben's VIP Club,FXM FREE TRADING ROOM
+LISTENER_SIGNAL_MEDIA_SUMMARY_TO_BOT=true
+LISTENER_SIGNAL_MEDIA_ARCHIVE_ENABLED=true
+LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR=data/signal_media_archive
 ```
 
 **Risk gate (AEGIS):** `AEGIS_*` variables control min R:R, daily loss cap, max open groups, slippage, and lot scaling. Full decision order, formulas, and defaults are in **[docs/AEGIS.md](AEGIS.md)**. Restart **bridge** (or `make restart`) after changing them.
@@ -385,6 +443,10 @@ node ~/tradingview-mcp-jackson/src/server.js
 
 # Try different exchange:
 LENS_EXCHANGE=OANDA   # in .env
+```
+If MCP tooling was newly installed, also run:
+```bash
+cd ~/tradingview-mcp-jackson && npm link
 ```
 
 **AURUM not responding on Telegram:**

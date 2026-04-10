@@ -1,0 +1,68 @@
+{
+  "watchlist": ["XAUUSD"],
+  "default_timeframe": "5",
+  "strategy": {
+    "name": "Gold Intraday Bias & Pullback",
+    "sources": [
+      "Trend structure — EMA20 vs EMA50 for directional bias",
+      "Momentum confirmation — RSI and MACD histogram alignment",
+      "DMI strength check — prefer ADX with DI+ / DI- confirmation"
+    ],
+    "primary_timeframes": [
+      "5-minute (execution bias)",
+      "1-hour (higher-timeframe confirmation)"
+    ]
+  },
+  "indicators": {
+    "rsi_14": "Momentum filter. Prefer longs above 50 and shorts below 50; avoid chasing above 72 or below 28.",
+    "ema_20_50": "Trend filter. Bullish when EMA20 > EMA50, bearish when EMA20 < EMA50.",
+    "macd_histogram": "Momentum follow-through. Positive for longs, negative for shorts.",
+    "adx_di": "Trend strength and direction. Prefer ADX > 18 with DI+ > DI- for longs and DI- > DI+ for shorts."
+  },
+  "bias_criteria": {
+    "bullish": [
+      "EMA20 is above EMA50",
+      "RSI is between 50 and 70",
+      "MACD histogram is positive",
+      "DI+ is above DI-"
+    ],
+    "bearish": [
+      "EMA20 is below EMA50",
+      "RSI is between 30 and 50",
+      "MACD histogram is negative",
+      "DI- is above DI+"
+    ],
+    "neutral": [
+      "ADX is below 15 (weak trend / chop)",
+      "EMA20 and EMA50 are flat or crossing repeatedly",
+      "RSI is in extreme zones above 72 or below 28"
+    ]
+  },
+  "entry_rules": {
+    "long": [
+      "Bias is bullish on 5m and not contradicted by 1h",
+      "Price pulls back toward EMA20 and holds above nearby support",
+      "RSI remains above 50 and MACD histogram stays >= 0",
+      "Enter buy only when spread/volatility is acceptable"
+    ],
+    "short": [
+      "Bias is bearish on 5m and not contradicted by 1h",
+      "Price retraces toward EMA20 and rejects near resistance",
+      "RSI remains below 50 and MACD histogram stays <= 0",
+      "Enter sell only when spread/volatility is acceptable"
+    ]
+  },
+  "exit_rules": [
+    "Take partials at first target and reduce risk after TP1",
+    "Move stop toward breakeven once trade confirms",
+    "Exit early if momentum flips against position (MACD/DMI reversal)"
+  ],
+  "risk_rules": [
+    "Risk 0.25% to 1.00% equity per trade based on mode",
+    "Avoid entries during high-impact news windows",
+    "Do not open new positions when ADX is weak and structure is unclear",
+    "Limit concurrent Gold positions by session risk cap",
+    "Require defined invalidation level before entry"
+  ],
+  "notes": "Gold-focused intraday rules for XAUUSD. Use 5m execution with 1h context, prioritize trend alignment (EMA/MACD/DMI), and avoid low-quality chop or high-impact event risk."
+}

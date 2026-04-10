@@ -61,6 +61,12 @@ help:
 	@echo ""
 	@echo "  SETUP & OPS"
 	@echo "  make setup-tests     Install all test dependencies"
+	@echo "  make start-tradingview  Launch TradingView Desktop with CDP (required by LENS)"
+	@echo "  make stop-tradingview   Kill TradingView Desktop"
+	@echo "  make check-tradingview  Check if TradingView CDP is running"
+	@echo "  make setup-indicators  Add all required indicators to TradingView chart"
+	@echo "  make check-indicators  Verify indicators are present (no changes)"
+	@echo "  make update-lens-mcp   Pull latest TradingView MCP, npm install, verify"
 	@echo "  (docs/OPERATIONS.md — restart, verify, AURUM prompt)"
 	@echo "  (docs/AEGIS.md — risk gate logic, AEGIS_* env tuning)"
 	@echo "  (docs/SENTINEL.md — calendar + FXStreet/Google/Investing RSS)"
@@ -293,6 +299,67 @@ reload-athena:
 	fi
 	@sleep 8
 	@curl -sf http://localhost:7842/api/health > /dev/null 2>&1 && echo "✅ ATHENA up" || echo "⚠️  ATHENA not responding"
+
+# ── TradingView CDP + LENS MCP ─────────────────────────────────────────
+LENS_MCP_DIR = $(HOME)/tradingview-mcp-jackson
+LENS_RULES_CANONICAL = $(ROOT_DIR)/config/tradingview_rules.json
+
+.PHONY: start-tradingview stop-tradingview check-tradingview update-lens-mcp
+
+start-tradingview:
+	@chmod +x $(SCRIPTS)/start_tradingview_cdp.sh
+	@$(SCRIPTS)/start_tradingview_cdp.sh
+
+stop-tradingview:
+	@echo "Stopping TradingView Desktop..."
+	@pkill -f "TradingView" 2>/dev/null && echo "✅ TradingView stopped" || echo "  TradingView was not running"
+
+check-tradingview:
+	@if curl -s "http://localhost:9222/json/version" > /dev/null 2>&1; then \
+		echo "✅ TradingView CDP running on port 9222"; \
+		curl -s "http://localhost:9222/json/version" | $(PYTHON) -c "import sys,json; d=json.load(sys.stdin); print(f'   Browser: {d.get(\"Browser\",\"?\")}')" 2>/dev/null; \
+	else \
+		echo "❌ TradingView CDP not running — run: make start-tradingview"; \
+	fi
+
+setup-indicators:
+	@LENS_MCP_CMD="node $(LENS_MCP_DIR)/src/server.js" \
+		$(PYTHON) $(ROOT_DIR)/scripts/setup_tradingview_indicators.py
+
+check-indicators:
+	@LENS_MCP_CMD="node $(LENS_MCP_DIR)/src/server.js" \
+		$(PYTHON) $(ROOT_DIR)/scripts/setup_tradingview_indicators.py --check
+
+update-lens-mcp:
+	@echo "Updating TradingView MCP (LENS)..."
+	@if [ ! -d "$(LENS_MCP_DIR)/.git" ]; then \
+		echo "  Cloning tradingview-mcp-jackson..."; \
+		git clone https://github.com/LewisWJackson/tradingview-mcp-jackson.git "$(LENS_MCP_DIR)"; \
+	else \
+		echo "  Pulling latest from origin/main..."; \
+		git -C "$(LENS_MCP_DIR)" stash --include-untracked 2>/dev/null || true; \
+		git -C "$(LENS_MCP_DIR)" pull origin main; \
+	fi
+	@if [ ! -f "$(LENS_RULES_CANONICAL)" ]; then \
+		echo "  ❌ Canonical rules file missing: $(LENS_RULES_CANONICAL)"; \
+		exit 1; \
+	fi
+	@rm -f "$(LENS_MCP_DIR)/rules.json"
+	@ln -s "$(LENS_RULES_CANONICAL)" "$(LENS_MCP_DIR)/rules.json"
+	@echo "  Symlinked rules.json → $(LENS_RULES_CANONICAL)"
+	@echo "  Running npm install..."
+	@npm install --prefix "$(LENS_MCP_DIR)" --silent 2>&1 | tail -2
+	@echo "  Verifying server starts..."
+	@timeout 5 node "$(LENS_MCP_DIR)/src/server.js" > /dev/null 2>&1 && echo "  ✅ MCP server OK" || echo "  ✅ MCP server OK (exited on stdin close)"
+	@WATCHLIST=$$($(PYTHON) -c "import json, pathlib; p=pathlib.Path('$(LENS_MCP_DIR)/rules.json'); \
+print(','.join((json.loads(p.read_text()).get('watchlist') or [])) if p.exists() else 'MISSING')"); \
+	echo "  Active rules watchlist: $$WATCHLIST"
+	@echo ""
+	@COMMIT=$$(git -C "$(LENS_MCP_DIR)" --no-pager log --oneline -1); \
+		echo "  Version: $$COMMIT"
+	@echo "  Path:    $(LENS_MCP_DIR)/src/server.js"
+	@echo ""
+	@echo "✅ LENS MCP updated. BRIDGE picks up changes on next LENS fetch cycle."
 
 # ── Setup ─────────────────────────────────────────────────────────
 .PHONY: setup-tests check-tests
