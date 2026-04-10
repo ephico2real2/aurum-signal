@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS signals_received (
     tp3_open       INTEGER DEFAULT 0,
     mgmt_intent    TEXT,
     mgmt_pct       REAL,
+    signal_source_type TEXT DEFAULT 'TEXT',
+    vision_extraction_id INTEGER,
+    vision_confidence TEXT,
     action_taken   TEXT,
     skip_reason    TEXT,
     trade_group_id INTEGER
@@ -200,6 +203,31 @@ CREATE TABLE IF NOT EXISTS component_heartbeats (
     error_msg     TEXT,
     cycle         INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS vision_extractions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp         TEXT NOT NULL,
+    caller            TEXT NOT NULL,
+    source_channel    TEXT,
+    context_hint      TEXT,
+    image_type        TEXT,
+    confidence        TEXT,
+    extracted_text    TEXT,
+    structured_data   TEXT,
+    direction         TEXT,
+    entry_price       REAL,
+    sl_price          REAL,
+    tp1_price         REAL,
+    tp2_price         REAL,
+    caller_action     TEXT,
+    downstream_result TEXT,
+    linked_signal_id  INTEGER,
+    linked_group_id   INTEGER,
+    image_hash        TEXT,
+    file_size_kb      INTEGER,
+    processing_ms     INTEGER,
+    error             TEXT
+);
 """
 
 
@@ -237,6 +265,16 @@ class Scribe:
         if "magic_number" not in cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN magic_number INTEGER")
             log.info("SCRIBE migration: added magic_number column to trade_groups")
+        sig_cols = [r[1] for r in conn.execute("PRAGMA table_info(signals_received)").fetchall()]
+        if "signal_source_type" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN signal_source_type TEXT DEFAULT 'TEXT'")
+            log.info("SCRIBE migration: added signal_source_type to signals_received")
+        if "vision_extraction_id" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN vision_extraction_id INTEGER")
+            log.info("SCRIBE migration: added vision_extraction_id to signals_received")
+        if "vision_confidence" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN vision_confidence TEXT")
+            log.info("SCRIBE migration: added vision_confidence to signals_received")
 
     @staticmethod
     def _now() -> str:
@@ -309,20 +347,32 @@ class Scribe:
                  data.get("session"), int(data.get("news_guard",False))))
 
     def log_signal(self, raw: str, parsed: dict, mode: str,
-                   channel: str = None, msg_id: int = None) -> int:
+                   channel: str = None, msg_id: int = None,
+                   signal_source_type: str = "TEXT",
+                   vision_extraction_id: int = None,
+                   vision_confidence: str = None) -> int:
+        tp3_open_raw = parsed.get("tp3_open", False)
+        if tp3_open_raw is None:
+            tp3_open = 0
+        elif isinstance(tp3_open_raw, str):
+            tp3_open = 1 if tp3_open_raw.strip().lower() in ("1", "true", "yes", "on") else 0
+        else:
+            tp3_open = 1 if bool(tp3_open_raw) else 0
         with self._conn() as c:
             cur = c.execute("""INSERT INTO signals_received
                 (timestamp,mode,raw_text,channel_name,message_id,signal_type,
                  direction,entry_low,entry_high,sl,tp1,tp2,tp3,tp3_open,
-                 mgmt_intent,mgmt_pct,action_taken,skip_reason)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 mgmt_intent,mgmt_pct,signal_source_type,vision_extraction_id,
+                 vision_confidence,action_taken,skip_reason)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, raw, channel, msg_id,
                  parsed.get("type","ENTRY"),
                  parsed.get("direction"), parsed.get("entry_low"),
                  parsed.get("entry_high"), parsed.get("sl"),
                  parsed.get("tp1"), parsed.get("tp2"), parsed.get("tp3"),
-                 int(parsed.get("tp3_open",False)),
+                 tp3_open,
                  parsed.get("mgmt_intent"), parsed.get("mgmt_pct"),
+                 signal_source_type, vision_extraction_id, vision_confidence,
                  parsed.get("action","PENDING"), parsed.get("skip_reason")))
             return cur.lastrowid
 
@@ -332,6 +382,40 @@ class Scribe:
             c.execute("""UPDATE signals_received
                 SET action_taken=?, skip_reason=?, trade_group_id=?
                 WHERE id=?""", (action, skip_reason, group_id, signal_id))
+
+    def log_vision_extraction(self, data: dict) -> int:
+        structured = data.get("structured_data")
+        structured_json = json.dumps(structured, default=str) if isinstance(structured, dict) else None
+        with self._conn() as c:
+            cur = c.execute("""INSERT INTO vision_extractions
+                (timestamp,caller,source_channel,context_hint,image_type,confidence,
+                 extracted_text,structured_data,direction,entry_price,sl_price,tp1_price,tp2_price,
+                 caller_action,downstream_result,linked_signal_id,linked_group_id,
+                 image_hash,file_size_kb,processing_ms,error)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self._now(),
+                 data.get("caller"), data.get("source_channel"), data.get("context_hint"),
+                 data.get("image_type"), data.get("confidence"), data.get("extracted_text"),
+                 structured_json,
+                 data.get("direction"), data.get("entry_price"), data.get("sl_price"),
+                 data.get("tp1_price"), data.get("tp2_price"),
+                 data.get("caller_action"), data.get("downstream_result"),
+                 data.get("linked_signal_id"), data.get("linked_group_id"),
+                 data.get("image_hash"), data.get("file_size_kb"), data.get("processing_ms"),
+                 data.get("error")))
+            return cur.lastrowid
+
+    def update_vision_extraction_result(self, extraction_id: int,
+                                        downstream_result: str,
+                                        linked_signal_id: int = None,
+                                        linked_group_id: int = None):
+        with self._conn() as c:
+            c.execute("""UPDATE vision_extractions
+                SET downstream_result=?,
+                    linked_signal_id=COALESCE(?, linked_signal_id),
+                    linked_group_id=COALESCE(?, linked_group_id)
+                WHERE id=?""",
+                (downstream_result, linked_signal_id, linked_group_id, extraction_id))
 
     def log_trade_group(self, data: dict, mode: str,
                         magic_number: int | None = None) -> int:
@@ -603,6 +687,16 @@ class Scribe:
             """).fetchone()
             return row[0] if row else None
 
+    def get_current_session_start(self) -> str | None:
+        """Return the open_time of the current (unclosed) session, or None."""
+        with self._conn() as c:
+            row = c.execute("""
+                SELECT open_time FROM trading_sessions
+                WHERE close_time IS NULL
+                ORDER BY open_time DESC LIMIT 1
+            """).fetchone()
+            return row[0] if row else None
+
     # ── Read API ───────────────────────────────────────────────────
     def get_today_pnl(self) -> float:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -618,9 +712,19 @@ class Scribe:
                 WHERE status IN ('OPEN','PARTIAL') ORDER BY timestamp DESC""").fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_signals(self, limit: int = 20, within_days: int = None) -> list:
+    def get_recent_signals(self, limit: int = 20, within_days: int = None,
+                            since: str = None) -> list:
+        """Return recent signals. If `since` is provided (ISO timestamp),
+        only return signals on or after that time."""
         with self._conn() as c:
-            if within_days is not None:
+            if since:
+                rows = c.execute(
+                    """SELECT * FROM signals_received
+                       WHERE timestamp >= ?
+                       ORDER BY timestamp DESC LIMIT ?""",
+                    (since, limit),
+                ).fetchall()
+            elif within_days is not None:
                 d = max(1, min(int(within_days), 366))
                 rows = c.execute(
                     """SELECT * FROM signals_received
@@ -672,6 +776,7 @@ class Scribe:
             rows = c.execute(
                 f"""SELECT COUNT(*) total,
                     SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) wins,
+                    SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END) losses,
                     COALESCE(SUM(pnl),0) total_pnl,
                     COALESCE(AVG(pips),0) avg_pips
                     FROM trade_positions {base}""",
@@ -679,12 +784,14 @@ class Scribe:
             ).fetchone()
             total_n = int(rows[0] or 0)
             wins = int(rows[1] or 0)
+            losses = int(rows[2] or 0)
             return {
                 "total": total_n,
                 "wins": wins,
+                "losses": losses,
                 "win_rate": round(wins / total_n * 100, 1) if total_n else None,
-                "total_pnl": round(rows[2] or 0, 2),
-                "avg_pips": round(rows[3] or 0, 1),
+                "total_pnl": round(rows[3] or 0, 2),
+                "avg_pips": round(rows[4] or 0, 1),
             }
 
     def query(self, sql: str, params: tuple = ()) -> list:

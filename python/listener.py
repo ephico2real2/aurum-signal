@@ -7,7 +7,7 @@ Parses every message with Claude API — no brittle regex.
 Writes parsed_signal.json and management_cmd.json for BRIDGE.
 """
 
-import os, json, logging, asyncio
+import os, json, logging, asyncio, tempfile, shutil, re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +17,7 @@ from telethon import TelegramClient, events
 from scribe import get_scribe
 from herald import get_herald
 from status_report import report_component_status
+from vision import Vision
 
 log = logging.getLogger("listener")
 
@@ -33,6 +34,26 @@ for _ch in _raw_channels:
     except ValueError:
         CHANNELS.append(_ch)  # keep as string for username-style channels
 ANTHROPIC_KEY= os.environ.get("ANTHROPIC_API_KEY", "")
+VISION_ENABLED = os.environ.get("VISION_ENABLED", "true").lower() in ("1", "true", "yes")
+VISION_LOW_CONFIDENCE_HOLD = os.environ.get("VISION_LOW_CONFIDENCE_HOLD", "true").lower() in ("1", "true", "yes")
+LISTENER_SIGNAL_MEDIA_SUMMARY_TO_BOT = os.environ.get(
+    "LISTENER_SIGNAL_MEDIA_SUMMARY_TO_BOT", "true"
+).lower() in ("1", "true", "yes")
+LISTENER_SIGNAL_MEDIA_ARCHIVE_ENABLED = os.environ.get(
+    "LISTENER_SIGNAL_MEDIA_ARCHIVE_ENABLED", "true"
+).lower() in ("1", "true", "yes")
+_LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR_RAW = os.environ.get(
+    "LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR", "data/signal_media_archive"
+)
+LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR = (
+    _LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR_RAW
+    if os.path.isabs(_LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR_RAW)
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), _LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR_RAW)
+)
+_raw_trade_rooms = [
+    r.strip() for r in os.environ.get("SIGNAL_TRADE_ROOMS", "").split(",") if r.strip()
+]
+SIGNAL_TRADE_ROOMS = {r.lower() for r in _raw_trade_rooms}
 
 SIGNAL_FILE  = os.environ.get("LISTENER_SIGNAL_FILE", "config/parsed_signal.json")
 MGMT_FILE    = os.environ.get("LISTENER_MGMT_FILE",   "config/management_cmd.json")
@@ -89,6 +110,7 @@ class Listener:
         self.scribe  = get_scribe()
         self.herald  = get_herald()
         self.claude  = Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+        self.vision  = Vision(self.claude)
         self._mode   = "SIGNAL"   # set by BRIDGE via set_mode()
         self._last_signal_id: set = set()   # dedup
         if not self.claude:
@@ -140,6 +162,15 @@ class Listener:
                 "ERROR",
                 note="Telegram credentials missing",
                 last_action="set TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE",
+            )
+            return
+        if not CHANNELS:
+            log.error("LISTENER: TELEGRAM_CHANNELS is empty — no channels to monitor")
+            report_component_status(
+                "LISTENER",
+                "ERROR",
+                note="TELEGRAM_CHANNELS empty",
+                last_action="set TELEGRAM_CHANNELS in .env",
             )
             return
 
@@ -195,9 +226,150 @@ class Listener:
 
         await client.run_until_disconnected()
 
+    @staticmethod
+    def _msg_has_media(msg) -> bool:
+        return bool(getattr(msg, "photo", None) or getattr(msg, "document", None))
+
+    @staticmethod
+    def _is_trade_room_allowed(channel_name: str, chat_id) -> bool:
+        """
+        Room-priority policy:
+        - SIGNAL_TRADE_ROOMS empty => legacy behavior (all rooms tradable)
+        - otherwise only allow exact match by channel title or chat_id string
+        """
+        if not SIGNAL_TRADE_ROOMS:
+            return True
+        channel_key = (channel_name or "").strip().lower()
+        chat_key = str(chat_id).strip().lower() if chat_id is not None else ""
+        return channel_key in SIGNAL_TRADE_ROOMS or chat_key in SIGNAL_TRADE_ROOMS
+
+    @staticmethod
+    def _normalize_parsed(parsed: dict) -> dict:
+        out = dict(parsed or {})
+        if out.get("type") == "MANAGEMENT":
+            if "mgmt_intent" not in out and out.get("intent"):
+                out["mgmt_intent"] = out.get("intent")
+            if "mgmt_pct" not in out and out.get("pct") is not None:
+                out["mgmt_pct"] = out.get("pct")
+        return out
+
+    @staticmethod
+    def _entry_complete(parsed: dict) -> bool:
+        if not isinstance(parsed, dict):
+            return False
+        if parsed.get("type") != "ENTRY":
+            return False
+        req = ("direction", "entry_low", "entry_high", "sl", "tp1")
+        for k in req:
+            if parsed.get(k) in (None, ""):
+                return False
+        return True
+
+    @staticmethod
+    def _parsed_from_vision_struct(structured: dict) -> dict:
+        p = dict(structured or {})
+        if not p:
+            return {"type": "IGNORE"}
+        if p.get("type") == "MANAGEMENT":
+            p["mgmt_intent"] = p.get("intent")
+            p["mgmt_pct"] = p.get("pct")
+        return p
+
+    @staticmethod
+    def _build_signal_media_summary(channel: str, msg_id: int, vr, parsed: dict | None) -> str:
+        pd = parsed if isinstance(parsed, dict) else {}
+        out = [
+            "🖼️ <b>SIGNAL ROOM CHART ANALYSIS</b>",
+            f"Channel: <b>{channel}</b>",
+            f"Message ID: <code>{msg_id}</code>",
+            f"Confidence: <b>{getattr(vr, 'confidence', 'UNKNOWN')}</b>",
+            f"Parsed Type: <b>{pd.get('type', 'IGNORE')}</b>",
+        ]
+        if pd.get("type") == "ENTRY":
+            out.append(
+                f"Entry: <code>{pd.get('direction','?')} {pd.get('entry_low','?')}–{pd.get('entry_high','?')}</code> "
+                f"SL <code>{pd.get('sl','?')}</code> TP1 <code>{pd.get('tp1','?')}</code>"
+            )
+        elif pd.get("type") == "MANAGEMENT":
+            out.append(
+                f"Management: <code>{pd.get('mgmt_intent') or pd.get('intent') or 'UNKNOWN'}</code>"
+            )
+        extracted = (getattr(vr, "extracted_text", "") or "").strip().replace("\n", " ")
+        if extracted:
+            out.append(f"Extract: {extracted[:220]}")
+        return "\n".join(out)
+
+    def _archive_signal_media(self, *, src_path: str, channel: str, msg_id: int, caption: str) -> str | None:
+        if not LISTENER_SIGNAL_MEDIA_ARCHIVE_ENABLED:
+            return None
+        try:
+            safe_channel = re.sub(r"[^a-zA-Z0-9._-]+", "_", (channel or "unknown")).strip("_") or "unknown"
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            base_dir = os.path.join(LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR, safe_channel)
+            os.makedirs(base_dir, exist_ok=True)
+            dst_img = os.path.join(base_dir, f"{ts}_msg{msg_id}.img")
+            shutil.copy2(src_path, dst_img)
+            meta = {
+                "archived_at": datetime.now(timezone.utc).isoformat(),
+                "channel": channel,
+                "message_id": msg_id,
+                "caption": caption or "",
+                "file_path": dst_img,
+                "source": "LISTENER_SIGNAL_MEDIA",
+            }
+            with open(dst_img + ".json", "w") as f:
+                json.dump(meta, f, indent=2)
+            try:
+                self.scribe.log_system_event(
+                    event_type="SIGNAL_CHART_ARCHIVED",
+                    triggered_by="LISTENER",
+                    reason="TELEGRAM_SIGNAL_MEDIA_ARCHIVE",
+                    notes=f"channel={channel} msg_id={msg_id} file={dst_img}",
+                )
+            except Exception:
+                pass
+            return dst_img
+        except Exception as e:
+            log.warning("LISTENER media archive failed: %s", e)
+            return None
+
+    async def _download_message_media(self, msg) -> str | None:
+        try:
+            with tempfile.NamedTemporaryFile(prefix="listener_", suffix=".img", delete=False) as tmp:
+                path = tmp.name
+            out = await msg.download_media(file=path)
+            return out or path
+        except Exception as e:
+            log.warning("LISTENER media download failed: %s", e)
+            return None
+
+    def _log_vision(self, *, caller: str, channel: str, hint: str, vr) -> int:
+        sd = vr.structured_data if isinstance(vr.structured_data, dict) else {}
+        return self.scribe.log_vision_extraction({
+            "caller": caller,
+            "source_channel": channel,
+            "context_hint": hint,
+            "image_type": vr.image_type,
+            "confidence": vr.confidence,
+            "extracted_text": vr.extracted_text,
+            "structured_data": sd,
+            "direction": sd.get("direction"),
+            "entry_price": sd.get("entry_low") or sd.get("entry_high"),
+            "sl_price": sd.get("sl"),
+            "tp1_price": sd.get("tp1"),
+            "tp2_price": sd.get("tp2"),
+            "caller_action": vr.caller_action,
+            "downstream_result": "CAPTURED",
+            "image_hash": vr.image_hash,
+            "file_size_kb": vr.file_size_kb,
+            "processing_ms": vr.processing_ms,
+            "error": vr.error,
+        })
+
     async def _handle_message(self, msg, edited: bool = False):
         text = msg.message or ""
-        if not text.strip():
+        has_media = self._msg_has_media(msg)
+        if not text.strip() and not has_media:
             return
 
         # Dedup
@@ -210,21 +382,145 @@ class Listener:
 
         channel = getattr(msg.chat, "title", str(msg.chat_id)) if msg.chat else "unknown"
         log.info(f"LISTENER [{channel}]: {text[:80]}")
+        if has_media:
+            try:
+                self.scribe.log_system_event(
+                    event_type="SIGNAL_CHART_RECEIVED",
+                    triggered_by="LISTENER",
+                    reason="TELEGRAM_SIGNAL_MEDIA",
+                    notes=(
+                        f"channel={channel} msg_id={msg.id} "
+                        f"photo={bool(getattr(msg, 'photo', None))} "
+                        f"document={bool(getattr(msg, 'document', None))} "
+                        f"text_len={len(text or '')}"
+                    ),
+                )
+            except Exception:
+                pass
 
-        # Parse
-        parsed = await self._parse(text)
+        source_type = "MIXED" if (text.strip() and has_media) else ("IMAGE" if has_media else "TEXT")
+        parsed = await self._parse(text) if text.strip() else {"type": "IGNORE"}
+        parsed = self._normalize_parsed(parsed)
+        vision_id = None
+        vision_result = None
+        if has_media and VISION_ENABLED:
+            img_path = await self._download_message_media(msg)
+            if not img_path:
+                try:
+                    self.scribe.log_system_event(
+                        event_type="SIGNAL_CHART_DOWNLOAD_FAILED",
+                        triggered_by="LISTENER",
+                        reason="TELEGRAM_SIGNAL_MEDIA",
+                        notes=f"channel={channel} msg_id={msg.id}",
+                    )
+                except Exception:
+                    pass
+            if img_path:
+                archived_path = self._archive_signal_media(
+                    src_path=img_path,
+                    channel=channel,
+                    msg_id=msg.id,
+                    caption=text,
+                )
+                if archived_path:
+                    log.info("LISTENER: archived signal media -> %s", archived_path)
+                try:
+                    vision_result = self.vision.extract(
+                        image_path=img_path,
+                        caption=text,
+                        context_hint="SIGNAL",
+                        caller="LISTENER",
+                    )
+                finally:
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if vision_result:
+                    vision_id = self._log_vision(
+                        caller="LISTENER",
+                        channel=channel,
+                        hint="SIGNAL",
+                        vr=vision_result,
+                    )
+                    vis_parsed = self._normalize_parsed(
+                        self._parsed_from_vision_struct(vision_result.structured_data)
+                    )
+                    if parsed.get("type") == "IGNORE":
+                        parsed = vis_parsed
+                    elif parsed.get("type") == "ENTRY" and not self._entry_complete(parsed):
+                        for k in ("direction", "entry_low", "entry_high", "sl", "tp1", "tp2", "tp3", "tp3_open"):
+                            if parsed.get(k) in (None, "") and vis_parsed.get(k) not in (None, ""):
+                                parsed[k] = vis_parsed.get(k)
+                    elif parsed.get("type") == "MANAGEMENT":
+                        if not parsed.get("mgmt_intent") and vis_parsed.get("mgmt_intent"):
+                            parsed["mgmt_intent"] = vis_parsed.get("mgmt_intent")
+                        if parsed.get("mgmt_pct") is None and vis_parsed.get("mgmt_pct") is not None:
+                            parsed["mgmt_pct"] = vis_parsed.get("mgmt_pct")
+                    if LISTENER_SIGNAL_MEDIA_SUMMARY_TO_BOT:
+                        try:
+                            sent_ok = self.herald.send(
+                                self._build_signal_media_summary(channel, msg.id, vision_result, parsed)
+                            )
+                            event_type = "SIGNAL_CHART_SUMMARY_SENT" if sent_ok else "SIGNAL_CHART_SUMMARY_FAILED"
+                            try:
+                                self.scribe.log_system_event(
+                                    event_type=event_type,
+                                    triggered_by="LISTENER",
+                                    reason="TELEGRAM_SIGNAL_MEDIA_SUMMARY",
+                                    notes=(
+                                        f"channel={channel} msg_id={msg.id} "
+                                        f"confidence={getattr(vision_result, 'confidence', 'UNKNOWN')} "
+                                        f"parsed_type={parsed.get('type','IGNORE')}"
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                            log.info(
+                                "LISTENER signal media summary %s channel=%s msg_id=%s",
+                                "sent" if sent_ok else "failed",
+                                channel,
+                                msg.id,
+                            )
+                        except Exception as e:
+                            log.warning("LISTENER media summary send failed: %s", e)
+
         if not parsed or parsed.get("type") == "IGNORE":
+            if vision_id:
+                self.scribe.update_vision_extraction_result(vision_id, "IGNORED")
             return
 
         # Log to SCRIBE regardless of mode
         signal_id = self.scribe.log_signal(
             raw=text, parsed=parsed, mode=self._mode,
-            channel=channel, msg_id=msg.id
+            channel=channel, msg_id=msg.id,
+            signal_source_type=source_type,
+            vision_extraction_id=vision_id,
+            vision_confidence=(vision_result.confidence if vision_result else None),
         )
+        if vision_id:
+            self.scribe.update_vision_extraction_result(vision_id, "PARSED", linked_signal_id=signal_id)
+
+        if (
+            source_type in ("IMAGE", "MIXED")
+            and vision_result
+            and VISION_LOW_CONFIDENCE_HOLD
+            and vision_result.confidence == "LOW"
+        ):
+            self.scribe.update_signal_action(signal_id, "HELD", "VISION_LOW_CONFIDENCE")
+            if vision_id:
+                self.scribe.update_vision_extraction_result(vision_id, "HELD", linked_signal_id=signal_id)
+            self.herald.send(
+                f"🟡 LISTENER held image signal from {channel} (LOW confidence). "
+                f"Signal #{signal_id} awaiting manual confirmation."
+            )
+            return
 
         # In non-trading modes — log only, don't dispatch to BRIDGE
         if self._mode not in ("SIGNAL", "HYBRID"):
             self.scribe.update_signal_action(signal_id, "LOGGED_ONLY")
+            if vision_id:
+                self.scribe.update_vision_extraction_result(vision_id, "LOGGED_ONLY", linked_signal_id=signal_id)
             log.info(f"LISTENER [{self._mode}]: logged signal, not dispatching")
             try:
                 report_component_status(
@@ -240,6 +536,27 @@ class Listener:
 
         # Dispatch
         if parsed["type"] == "ENTRY":
+            if not self._is_trade_room_allowed(channel, msg.chat_id):
+                reason = f"ROOM_NOT_PRIORITY:{channel}"
+                self.scribe.update_signal_action(signal_id, "WATCH_ONLY", reason)
+                if vision_id:
+                    self.scribe.update_vision_extraction_result(
+                        vision_id, "WATCH_ONLY", linked_signal_id=signal_id
+                    )
+                try:
+                    self.scribe.log_system_event(
+                        event_type="SIGNAL_ROOM_WATCH_ONLY",
+                        triggered_by="LISTENER",
+                        reason="ROOM_PRIORITY_POLICY",
+                        notes=(
+                            f"channel={channel} chat_id={msg.chat_id} "
+                            f"signal_id={signal_id} mode={self._mode}"
+                        ),
+                    )
+                except Exception:
+                    pass
+                log.info("LISTENER: watch-only room policy applied for %s", channel)
+                return
             parsed["signal_id"]  = signal_id
             parsed["channel"]    = channel
             parsed["timestamp"]  = datetime.now(timezone.utc).isoformat()
@@ -247,6 +564,8 @@ class Listener:
             self._write_signal(parsed)
             log.info(f"LISTENER → parsed_signal.json: {parsed.get('direction')} "
                      f"@ {parsed.get('entry_low')}–{parsed.get('entry_high')}")
+            if vision_id:
+                self.scribe.update_vision_extraction_result(vision_id, "DISPATCHED_ENTRY", linked_signal_id=signal_id)
             try:
                 report_component_status(
                     "LISTENER",
@@ -280,6 +599,8 @@ class Listener:
 
             self._write_mgmt(parsed)
             log.info(f"LISTENER → management_cmd.json: {parsed.get('intent')} (group={parsed.get('group_id','ALL')})")
+            if vision_id:
+                self.scribe.update_vision_extraction_result(vision_id, "DISPATCHED_MANAGEMENT", linked_signal_id=signal_id)
 
     async def _parse(self, text: str) -> dict | None:
         if not self.claude:

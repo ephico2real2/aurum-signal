@@ -5,7 +5,7 @@ Build order: #3 — depends only on .env (bot token).
 Send-only bot. Other components call herald.send() for alerts.
 """
 
-import os, logging, asyncio
+import os, logging, asyncio, tempfile
 from datetime import datetime, timezone
 
 from status_report import report_component_status
@@ -37,18 +37,36 @@ class Herald:
             log.warning(f"HERALD (no token): {text[:60]}")
             return False
         try:
-            result = asyncio.run(self._async_send(text, parse_mode))
-            self._bot = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop in this thread — safe to run synchronously.
+                result = asyncio.run(self._async_send(text, parse_mode))
+                self._bot = None
+                try:
+                    report_component_status(
+                        "HERALD",
+                        "OK" if result else "WARN",
+                        note="bot active" if self.token else "no token configured",
+                        last_action=f"sent: {text[:80]}",
+                    )
+                except Exception as _he:
+                    log.debug(f"HERALD heartbeat error: {_he}")
+                return result
+
+            # Running inside an event loop (e.g., AURUM Bot API handlers).
+            # Schedule send asynchronously and return immediately.
+            loop.create_task(self._async_send(text, parse_mode))
             try:
                 report_component_status(
                     "HERALD",
-                    "OK" if result else "WARN",
+                    "OK",
                     note="bot active" if self.token else "no token configured",
-                    last_action=f"sent: {text[:80]}",
+                    last_action=f"queued-send: {text[:80]}",
                 )
             except Exception as _he:
                 log.debug(f"HERALD heartbeat error: {_he}")
-            return result
+            return True
         except Exception as e:
             self._bot = None
             log.error(f"HERALD send error: {e}")
@@ -64,6 +82,50 @@ class Herald:
             parse_mode=parse_mode,
         )
         return True
+
+    async def download_inbound_media(self, message, prefix: str = "herald_img_") -> str | None:
+        """Download Telegram photo/document to a temp file and return the local path."""
+        try:
+            if not message:
+                return None
+            media_obj = None
+            photo = getattr(message, "photo", None)
+            document = getattr(message, "document", None)
+            effective = getattr(message, "effective_attachment", None)
+            if photo:
+                media_obj = photo[-1]
+            elif document:
+                media_obj = document
+            elif isinstance(effective, (list, tuple)) and effective:
+                media_obj = effective[-1]
+            elif effective:
+                media_obj = effective
+            if media_obj is None:
+                return None
+            tg_file = None
+            if hasattr(media_obj, "get_file"):
+                tg_file = await media_obj.get_file()
+            else:
+                file_id = getattr(media_obj, "file_id", None)
+                bot = None
+                try:
+                    bot = message.get_bot()
+                except Exception:
+                    bot = None
+                if file_id and bot:
+                    tg_file = await bot.get_file(file_id)
+            if tg_file is None:
+                return None
+            with tempfile.NamedTemporaryFile(prefix=prefix, suffix=".img", delete=False) as tmp:
+                image_path = tmp.name
+            if hasattr(tg_file, "download_to_drive"):
+                await tg_file.download_to_drive(custom_path=image_path)
+            else:
+                await tg_file.download(custom_path=image_path)
+            return image_path
+        except Exception as e:
+            log.warning("HERALD media download failed: %s", e)
+            return None
 
     # ── Pre-built message templates ──────────────────────────────
     def trade_group_opened(self, group: dict):
