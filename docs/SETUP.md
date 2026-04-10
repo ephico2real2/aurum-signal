@@ -158,6 +158,22 @@ node src/server.js
 # Ctrl+C to stop
 ```
 
+### Rules symlink (recommended)
+
+This repo keeps canonical TradingView rules in `signal_system/config/tradingview_rules.json`.
+Symlink MCP `rules.json` to that file so all updates stay centralized:
+
+```bash
+cd ~/tradingview-mcp-jackson
+ln -sf /Users/YOUR_USERNAME/signal_system/config/tradingview_rules.json rules.json
+```
+
+Verify the symlink:
+```bash
+ls -l ~/tradingview-mcp-jackson/rules.json
+# should point to .../signal_system/config/tradingview_rules.json
+```
+
 ### Point LENS at the server
 
 Add to `.env` (replace YOUR_USERNAME with your macOS username — run `whoami` to check):
@@ -218,6 +234,7 @@ make update-lens-mcp
 ```
 
 This pulls the latest code, runs `npm install`, and verifies the server starts. BRIDGE picks up the new version on its next LENS fetch cycle — no restart required.
+It also re-links `~/tradingview-mcp-jackson/rules.json` to `signal_system/config/tradingview_rules.json`.
 
 To check your current version:
 ```bash
