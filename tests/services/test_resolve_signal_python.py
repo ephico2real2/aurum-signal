@@ -17,7 +17,7 @@ import install_services  # noqa: E402
 def test_resolve_prefers_signal_python_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SIGNAL_PYTHON", str(sys.executable))
     p = install_services.resolve_signal_python(tmp_path)
-    assert p == str(Path(sys.executable).resolve())
+    assert p == str(Path(sys.executable).expanduser())
 
 
 @pytest.mark.unit
@@ -26,7 +26,7 @@ def test_resolve_prefers_venv_when_no_env(tmp_path, monkeypatch):
     vpy = tmp_path / ".venv" / "bin" / "python"
     vpy.parent.mkdir(parents=True)
     vpy.write_bytes(b"")
-    assert install_services.resolve_signal_python(tmp_path) == str(vpy.resolve())
+    assert install_services.resolve_signal_python(tmp_path) == str(vpy)
 
 
 @pytest.mark.unit

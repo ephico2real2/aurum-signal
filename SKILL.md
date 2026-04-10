@@ -13,6 +13,36 @@ Direct answers from injected context (no tool call needed). Works via Telegram b
 - "How many SL hits today?" → from trade_closures table
 - "What's my TP hit rate?" → from closure_stats (7d rolling)
 - "Show recent closures" → from trade_closures (last 24h in context)
+- "Show TradingView brief" → from `tv_brief` in live context or full payload at `GET /api/brief`
+
+### 1b. Read live TradingView chart state via MCP
+I can execute chart MCP commands when needed (instead of guessing):
+- `chart_get_state`, `quote_get`, `data_get_study_values`
+- `data_get_pine_boxes`, `data_get_pine_lines`
+- `chart_set_symbol`, `chart_set_timeframe`, `chart_manage_indicator`
+- `capture_screenshot`
+When a user asks for chart levels/indicator state, I should read MCP data first and report what is actually on-chart.
+
+### 1c. Screenshot/image extraction playbook (VISION)
+When a user sends chart screenshots (PNG/JPG/WebP), I must attempt a structured extraction before giving narrative commentary.
+
+Extraction order:
+1. Instrument + timeframe (e.g., `XAUUSD, M1`)
+2. Pinned/current level(s):
+   - Red/blue horizontal labels (e.g., `4754.54`, `4746.57`)
+   - Explicit entry/SL/TP labels if visible
+3. Directional context from candles (impulse up/down, range, breakout)
+4. Actionability decision:
+   - `ENTRY` only if direction + at least one usable level are clear
+   - otherwise `IGNORE` with `LOW` confidence
+
+Output rules for chart screenshots:
+- If level text is visible, include it in `extracted_text` and `structured_data`.
+- Prefer exact numeric strings as shown on chart labels (do not round unless necessary).
+- If confidence is not HIGH/MEDIUM, state uncertainty explicitly and request either:
+  - cleaner crop around the y-axis labels and entry marker, or
+  - accompanying text levels from the operator.
+- Never fabricate missing levels; return `HOLD/CONFIRM` when uncertain.
 
 ### 2. Query SCRIBE History (SQL)
 I can query the SQLite database for historical analysis:
@@ -48,6 +78,7 @@ BRIDGE reads it on the next loop, executes the command, then **deletes the file*
 Supported modes: OFF | WATCH | SIGNAL | SCALPER | HYBRID | AUTO_SCALPER
 
 Mode persists across restarts (`RESTORE_MODE_ON_RESTART=true` default). Telegram startup message shows current mode with `(restored)` tag. Set `RESTORE_MODE_ON_RESTART=false` to always start with `DEFAULT_MODE` from .env.
+If `BRIDGE_PIN_MODE` is set (e.g. `HYBRID`), BRIDGE blocks runtime mode changes away from the pinned value and logs `MODE_CHANGE_BLOCKED`.
 
 #### User prompts that reliably switch to **SCALPER** (pick one)
 
@@ -94,7 +125,10 @@ BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supp
 **Multiple commands in one reply:** Put each as a SEPARATE \`\`\`json block. BRIDGE processes them sequentially (6s delay between each).
 
 #### SIGNAL mode — Telegram channel signals
-In **SIGNAL** or **HYBRID** mode, LISTENER monitors configured Telegram channels and dispatches.
+In **SIGNAL** or **HYBRID** mode, LISTENER monitors configured Telegram channels and applies room-priority dispatch policy.
+Execution routing:
+- `SIGNAL_TRADE_ROOMS` empty/unset: all monitored rooms can dispatch.
+- `SIGNAL_TRADE_ROOMS` set: only listed room titles/chat IDs dispatch; all others are logged as `WATCH_ONLY` with `ROOM_NOT_PRIORITY:*`.
 
 Available API endpoints for channels and signals:
 - `GET /api/channels` — configured channels with names and signal stats
@@ -103,6 +137,7 @@ Available API endpoints for channels and signals:
 - `POST /api/signals/parse` — test the Claude Haiku parser via API: `{"text": "SELL Gold @4691..."}`
 - `POST /api/sentinel/override` — bypass sentinel for N seconds
 - `POST /api/sentinel/digest` — override event digest interval
+- `GET /api/brief` — full persisted TradingView brief JSON payload
 
 In **all modes**, LISTENER logs messages to SCRIBE. Only SIGNAL/HYBRID dispatches them to BRIDGE for execution.
 
@@ -113,12 +148,13 @@ Signal arrives → 60s expiry (SIGNAL_EXPIRY_SEC) or EXPIRED
 AEGIS validates (M5→M15→H1 cascade for SIGNAL source)
     ↓
 FORGE places orders with TP SPLIT:
-  75% of positions → TP1 (broker-side close)
-  25% of positions → TP2 (runners)
+  70% of positions → TP1 (default TP1_CLOSE_PCT)
+  20% of positions → TP2 (default TP2_CLOSE_PCT)
+  remaining positions continue as runners
     ↓ (unfilled after PENDING_ORDER_TIMEOUT_SEC=120s)
 Auto-cancel → Telegram "⏰ PENDING EXPIRED"
     ↓ (TP1 hit)
-75% close at TP1 → remaining SL→BE, TP→TP2
+TP1 share closes → remaining SL→BE, TP→TP2
     ↓ (all positions close)
 Tracker logs P&L → Telegram "✅ GROUP CLOSED"
 ```
@@ -262,7 +298,8 @@ MT5 MULTI-TIMEFRAME INDICATORS (FORGE, 3s refresh):
   Each includes bias: BULL/BEAR/FLAT (from EMA20 vs EMA50)
 
 LENS / TradingView (supplementary, 60s refresh):
-  TV chart last, bb_rating, tv_recommend
+  TV chart last, bb_rating, tv_recommend, adx/di, order_block_values
+  tv_brief (compact summary); full payload at /api/brief
   Use MT5 for price; TV for indicator shape / sentiment only.
 
 SENTINEL:

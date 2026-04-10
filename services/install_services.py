@@ -20,14 +20,17 @@ from pathlib import Path
 
 def resolve_signal_python(project: Path) -> str:
     """
-    Interpreter for launchd/systemd: .venv if present, else SIGNAL_PYTHON env, else python3 on PATH.
+    Interpreter for launchd/systemd: .venv (python or python3) if present, else SIGNAL_PYTHON env, else python3 on PATH.
     """
     override = (os.environ.get("SIGNAL_PYTHON") or "").strip()
     if override:
-        return str(Path(override).expanduser().resolve())
+        return str(Path(override).expanduser())
     venv_py = project / ".venv" / "bin" / "python"
     if venv_py.is_file():
-        return str(venv_py.resolve())
+        return str(venv_py)
+    venv_py3 = project / ".venv" / "bin" / "python3"
+    if venv_py3.is_file():
+        return str(venv_py3)
     w = shutil.which("python3")
     return w or "/usr/bin/python3"
 
