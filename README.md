@@ -1,6 +1,6 @@
 # ⚒ SIGNAL SYSTEM v1.0
 > XAUUSD signal-following scalper with AI intelligence layer.
-> macOS + MetaTrader 5 native. 11 components. 6 operating modes.
+> macOS + MetaTrader 5 native. 12 components. 6 operating modes.
 
 ---
 ## External Dependencies
@@ -55,7 +55,8 @@ Recent behavior notes:
 | 8 | AURUM | `python/aurum.py` | Claude AI agent (`SOUL.md` + `SKILL.md`) |
 | 9 | BRIDGE | `python/bridge.py` | Orchestrator + mode state machine |
 | 10 | ATHENA | `python/athena_api.py` | Flask API + React dashboard |
-| 11 | RECONCILER | `python/reconciler.py` | Hourly MT5↔SCRIBE consistency audit |
+| 11 | VISION | `python/vision.py` | Shared chart/image extraction module for LISTENER + AURUM |
+| 12 | RECONCILER | `python/reconciler.py` | Hourly MT5↔SCRIBE consistency audit |
 
 ## Operating Modes
 - **OFF** — Completely dormant
