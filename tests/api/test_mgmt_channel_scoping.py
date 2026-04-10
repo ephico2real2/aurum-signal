@@ -36,11 +36,27 @@ def _make_bridge_stub(monkeypatch, tmp_path, open_groups=None):
         {"id": gid, **g} for gid, g in (open_groups or {}).items()
     ]
     stub.scribe.get_open_positions_by_group.return_value = []
-    stub.scribe.query.return_value = []
+    signal_gids = sorted(
+        [int(gid) for gid, g in (open_groups or {}).items() if g.get("source") == "SIGNAL"],
+        reverse=True,
+    )
+
+    def _query(sql, params=()):
+        sql = sql or ""
+        if "SELECT trade_group_id FROM signals_received WHERE id=?" in sql:
+            return []
+        if "SELECT DISTINCT tg.id FROM trade_groups tg" in sql:
+            return [{"id": gid} for gid in signal_gids]
+        if "SELECT tg.id FROM trade_groups tg" in sql:
+            return [{"id": signal_gids[0]}] if signal_gids else []
+        return []
+
+    stub.scribe.query.side_effect = _query
     stub.herald = MagicMock()
     stub._lookup_group_magic = lambda gid: 202401 + gid
     stub._bridge_activity = MagicMock()
     stub._resolve_channel_group = bm.Bridge._resolve_channel_group.__get__(stub)
+    stub._resolve_channel_open_groups = bm.Bridge._resolve_channel_open_groups.__get__(stub)
     stub._effective_mode = lambda: "SIGNAL"
 
     return stub, mgmt_path, bm
@@ -194,8 +210,8 @@ def test_resolve_channel_group_by_signal_id(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_resolve_channel_group_fallback_to_latest_signal(monkeypatch, tmp_path):
-    """Without signal_id, fallback to most recent open SIGNAL group."""
+def test_resolve_channel_group_scopes_to_channel_signal_group(monkeypatch, tmp_path):
+    """Without signal_id, resolve to most recent channel-scoped SIGNAL group."""
     groups = {
         8: {"source": "SIGNAL"},
         9: {"source": "AURUM"},
@@ -205,7 +221,7 @@ def test_resolve_channel_group_fallback_to_latest_signal(monkeypatch, tmp_path):
     stub.scribe.query.return_value = []  # no signal_id match
 
     result = stub._resolve_channel_group({"channel": "Test"})
-    assert result == 10  # most recent SIGNAL group (highest id)
+    assert result == 10
 
 
 @pytest.mark.unit
@@ -217,6 +233,20 @@ def test_resolve_channel_group_returns_none_if_no_signal_groups(monkeypatch, tmp
 
     result = stub._resolve_channel_group({"channel": "Test"})
     assert result is None
+
+
+@pytest.mark.unit
+def test_channel_close_all_ignored_when_no_scoped_groups(monkeypatch, tmp_path):
+    """If channel has no scoped SIGNAL groups, channel CLOSE_ALL should be ignored."""
+    groups = {11: {"source": "AURUM", "direction": "SELL"}}
+    stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, groups)
+    _write_mgmt(mgmt_path, "CLOSE_ALL", source="LISTENER", channel="Unknown Channel")
+
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        bm.Bridge._process_mgmt_command(stub, {})
+
+    mock_forge.assert_not_called()
+    stub.scribe.update_trade_group.assert_not_called()
 
 
 # ── Source field detection ────────────────────────────────────────

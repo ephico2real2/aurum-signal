@@ -30,6 +30,23 @@ function fmtAgeSec(sec){
   return`${(s/86400).toFixed(1)}d`;
 }
 
+function fmtDateTime(ts){
+  if(!ts)return'—';
+  try{
+    const d=new Date(ts);
+    if(Number.isNaN(d.getTime()))throw new Error('bad date');
+    const y=d.getFullYear();
+    const m=String(d.getMonth()+1).padStart(2,'0');
+    const day=String(d.getDate()).padStart(2,'0');
+    const hh=String(d.getHours()).padStart(2,'0');
+    const mm=String(d.getMinutes()).padStart(2,'0');
+    const ss=String(d.getSeconds()).padStart(2,'0');
+    return`${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+  }catch(e){
+    return String(ts).replace('T',' ').slice(0,19);
+  }
+}
+
 const Dot=({ok,sz=6,b=false})=>(<div className={b&&ok?'blink':''}
   style={{width:sz,height:sz,borderRadius:'50%',flexShrink:0,
     background:ok?T.green:T.red,boxShadow:`0 0 ${sz+2}px ${ok?T.green:T.red}55`}}/>);
@@ -155,7 +172,7 @@ function formatActivityMessage(raw){
 }
 function normalizeActivityEvent(e,idx){
   const id=e.id!=null?e.id:`row-${idx}-${e.timestamp||idx}`;
-  const t=(e.timestamp||'').slice(11,19)||'';
+  const t=fmtDateTime(e.timestamp);
   const comp=activityComponent(e);
   const cat=activityCategory(e.event_type);
   const level=activityLevelForEvent(e.event_type);
@@ -206,7 +223,7 @@ function ActivityEventRow({e,sel,setSel,isRecent}){
         borderLeft:`2px solid ${e.level==='WARN'?T.amber:e.level==='ERROR'?T.red:cc}`,
         transition:'background 0.1s'}}>
       <span style={{fontFamily:T.mono,fontSize:8,color:T.textD,
-        padding:'5px 7px',flexShrink:0,width:58}}>{e.t}</span>
+        padding:'5px 7px',flexShrink:0,width:132}}>{e.t}</span>
       <span style={{fontFamily:T.mono,fontSize:8,color:cc,
         fontWeight:700,letterSpacing:1,width:56,flexShrink:0}}>{e.comp}</span>
       <span style={{fontFamily:T.mono,fontSize:6,color:catc,
@@ -288,7 +305,7 @@ function ActivityLog({events=[], components=[]}){
                 color:cf===name?color:T.text,letterSpacing:1}}>{name}</span>
             </div>
             <span style={{fontSize:6,color:T.textD,fontFamily:T.mono}}>
-              {comp?.timestamp?.slice(11,19)||'--:--:--'}
+              {fmtDateTime(comp?.timestamp)}
             </span>
           </div>
           );
@@ -656,7 +673,7 @@ function ATHENA(){
       <div style={{display:'flex',alignItems:'center',gap:10}}>
         <div style={{display:'flex',alignItems:'center',gap:5,fontSize:9,
           fontFamily:T.mono,color:connected?T.green:T.amber}}>
-          <Dot ok={connected} sz={5}/>{connected?'LIVE':'DEMO'}
+          <Dot ok={connected} sz={5} b={connected}/>{connected?'LIVE':'DEMO'}
         </div>
         <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>Cycle {D.cycle}</span>
       </div>
@@ -979,7 +996,7 @@ function ATHENA(){
                       <span style={{fontFamily:T.mono,fontSize:8,color:T.textD}}>
                         {(c.pips||0)>=0?'+':''}{(c.pips||0).toFixed(1)}p</span>
                       <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
-                        {(c.timestamp||'').slice(11,19)}</span>
+                        {fmtDateTime(c.timestamp)}</span>
                     </div>
                   );
                 })
@@ -1034,8 +1051,7 @@ function ATHENA(){
                 {filtered.length} signals · current session</div>
               {/* Signal rows — separate ENTRY from MANAGEMENT/other */}
               {filtered.map((row)=>{
-                const ts=(row.timestamp||'').replace('T',' ');
-                const t=ts.length>=19?ts.slice(11,19):(row.timestamp||'').slice(11,19)||'—';
+                const t=fmtDateTime(row.timestamp);
                 const sigType=(row.signal_type||'ENTRY').toUpperCase();
                 const dir=(row.direction||'').toUpperCase();
                 const low=row.entry_low,high=row.entry_high;
@@ -1129,7 +1145,7 @@ function ATHENA(){
                         <Tag lbl={(raw.triggered_by||'SYSTEM').toUpperCase()} color={CC[(raw.triggered_by||'SYSTEM').toUpperCase()]||T.textD} xs/>
                       </div>
                       <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
-                        {(raw.timestamp||'').slice(11,19)}
+                        {fmtDateTime(raw.timestamp)}
                       </span>
                     </div>
                     <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
@@ -1155,6 +1171,9 @@ function ATHENA(){
             <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
               <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,lineHeight:1.4}}>
                 {D.performance_window?.label||`Closed trades in SCRIBE · rolling ${PERF_ROLLING_DAYS}d UTC`}
+              </div>
+              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:10}}>
+                Last update: {fmtDateTime(D.timestamp)}
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
                 {[['Win Rate',winRateLbl,T.green],

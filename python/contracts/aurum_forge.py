@@ -20,7 +20,6 @@ FORGE_OPEN_GROUP_KEYS = frozenset({
     "action",
     "group_id",
     "direction",
-    "entry_ladder",
     "lot_per_trade",
     "sl",
     "tp1",
@@ -29,6 +28,15 @@ FORGE_OPEN_GROUP_KEYS = frozenset({
     "timestamp",
 })
 # FORGE also reads tp2, tp3 (optional); entry_low used only if entry_ladder empty
+FORGE_ORDER_TYPES = frozenset({
+    "AUTO",
+    "BUY_LIMIT",
+    "SELL_LIMIT",
+    "BUY_STOP",
+    "SELL_STOP",
+    "BUY_STOP_LIMIT",
+    "SELL_STOP_LIMIT",
+})
 
 
 def _num(x: Any) -> float | None:
@@ -41,6 +49,44 @@ def _num(x: Any) -> float | None:
     if math.isnan(v) or math.isinf(v):
         return None
     return v
+
+
+def _normalize_order_type(v: Any) -> str:
+    s = str(v or "").strip().upper()
+    if not s:
+        return "AUTO"
+    if s == "BUY_STOPLIMIT":
+        return "BUY_STOP_LIMIT"
+    if s == "SELL_STOPLIMIT":
+        return "SELL_STOP_LIMIT"
+    return s
+
+
+def normalize_entry_legs(raw_legs: Any) -> list[dict]:
+    """
+    Canonicalize entry_legs items and drop invalid legs.
+    """
+    out: list[dict] = []
+    if not isinstance(raw_legs, list):
+        return out
+    for leg in raw_legs:
+        if not isinstance(leg, dict):
+            continue
+        ep = _num(leg.get("entry_price"))
+        if ep is None or ep <= 0:
+            continue
+        row: dict[str, Any] = {
+            "order_type": _normalize_order_type(leg.get("order_type")),
+            "entry_price": float(ep),
+        }
+        slp = _num(leg.get("stoplimit_price"))
+        if slp is not None and slp > 0:
+            row["stoplimit_price"] = float(slp)
+        tp = _num(leg.get("tp"))
+        if tp is not None and tp > 0:
+            row["tp"] = float(tp)
+        out.append(row)
+    return out
 
 
 def validate_aurum_cmd(cmd: dict) -> list[str]:
@@ -73,18 +119,25 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
             errs.append(f"direction must be BUY or SELL, got {cmd.get('direction')!r}")
         # OPEN_TRADE may fill entry via market — skip strict entry check for that
         if action == "OPEN_GROUP":
-            for label, key in (
-                ("entry_low", "entry_low"),
-                ("sl", "sl"),
-                ("tp1", "tp1"),
-            ):
+            for label, key in (("sl", "sl"), ("tp1", "tp1")):
                 v = _num(cmd.get(key))
                 if v is None or v <= 0:
                     errs.append(f"OPEN_GROUP requires positive numeric {label}")
-            el = _num(cmd.get("entry_low"))
-            eh = _num(cmd.get("entry_high"))
-            if el is not None and eh is not None and eh < el:
-                errs.append("entry_high must be >= entry_low")
+            legs = normalize_entry_legs(cmd.get("entry_legs"))
+            if legs:
+                for i, leg in enumerate(legs):
+                    ot = _normalize_order_type(leg.get("order_type"))
+                    if ot not in FORGE_ORDER_TYPES:
+                        errs.append(f"OPEN_GROUP entry_legs[{i}].order_type invalid: {ot!r}")
+                    if ot in ("BUY_STOP_LIMIT", "SELL_STOP_LIMIT") and _num(leg.get("stoplimit_price")) is None:
+                        errs.append(f"OPEN_GROUP entry_legs[{i}].stoplimit_price required for {ot}")
+            else:
+                el = _num(cmd.get("entry_low"))
+                eh = _num(cmd.get("entry_high"))
+                if el is None or el <= 0:
+                    errs.append("OPEN_GROUP requires positive numeric entry_low (or valid entry_legs)")
+                if el is not None and eh is not None and eh < el:
+                    errs.append("entry_high must be >= entry_low")
         return errs
 
     errs.append(f"unknown action {action!r} (expected MODE_CHANGE, CLOSE_ALL, OPEN_GROUP, OPEN_TRADE)")
@@ -108,6 +161,14 @@ def validate_forge_command(cmd: dict) -> list[str]:
             errs.append("CLOSE_ALL should include timestamp string")
         return errs
 
+    if action == "CANCEL_GROUP_PENDING":
+        mg = _num(cmd.get("magic"))
+        if mg is None or int(mg) < 1:
+            errs.append("CANCEL_GROUP_PENDING.magic must be a positive integer")
+        if not (cmd.get("timestamp") or "").strip():
+            errs.append("CANCEL_GROUP_PENDING should include timestamp string")
+        return errs
+
     if action == "OPEN_GROUP":
         missing = FORGE_OPEN_GROUP_KEYS - set(cmd.keys())
         if missing:
@@ -129,19 +190,35 @@ def validate_forge_command(cmd: dict) -> list[str]:
                 errs.append(f"OPEN_GROUP.{label} must be positive")
 
         lad = cmd.get("entry_ladder")
-        if isinstance(lad, list):
-            if not lad:
-                el = _num(cmd.get("entry_low"))
-                if el is None or el <= 0:
-                    errs.append("OPEN_GROUP needs non-empty entry_ladder or positive entry_low")
-            else:
-                for i, x in enumerate(lad):
-                    if _num(x) is None or _num(x) <= 0:
-                        errs.append(f"entry_ladder[{i}] must be a positive number")
-        else:
+        legs = cmd.get("entry_legs")
+        has_ladder = isinstance(lad, list) and len(lad) > 0
+        has_legs = isinstance(legs, list) and len(legs) > 0
+        if not has_ladder and not has_legs:
             el = _num(cmd.get("entry_low"))
             if el is None or el <= 0:
-                errs.append("OPEN_GROUP.entry_ladder must be a list or entry_low set")
+                errs.append("OPEN_GROUP requires non-empty entry_ladder or entry_legs (or positive entry_low fallback)")
+        if has_ladder:
+            for i, x in enumerate(lad):
+                if _num(x) is None or _num(x) <= 0:
+                    errs.append(f"entry_ladder[{i}] must be a positive number")
+        if has_legs:
+            for i, leg in enumerate(legs):
+                if not isinstance(leg, dict):
+                    errs.append(f"entry_legs[{i}] must be an object")
+                    continue
+                ot = _normalize_order_type(leg.get("order_type"))
+                if ot not in FORGE_ORDER_TYPES:
+                    errs.append(f"entry_legs[{i}].order_type invalid: {ot!r}")
+                ep = _num(leg.get("entry_price"))
+                if ep is None or ep <= 0:
+                    errs.append(f"entry_legs[{i}].entry_price must be a positive number")
+                if ot in ("BUY_STOP_LIMIT", "SELL_STOP_LIMIT"):
+                    slp = _num(leg.get("stoplimit_price"))
+                    if slp is None or slp <= 0:
+                        errs.append(f"entry_legs[{i}].stoplimit_price required for {ot}")
+                tpp = _num(leg.get("tp"))
+                if tpp is not None and tpp <= 0:
+                    errs.append(f"entry_legs[{i}].tp must be positive when provided")
 
         if not (cmd.get("timestamp") or "").strip():
             errs.append("OPEN_GROUP should include timestamp string")
@@ -186,6 +263,14 @@ def normalize_aurum_open_trade(cmd: dict, market_data: dict | None) -> dict:
         out["tp1"] = out["tp"]
     if out.get("lots") is not None and out.get("lot_per_trade") is None:
         out["lot_per_trade"] = out["lots"]
+    if isinstance(out.get("entry_legs"), list):
+        out["entry_legs"] = normalize_entry_legs(out.get("entry_legs"))
+        if out["entry_legs"] and (out.get("entry_low") is None or out.get("entry_high") is None):
+            prices = [float(x["entry_price"]) for x in out["entry_legs"]]
+            out["entry_low"] = out.get("entry_low", min(prices))
+            out["entry_high"] = out.get("entry_high", max(prices))
+        if out["entry_legs"] and out.get("num_trades") is None and out.get("trades") is None:
+            out["num_trades"] = len(out["entry_legs"])
     return out
 
 
@@ -202,9 +287,10 @@ def forge_open_group_from_bridge(
     tp1_close_pct: float,
     move_be_on_tp1: bool,
     timestamp: str,
+    entry_legs: list[dict] | None = None,
 ) -> dict:
     """Canonical OPEN_GROUP dict matching bridge._dispatch_aurum_open_group / signal paths."""
-    return {
+    out = {
         "action": "OPEN_GROUP",
         "group_id": group_id,
         "direction": direction.upper(),
@@ -218,3 +304,6 @@ def forge_open_group_from_bridge(
         "move_be_on_tp1": move_be_on_tp1,
         "timestamp": timestamp,
     }
+    if entry_legs:
+        out["entry_legs"] = normalize_entry_legs(entry_legs)
+    return out

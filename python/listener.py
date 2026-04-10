@@ -372,8 +372,10 @@ class Listener:
         if not text.strip() and not has_media:
             return
 
-        # Dedup
-        msg_key = (msg.id, msg.chat_id, edited)
+        # Dedup by Telegram message identity (ignore edited flag).
+        # Same message often arrives as NewMessage then MessageEdited a few seconds later.
+        # We should process it once for execution safety.
+        msg_key = (msg.id, msg.chat_id)
         if msg_key in self._last_signal_id:
             return
         self._last_signal_id.add(msg_key)
@@ -580,6 +582,7 @@ class Listener:
         elif parsed["type"] == "MANAGEMENT":
             parsed["signal_id"]  = signal_id
             parsed["channel"]    = channel
+            parsed["source"]     = "LISTENER"
             parsed["timestamp"]  = datetime.now(timezone.utc).isoformat()
 
             # Find the most recent OPEN group from this channel

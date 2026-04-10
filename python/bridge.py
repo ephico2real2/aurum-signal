@@ -88,7 +88,7 @@ AUTO_SCALPER_MAX_GROUPS    = int(os.environ.get("AUTO_SCALPER_MAX_GROUPS",      
 SIGNAL_LOT_SIZE    = float(os.environ.get("SIGNAL_LOT_SIZE",    "0.01"))
 SIGNAL_NUM_TRADES  = int(os.environ.get("SIGNAL_NUM_TRADES",    "4"))
 SIGNAL_EXPIRY_SEC  = int(os.environ.get("SIGNAL_EXPIRY_SEC",    "60"))   # 60s default — scalping signals must be fresh
-PENDING_ORDER_TIMEOUT_SEC = int(os.environ.get("PENDING_ORDER_TIMEOUT_SEC", "120"))  # 2min — auto-cancel unfilled pending orders
+PENDING_ORDER_TIMEOUT_SEC = int(os.environ.get("PENDING_ORDER_TIMEOUT_SEC", "3600"))  # 1h — auto-cancel fulfilled-pending orders that never trigger
 # BRIDGE scalper path config (no AEGIS gating)
 SCALPER_LOT_SIZE   = float(os.environ.get("SCALPER_LOT_SIZE", "0.01"))
 SCALPER_NUM_TRADES = max(1, int(os.environ.get("SCALPER_NUM_TRADES", "4")))
@@ -272,6 +272,69 @@ def _build_entry_ladder(entry_low: float, entry_high: float, trades: int) -> lis
         return [round((lo + hi) / 2 if hi > 0 else lo, 2)]
     step = (hi - lo) / (trades - 1)
     return [round(lo + i * step, 2) for i in range(trades)]
+
+def _infer_price_decimals(*values: float) -> int:
+    """Infer decimal precision from numeric price values."""
+    max_dec = 0
+    for v in values:
+        try:
+            s = f"{float(v):.10f}".rstrip("0").rstrip(".")
+            if "." in s:
+                max_dec = max(max_dec, len(s.split(".")[1]))
+        except (TypeError, ValueError):
+            continue
+    return max_dec
+
+
+def _pip_size_for_symbol(symbol: str | None, open_price: float, close_price: float) -> float:
+    """
+    Infer pip size for reporting:
+      - XAU/XAG metals: 0.01
+      - JPY FX pairs: 0.01
+      - Major/minor FX: 0.0001
+      - Fallback by decimals: 10*point for 2/3/5-digit quotes, else point
+    """
+    sym = (symbol or "").upper()
+    if sym.startswith(("XAU", "XAG")):
+        return 0.01
+    if len(sym) >= 6 and sym[3:6] == "JPY":
+        return 0.01
+    if len(sym) >= 6 and sym[:6].isalpha():
+        return 0.0001
+
+    dec = _infer_price_decimals(open_price, close_price)
+    if dec <= 0:
+        return 1.0
+    point = 10 ** (-dec)
+    if dec in (2, 3, 5):
+        return point * 10.0
+    return point
+
+
+def _calc_pips(symbol: str | None, direction: str, open_price: float, close_price: float) -> float:
+    if not open_price or not close_price:
+        return 0.0
+    raw = float(close_price) - float(open_price)
+    if (direction or "").upper() == "SELL":
+        raw = -raw
+    pip_size = _pip_size_for_symbol(symbol, open_price, close_price)
+    if pip_size <= 0:
+        pip_size = 1.0
+    return round(raw / pip_size, 1)
+
+
+def _entry_legs_from_ladder(entry_ladder: list[float]) -> list[dict]:
+    return [
+        {"order_type": "AUTO", "entry_price": float(px)}
+        for px in (entry_ladder or [])
+        if px is not None
+    ]
+
+
+def _normalize_forge_entry_legs(raw_legs) -> list[dict]:
+    from contracts.aurum_forge import normalize_entry_legs
+
+    return normalize_entry_legs(raw_legs)
 
 
 class Bridge:
@@ -594,6 +657,7 @@ class Bridge:
                     "open_price": p.get("open_price"),
                     "last_profit": p.get("profit", 0),
                     "current_price": p.get("current_price"),
+                    "symbol": p.get("symbol"),
                     "sl": p.get("sl"), "tp": p.get("tp"),
                 }
                 continue
@@ -611,6 +675,7 @@ class Bridge:
                 "group_id": gid, "magic": magic, "direction": direction,
                 "open_price": p.get("open_price"), "last_profit": p.get("profit", 0),
                 "current_price": p.get("current_price"),
+                "symbol": p.get("symbol"),
                 "lot_size": p.get("lots", 0),
                 "sl": p.get("sl"), "tp": p.get("tp"),
             }
@@ -778,17 +843,61 @@ class Bridge:
             for gid in stale_groups:
                 if gid is None:
                     continue
+                group_source = None
+                g_cached = self._open_groups.get(int(gid))
+                if isinstance(g_cached, dict):
+                    group_source = (g_cached.get("source") or "").upper()
+                if not group_source:
+                    try:
+                        g_rows = self.scribe.query(
+                            "SELECT source FROM trade_groups WHERE id=? LIMIT 1",
+                            (int(gid),),
+                        )
+                        if g_rows:
+                            group_source = str(g_rows[0].get("source") or "").upper()
+                    except Exception:
+                        group_source = ""
+                # Signal-origin groups should remain active until explicit operator close.
+                if group_source == "SIGNAL":
+                    log.info(
+                        "TRACKER: skipping pending timeout for SIGNAL group G%s",
+                        gid,
+                    )
+                    continue
                 magic = self._lookup_group_magic(gid)
                 if magic:
                     log.warning("TRACKER: pending orders for G%s stale (>%ds) — auto-cancelling",
                                 gid, PENDING_ORDER_TIMEOUT_SEC)
-                    _write_forge_command({"action": "CLOSE_GROUP", "magic": magic, "timestamp": _now()})
-                    self.scribe.update_trade_group(gid, "CLOSED", close_reason="PENDING_EXPIRED")
+                    _write_forge_command({
+                        "action": "CANCEL_GROUP_PENDING",
+                        "magic": magic,
+                        "timestamp": _now(),
+                    })
+                    has_open_positions = any(
+                        int(p.get("magic", 0) or 0) == int(magic)
+                        for p in live_positions.values()
+                    ) or any(
+                        int(s.get("magic", 0) or 0) == int(magic)
+                        for s in self._known_positions.values()
+                    )
+                    if not has_open_positions:
+                        self.scribe.update_trade_group(gid, "CLOSED", close_reason="PENDING_EXPIRED")
                     self.herald.send(
                         f"⏰ <b>PENDING EXPIRED</b> — G{gid}\n"
-                        f"Unfilled orders cancelled after {PENDING_ORDER_TIMEOUT_SEC}s")
+                        f"FULFILLED_PENDING orders cancelled after {PENDING_ORDER_TIMEOUT_SEC}s")
                     self._bridge_activity(
-                        "PENDING_EXPIRED", reason=f"G{gid} timeout {PENDING_ORDER_TIMEOUT_SEC}s")
+                        "PENDING_EXPIRED",
+                        reason=f"G{gid} timeout {PENDING_ORDER_TIMEOUT_SEC}s",
+                        notes=json.dumps(
+                            {
+                                "group_id": gid,
+                                "magic": magic,
+                                "cancelled_pending_only": True,
+                                "has_open_positions": has_open_positions,
+                            },
+                            default=str,
+                        ),
+                    )
 
         # ── Disappeared positions → closed (SL/TP/manual) ─────────
         closed_tickets = set(self._known_positions) - set(live_positions)
@@ -800,16 +909,11 @@ class Bridge:
             close_price = snap.get("current_price") or 0
             open_price = snap.get("open_price") or 0
             direction = snap.get("direction", "?")
+            symbol = snap.get("symbol")
             sl = snap.get("sl") or 0
             tp = snap.get("tp") or 0
             lot_size = snap.get("lot_size", 0)
-            # Estimate pips (XAUUSD: 1 pip = $0.01)
-            pips = 0.0
-            if open_price and close_price:
-                raw = close_price - open_price
-                if direction == "SELL":
-                    raw = -raw
-                pips = round(raw / 0.01, 1)  # XAUUSD pip
+            pips = _calc_pips(symbol, direction, open_price, close_price)
 
             # ── Infer close reason from SL/TP proximity ────────────
             close_reason = self._infer_close_reason(
@@ -912,15 +1016,11 @@ class Bridge:
             close_price = snap.get("current_price") or 0
             open_price = snap.get("open_price") or 0
             direction = snap.get("direction", "?")
+            symbol = snap.get("symbol")
             sl = snap.get("sl") or 0
             tp = snap.get("tp") or 0
             lot_size = snap.get("lot_size", 0)
-            pips = 0.0
-            if open_price and close_price:
-                raw = close_price - open_price
-                if direction == "SELL":
-                    raw = -raw
-                pips = round(raw / 0.01, 1)  # XAUUSD pip
+            pips = _calc_pips(symbol, direction, open_price, close_price)
             close_reason = self._infer_close_reason(
                 close_price, sl, tp, direction, gid
             )
@@ -1546,12 +1646,13 @@ class Bridge:
             "group_id":      group_id,
             "direction":     signal["direction"],
             "entry_ladder":  approval.entry_ladder,
+            "entry_legs":    _entry_legs_from_ladder(approval.entry_ladder),
             "lot_per_trade": approval.lot_per_trade,
             "sl":            signal["sl"],
             "tp1":           signal["tp1"],
-            "tp2":           signal.get("tp2"),
-            "tp3":           signal.get("tp3"),
-            "tp1_close_pct": TP1_CLOSE_PCT,
+            "tp2":           None,
+            "tp3":           None,
+            "tp1_close_pct": 100.0,
             "tp2_close_pct": TP2_CLOSE_PCT,
             "move_be_on_tp1":MOVE_BE_ON_TP1,
             "timestamp":     _now(),
@@ -1593,11 +1694,40 @@ class Bridge:
                 (sig_id,))
             if rows and rows[0].get("trade_group_id"):
                 return int(rows[0]["trade_group_id"])
-        # Fallback: most recent open SIGNAL group
-        for gid, g in sorted(self._open_groups.items(), reverse=True):
-            if g.get("source") == "SIGNAL":
-                return int(gid)
+        # Fallback: most recent OPEN/PARTIAL SIGNAL group from same channel only
+        if channel:
+            rows = self.scribe.query(
+                """SELECT tg.id FROM trade_groups tg
+                   JOIN signals_received sr ON sr.trade_group_id = tg.id
+                   WHERE sr.channel_name = ?
+                     AND tg.source = 'SIGNAL'
+                     AND tg.status IN ('OPEN','PARTIAL')
+                   ORDER BY tg.id DESC LIMIT 1""",
+                (channel,),
+            )
+            if rows and rows[0].get("id"):
+                return int(rows[0]["id"])
         return None
+
+    def _resolve_channel_open_groups(self, channel: str) -> list[int]:
+        """Return OPEN/PARTIAL SIGNAL groups for a specific channel only."""
+        if not channel:
+            return []
+        rows = self.scribe.query(
+            """SELECT DISTINCT tg.id FROM trade_groups tg
+               JOIN signals_received sr ON sr.trade_group_id = tg.id
+               WHERE sr.channel_name = ?
+                 AND tg.source = 'SIGNAL'
+                 AND tg.status IN ('OPEN','PARTIAL')
+               ORDER BY tg.id DESC""",
+            (channel,),
+        )
+        out = []
+        for r in rows or []:
+            gid = r.get("id")
+            if gid is not None:
+                out.append(int(gid))
+        return out
 
     def _process_mgmt_command(self, mt5: dict):
         mgmt = _read_json(MGMT_FILE)
@@ -1641,15 +1771,19 @@ class Bridge:
                         )
                 self._open_groups.clear()
             else:
-                # Channel CLOSE_ALL without group_id — only close SIGNAL groups
-                _tlog("MGMT", "CLOSE_ALL_SIGNAL_ONLY", f"channel {mgmt.get('channel','')} — only closing SIGNAL-source groups", level="warning")
-                for gid, g in list(self._open_groups.items()):
-                    if g.get("source") == "SIGNAL":
-                        magic = self._lookup_group_magic(int(gid))
-                        if magic:
-                            _write_forge_command({"action": "CLOSE_GROUP", "magic": magic, "timestamp": _now()})
-                            self.scribe.update_trade_group(int(gid), "CLOSED", close_reason=f"CHANNEL_CLOSE_ALL ({mgmt.get('channel','')})")
-                            _tlog("MGMT", "CLOSE_GROUP", f"channel CLOSE_ALL scoped to SIGNAL group", group_id=gid)
+                # Channel CLOSE_ALL without explicit group_id — scope by channel open groups only.
+                ch = mgmt.get("channel", "")
+                gids = self._resolve_channel_open_groups(ch)
+                if not gids:
+                    _tlog("MGMT", "CLOSE_ALL_IGNORED", f"channel {ch} — no scoped SIGNAL groups found", level="warning")
+                    return
+                _tlog("MGMT", "CLOSE_ALL_SIGNAL_ONLY", f"channel {ch} — closing scoped SIGNAL groups only", level="warning")
+                for gid in gids:
+                    magic = self._lookup_group_magic(int(gid))
+                    if magic:
+                        _write_forge_command({"action": "CLOSE_GROUP", "magic": magic, "timestamp": _now()})
+                        self.scribe.update_trade_group(int(gid), "CLOSED", close_reason=f"CHANNEL_CLOSE_ALL ({ch})")
+                        _tlog("MGMT", "CLOSE_GROUP", f"channel CLOSE_ALL scoped to SIGNAL group", group_id=gid)
                 return  # Don't send global CLOSE_ALL
 
         elif intent == "MOVE_BE":
@@ -1668,18 +1802,22 @@ class Bridge:
             elif mgmt_source == "ATHENA":
                 cmd = {"action": "MOVE_BE_ALL", "timestamp": _now()}
             else:
-                # Channel MOVE_BE — only affect SIGNAL groups
-                _tlog("MGMT", "MOVE_BE_SIGNAL_ONLY", f"channel {mgmt.get('channel','')} — skipping non-SIGNAL positions", level="warning")
-                for gid, g in self._open_groups.items():
-                    if g.get("source") == "SIGNAL":
-                        magic = self._lookup_group_magic(int(gid))
-                        if magic:
-                            positions = self.scribe.get_open_positions_by_group(int(gid))
-                            for pos in positions:
-                                ep = pos.get("entry_price")
-                                if ep and ep > 100:
-                                    _write_forge_command({"action": "MODIFY_SL", "sl": float(ep), "timestamp": _now()})
-                            _tlog("MGMT", "MOVE_BE", f"channel scoped to SIGNAL group", group_id=gid)
+                # Channel MOVE_BE — only affect this channel's SIGNAL groups.
+                ch = mgmt.get("channel", "")
+                gids = self._resolve_channel_open_groups(ch)
+                if not gids:
+                    _tlog("MGMT", "MOVE_BE_IGNORED", f"channel {ch} — no scoped SIGNAL groups found", level="warning")
+                    return
+                _tlog("MGMT", "MOVE_BE_SIGNAL_ONLY", f"channel {ch} — scoped SIGNAL groups only", level="warning")
+                for gid in gids:
+                    magic = self._lookup_group_magic(int(gid))
+                    if magic:
+                        positions = self.scribe.get_open_positions_by_group(int(gid))
+                        for pos in positions:
+                            ep = pos.get("entry_price")
+                            if ep and ep > 100:
+                                _write_forge_command({"action": "MODIFY_SL", "sl": float(ep), "timestamp": _now()})
+                        _tlog("MGMT", "MOVE_BE", f"channel scoped to SIGNAL group", group_id=gid)
                 return  # Don't send global MOVE_BE_ALL
 
         elif intent == "CLOSE_PCT":
@@ -1691,12 +1829,16 @@ class Bridge:
             elif mgmt_source == "ATHENA":
                 cmd = {"action": "CLOSE_PCT", "pct": pct, "timestamp": _now()}
             else:
-                # Channel CLOSE_PCT — scope to SIGNAL groups
-                for gid, g in self._open_groups.items():
-                    if g.get("source") == "SIGNAL":
-                        magic = self._lookup_group_magic(int(gid))
-                        if magic:
-                            _write_forge_command({"action": "CLOSE_GROUP_PCT", "magic": magic, "pct": float(pct), "timestamp": _now()})
+                # Channel CLOSE_PCT — scope to this channel's SIGNAL groups only.
+                ch = mgmt.get("channel", "")
+                gids = self._resolve_channel_open_groups(ch)
+                if not gids:
+                    _tlog("MGMT", "CLOSE_PCT_IGNORED", f"channel {ch} — no scoped SIGNAL groups found", level="warning")
+                    return
+                for gid in gids:
+                    magic = self._lookup_group_magic(int(gid))
+                    if magic:
+                        _write_forge_command({"action": "CLOSE_GROUP_PCT", "magic": magic, "pct": float(pct), "timestamp": _now()})
                 return
 
         elif intent == "MODIFY_SL":
@@ -1805,6 +1947,7 @@ class Bridge:
         self._open_groups[gid] = {**group_data, "magic_number": magic}
         cmd = {"action":"OPEN_GROUP","group_id":gid,"direction":direction,
                "entry_ladder":entry_ladder,
+               "entry_legs":_entry_legs_from_ladder(entry_ladder),
                "lot_per_trade":SCALPER_LOT_SIZE,
                "sl":sl,"tp1":tp1,"tp2":None,"tp3":None,
                "tp1_close_pct":TP1_CLOSE_PCT,
@@ -2224,6 +2367,7 @@ class Bridge:
                 notes=json.dumps({"direction": cmd.get("direction")}, default=str),
             )
             return
+        explicit_entry_legs = _normalize_forge_entry_legs(cmd.get("entry_legs"))
 
         try:
             el = float(cmd.get("entry_low", 0) or 0)
@@ -2239,6 +2383,11 @@ class Bridge:
             )
             return
 
+        if explicit_entry_legs and el <= 0:
+            prices = [float(leg["entry_price"]) for leg in explicit_entry_legs]
+            el = min(prices)
+            if eh <= 0:
+                eh = max(prices)
         if el <= 0 or sl <= 0 or tp1 <= 0:
             log.warning("BRIDGE: AURUM OPEN_GROUP missing entry_low/high, sl, or tp1")
             self._bridge_activity(
@@ -2253,6 +2402,8 @@ class Bridge:
 
         # Accept num_trades from AURUM command ("num_trades" or "trades")
         req_nt = cmd.get("num_trades") or cmd.get("trades")
+        if explicit_entry_legs:
+            req_nt = len(explicit_entry_legs)
         signal = {
             "direction": direction,
             "entry_low": el,
@@ -2261,6 +2412,7 @@ class Bridge:
             "tp1": tp1,
             "tp2": cmd.get("tp2"),
             "tp3": cmd.get("tp3"),
+            "entry_legs": explicit_entry_legs,
             "signal_id": None,
             "source": "AURUM",
         }
@@ -2325,7 +2477,11 @@ class Bridge:
             "action": "OPEN_GROUP",
             "group_id": gid,
             "direction": direction,
-            "entry_ladder": approval.entry_ladder,
+            "entry_ladder": (
+                [float(leg["entry_price"]) for leg in explicit_entry_legs]
+                if explicit_entry_legs else approval.entry_ladder
+            ),
+            "entry_legs": explicit_entry_legs or _entry_legs_from_ladder(approval.entry_ladder),
             "lot_per_trade": lot_pt,
             "sl": sl,
             "tp1": tp1,

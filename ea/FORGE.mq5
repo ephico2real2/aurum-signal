@@ -21,6 +21,7 @@
 //    CLOSE_ALL       — close all positions + cancel all pending orders
 //    CLOSE_PCT       — close N% of all positions
 //    CLOSE_GROUP     — close positions + pendings for specific magic number
+//    CANCEL_GROUP_PENDING — cancel pending orders only for specific magic number
 //    CLOSE_GROUP_PCT — close N% of positions for specific magic number
 //    CLOSE_PROFITABLE— close only positions in profit
 //    CLOSE_LOSING    — close only positions in loss
@@ -156,6 +157,31 @@ struct TradeGroup {
 TradeGroup g_groups[];
 
 string JsonEscape(const string s);
+
+struct EntryLeg {
+   string order_type;      // AUTO | BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP | BUY_STOP_LIMIT | SELL_STOP_LIMIT
+   double entry_price;     // trigger/entry price
+   double stoplimit_price; // required for *_STOP_LIMIT
+   double tp;              // optional per-leg TP override
+};
+
+string NormalizeOrderType(string ot);
+bool ParseEntryLegs(const string &json, const string &key, EntryLeg &legs[]);
+bool SymbolSupportsOrderType(const string order_type);
+bool PlaceOpenGroupLeg(
+   const string direction,
+   const EntryLeg &leg,
+   const double lot_per_trade,
+   const double sl,
+   const double tp_default,
+   const int group_magic,
+   const int group_id,
+   const int leg_index,
+   const int leg_count,
+   bool &ok,
+   string &order_kind,
+   string &fail_reason
+);
 
 // SYMBOL MATCHING — handles broker suffixes (XAUUSD vs XAUUSDm vs XAUUSD.r)
 // Used to filter positions/orders to only those on the chart symbol
@@ -428,6 +454,7 @@ void ReadAndExecuteCommand() {
    else if(action == "MODIFY_SL")   ExecuteModifySL(content);
    else if(action == "MODIFY_TP")   ExecuteModifyTP(content);
    else if(action == "CLOSE_GROUP")     ExecuteCloseGroup(content);
+   else if(action == "CANCEL_GROUP_PENDING") ExecuteCancelGroupPending(content);
    else if(action == "CLOSE_GROUP_PCT") ExecuteCloseGroupPct(content);
    else if(action == "CLOSE_PROFITABLE") ExecuteCloseProfitable();
    else if(action == "CLOSE_LOSING")    ExecuteCloseLosing();
@@ -451,19 +478,31 @@ void ExecuteOpenGroup(const string &json) {
    if(mbe == "false" || mbe == "0") move_be = false;
    else if(mbe == "true" || mbe == "1") move_be = true;
 
-   // Parse entry ladder
-   double entries[];
-   ParseDoubleArray(json, "entry_ladder", entries);
-   int n = ArraySize(entries);
+   EntryLeg legs[];
+   ParseEntryLegs(json, "entry_legs", legs);
+   int n = ArraySize(legs);
    if(n == 0) {
-      double single_entry = JsonGetDouble(json, "entry_low");
-      if(single_entry == 0) {
-         Print("FORGE: OPEN_GROUP aborted — entry_ladder empty and no entry_low (check JSON indent / parser)");
-         return;
+      // Backward-compatible path: build AUTO legs from entry_ladder/entry_low.
+      double entries[];
+      ParseDoubleArray(json, "entry_ladder", entries);
+      n = ArraySize(entries);
+      if(n == 0) {
+         double single_entry = JsonGetDouble(json, "entry_low");
+         if(single_entry == 0) {
+            Print("FORGE: OPEN_GROUP aborted — entry_ladder/entry_legs empty and no entry_low");
+            return;
+         }
+         ArrayResize(entries, 1);
+         entries[0] = single_entry;
+         n = 1;
       }
-      ArrayResize(entries, 1);
-      entries[0] = single_entry;
-      n = 1;
+      ArrayResize(legs, n);
+      for(int i = 0; i < n; i++) {
+         legs[i].order_type = "AUTO";
+         legs[i].entry_price = entries[i];
+         legs[i].stoplimit_price = 0;
+         legs[i].tp = 0;
+      }
    }
    if(direction != "BUY" && direction != "SELL") {
       Print("FORGE: OPEN_GROUP aborted — bad direction '", direction, "'");
@@ -479,26 +518,52 @@ void ExecuteOpenGroup(const string &json) {
    double tp2_price = (tp2 > 0) ? tp2 : tp1;  // fallback to TP1 if no TP2
 
    for(int i = 0; i < n; i++) {
-      double entry = entries[i];
       double tp_for_this = (i < tp1_count) ? tp1 : tp2_price;  // first N get TP1, rest get TP2
       string tp_label = (i < tp1_count) ? "TP1" : "TP2";
-      string comment = "FORGE|G" + IntegerToString(group_id) + "|" + IntegerToString(i) + "|" + tp_label;
+      if(legs[i].tp > 0) tp_for_this = legs[i].tp;
       bool ok = false;
-      if(direction == "BUY") {
-         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         if(entry < ask - 5)
-            ok = g_trade.BuyLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
-         else
-            ok = g_trade.Buy(lot_per_trade, _Symbol, ask, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
-      } else {
-         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         if(entry > bid + 5)
-            ok = g_trade.SellLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
-         else
-            ok = g_trade.Sell(lot_per_trade, _Symbol, bid, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
+      string order_kind = "UNKNOWN";
+      string fail_reason = "";
+      bool placed = PlaceOpenGroupLeg(
+         direction,
+         legs[i],
+         lot_per_trade,
+         sl,
+         tp_for_this,
+         group_magic,
+         group_id,
+         i,
+         n,
+         ok,
+         order_kind,
+         fail_reason
+      );
+      if(!placed) {
+         Print(
+            "FORGE: Skipped leg ", i+1, "/", n,
+            " ", order_kind,
+            " entry=", DoubleToString(legs[i].entry_price, _Digits),
+            " reason=", fail_reason
+         );
+         continue;
       }
-      if(ok) { opened++; Print("FORGE: Opened trade ", i+1, "/", n, " ", tp_label, "=", DoubleToString(tp_for_this,2), " ticket=", g_trade.ResultOrder()); }
-      else Print("FORGE: Failed trade ", i+1, " error=", g_trade.ResultRetcode());
+      if(ok) {
+         opened++;
+         Print(
+            "FORGE: Opened trade ", i+1, "/", n,
+            " ", order_kind,
+            " entry=", DoubleToString(legs[i].entry_price, _Digits),
+            " ", tp_label, "=", DoubleToString(tp_for_this,2),
+            " ticket=", g_trade.ResultOrder()
+         );
+      } else {
+         Print(
+            "FORGE: Failed trade ", i+1,
+            " ", order_kind,
+            " entry=", DoubleToString(legs[i].entry_price, _Digits),
+            " retcode=", g_trade.ResultRetcode()
+         );
+      }
       Sleep(100);
    }
    Print("FORGE: Group ", group_id, " TP split: ", tp1_count, " at TP1=", DoubleToString(tp1,2),
@@ -662,6 +727,24 @@ void ExecuteCloseGroup(const string &json) {
       }
    }
    Print("FORGE: CLOSE_GROUP magic=", target_magic, " — closed ", closed, " positions, cancelled ", cancelled, " pending");
+}
+
+//+------------------------------------------------------------------+
+//| Cancel only pending orders for a specific group (magic)          |
+//+------------------------------------------------------------------+
+void ExecuteCancelGroupPending(const string &json) {
+   int target_magic = (int)JsonGetDouble(json, "magic");
+   if(target_magic <= 0) { Print("FORGE: CANCEL_GROUP_PENDING aborted — invalid magic"); return; }
+   int cancelled = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) == target_magic) {
+         if(g_trade.OrderDelete(ot)) cancelled++;
+      }
+   }
+   Print("FORGE: CANCEL_GROUP_PENDING magic=", target_magic, " — cancelled ", cancelled, " pending");
 }
 
 //+------------------------------------------------------------------+
@@ -1310,6 +1393,204 @@ void GetGroupPositions(int magic, int &tickets[]) {
    }
 }
 
+
+string NormalizeOrderType(string ot) {
+   string out = ot;
+   StringTrimLeft(out);
+   StringTrimRight(out);
+   StringToUpper(out);
+   if(out == "") return "AUTO";
+   if(out == "BUY_STOPLIMIT") return "BUY_STOP_LIMIT";
+   if(out == "SELL_STOPLIMIT") return "SELL_STOP_LIMIT";
+   return out;
+}
+
+bool SymbolSupportsOrderType(const string order_type) {
+   long mode = SymbolInfoInteger(_Symbol, SYMBOL_ORDER_MODE);
+   string ot = NormalizeOrderType(order_type);
+   if(ot == "BUY_LIMIT" || ot == "SELL_LIMIT")
+      return (mode & SYMBOL_ORDER_LIMIT) == SYMBOL_ORDER_LIMIT;
+   if(ot == "BUY_STOP" || ot == "SELL_STOP")
+      return (mode & SYMBOL_ORDER_STOP) == SYMBOL_ORDER_STOP;
+   if(ot == "BUY_STOP_LIMIT" || ot == "SELL_STOP_LIMIT")
+      return (mode & SYMBOL_ORDER_STOP_LIMIT) == SYMBOL_ORDER_STOP_LIMIT;
+   return true;
+}
+
+bool ParseEntryLegs(const string &json, const string &key, EntryLeg &legs[]) {
+   ArrayResize(legs, 0);
+   string search = "\"" + key + "\"";
+   int kpos = StringFind(json, search);
+   if(kpos < 0) return false;
+   int p = kpos + StringLen(search);
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json, p) != ':') return false;
+   p++;
+   while(p < StringLen(json) && StringGetCharacter(json, p) <= 32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json, p) != '[') return false;
+   p++;
+   int idx = p;
+   int depth = 0;
+   int obj_start = -1;
+   while(idx < StringLen(json)) {
+      ushort c = StringGetCharacter(json, idx);
+      if(c == '{') {
+         if(depth == 0) obj_start = idx;
+         depth++;
+      } else if(c == '}') {
+         depth--;
+         if(depth == 0 && obj_start >= 0) {
+            string obj = StringSubstr(json, obj_start, idx - obj_start + 1);
+            int n = ArraySize(legs);
+            ArrayResize(legs, n + 1);
+            legs[n].order_type = NormalizeOrderType(JsonGetString(obj, "order_type"));
+            if(legs[n].order_type == "") legs[n].order_type = "AUTO";
+            legs[n].entry_price = JsonGetDouble(obj, "entry_price");
+            legs[n].stoplimit_price = JsonGetDouble(obj, "stoplimit_price");
+            legs[n].tp = JsonGetDouble(obj, "tp");
+            if(legs[n].entry_price <= 0) {
+               ArrayResize(legs, n);
+            }
+            obj_start = -1;
+         }
+      } else if(c == ']' && depth == 0) {
+         break;
+      }
+      idx++;
+   }
+   return ArraySize(legs) > 0;
+}
+
+bool PlaceOpenGroupLeg(
+   const string direction,
+   const EntryLeg &leg,
+   const double lot_per_trade,
+   const double sl,
+   const double tp_default,
+   const int group_magic,
+   const int group_id,
+   const int leg_index,
+   const int leg_count,
+   bool &ok,
+   string &order_kind,
+   string &fail_reason
+) {
+   ok = false;
+   fail_reason = "";
+   string tp_label = (leg_index < (int)MathCeil(leg_count * 0.7)) ? "TP1" : "TP2";
+   string comment = "FORGE|G" + IntegerToString(group_id) + "|" + IntegerToString(leg_index) + "|" + tp_label;
+   string req_type = NormalizeOrderType(leg.order_type);
+   double entry = leg.entry_price;
+   double entry_tolerance = MathMax(_Point * 5.0, 0.05);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double tp_for_this = tp_default;
+   if(leg.tp > 0) tp_for_this = leg.tp;
+
+   if(req_type == "AUTO") {
+      if(direction == "BUY") {
+         if(entry <= ask - entry_tolerance) req_type = "BUY_LIMIT";
+         else if(entry >= ask + entry_tolerance) req_type = "BUY_STOP";
+         else req_type = "BUY_MARKET";
+      } else {
+         if(entry >= bid + entry_tolerance) req_type = "SELL_LIMIT";
+         else if(entry <= bid - entry_tolerance) req_type = "SELL_STOP";
+         else req_type = "SELL_MARKET";
+      }
+   }
+
+   if(direction == "BUY" && StringFind(req_type, "SELL_") == 0) {
+      order_kind = req_type;
+      fail_reason = "direction/order_type mismatch";
+      return false;
+   }
+   if(direction == "SELL" && StringFind(req_type, "BUY_") == 0) {
+      order_kind = req_type;
+      fail_reason = "direction/order_type mismatch";
+      return false;
+   }
+   if(req_type != "BUY_MARKET" && req_type != "SELL_MARKET" && !SymbolSupportsOrderType(req_type)) {
+      order_kind = req_type;
+      fail_reason = "symbol does not support order type";
+      return false;
+   }
+
+   order_kind = req_type;
+   if(req_type == "BUY_MARKET") {
+      ok = g_trade.Buy(lot_per_trade, _Symbol, ask, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
+      return true;
+   }
+   if(req_type == "SELL_MARKET") {
+      ok = g_trade.Sell(lot_per_trade, _Symbol, bid, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
+      return true;
+   }
+   if(req_type == "BUY_LIMIT") {
+      ok = g_trade.BuyLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      return true;
+   }
+   if(req_type == "SELL_LIMIT") {
+      ok = g_trade.SellLimit(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      return true;
+   }
+   if(req_type == "BUY_STOP") {
+      ok = g_trade.BuyStop(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      return true;
+   }
+   if(req_type == "SELL_STOP") {
+      ok = g_trade.SellStop(lot_per_trade, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      return true;
+   }
+   if(req_type == "BUY_STOP_LIMIT" || req_type == "SELL_STOP_LIMIT") {
+      double slp = leg.stoplimit_price;
+      if(slp <= 0) {
+         fail_reason = "missing stoplimit_price";
+         return false;
+      }
+      if(req_type == "BUY_STOP_LIMIT") {
+         if(entry <= ask + entry_tolerance) {
+            fail_reason = "BUY_STOP_LIMIT trigger must be above current ask";
+            return false;
+         }
+         if(slp > entry) {
+            fail_reason = "BUY_STOP_LIMIT stoplimit_price must be <= trigger";
+            return false;
+         }
+      } else {
+         if(entry >= bid - entry_tolerance) {
+            fail_reason = "SELL_STOP_LIMIT trigger must be below current bid";
+            return false;
+         }
+         if(slp < entry) {
+            fail_reason = "SELL_STOP_LIMIT stoplimit_price must be >= trigger";
+            return false;
+         }
+      }
+      MqlTradeRequest req;
+      MqlTradeResult  res;
+      ZeroMemory(req);
+      ZeroMemory(res);
+      req.action = TRADE_ACTION_PENDING;
+      req.symbol = _Symbol;
+      req.magic = (ulong)group_magic;
+      req.volume = lot_per_trade;
+      req.type = (req_type == "BUY_STOP_LIMIT") ? ORDER_TYPE_BUY_STOP_LIMIT : ORDER_TYPE_SELL_STOP_LIMIT;
+      req.price = NormalizeDouble(entry, _Digits);
+      req.stoplimit = NormalizeDouble(slp, _Digits);
+      req.sl = NormalizeDouble(sl, _Digits);
+      req.tp = NormalizeDouble(tp_for_this, _Digits);
+      req.type_time = ORDER_TIME_GTC;
+      req.deviation = 30;
+      req.comment = comment;
+      ok = OrderSend(req, res);
+      if(!ok) {
+         Print("FORGE: stop-limit send failed retcode=", (int)res.retcode, " type=", req_type,
+               " trigger=", DoubleToString(entry, _Digits), " stoplimit=", DoubleToString(slp, _Digits));
+      }
+      return true;
+   }
+   fail_reason = "unsupported order_type";
+   return false;
+}
 // Tolerant of Python json.dump(indent=2): space after colon, newlines inside arrays.
 string JsonGetString(const string &json, const string &key) {
    string search = "\"" + key + "\"";

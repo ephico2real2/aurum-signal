@@ -105,3 +105,87 @@ def test_scalper_logic_no_aegis_validate_call():
 
     src = inspect.getsource(bm.Bridge._scalper_logic)
     assert "aegis.validate" not in src
+
+
+@pytest.mark.unit
+def test_aegis_signal_buy_uses_cheapest_endpoint_for_ladder():
+    import aegis
+
+    ladder = aegis.Aegis._build_entry_ladder(
+        direction="BUY",
+        entry_low=4750.2,
+        entry_high=4760.2,
+        num_trades=4,
+        source="SIGNAL",
+    )
+    assert ladder == [4750.2, 4750.2, 4750.2, 4750.2]
+
+
+@pytest.mark.unit
+def test_aegis_signal_sell_uses_highest_endpoint_for_ladder():
+    import aegis
+
+    ladder = aegis.Aegis._build_entry_ladder(
+        direction="SELL",
+        entry_low=4750.2,
+        entry_high=4760.2,
+        num_trades=4,
+        source="SIGNAL",
+    )
+    assert ladder == [4760.2, 4760.2, 4760.2, 4760.2]
+
+
+@pytest.mark.unit
+def test_aegis_non_signal_keeps_even_spread_ladder():
+    import aegis
+
+    ladder = aegis.Aegis._build_entry_ladder(
+        direction="BUY",
+        entry_low=4750.2,
+        entry_high=4760.2,
+        num_trades=4,
+        source="AURUM",
+    )
+    assert ladder == [4750.2, 4753.53, 4756.87, 4760.2]
+
+
+@pytest.mark.unit
+def test_aegis_signal_buy_above_market_is_rejected_for_limit_policy():
+    import aegis
+
+    reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="BUY",
+        entry_low=4773.5,
+        entry_high=4774.5,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    assert reason and reason.startswith("SIGNAL_BUY_LIMIT_REQUIRED")
+
+
+@pytest.mark.unit
+def test_aegis_signal_sell_below_market_is_rejected_for_limit_policy():
+    import aegis
+
+    reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="SELL",
+        entry_low=4769.0,
+        entry_high=4770.0,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    assert reason and reason.startswith("SIGNAL_SELL_LIMIT_REQUIRED")
+
+
+@pytest.mark.unit
+def test_aegis_signal_limit_orientation_accepts_buy_below_market():
+    import aegis
+
+    reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="BUY",
+        entry_low=4770.0,
+        entry_high=4771.0,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    assert reason is None

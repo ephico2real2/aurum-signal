@@ -18,6 +18,7 @@ import pytest
 from contracts.aurum_forge import (
     VALID_MODES,
     forge_open_group_from_bridge,
+    normalize_entry_legs,
     normalize_aurum_open_trade,
     validate_aurum_cmd,
     validate_forge_command,
@@ -100,6 +101,15 @@ class TestForgeCommandContract:
             {"action": "CLOSE_ALL", "timestamp": "2026-04-06T12:00:00+00:00"}
         ) == []
 
+    def test_cancel_group_pending_passes(self):
+        assert validate_forge_command(
+            {
+                "action": "CANCEL_GROUP_PENDING",
+                "magic": 202425,
+                "timestamp": "2026-04-06T12:00:00+00:00",
+            }
+        ) == []
+
     def test_open_group_missing_keys_fails(self):
         bad = {"action": "OPEN_GROUP", "group_id": 1}
         errs = validate_forge_command(bad)
@@ -122,6 +132,47 @@ class TestForgeCommandContract:
         s = json.dumps(cmd)
         back = json.loads(s)
         assert validate_forge_command(back) == []
+
+    def test_open_group_with_explicit_stop_limit_legs_passes(self):
+        cmd = forge_open_group_from_bridge(
+            group_id=11,
+            direction="BUY",
+            entry_ladder=[3300.0],
+            entry_legs=[
+                {
+                    "order_type": "BUY_STOP_LIMIT",
+                    "entry_price": 3310.0,
+                    "stoplimit_price": 3308.0,
+                }
+            ],
+            lot_per_trade=0.02,
+            sl=3299.0,
+            tp1=3320.0,
+            tp2=None,
+            tp3=None,
+            tp1_close_pct=70.0,
+            move_be_on_tp1=True,
+            timestamp="2026-04-06T12:00:00+00:00Z",
+        )
+        assert validate_forge_command(cmd) == []
+
+    def test_open_group_stop_limit_leg_without_stoplimit_rejected(self):
+        cmd = forge_open_group_from_bridge(
+            group_id=12,
+            direction="SELL",
+            entry_ladder=[3300.0],
+            entry_legs=[{"order_type": "SELL_STOP_LIMIT", "entry_price": 3290.0}],
+            lot_per_trade=0.02,
+            sl=3310.0,
+            tp1=3280.0,
+            tp2=None,
+            tp3=None,
+            tp1_close_pct=70.0,
+            move_be_on_tp1=True,
+            timestamp="2026-04-06T12:00:00+00:00Z",
+        )
+        errs = validate_forge_command(cmd)
+        assert any("stoplimit_price required" in e for e in errs)
 
 
 @pytest.mark.unit
@@ -153,6 +204,35 @@ class TestNormalizeAurumOpenTrade:
         assert out["tp1"] == 1.5
         assert out["lot_per_trade"] == 0.02
 
+    def test_entry_legs_normalized_and_trade_count_derived(self):
+        cmd = {
+            "action": "OPEN_TRADE",
+            "direction": "BUY",
+            "sl": 3290.0,
+            "tp1": 3320.0,
+            "entry_legs": [
+                {"order_type": "buy_stoplimit", "entry_price": 3310.0, "stoplimit_price": 3308.0},
+                {"order_type": "AUTO", "entry_price": 3305.0},
+            ],
+        }
+        out = normalize_aurum_open_trade(cmd, None)
+        assert out["num_trades"] == 2
+        assert out["entry_low"] == 3305.0
+        assert out["entry_high"] == 3310.0
+        assert out["entry_legs"][0]["order_type"] == "BUY_STOP_LIMIT"
+
+    def test_normalize_entry_legs_filters_invalid_rows(self):
+        legs = normalize_entry_legs(
+            [
+                {"order_type": "AUTO", "entry_price": 3300.0},
+                {"order_type": "BUY_STOP_LIMIT", "entry_price": 0},
+                {"order_type": "SELL_STOPLIMIT", "entry_price": 3290.0, "stoplimit_price": 3292.0},
+                "bad",
+            ]
+        )
+        assert len(legs) == 2
+        assert legs[1]["order_type"] == "SELL_STOP_LIMIT"
+
 
 @pytest.mark.unit
 class TestBridgeUsesContractModule:
@@ -162,6 +242,20 @@ class TestBridgeUsesContractModule:
         src = inspect.getsource(bridge.Bridge._normalize_aurum_open_trade)
         assert "normalize_aurum_open_trade" in src
         assert "contracts" in src
+
+
+@pytest.mark.unit
+class TestForgeOpenGroupPendingOrderSupport:
+    def test_forge_open_group_uses_limit_and_stop_pending_types(self):
+        forge = (Path(__file__).resolve().parents[2] / "ea" / "FORGE.mq5").read_text(
+            encoding="utf-8"
+        )
+        assert "BuyLimit(" in forge
+        assert "SellLimit(" in forge
+        assert "BuyStop(" in forge
+        assert "SellStop(" in forge
+        assert "ORDER_TYPE_BUY_STOP_LIMIT" in forge
+        assert "ORDER_TYPE_SELL_STOP_LIMIT" in forge
 
 
 @pytest.mark.unit

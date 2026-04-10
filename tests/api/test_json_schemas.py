@@ -33,6 +33,31 @@ class TestFileBusSchemas:
         s = _load_schema("files/forge_command.schema.json")
         _v(s).validate({"action": "CLOSE_ALL", "timestamp": "2026-04-06T00:00:00Z"})
 
+    def test_forge_cancel_group_pending(self):
+        s = _load_schema("files/forge_command.schema.json")
+        _v(s).validate(
+            {
+                "action": "CANCEL_GROUP_PENDING",
+                "magic": 202425,
+                "timestamp": "2026-04-06T00:00:00Z",
+            }
+        )
+
+    def test_aurum_open_group_with_entry_legs(self):
+        s = _load_schema("files/aurum_cmd.schema.json")
+        _v(s).validate(
+            {
+                "action": "OPEN_GROUP",
+                "direction": "BUY",
+                "entry_legs": [
+                    {"order_type": "BUY_STOP_LIMIT", "entry_price": 3310.0, "stoplimit_price": 3308.0}
+                ],
+                "sl": 3290.0,
+                "tp1": 3330.0,
+                "timestamp": "2026-04-06T00:00:00Z",
+            }
+        )
+
     def test_forge_open_group(self):
         s = _load_schema("files/forge_command.schema.json")
         _v(s).validate(
@@ -63,6 +88,27 @@ class TestFileBusSchemas:
             }
         )
 
+
+    def test_forge_open_group_with_entry_legs(self):
+        s = _load_schema("files/forge_command.schema.json")
+        _v(s).validate(
+            {
+                "action": "OPEN_GROUP",
+                "group_id": 8,
+                "direction": "SELL",
+                "entry_legs": [
+                    {"order_type": "SELL_STOP_LIMIT", "entry_price": 3290.0, "stoplimit_price": 3291.5}
+                ],
+                "lot_per_trade": 0.05,
+                "sl": 3310.0,
+                "tp1": 3270.0,
+                "tp2": None,
+                "tp3": None,
+                "tp1_close_pct": 70.0,
+                "move_be_on_tp1": True,
+                "timestamp": "2026-04-06T00:00:00Z",
+            }
+        )
     def test_aurum_open_group(self):
         s = _load_schema("files/aurum_cmd.schema.json")
         _v(s).validate(

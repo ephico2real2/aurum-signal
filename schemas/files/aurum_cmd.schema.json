@@ -29,12 +29,40 @@
     },
     {
       "type": "object",
-      "required": ["action", "direction", "entry_low", "sl", "tp1", "timestamp"],
+      "required": ["action", "direction", "sl", "tp1", "timestamp"],
       "properties": {
         "action": { "type": "string", "enum": ["OPEN_GROUP", "OPEN_TRADE"] },
         "direction": { "type": "string", "enum": ["BUY", "SELL", "buy", "sell"] },
         "entry_low": { "type": "number", "exclusiveMinimum": 0 },
         "entry_high": { "type": "number", "exclusiveMinimum": 0 },
+        "entry_legs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["entry_price"],
+            "properties": {
+              "order_type": {
+                "type": "string",
+                "enum": [
+                  "AUTO",
+                  "BUY_LIMIT",
+                  "SELL_LIMIT",
+                  "BUY_STOP",
+                  "SELL_STOP",
+                  "BUY_STOP_LIMIT",
+                  "SELL_STOP_LIMIT",
+                  "BUY_STOPLIMIT",
+                  "SELL_STOPLIMIT"
+                ]
+              },
+              "entry_price": { "type": "number", "exclusiveMinimum": 0 },
+              "stoplimit_price": { "type": "number", "exclusiveMinimum": 0 },
+              "tp": { "type": "number", "exclusiveMinimum": 0 }
+            },
+            "additionalProperties": true
+          }
+        },
         "sl": { "type": "number", "exclusiveMinimum": 0 },
         "tp1": { "type": "number", "exclusiveMinimum": 0 },
         "tp2": {},
@@ -46,6 +74,10 @@
         "timestamp": { "type": "string", "minLength": 1 },
         "reason": { "type": "string" }
       },
+      "anyOf": [
+        { "required": ["entry_low"] },
+        { "required": ["entry_legs"] }
+      ],
       "additionalProperties": true
     }
   ]

@@ -79,6 +79,57 @@ class Aegis:
         except Exception as e:
             log.debug(f"AEGIS heartbeat init error: {e}")
 
+    @staticmethod
+    def _build_entry_ladder(direction: str, entry_low: float, entry_high: float, num_trades: int, source: str = "") -> list[float]:
+        """
+        Build entry prices for group legs.
+        For SIGNAL source, prioritize favorable endpoint:
+          - BUY -> cheapest entry (entry_low)
+          - SELL -> highest entry (entry_high)
+        """
+        trades = max(1, int(num_trades))
+        lo = float(entry_low)
+        hi = float(entry_high)
+        dir_u = (direction or "").upper()
+        src_u = (source or "").upper()
+
+        if src_u == "SIGNAL" and hi > lo and trades > 1:
+            favored = lo if dir_u == "BUY" else hi
+            return [round(favored, 2)] * trades
+
+        if hi > lo and trades > 1:
+            step = (hi - lo) / (trades - 1)
+            return [round(lo + i * step, 2) for i in range(trades)]
+        return [round(lo, 2)] * trades
+
+    @staticmethod
+    def _signal_limit_orientation_reject_reason(
+        direction: str,
+        entry_low: float,
+        entry_high: float,
+        current_price: float | None,
+        source: str = "",
+    ) -> str | None:
+        """
+        SIGNAL policy: pending entries should be LIMIT-oriented, not STOP-oriented.
+          - BUY entry should be below current market
+          - SELL entry should be above current market
+        """
+        if (source or "").upper() != "SIGNAL" or current_price is None:
+            return None
+        try:
+            cp = float(current_price)
+            lo = float(entry_low)
+            hi = float(entry_high)
+        except (TypeError, ValueError):
+            return None
+        d = (direction or "").upper()
+        if d == "BUY" and lo >= cp:
+            return f"SIGNAL_BUY_LIMIT_REQUIRED:entry_low={lo:.2f}>=market={cp:.2f}"
+        if d == "SELL" and hi <= cp:
+            return f"SIGNAL_SELL_LIMIT_REQUIRED:entry_high={hi:.2f}<=market={cp:.2f}"
+        return None
+
     # ── Public API ─────────────────────────────────────────────────
     def validate(self, signal: dict, account: dict,
                  current_price: float = None,
@@ -106,6 +157,11 @@ class Aegis:
             return TradeApproval(False, "INCOMPLETE_SIGNAL")
         if direction not in ("BUY", "SELL"):
             return TradeApproval(False, f"INVALID_DIRECTION:{direction}")
+        orientation_reject = self._signal_limit_orientation_reject_reason(
+            direction, entry_low, entry_high, current_price, source=source
+        )
+        if orientation_reject:
+            return TradeApproval(False, orientation_reject)
 
         # ── Guard 1b: Multi-TF trend filter (cascade by source) ────
         if H1_TREND_FILTER and mt5_data:
@@ -199,11 +255,7 @@ class Aegis:
             lot_per_trade = round(MAX_LOT_TOTAL / num_trades, 2)
 
         # ── Entry ladder ───────────────────────────────────────────
-        if entry_high > entry_low and num_trades > 1:
-            step   = (entry_high - entry_low) / (num_trades - 1)
-            ladder = [round(entry_low + i * step, 2) for i in range(num_trades)]
-        else:
-            ladder = [entry_low] * num_trades
+        ladder = self._build_entry_ladder(direction, entry_low, entry_high, num_trades, source=source)
 
         total_risk = lot_per_trade * num_trades * sl_pips * PIP_VALUE_PER_LOT
 

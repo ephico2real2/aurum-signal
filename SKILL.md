@@ -101,7 +101,7 @@ AURUM’s reply is scanned for (a) a **magic phrase** or (b) **one** markdown `j
 BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supported:
 
 **Trade execution:**
-- **OPEN_GROUP** (or **OPEN_TRADE**, normalized) → AEGIS validates → SCRIBE group → FORGE places N trades across entry ladder with TP split (70% TP1, 30% TP2). Full gate order, R:R formulas, rejection codes: [docs/AEGIS.md](docs/AEGIS.md).
+- **OPEN_GROUP** (or **OPEN_TRADE**, normalized) → AEGIS validates → SCRIBE group → FORGE places N trades across entry ladder. For `source=SIGNAL`, BRIDGE currently routes all legs to TP1 by default (`tp1_close_pct=100`, `tp2/tp3=null`). Full gate order, R:R formulas, rejection codes: [docs/AEGIS.md](docs/AEGIS.md).
 
 **Close commands:**
 - **CLOSE_ALL** → close all EA positions + cancel all pending orders
@@ -145,23 +145,22 @@ In **all modes**, LISTENER logs messages to SCRIBE. Only SIGNAL/HYBRID dispatche
 ```
 Signal arrives → 60s expiry (SIGNAL_EXPIRY_SEC) or EXPIRED
     ↓
-AEGIS validates (M5→M15→H1 cascade for SIGNAL source)
+AEGIS validates (M5→M15→H1 cascade for SIGNAL source, plus SIGNAL limit-orientation guard)
     ↓
-FORGE places orders with TP SPLIT:
-  70% of positions → TP1 (default TP1_CLOSE_PCT)
-  20% of positions → TP2 (default TP2_CLOSE_PCT)
-  remaining positions continue as runners
+FORGE places pending orders:
+  SIGNAL path default → 100% of legs target TP1
+  (tp1_close_pct=100, tp2/tp3 unset unless explicitly overridden)
     ↓ (unfilled after PENDING_ORDER_TIMEOUT_SEC=120s)
 Auto-cancel → Telegram "⏰ PENDING EXPIRED"
     ↓ (TP1 hit)
-TP1 share closes → remaining SL→BE, TP→TP2
+Position(s) close at TP1 unless alternate routing was explicitly requested
     ↓ (all positions close)
 Tracker logs P&L → Telegram "✅ GROUP CLOSED"
 ```
 
 LISTENER dispatches:
 - **ENTRY** signals → parsed by Claude Haiku → BRIDGE with fixed `SIGNAL_LOT_SIZE` (default 0.01) and `SIGNAL_NUM_TRADES` (default 4) → AEGIS validates → FORGE executes at the channel's entry range
-- **MANAGEMENT** messages → "close all", "move to BE", "close 70%", "move SL to 4660", "new TP 4680" → FORGE applies to all EA positions
+- **MANAGEMENT** messages → "close all", "move to BE", "close 70%", "move SL to 4660", "new TP 4680" → BRIDGE scopes channel-origin commands to that channel's open SIGNAL groups only (ATHENA remains global by intent)
 
 Channel signals use **fixed lot sizing** by default (`AEGIS_LOT_MODE=fixed`). Set `AEGIS_LOT_MODE=risk_based` in `.env` to let AEGIS compute lots dynamically from balance, risk %, and SL distance instead. All AEGIS guards (H1 trend, R:R, drawdown) apply regardless of lot mode.
 
@@ -186,6 +185,7 @@ This is a **scalping** system. TP targets must be **realistic for the timeframe*
 - R:R must be ≥ 1.2 (AEGIS enforces this). If ATR-based SL is $4, TP1 should be ≥$4.80.
 - **Trend filter is source-aware (cascade):**
   - **SIGNAL** (channel scalps): M5 → M15 → H1. If M5 agrees with direction, trade passes even if H1 disagrees. Only rejects if BOTH M5 and M15 conflict.
+  - **SIGNAL limit-orientation guard:** BUY entries must be below current market (buy-limit orientation), SELL entries must be above current market (sell-limit orientation). Wrong-side entries are rejected with `SIGNAL_BUY_LIMIT_REQUIRED` / `SIGNAL_SELL_LIMIT_REQUIRED`.
   - **AURUM/AUTO_SCALPER**: H1 → M15. Conservative — needs H1 or M15 agreement.
   - **SCALPER** (BRIDGE): H1 only (strictest).
   - FLAT counts as agreement (allows entry in either direction).

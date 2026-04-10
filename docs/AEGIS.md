@@ -37,6 +37,17 @@ AEGIS evaluates **Guards 1 → 6** in order. The **first** failure wins; later c
 
 - Reject **`INCOMPLETE_SIGNAL`** if any of: `direction`, `entry_low`, `sl`, `tp1`, or `balance` is missing/zero in a way that breaks validation.
 
+### Guard 1a — SIGNAL limit-orientation (new)
+
+Applied only when `source=SIGNAL` and `current_price` is available:
+
+- **BUY** entries must be **below** market (`entry_low < current_price`) — buy-limit orientation.
+- **SELL** entries must be **above** market (`entry_high > current_price`) — sell-limit orientation.
+
+Reject codes:
+- **`SIGNAL_BUY_LIMIT_REQUIRED:entry_low=...>=market=...`**
+- **`SIGNAL_SELL_LIMIT_REQUIRED:entry_high=...<=market=...`**
+
 ### Guard 2 — Max open groups
 
 - Reject **`MAX_GROUPS:{n}/{max}`** if `open_groups_count >= MAX_OPEN_GROUPS` (default **3**).
@@ -107,7 +118,11 @@ If all guards pass:
 
 4. **`PIP_VALUE_PER_LOT`** is fixed at **100.0** in code (XAUUSD assumption: **$100 per 1.0 lot per $1.00 adverse move** in the simplified model — align your mental model with your broker’s contract specs).
 
-5. **Entry ladder**: if `entry_high > entry_low` and `NUM_TRADES > 1`, entries are spaced linearly between low and high; otherwise the ladder repeats `entry_low`.
+5. **Entry ladder**:
+   - For `source=SIGNAL` with a range and multiple trades:
+     - **BUY**: all legs use the cheapest endpoint (`entry_low`)
+     - **SELL**: all legs use the highest endpoint (`entry_high`)
+   - Other sources keep linear spacing between `entry_low` and `entry_high`.
 
 ---
 
@@ -117,6 +132,8 @@ If all guards pass:
 |----------------|---------|
 | `INCOMPLETE_SIGNAL` | Missing/invalid fields |
 | `INVALID_DIRECTION` | Not BUY/SELL |
+| `SIGNAL_BUY_LIMIT_REQUIRED` | SIGNAL BUY entry is on/above market (wrong-side for buy-limit policy) |
+| `SIGNAL_SELL_LIMIT_REQUIRED` | SIGNAL SELL entry is on/below market (wrong-side for sell-limit policy) |
 | `MAX_GROUPS` | Too many open groups |
 | `DAILY_LOSS_LIMIT` | Session loss exceeded % of balance |
 | `SLIPPAGE` | Current price too far vs entry zone |

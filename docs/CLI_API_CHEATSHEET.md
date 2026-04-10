@@ -218,11 +218,13 @@ Signal arrives → 60s to process (or EXPIRED)
     ↓
 AEGIS validates (M5→M15→H1 cascade for SIGNAL source)
     ↓
-FORGE places orders (market or limit)
+FORGE places orders (market or pending)
     ↓
-Orders fill → positions tracked in SCRIBE → SL/TP managed by MT5
-    ↓ (if orders DON'T fill within 120s)
-Auto-cancel → CLOSE_GROUP → Telegram alert "⏰ PENDING EXPIRED"
+Pending placed on MT5 = FULFILLED_PENDING
+    ↓ (when pending triggers)
+Positions tracked in SCRIBE → SL/TP managed by MT5
+    ↓ (if pending does NOT trigger within 3600s; non-SIGNAL groups)
+Auto-cancel pending-only → Telegram alert "⏰ PENDING EXPIRED"
     ↓ (when all positions close via SL/TP)
 Tracker logs P&L → group closed in SCRIBE → Telegram "✅ GROUP CLOSED"
 ```
@@ -230,7 +232,7 @@ Tracker logs P&L → group closed in SCRIBE → Telegram "✅ GROUP CLOSED"
 Config:
 ```bash
 SIGNAL_EXPIRY_SEC=60             # signal must be fresh (60s)
-PENDING_ORDER_TIMEOUT_SEC=120    # unfilled limits cancelled after 2min
+PENDING_ORDER_TIMEOUT_SEC=3600   # fulfilled-pending orders cancelled after 1h (non-SIGNAL groups)
 SIGNAL_LOT_SIZE=0.01             # fixed lot for channel signals
 SIGNAL_NUM_TRADES=4              # trades per signal group
 ```

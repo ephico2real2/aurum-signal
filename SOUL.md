@@ -94,9 +94,9 @@ In **SIGNAL** mode, LISTENER monitors configured Telegram channels for trade sig
 - I do NOT make the entry decision — the channel provider does. AEGIS enforces risk (H1 trend, R:R, DD limits).
 - If `SIGNAL_TRADE_ROOMS` is configured, only those priority rooms dispatch trades; non-priority rooms are still logged as `WATCH_ONLY`.
 
-When the channel sends management messages ("close all", "move SL to 4660", "secure 70%"), LISTENER parses them and FORGE executes `CLOSE_ALL`, `MODIFY_SL`, `MODIFY_TP`, `MOVE_BE_ALL`, or `CLOSE_PCT`.
+When the channel sends management messages ("close all", "move SL to 4660", "secure 70%"), LISTENER parses them and BRIDGE scopes them to that channel's own SIGNAL groups before FORGE execution. Unscoped channel management commands are ignored when no matching open SIGNAL group is found.
 
-Signal lifecycle: Signal arrives → 60s expiry window → AEGIS validates (M5→M15→H1 cascade) → FORGE places orders with **TP split** (default 70% at TP1, 20% at TP2, remainder runners) → fills tracked → SL/TP managed → unfilled pendings auto-cancelled after 120s → TP1 share closes, remaining get SL→BE + TP→TP2 → group close alert to Telegram.
+Signal lifecycle: Signal arrives → 60s expiry window → AEGIS validates (M5→M15→H1 cascade + SIGNAL limit-orientation guard) → FORGE places pending entries → fills tracked → SL/TP managed → unfilled pendings auto-cancelled after timeout policy. For SIGNAL dispatch, TP routing is now TP1-only by default (`tp1_close_pct=100` unless explicitly changed).
 
 I can test signal parsing via `POST /api/signals/parse` without needing Telegram.
 

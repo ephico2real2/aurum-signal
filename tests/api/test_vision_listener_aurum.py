@@ -354,6 +354,39 @@ class TestListenerImageFlow:
         assert "ROOM_NOT_PRIORITY" in (scribe.signal_updates[-1][2] or "")
         assert any(e.get("event_type") == "SIGNAL_ROOM_WATCH_ONLY" for e in scribe.system_events)
 
+    def test_same_message_id_edit_is_deduped_for_execution(self, monkeypatch):
+        l = Listener()
+        scribe = _ScribeStub()
+        l.scribe = scribe
+        l.herald = _Obj(send=lambda *_args, **_kwargs: True)
+        l._mode = "SIGNAL"
+        dispatched = []
+        l._write_signal = lambda data: dispatched.append(dict(data))
+        l._write_mgmt = lambda data: None
+        monkeypatch.setattr(listener_mod, "VISION_ENABLED", False)
+
+        async def parse_ok(_text):
+            return {
+                "type": "ENTRY",
+                "direction": "SELL",
+                "entry_low": 4750.0,
+                "entry_high": 4760.0,
+                "sl": 4764.0,
+                "tp1": 4746.0,
+            }
+
+        l._parse = parse_ok
+        msg = self._build_msg(text="Sell Gold @4750-4760", has_media=False)
+        msg.id = 16842
+        msg.chat_id = -100123
+        msg.chat = _Obj(title="Ben's VIP Club")
+
+        asyncio.run(l._handle_message(msg, edited=False))
+        asyncio.run(l._handle_message(msg, edited=True))
+
+        assert len(scribe.logged_signals) == 1
+        assert len(dispatched) == 1
+
 
 @pytest.mark.unit
 class TestAegisSignalOverrides:
@@ -383,7 +416,7 @@ class TestAegisSignalOverrides:
             "num_trades": 2,
         }
         account = {"balance": 10000.0, "open_groups_count": 0}
-        approval = a.validate(signal, account, current_price=100.0, mt5_data=None)
+        approval = a.validate(signal, account, current_price=101.0, mt5_data=None)
         assert approval.approved is True
 
     def test_non_signal_still_uses_global_rr(self, monkeypatch):
