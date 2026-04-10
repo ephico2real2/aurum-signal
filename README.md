@@ -24,7 +24,8 @@ Core architecture and operations docs:
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
 - **Vision validation runbook**: [docs/VISION_CLI_RUNBOOK.md](docs/VISION_CLI_RUNBOOK.md)
 - **Signal room policy**: [docs/SIGNAL_ROOM_POLICY.md](docs/SIGNAL_ROOM_POLICY.md)
-- **Architecture diagram (rendered HTML)**: [docs/assets/trading-system-architecture.drawio.html](docs/assets/trading-system-architecture.drawio.html)
+- **Architecture diagram source (Draw.io)**: [docs/assets/trading-system-architecture.drawio](docs/assets/trading-system-architecture.drawio)
+- **Architecture diagram source (XML)**: [docs/assets/trading-system-architecture.xml](docs/assets/trading-system-architecture.xml)
 
 Recent behavior notes:
 - Signal-room media uploads are archived and replayable via `scripts/replay_signal_uploads.py`, with channel-aware summary notifications to Telegram.
