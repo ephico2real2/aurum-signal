@@ -11,6 +11,19 @@ test.describe('ATHENA Panel Interactions', () => {
     await page.waitForTimeout(1000); // allow poll to run
   });
 
+  test('right panel shows enhanced TradingView/LENS sections', async ({ page }) => {
+    await expect(page.locator('text=TradingView · indicators').first()).toBeVisible();
+    await expect(page.locator('text=DMI STUDY').first()).toBeVisible();
+    await expect(page.locator('text=ORDER BLOCK DETECTOR').first()).toBeVisible();
+    await expect(page.locator('text=TV suggest:').first()).toBeVisible();
+  });
+
+  test('right panel keeps required indicator labels', async ({ page }) => {
+    for (const label of ['RSI 14', 'MACD', 'BB Rtg', 'ADX', 'EMA20', 'EMA50']) {
+      await expect(page.locator(`text=${label}`).first()).toBeVisible();
+    }
+  });
+
   test('Activity tab switches content', async ({ page }) => {
     const activityTab = page.locator('text=Activity').first();
     await expect(activityTab).toBeVisible();
@@ -45,14 +58,10 @@ test.describe('ATHENA Panel Interactions', () => {
   });
 
   test('AURUM chat input is present', async ({ page }) => {
-    const chatInput = page.locator('input[placeholder*="AURUM"]').first();
-    if (await chatInput.isVisible().catch(() => false)) {
-      await expect(chatInput).toBeEnabled();
-    } else {
-      // AURUM chat may be in right panel — scroll or check
-      const aurum = page.locator('text=AURUM').first();
-      await expect(aurum).toBeVisible();
-    }
+    const chatInput = page.locator('textarea[placeholder*=\"AURUM\"]').first();
+    await expect(chatInput).toBeVisible();
+    await expect(chatInput).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'SEND' })).toBeVisible();
   });
 
   test('Performance tab shows stats', async ({ page }) => {

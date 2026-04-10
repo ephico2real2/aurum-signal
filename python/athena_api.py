@@ -65,6 +65,7 @@ BROKER_FILE    = _root_path(os.environ.get("MT5_BROKER_FILE",  "MT5/broker_info.
 # Config files live in python/config/ (written by bridge.py from python/ CWD)
 STATUS_FILE    = _py_path(os.environ.get("BRIDGE_STATUS_FILE",   "config/status.json"))
 LENS_FILE      = _py_path(os.environ.get("LENS_SNAPSHOT_FILE",   "config/lens_snapshot.json"))
+LENS_BRIEF_FILE = _py_path(os.environ.get("LENS_BRIEF_FILE", "config/lens_brief.json"))
 SENTINEL_FILE  = _py_path(os.environ.get("SENTINEL_STATUS_FILE", "config/sentinel_status.json"))
 AURUM_CMD_FILE = _py_path(os.environ.get("AURUM_CMD_FILE",       "config/aurum_cmd.json"))
 MGMT_FILE      = _py_path(os.environ.get("LISTENER_MGMT_FILE",   "config/management_cmd.json"))
@@ -142,7 +143,11 @@ def partition_open_groups_for_athena(
 
 TV_KEYS = (
     "rsi", "macd_hist", "bb_rating", "bb_upper", "bb_mid", "bb_lower",
-    "bb_width", "bb_squeeze", "adx", "ema_20", "ema_50", "tv_recommend",
+    "bb_width", "bb_squeeze", "adx", "di_plus", "di_minus",
+    "dmi_present", "dmi_study",
+    "order_block_present", "order_block_study", "order_block_values",
+    "ema_20", "ema_50", "tv_recommend", "tv_recommend_source",
+    "tv_brief", "tv_brief_source", "tv_brief_timestamp",
     "timeframe", "timestamp", "age_seconds", "mode",
 )
 
@@ -356,6 +361,16 @@ def api_live():
         } if recon else None,
     })
 
+# ── TradingView brief endpoint ─────────────────────────────────────
+@app.route("/api/brief")
+def api_brief():
+    brief = _read_json(LENS_BRIEF_FILE)
+    if not brief:
+        return jsonify({
+            "status": "UNAVAILABLE",
+            "message": "No TradingView brief has been captured yet.",
+        }), 404
+    return jsonify(brief)
 
 # ── Component health endpoint ──────────────────────────────────────
 @app.route("/api/components")
@@ -572,9 +587,12 @@ def api_mode():
     """
     if request.method == "GET":
         status = _read_json(STATUS_FILE)
+        pinned_mode = (os.environ.get("BRIDGE_PIN_MODE") or "").upper().strip() or None
         return jsonify({
             "mode":           status.get("mode", "UNKNOWN"),
             "effective_mode": status.get("effective_mode", "UNKNOWN"),
+            "requested_mode": status.get("requested_mode"),
+            "mode_pin":       pinned_mode,
             "timestamp":      status.get("timestamp"),
             "session":        status.get("session"),
             "session_id":     status.get("session_id"),
@@ -598,15 +616,23 @@ def api_mode():
     try:
         with open(AURUM_CMD_FILE, "w") as f:
             json.dump(cmd, f, indent=2)
-        # Also update status.json directly so mode persists across restarts
+        # Do NOT force mode/effective_mode here — BRIDGE is source-of-truth.
+        # Record requested_mode for operator visibility until BRIDGE applies/blocks it.
         try:
             status = _read_json(STATUS_FILE)
-            status["mode"] = new_mode
+            status["requested_mode"] = new_mode
             with open(STATUS_FILE, "w") as f:
                 json.dump(status, f, indent=2)
         except Exception:
             pass
-        return jsonify({"ok": True, "new_mode": new_mode})
+        pinned_mode = (os.environ.get("BRIDGE_PIN_MODE") or "").upper().strip() or None
+        return jsonify({
+            "ok": True,
+            "new_mode": new_mode,
+            "queued": True,
+            "mode_pin": pinned_mode,
+            "hint": "BRIDGE applies this on next loop tick; if mode pin is active, non-pinned requests are blocked."
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -828,9 +854,14 @@ def api_signals_parse():
 def api_signals():
     limit = int(request.args.get("limit", 20))
     days_raw = request.args.get("days")
+    session_filter = request.args.get("session", "").strip().lower()
     stats_flag = request.args.get("stats", "0") == "1"
     scribe = get_scribe()
-    if days_raw is not None:
+    # session=current → only signals from the active trading session
+    if session_filter == "current":
+        since = scribe.get_current_session_start()
+        signals = scribe.get_recent_signals(limit=limit, since=since)
+    elif days_raw is not None:
         d = max(1, min(int(days_raw), 366))
         signals = scribe.get_recent_signals(limit=limit, within_days=d)
     else:

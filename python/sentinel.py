@@ -20,7 +20,10 @@ from status_report import report_component_status
 
 log = logging.getLogger("sentinel")
 
-STATUS_FILE   = os.environ.get("SENTINEL_STATUS", "config/sentinel_status.json")
+STATUS_FILE   = os.environ.get(
+    "SENTINEL_STATUS_FILE",
+    os.environ.get("SENTINEL_STATUS", "config/sentinel_status.json"),
+)
 GUARD_MINUTES = int(os.environ.get("SENTINEL_GUARD_MIN", "30"))
 POLL_SECONDS  = int(os.environ.get("SENTINEL_POLL_SEC", "60"))
 # Post-event guard: instant data releases (NFP, CPI) settle fast; extended

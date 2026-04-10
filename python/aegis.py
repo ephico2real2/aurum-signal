@@ -32,6 +32,9 @@ MIN_LOT           = float(os.environ.get("AEGIS_MIN_LOT",           "0.01"))
 MAX_LOT_TOTAL     = float(os.environ.get("AEGIS_MAX_LOT_TOTAL",     "5.0"))
 PIP_VALUE_PER_LOT = float(os.environ.get("AEGIS_PIP_VALUE_PER_LOT", "100.0"))  # XAUUSD default
 MIN_SL_PIPS       = float(os.environ.get("AEGIS_MIN_SL_PIPS",       "3.0"))
+AEGIS_SIGNAL_MAX_SLIPPAGE = float(os.environ.get("AEGIS_SIGNAL_MAX_SLIPPAGE", str(MAX_SLIPPAGE)))
+AEGIS_SIGNAL_MIN_RR = float(os.environ.get("AEGIS_SIGNAL_MIN_RR", str(MIN_RR)))
+AEGIS_SIGNAL_MIN_SL_PIPS = float(os.environ.get("AEGIS_SIGNAL_MIN_SL_PIPS", str(MIN_SL_PIPS)))
 H1_TREND_FILTER   = os.environ.get("AEGIS_H1_TREND_FILTER", "true").lower() == "true"
 H1_FLAT_THRESHOLD = float(os.environ.get("AEGIS_H1_FLAT_THRESHOLD", "1.0"))  # $ diff for FLAT
 # Lot sizing mode: "fixed" = use source lot_per_trade as-is, "risk_based" = compute from balance/risk%
@@ -87,12 +90,16 @@ class Aegis:
         mt5_data: raw market_data.json for H1 trend filter
         """
         direction   = signal.get("direction", "")
+        source      = signal.get("source", "")
         entry_low   = float(signal.get("entry_low", 0))
         entry_high  = float(signal.get("entry_high", entry_low))
         sl          = float(signal.get("sl", 0))
         tp1         = float(signal.get("tp1", 0))
         balance     = float(account.get("balance", 0))
         open_groups = int(account.get("open_groups_count", 0))
+        min_rr_req = AEGIS_SIGNAL_MIN_RR if source == "SIGNAL" else MIN_RR
+        min_sl_req = AEGIS_SIGNAL_MIN_SL_PIPS if source == "SIGNAL" else MIN_SL_PIPS
+        max_slippage_req = AEGIS_SIGNAL_MAX_SLIPPAGE if source == "SIGNAL" else MAX_SLIPPAGE
 
         # ── Guard 1: Completeness ──────────────────────────────────
         if not all([direction, entry_low, sl, tp1, balance]):
@@ -102,7 +109,6 @@ class Aegis:
 
         # ── Guard 1b: Multi-TF trend filter (cascade by source) ────
         if H1_TREND_FILTER and mt5_data:
-            source = signal.get("source", "")
             rejection = self._check_trend_cascade(direction, source, mt5_data)
             if rejection:
                 return TradeApproval(False, rejection)
@@ -133,25 +139,25 @@ class Aegis:
         if current_price:
             slippage = (current_price - entry_high if direction == "BUY"
                         else entry_low - current_price)
-            if slippage > MAX_SLIPPAGE:
+            if slippage > max_slippage_req:
                 return TradeApproval(False,
-                    f"SLIPPAGE:{slippage:.1f}>{MAX_SLIPPAGE}pips")
+                    f"SLIPPAGE:{slippage:.1f}>{max_slippage_req}pips")
 
         # ── Guard 5: SL distance ───────────────────────────────────
         mid_entry = (entry_low + entry_high) / 2
         sl_pips   = (mid_entry - sl if direction == "BUY" else sl - mid_entry)
         if sl_pips <= 0:
             return TradeApproval(False, "INVALID_SL:SL_BEYOND_ENTRY")
-        if sl_pips < MIN_SL_PIPS:
-            return TradeApproval(False, f"SL_TOO_TIGHT:{sl_pips:.1f}<{MIN_SL_PIPS}pips")
+        if sl_pips < min_sl_req:
+            return TradeApproval(False, f"SL_TOO_TIGHT:{sl_pips:.1f}<{min_sl_req}pips")
 
         # ── Guard 6: R:R ───────────────────────────────────────────
         tp_pips = (tp1 - mid_entry if direction == "BUY" else mid_entry - tp1)
         if tp_pips <= 0:
             return TradeApproval(False, "INVALID_TP1:TP_BEYOND_ENTRY")
         rr = tp_pips / sl_pips
-        if rr < MIN_RR:
-            return TradeApproval(False, f"LOW_RR:{rr:.2f}<{MIN_RR}")
+        if rr < min_rr_req:
+            return TradeApproval(False, f"LOW_RR:{rr:.2f}<{min_rr_req}")
 
         # ── Per-signal num_trades override ───────────────────────
         num_trades = NUM_TRADES

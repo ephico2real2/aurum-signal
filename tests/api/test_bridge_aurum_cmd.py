@@ -10,6 +10,7 @@ import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+import inspect
 
 import pytest
 
@@ -76,3 +77,31 @@ def test_aurum_cmd_missing_file_no_crash(monkeypatch, tmp_path):
     bm.Bridge._check_aurum_command(stub, {})
 
     stub._change_mode.assert_not_called()
+
+
+@pytest.mark.unit
+def test_resolve_forge_scalper_mode_by_mode():
+    import bridge as bm
+
+    assert bm._resolve_forge_scalper_mode("SCALPER") == bm.FORGE_SCALPER_MODE
+    assert bm._resolve_forge_scalper_mode("HYBRID") == bm.FORGE_SCALPER_MODE
+    assert bm._resolve_forge_scalper_mode("SIGNAL") == "NONE"
+    assert bm._resolve_forge_scalper_mode("WATCH") == "NONE"
+    assert bm._resolve_forge_scalper_mode("OFF") == "NONE"
+    assert bm._resolve_forge_scalper_mode("AUTO_SCALPER") == "NONE"
+
+
+@pytest.mark.unit
+def test_build_entry_ladder_even_spacing():
+    import bridge as bm
+
+    ladder = bm._build_entry_ladder(100.0, 101.5, 4)
+    assert ladder == [100.0, 100.5, 101.0, 101.5]
+
+
+@pytest.mark.unit
+def test_scalper_logic_no_aegis_validate_call():
+    import bridge as bm
+
+    src = inspect.getsource(bm.Bridge._scalper_logic)
+    assert "aegis.validate" not in src

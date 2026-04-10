@@ -167,6 +167,11 @@ function activityLevelColor(l){
   return l==='WARN'?T.amber:l==='ERROR'?T.red:T.textD;
 }
 
+function isUploadEvent(raw){
+  const et=String((raw&&raw.event_type)||'').toUpperCase();
+  return et.includes('_UPLOAD_')||et.startsWith('SIGNAL_CHART_');
+}
+
 function ActivityCategoryChips({catf,setCatf}){
   return(
     <div style={{display:'flex',gap:3,flexWrap:'wrap',alignItems:'center'}}>
@@ -523,7 +528,7 @@ function ATHENA(){
         const re=await fetch(`${API}/api/events?limit=500`);
         if(re.ok){const ev=await re.json();
           setEvents(Array.isArray(ev)?ev.map(normalizeActivityEvent):[]);}
-        try{const rs=await fetch(`${API}/api/signals?limit=50&days=7&stats=1`);
+        try{const rs=await fetch(`${API}/api/signals?limit=50&session=current&stats=1`);
           if(rs.ok){const sj=await rs.json();
             if(sj&&Array.isArray(sj.signals)){setSignals(sj.signals);setSignalStats(sj.stats||null);}
             else if(Array.isArray(sj)){setSignals(sj);setSignalStats(null);}}}
@@ -572,20 +577,26 @@ function ATHENA(){
     },
     tradingview:{
       last:null,timeframe:null,age_seconds:null,rsi:null,macd_hist:null,bb_rating:null,
-      adx:null,ema_20:null,ema_50:null,tv_recommend:null,divergence_from_mt5_usd:null,
+      adx:null,di_plus:null,di_minus:null,dmi_present:false,dmi_study:null,
+      order_block_present:false,order_block_study:null,order_block_values:{},
+      ema_20:null,ema_50:null,tv_recommend:null,tv_recommend_source:null,
+      tv_brief:null,tv_brief_source:null,tv_brief_timestamp:null,divergence_from_mt5_usd:null,
     },
     account:{balance:null,equity:null,total_floating_pnl:null,
       margin:null,free_margin:null,margin_level:null,
       open_positions_count:0,session_pnl:null},
     price:{bid:null,ask:null,spread_points:null},
     lens:{price:null,bid:null,ask:null,rsi:null,macd_hist:null,bb_rating:null,
-      bb_width:null,adx:null,ema_20:null,ema_50:null,
-      tv_recommend:null,timeframe:'--',age_seconds:null,spread_usd:null,
+      bb_width:null,adx:null,di_plus:null,di_minus:null,dmi_present:false,dmi_study:null,
+      order_block_present:false,order_block_study:null,order_block_values:{},
+      ema_20:null,ema_50:null,
+      tv_recommend:null,tv_recommend_source:null,tv_brief:null,tv_brief_source:null,tv_brief_timestamp:null,
+      timeframe:'--',age_seconds:null,spread_usd:null,
       tradingview_close:null,tv_price_mismatch:false,mt5_symbol:null},
     sentinel:{active:false,next_event:'Unknown',next_in_min:null,next_time:null,news_feeds:{}},
     open_groups:[],open_groups_queued:[],open_groups_policy:'',
     pending_orders:[],pending_orders_forge_count:null,
-    performance:{total_pnl:0,total:0,wins:0,win_rate:null,avg_pips:0},
+    performance:{total_pnl:0,total:0,wins:0,losses:0,win_rate:null,avg_pips:0},
     performance_window:null,
     aegis:{scale_factor:1,scale_reason:'UNKNOWN',session_pnl:0,streak:0,streak_type:'NONE'},
     reconciler:null,
@@ -600,6 +611,8 @@ function ATHENA(){
   const modeColor=MODES.find(m=>m.id===mode)?.color||T.gold;
   const timeStr=new Date().toUTCString().split(' ')[4]+' UTC';
   const warnCount=events.filter(e=>e.level==='WARN'||e.level==='ERROR').length;
+  const uploadEvents=events.filter(e=>isUploadEvent(e.raw));
+  const uploadCount=uploadEvents.length;
   const st=signalStats||{received:0,executed:0,skipped:0,expired:0};
   const pnlSpark=(()=>{
     if(!pnlCurve||pnlCurve.length<1)return null;
@@ -792,7 +805,7 @@ function ATHENA(){
       <div style={{display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}>
         <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
           {[{id:'groups',label:'Groups'},{id:'closures',label:'Closures'},{id:'activity',label:'Activity',badge:warnCount||null},
-            {id:'signals',label:'Signals'},{id:'perf',label:'Performance'}].map(t=>(
+            {id:'signals',label:'Signals'},{id:'uploads',label:'Uploads',badge:uploadCount||null},{id:'perf',label:'Performance'}].map(t=>(
             <button key={t.id} type="button" data-testid={`tab-${t.id}`}
               onClick={()=>setTab(t.id)} style={{
               padding:'6px 10px',background:'transparent',border:'none',
@@ -1018,7 +1031,7 @@ function ATHENA(){
                 </div>
               )}
               <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:1}}>
-                {filtered.length} signals · last 7 days (UTC)</div>
+                {filtered.length} signals · current session</div>
               {/* Signal rows — separate ENTRY from MANAGEMENT/other */}
               {filtered.map((row)=>{
                 const ts=(row.timestamp||'').replace('T',' ');
@@ -1088,12 +1101,55 @@ function ATHENA(){
               {filtered.length===0&&(
                 <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,
                   textAlign:'center',padding:32}}>
-                  {signals.length===0?'No signals in the last 7 days — LISTENER monitors 3 Telegram channels'
+                  {signals.length===0?'No signals this session — LISTENER monitors Telegram channels'
                     :`No signals from ${chFilter||'this channel'}`}
                 </div>
               )}
             </div>
             );})()}
+
+          {tab==='uploads'&&(
+            <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
+              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:1}}>
+                Direct bot uploads + signal-room chart media events
+              </div>
+              {uploadEvents.map((e,i)=>{
+                const raw=e.raw||{};
+                const et=String(raw.event_type||'');
+                const isFail=et.includes('FAILED');
+                const c=isFail?T.red:(et.startsWith('AURUM_')?T.gold:T.cyan);
+                return(
+                  <div key={raw.id||`upload-${i}`} style={{
+                    background:T.card,border:`1px solid ${T.border2}`,
+                    borderLeft:`3px solid ${c}`,borderRadius:5,padding:'8px 10px',marginBottom:6
+                  }}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                      <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                        <Tag lbl={et} color={c} xs/>
+                        <Tag lbl={(raw.triggered_by||'SYSTEM').toUpperCase()} color={CC[(raw.triggered_by||'SYSTEM').toUpperCase()]||T.textD} xs/>
+                      </div>
+                      <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
+                        {(raw.timestamp||'').slice(11,19)}
+                      </span>
+                    </div>
+                    <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
+                      {raw.reason||'—'}
+                    </div>
+                    {raw.notes&&(
+                      <div style={{fontSize:8,color:T.textD,fontFamily:T.mono,lineHeight:1.35,marginTop:4,whiteSpace:'pre-wrap'}}>
+                        {String(raw.notes)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {uploadEvents.length===0&&(
+                <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,textAlign:'center',padding:36}}>
+                  No upload/chart media events recorded yet.
+                </div>
+              )}
+            </div>
+          )}
 
           {tab==='perf'&&(
             <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
@@ -1106,7 +1162,7 @@ function ATHENA(){
                   ['Total P&L',`$${(D.performance?.total_pnl||0).toFixed(2)}`,(D.performance?.total_pnl||0)>=0?T.green:T.red],
                   ['Trades',D.performance?.total||0,T.textBB],
                   ['Wins',D.performance?.wins||0,T.green],
-                  ['Losses',(D.performance?.total||0)-(D.performance?.wins||0),T.red],
+                  ['Losses',D.performance?.losses||0,T.red],
                 ].map(([l,v,c])=>(
                   <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
                     borderRadius:5,padding:'10px 12px',textAlign:'center'}}>
@@ -1129,9 +1185,12 @@ function ATHENA(){
             </div>
           )}
         </div>
+        <div style={{borderTop:`1px solid ${T.border}`,padding:'8px 10px',minHeight:240,maxHeight:340,display:'flex',flexDirection:'column'}}>
+          <AurumChat liveData={D}/>
+        </div>
       </div>
 
-      {/* RIGHT — split into fixed header (quotes/indicators) + scrollable AURUM chat */}
+      {/* RIGHT — FORGE + LENS/TradingView data panel */}
       <div style={{borderLeft:`1px solid ${T.border}`,display:'flex',flexDirection:'column',
         overflow:'hidden',minHeight:0}}>
       <div style={{padding:'12px 10px',overflowY:'auto',overscrollBehavior:'contain',
@@ -1203,6 +1262,8 @@ function ATHENA(){
             ['MACD',tv.macd_hist!=null?(tv.macd_hist>0?'+'+tv.macd_hist.toFixed(5):tv.macd_hist.toFixed(5)):'—',tv.macd_hist!=null?(tv.macd_hist>0?T.green:T.red):T.textBB],
             ['BB Rtg',tv.bb_rating!=null?(tv.bb_rating>0?'+'+tv.bb_rating:tv.bb_rating):'—',tv.bb_rating!=null?(tv.bb_rating>0?T.green:T.textBB):T.textBB],
             ['ADX',tv.adx!=null?tv.adx.toFixed(1):'—',T.amber],
+            ['DI+',tv.di_plus!=null?tv.di_plus.toFixed(2):'—',T.green],
+            ['DI-',tv.di_minus!=null?tv.di_minus.toFixed(2):'—',T.red],
             ['EMA20',tv.ema_20!=null?'$'+tv.ema_20.toFixed(1):'—',T.textBB],
             ['EMA50',tv.ema_50!=null?'$'+tv.ema_50.toFixed(1):'—',T.textBB],
           ].map(([l,v,c])=>(
@@ -1212,18 +1273,60 @@ function ATHENA(){
               <span style={{fontSize:11,fontFamily:T.mono,color:c,fontWeight:600}}>{v}</span>
             </div>
           ))}
+          <div style={{marginTop:8,padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
+            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>DMI STUDY</div>
+            <div style={{fontSize:8,color:T.cyan,fontFamily:T.mono,lineHeight:1.4}}>
+              {tv.dmi_present?(tv.dmi_study||'present'):'missing on chart'}
+            </div>
+            <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
+              ADX {tv.adx!=null?tv.adx.toFixed(1):'—'} · DI+ {tv.di_plus!=null?tv.di_plus.toFixed(2):'—'} · DI- {tv.di_minus!=null?tv.di_minus.toFixed(2):'—'}
+            </div>
+          </div>
+          <div style={{marginTop:6,padding:'6px 8px',background:tv.order_block_present?T.greenBg:T.amberBg,border:`1px solid ${tv.order_block_present?T.green:T.amber}`,borderRadius:4}}>
+            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:1}}>ORDER BLOCK DETECTOR</div>
+            <div style={{fontSize:8,color:tv.order_block_present?T.green:T.amber,fontFamily:T.mono,lineHeight:1.35}}>
+              {tv.order_block_present?(tv.order_block_study||'present on chart'):'missing on chart'}
+            </div>
+            {tv.order_block_values&&Object.keys(tv.order_block_values).length>0&&(
+              <div style={{fontSize:7,color:T.text,fontFamily:T.mono,marginTop:4,lineHeight:1.35}}>
+                {tv.order_block_values.zone_count!=null?(
+                  <span>zone_count:{tv.order_block_values.zone_count}</span>
+                ):null}
+                {Array.isArray(tv.order_block_values.zones)&&tv.order_block_values.zones.length>0?(
+                  <div style={{marginTop:4}}>
+                    {tv.order_block_values.zones.slice(0,6).map((z,idx)=>(
+                      <div key={idx}>Z{idx+1}: H {z.high} · L {z.low}</div>
+                    ))}
+                  </div>
+                ):(
+                  Object.entries(tv.order_block_values)
+                    .filter(([k])=>k!=='zones')
+                    .map(([k,v])=>`${k}:${v}`)
+                    .join(' · ')
+                )}
+              </div>
+            )}
+          </div>
           <div style={{marginTop:7,padding:'5px 8px',background:T.cyanBg,
             border:`1px solid ${T.cyan}`,borderRadius:4,textAlign:'center'}}>
             <span style={{fontFamily:T.mono,fontSize:10,color:T.cyan,letterSpacing:1.5,fontWeight:600}}>
-              TV suggest: {tv.tv_recommend??'—'}</span>
+              TV suggest: {tv.tv_recommend==null?'N/A':tv.tv_recommend}
+              {tv.tv_recommend_source?` (${tv.tv_recommend_source})`:''}
+            </span>
           </div>
-        </div>
-        </div>
-        <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:260,
-          borderTop:`1px solid ${T.border}`,padding:'8px 10px'}}>
-          <AurumChat liveData={D}/>
+          {tv.tv_brief&&(
+            <div style={{marginTop:6,padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
+              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:1}}>
+                TV BRIEF {tv.tv_brief_source?`(${tv.tv_brief_source})`:''}
+              </div>
+              <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,whiteSpace:'pre-wrap'}}>
+                {String(tv.tv_brief).slice(0,280)}
+              </div>
+            </div>
+          )}
         </div>
       </div>
+    </div>
     </div>
 
     {/* FOOTER */}

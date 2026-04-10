@@ -8,7 +8,7 @@ SOUL.md + SKILL.md define identity and capabilities.
 Writes aurum_cmd.json for BRIDGE to execute commands.
 """
 
-import os, json, logging, asyncio, time
+import os, json, logging, asyncio, time, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +20,8 @@ from herald import get_herald
 from status_report import report_component_status
 from market_data import build_execution_quote, fmt_age_short, safe_float
 from trading_session import get_trading_session_utc, session_clock_summary
+from mcp_client import MCPSession
+from vision import Vision
 
 log = logging.getLogger("aurum")
 
@@ -60,6 +62,7 @@ SESSION_FILE    = _py_rel(os.environ.get("TELEGRAM_SESSION_FILE", "config/aurum_
 
 MAX_TOKENS      = int(os.environ.get("AURUM_MAX_TOKENS", "1000"))
 MODEL           = os.environ.get("AURUM_MODEL", "claude-sonnet-4-6")
+VISION_ENABLED  = os.environ.get("VISION_ENABLED", "true").lower() in ("1", "true", "yes")
 
 Path(_PY, "config").mkdir(parents=True, exist_ok=True)
 
@@ -89,6 +92,7 @@ class Aurum:
         self.scribe  = get_scribe()
         self.herald  = get_herald()
         self.claude  = Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+        self.vision  = Vision(self.claude)
         self._soul   = _read_file(SOUL_FILE)
         self._skill  = _read_file(SKILL_FILE)
         self._mode   = "SIGNAL"
@@ -101,8 +105,20 @@ class Aurum:
     def set_mode(self, mode: str):
         self._mode = mode
 
+    @staticmethod
+    def _message_has_media(message) -> bool:
+        if not message:
+            return False
+        return bool(
+            getattr(message, "photo", None)
+            or getattr(message, "document", None)
+            or getattr(message, "effective_attachment", None)
+            or getattr(message, "animation", None)
+            or getattr(message, "video", None)
+        )
+
     # ── Core query handler ─────────────────────────────────────────
-    def ask(self, query: str, source: str = "TELEGRAM") -> str:
+    def ask(self, query: str, source: str = "TELEGRAM", extra_context: str = "") -> str:
         """
         Answer a query. Returns response string.
         Injects last 5 conversations from SCRIBE for continuity.
@@ -118,6 +134,8 @@ class Aurum:
         if web_context:
             context += "\n\n" + web_context
 
+        if extra_context:
+            context += "\n\n" + extra_context
         memory   = self._build_memory()
         system   = self._build_system_prompt(context, memory)
 
@@ -158,6 +176,11 @@ class Aurum:
             self._check_for_command(answer)
             self._extract_json_commands_from_response(answer)
 
+            # Execute chart commands via TradingView MCP
+            chart_result = self._execute_chart_commands(answer)
+            if chart_result:
+                answer += f"\n\n📊 Chart result: {chart_result}"
+
             return answer
 
         except Exception as e:
@@ -195,6 +218,23 @@ class Aurum:
             "Automatic SCALPER entries from BRIDGE (without AURUM) only fire when ADX>20 and RSI/MACD/BB align — low ADX means no *auto* scalp from BRIDGE.",
             "That ADX rule does NOT apply to **you**: if the user **explicitly** asks you to place a trade / act / buy or sell with size, you MUST output a valid OPEN_GROUP JSON (sl, tp1, lot, entry from MT5+structure) and state risks in reason — do not refuse solely because ADX is 0 or session is thin. Still skip OPEN_GROUP if MT5 price missing or SENTINEL clearly blocks.",
             "If **CURRENT SYSTEM STATE** shows **ACCOUNT_TYPE: DEMO**, treat explicit execution requests as practice: still use SL/TP and AEGIS, but **never** refuse those orders only for 'hard filter' / trendless / ADX=0 — put the caveat in `reason` and issue the JSON.",
+            "---",
+            "## TradingView chart control (via MCP)",
+            "You can interact with the live TradingView Desktop chart. To execute a chart action, "
+            "include a ```chart_command code fence with a JSON object: {\"tool\": \"tool_name\", \"args\": {...}}",
+            "Available tools:",
+            '- chart_set_symbol: {"tool":"chart_set_symbol","args":{"symbol":"XAUUSD"}} — change ticker',
+            '- chart_set_timeframe: {"tool":"chart_set_timeframe","args":{"timeframe":"60"}} — 1/5/15/60/D/W',
+            '- chart_manage_indicator: {"tool":"chart_manage_indicator","args":{"action":"add","indicator":"Bollinger Bands"}} — add/remove indicator',
+            '- indicator_set_inputs: {"tool":"indicator_set_inputs","args":{"entity_id":"...","inputs":"{\\"length\\":20}"}}',
+            '- data_get_study_values: {"tool":"data_get_study_values","args":{}} — read all indicator values',
+            '- data_get_pine_boxes: {"tool":"data_get_pine_boxes","args":{"study_filter":"Order Block"}} — read OB/FVG zones',
+            '- data_get_pine_lines: {"tool":"data_get_pine_lines","args":{}} — read drawn price levels',
+            '- quote_get: {"tool":"quote_get","args":{}} — current price/OHLC',
+            '- chart_get_state: {"tool":"chart_get_state","args":{}} — symbol, timeframe, all studies',
+            '- capture_screenshot: {"tool":"capture_screenshot","args":{}} — screenshot the chart',
+            "You may use multiple ```chart_command blocks in one reply. Results are appended to your response.",
+            "If the user asks about chart state, levels, or indicators — read them via MCP rather than guessing.",
             "---",
             "## MT5 vs SCRIBE vs order types (do not confuse these)",
             "- **Open positions** (MT5 `open_positions_count` in context): **filled** deals only. Working **Buy/Sell Limit** or **Stop** orders that are not filled are **not** counted there.",
@@ -564,6 +604,150 @@ class Aurum:
             log.debug("AURUM web_search failed: %s", e)
             return None
 
+    def _vision_prompt_context(self, vr) -> str:
+        sd = vr.structured_data if isinstance(vr.structured_data, dict) else {}
+        return (
+            "## IMAGE EXTRACTION (VISION)\n"
+            f"confidence: {vr.confidence}\n"
+            f"image_type: {vr.image_type}\n"
+            f"action_hint: {vr.caller_action}\n"
+            f"summary: {vr.extracted_text}\n"
+            f"structured_data: {json.dumps(sd, default=str)}"
+        )
+
+    @staticmethod
+    def _response_claims_no_image(text: str) -> bool:
+        t = (text or "").lower()
+        patterns = (
+            "no image attached",
+            "no image coming through",
+            "i don't see an image",
+            "still no image",
+            "image not attached",
+            "no image in your message",
+        )
+        return any(p in t for p in patterns)
+
+    def _log_vision(self, *, caller: str, source_channel: str, context_hint: str, vr) -> int:
+        sd = vr.structured_data if isinstance(vr.structured_data, dict) else {}
+        return self.scribe.log_vision_extraction({
+            "caller": caller,
+            "source_channel": source_channel,
+            "context_hint": context_hint,
+            "image_type": vr.image_type,
+            "confidence": vr.confidence,
+            "extracted_text": vr.extracted_text,
+            "structured_data": sd,
+            "direction": sd.get("direction"),
+            "entry_price": sd.get("entry_low") or sd.get("entry_high"),
+            "sl_price": sd.get("sl"),
+            "tp1_price": sd.get("tp1"),
+            "tp2_price": sd.get("tp2"),
+            "caller_action": vr.caller_action,
+            "downstream_result": "USED_FOR_CHAT",
+            "image_hash": vr.image_hash,
+            "file_size_kb": vr.file_size_kb,
+            "processing_ms": vr.processing_ms,
+            "error": vr.error,
+        })
+
+    def _reply_with_optional_image(self, *, query: str, caption: str,
+                                   image_path: str | None,
+                                   source: str = "TELEGRAM",
+                                   context_hint: str = "GENERAL",
+                                   source_channel: str = "direct") -> str:
+        if image_path and VISION_ENABLED:
+            vr = self.vision.extract(
+                image_path=image_path,
+                caption=caption,
+                context_hint=context_hint,
+                caller="HERALD",
+            )
+            try:
+                self.scribe.log_system_event(
+                    event_type="AURUM_UPLOAD_VISION_PARSED",
+                    triggered_by="AURUM",
+                    reason="TELEGRAM_DIRECT_MEDIA",
+                    notes=f"confidence={vr.confidence} image_type={vr.image_type} source={source_channel}",
+                )
+            except Exception:
+                pass
+            vid = self._log_vision(
+                caller="HERALD",
+                source_channel=source_channel,
+                context_hint=context_hint,
+                vr=vr,
+            )
+            if vr.confidence == "LOW":
+                self.scribe.update_vision_extraction_result(vid, "LOW_CONFIDENCE")
+                return (
+                    "I received the image but confidence is LOW, so I may misread key levels. "
+                    "Please resend as a clearer file or include entry/SL/TP in text."
+                )
+            guard_ctx = (
+                "## IMAGE DELIVERY CONFIRMATION\n"
+                "The image WAS successfully received and parsed by VISION for this same user message.\n"
+                "Do NOT claim that no image was attached. Use the extraction below as primary evidence.\n"
+            )
+            answer = self.ask(
+                query,
+                source=source,
+                extra_context=guard_ctx + "\n" + self._vision_prompt_context(vr),
+            )
+            if self._response_claims_no_image(answer):
+                return (
+                    f"Image received and parsed ({vr.confidence}).\n"
+                    f"Extraction: {vr.extracted_text}\n"
+                    "Reply with your intended action (analyze / trade setup / levels), and I’ll proceed from this extraction."
+                )
+            return answer
+        return self.ask(query, source=source)
+
+    def _execute_chart_commands(self, text: str) -> str | None:
+        """Parse ```chart_command ... ``` fences, execute via MCP, return results."""
+        if not text or "```" not in text:
+            return None
+
+        chunks = text.split("```")
+        commands: list[dict] = []
+        for i in range(1, len(chunks), 2):
+            block = chunks[i].strip()
+            if not block.lower().startswith("chart_command"):
+                continue
+            block = block[len("chart_command"):].lstrip("\n\r").strip()
+            if not block.startswith("{"):
+                continue
+            try:
+                commands.append(json.loads(block))
+            except json.JSONDecodeError:
+                continue
+
+        if not commands:
+            return None
+
+        results = []
+        try:
+            with MCPSession(timeout=20) as mcp:
+                for cmd in commands:
+                    tool = cmd.get("tool", "")
+                    args = cmd.get("args", {})
+                    if not tool:
+                        continue
+                    log.info("AURUM: MCP call %s(%s)", tool, json.dumps(args, default=str)[:100])
+                    result = mcp.call(tool, args)
+                    # Truncate large results (e.g. 73 FVG zones)
+                    result_str = json.dumps(result, default=str)
+                    if len(result_str) > 2000:
+                        result_str = result_str[:2000] + "...(truncated)"
+                    results.append(f"{tool}: {result_str}")
+        except ConnectionError:
+            return "TradingView not connected — run: make start-tradingview"
+        except Exception as e:
+            log.error("AURUM MCP error: %s", e)
+            return f"MCP error: {str(e)[:100]}"
+
+        return "\n".join(results) if results else None
+
     def _extract_json_commands_from_response(self, text: str) -> None:
         """Parse ```json ... ``` fences and write actionable commands to aurum_cmd.json.
 
@@ -685,27 +869,74 @@ class Aurum:
         msg_queue: _aio.Queue = _aio.Queue()
 
         async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            if not update.message or not update.message.text:
+            if not update.message:
                 return
             if update.message.chat_id != allowed_chat:
                 log.warning("AURUM bot: rejected message from chat %s (allowed: %s)",
                             update.message.chat_id, allowed_chat)
                 return
-            text = update.message.text.strip()
-            if not text or text.startswith("/system"):
+            text = (update.message.text or update.message.caption or "").strip()
+            has_media = self._message_has_media(update.message)
+            if not text and not has_media:
                 return
+            if text.startswith("/system"):
+                return
+            if has_media:
+                try:
+                    self.scribe.log_system_event(
+                        event_type="AURUM_UPLOAD_RECEIVED",
+                        triggered_by="AURUM",
+                        reason="TELEGRAM_DIRECT_MEDIA",
+                        notes=(
+                            f"chat={update.message.chat_id} msg={update.message.message_id} "
+                            f"photo={bool(update.message.photo)} document={bool(update.message.document)} "
+                            f"caption_len={len(text)}"
+                        ),
+                    )
+                except Exception:
+                    pass
+            image_path = None
+            if has_media and VISION_ENABLED:
+                try:
+                    image_path = await self.herald.download_inbound_media(update.message, prefix="aurum_img_")
+                    if not image_path:
+                        self.scribe.log_system_event(
+                            event_type="AURUM_UPLOAD_DOWNLOAD_FAILED",
+                            triggered_by="AURUM",
+                            reason="TELEGRAM_DIRECT_MEDIA",
+                            notes=f"chat={update.message.chat_id} msg={update.message.message_id}",
+                        )
+                except Exception as e:
+                    try:
+                        self.scribe.log_system_event(
+                            event_type="AURUM_UPLOAD_DOWNLOAD_FAILED",
+                            triggered_by="AURUM",
+                            reason="TELEGRAM_DIRECT_MEDIA",
+                            notes=f"chat={update.message.chat_id} msg={update.message.message_id} err={str(e)[:180]}",
+                        )
+                    except Exception:
+                        pass
+                    log.warning("AURUM bot: failed to download image: %s", e)
             # Queue the message for sequential processing
-            await msg_queue.put((update, text))
+            await msg_queue.put((update, text, image_path))
 
         async def process_queue():
             """Process messages one at a time in FIFO order."""
             while True:
-                update, text = await msg_queue.get()
+                update, text, image_path = await msg_queue.get()
                 try:
-                    log.info(f"AURUM query from Telegram (bot): {text[:60]}")
+                    query = text or "Analyze this image in context of the current trading session."
+                    log.info(f"AURUM query from Telegram (bot): {query[:60]}")
                     # Show typing indicator while thinking
                     await update.message.chat.send_action("typing")
-                    reply = self.ask(text, source="TELEGRAM")
+                    reply = self._reply_with_optional_image(
+                        query=query,
+                        caption=text,
+                        image_path=image_path,
+                        source="TELEGRAM",
+                        context_hint="GENERAL",
+                        source_channel="direct",
+                    )
                     # Telegram has 4096 char limit per message
                     if len(reply) <= 4096:
                         await update.message.reply_text(reply)
@@ -720,10 +951,17 @@ class Aurum:
                     except Exception:
                         pass
                 finally:
+                    if image_path:
+                        try:
+                            os.remove(image_path)
+                        except Exception:
+                            pass
                     msg_queue.task_done()
 
         app = ApplicationBuilder().token(BOT_TOKEN).build()
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(
+            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, handle_message)
+        )
         log.info("AURUM: Bot API listening (message the bot directly in Telegram, queued FIFO)")
         await app.initialize()
         await app.start()
@@ -753,11 +991,87 @@ class Aurum:
         async def on_message(event):
             if event.message.sender_id != my_id:
                 return
-            text = event.message.message or ""
-            if not text.strip() or text.startswith("/system"):
+            text = (event.message.message or "").strip()
+            has_media = self._message_has_media(event.message)
+            if not text and not has_media:
                 return
-            log.info(f"AURUM query from Telegram (telethon): {text[:60]}")
-            reply = self.ask(text, source="TELEGRAM")
+            if text.startswith("/system"):
+                return
+            if has_media:
+                try:
+                    self.scribe.log_system_event(
+                        event_type="AURUM_UPLOAD_RECEIVED",
+                        triggered_by="AURUM",
+                        reason="TELETHON_DIRECT_MEDIA",
+                        notes=(
+                            f"chat={target_chat} msg={event.message.id} "
+                            f"photo={bool(getattr(event.message, 'photo', None))} "
+                            f"document={bool(getattr(event.message, 'document', None))} "
+                            f"caption_len={len(text)}"
+                        ),
+                    )
+                except Exception:
+                    pass
+            query = text or "Analyze this image in context of the current trading session."
+            reply = None
+            image_path = None
+            if has_media and VISION_ENABLED:
+                try:
+                    with tempfile.NamedTemporaryFile(prefix="aurum_tel_", suffix=".img", delete=False) as tmp:
+                        image_path = tmp.name
+                    out = await event.message.download_media(file=image_path)
+                    image_path = out or image_path
+                    if not image_path:
+                        self.scribe.log_system_event(
+                            event_type="AURUM_UPLOAD_DOWNLOAD_FAILED",
+                            triggered_by="AURUM",
+                            reason="TELETHON_DIRECT_MEDIA",
+                            notes=f"chat={target_chat} msg={event.message.id}",
+                        )
+                    vr = self.vision.extract(
+                        image_path=image_path,
+                        caption=text,
+                        context_hint="GENERAL",
+                        caller="HERALD",
+                    )
+                    vid = self._log_vision(
+                        caller="HERALD",
+                        source_channel="direct",
+                        context_hint="GENERAL",
+                        vr=vr,
+                    )
+                    if vr.confidence == "LOW":
+                        self.scribe.update_vision_extraction_result(vid, "LOW_CONFIDENCE")
+                        reply = (
+                            "I received the image but confidence is LOW, so I may misread key levels. "
+                            "Please resend as a clearer file or include entry/SL/TP in text."
+                        )
+                    else:
+                        reply = self.ask(
+                            query,
+                            source="TELEGRAM",
+                            extra_context=self._vision_prompt_context(vr),
+                        )
+                except Exception as e:
+                    try:
+                        self.scribe.log_system_event(
+                            event_type="AURUM_UPLOAD_DOWNLOAD_FAILED",
+                            triggered_by="AURUM",
+                            reason="TELETHON_DIRECT_MEDIA",
+                            notes=f"chat={target_chat} msg={event.message.id} err={str(e)[:180]}",
+                        )
+                    except Exception:
+                        pass
+                    log.warning("AURUM telethon: failed to process media upload: %s", e)
+                finally:
+                    if image_path:
+                        try:
+                            os.remove(image_path)
+                        except Exception:
+                            pass
+            if reply is None:
+                reply = self.ask(query, source="TELEGRAM")
+            log.info(f"AURUM query from Telegram (telethon): {query[:60]}")
             await event.respond(reply)
 
         log.info("AURUM Telegram (Telethon) listening")

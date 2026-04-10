@@ -181,6 +181,11 @@ Set these in **repo root `.env`** (or the environment of **bridge** / launchd pl
 | `DD_FLOATING_BLOCK_PCT` | `2.0` | Block new groups if floating loss ≥ this % of balance |
 | `DD_EQUITY_CLOSE_ALL_PCT` | `3.0` | CLOSE ALL + WATCH if equity drops this % from session peak |
 | `DD_LOSS_COOLDOWN_SEC` | `300` | AUTO_SCALPER pauses this long after a losing close |
+| `AEGIS_SIGNAL_MIN_RR` | `AEGIS_MIN_RR` | Override min R:R for `source=SIGNAL` only |
+| `AEGIS_SIGNAL_MIN_SL_PIPS` | `AEGIS_MIN_SL_PIPS` | Override min SL distance for `source=SIGNAL` only |
+| `AEGIS_SIGNAL_MAX_SLIPPAGE` | `AEGIS_MAX_SLIPPAGE` | Override max slippage for `source=SIGNAL` only |
+
+When `source=SIGNAL` (LISTENER room entries), AEGIS evaluates Guard 4, Guard 5, and Guard 6 using `AEGIS_SIGNAL_*` values when set. Non-SIGNAL sources (`AURUM`, `AUTO_SCALPER`, internal `SCALPER`) continue using base `AEGIS_*` thresholds.
 
 ### Lot sizing mode
 
