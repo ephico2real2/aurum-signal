@@ -12,10 +12,16 @@ from contextlib import contextmanager
 
 log = logging.getLogger("scribe")
 
-DB_PATH = os.environ.get("SCRIBE_DB", "data/aurum_intelligence.db")
 _PY_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PY_DIR.parent
 _DEFAULT_AUDIT_JSONL = _REPO_ROOT / "logs" / "audit" / "system_events.jsonl"
+def _resolve_db_path() -> str:
+    raw = os.environ.get("SCRIBE_DB", "data/aurum_intelligence.db")
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    return str((_PY_DIR / p).resolve())
+DB_PATH = _resolve_db_path()
 
 DDL = """
 CREATE TABLE IF NOT EXISTS system_events (

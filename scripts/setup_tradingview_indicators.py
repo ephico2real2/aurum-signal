@@ -12,6 +12,7 @@ Required by LENS:
   - Relative Strength Index
   - Moving Average Convergence Divergence (MACD)
   - Directional Movement (ADX)
+  - Cumulative Volume Delta (CVD/Volume Delta when available)
 
 Structure (OB/FVG):
   - Order Block Detector [LuxAlgo]
@@ -39,6 +40,8 @@ REQUIRED_INDICATORS = [
     ("ADX and DI",                             "ADX and DI for v4"),
 ]
 
+CVD_PROXY_ACCEPTED = {"Volume Footprint", "Session Volume Profile HD"}
+
 # EMA needs special handling (add twice, set lengths)
 EMA_LENGTHS = [20, 50]
 
@@ -46,6 +49,15 @@ EMA_LENGTHS = [20, 50]
 STRUCTURE_INDICATORS = [
     ("Order Block Detector",  "Order Block Detector [LuxAlgo]"),
     ("Fair Value Gap",        "Fair Value Gap [LuxAlgo]"),
+]
+
+# CVD candidates vary by TradingView build/account availability
+CVD_INDICATOR_CANDIDATES = [
+    ("Cumulative Volume Delta", "Cumulative Volume Delta"),
+    ("Volume Delta", "Volume Delta"),
+    ("Volume Delta Candles", "Volume Delta Candles"),
+    ("Volume Footprint", "Volume Footprint"),
+    ("Session Volume Profile HD", "Session Volume Profile HD"),
 ]
 
 
@@ -148,6 +160,39 @@ def setup_indicators(mcp: MCPSession, check_only: bool = False):
         else:
             if not add_indicator(mcp, tv_name, name_frag):
                 log.info(f"     ℹ️  {name_frag} may need manual add (community indicator)")
+
+    # ── CVD indicator (order-flow proxy) ───────────────────────
+    log.info("\nCVD indicator (order-flow proxy):")
+    refreshed = get_current_studies(mcp)
+    has_cvd = (
+        has_study(refreshed, "Cumulative Volume Delta")
+        or has_study(refreshed, "Volume Delta")
+        or has_study(refreshed, "CVD")
+    )
+    has_proxy = any(has_study(refreshed, name) for name in CVD_PROXY_ACCEPTED)
+    if has_cvd:
+        log.info("  ✅ Already present: CVD/Volume Delta")
+    elif has_proxy:
+        log.info("  ✅ CVD proxy present: Volume Footprint/Session Volume Profile HD")
+    elif check_only:
+        log.warning("  ❌ Missing: CVD/Volume Delta")
+        all_ok = False
+    else:
+        added = False
+        added_proxy = False
+        for label, tv_name in CVD_INDICATOR_CANDIDATES:
+            if add_indicator(mcp, tv_name, label):
+                added = True
+                if label in CVD_PROXY_ACCEPTED:
+                    added_proxy = True
+                break
+            time.sleep(1)
+        if not added:
+            all_ok = False
+            log.warning("  ❌ Could not auto-add CVD by known names.")
+            log.warning("     Add CVD manually in TradingView and re-run --check.")
+        elif added_proxy:
+            log.info("  ✅ Added CVD proxy indicator (native CVD unavailable in this catalog).")
 
     # ── Verify final state ─────────────────────────────────────
     if not check_only:

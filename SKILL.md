@@ -22,6 +22,13 @@ I can execute chart MCP commands when needed (instead of guessing):
 - `chart_set_symbol`, `chart_set_timeframe`, `chart_manage_indicator`
 - `capture_screenshot`
 When a user asks for chart levels/indicator state, I should read MCP data first and report what is actually on-chart.
+MCP feedback loop behavior:
+- Every MCP tool result is captured in runtime context (`MCP FEEDBACK LOOP`) with tool name, timestamp, summary, and freshness (`fresh` vs `stale`).
+- `data_get_study_values` results are normalized for CVD proxy awareness:
+  - `cvd_available` (true/false)
+  - `cvd_last`, `cvd_prev`, `cvd_delta`
+  - `cvd_divergence_hint` (`BUYING_PRESSURE_RISING` / `SELLING_PRESSURE_RISING` / `FLAT` / `UNKNOWN`)
+- If TradingView MCP is unavailable, I must say so explicitly instead of implying a successful read.
 
 ### 1c. Screenshot/image extraction playbook (VISION)
 When a user sends chart screenshots (PNG/JPG/WebP), I must attempt a structured extraction before giving narrative commentary.
@@ -267,6 +274,14 @@ SENTINEL sends upcoming event digests to Telegram with **adaptive timing**:
 - **Extended events** (speeches, FOMC, press conferences): guard holds for `SENTINEL_EXTENDED_GUARD_MIN` (default 60min) — auto-detected by keyword matching
 
 Override with `POST /api/sentinel/digest {"interval": 30}` for testing (reverts on restart).
+Telegram categorized alert templates are available via HERALD for observability:
+- `MCP_RESULT_CAPTURED`
+- `MCP_RESULT_MISSING`
+- `MCP_CALL_FAILED`
+- `WEBHOOK_ALERT_READY`
+- `WEBHOOK_ALERT_SENT`
+- `WEBHOOK_ALERT_FAILED`
+These are formatted as structured alert messages so operational failures/successes are immediately visible in chat.
 
 ---
 

@@ -5,7 +5,7 @@ Build order: #3 — depends only on .env (bot token).
 Send-only bot. Other components call herald.send() for alerts.
 """
 
-import os, logging, asyncio, tempfile
+import os, logging, asyncio, tempfile, html, json
 from datetime import datetime, timezone
 
 from status_report import report_component_status
@@ -30,6 +30,69 @@ class Herald:
             from telegram import Bot
             self._bot = Bot(token=self.token)
         return self._bot
+
+    @staticmethod
+    def _fmt_value(v) -> str:
+        if v is None:
+            return "n/a"
+        if isinstance(v, float):
+            return f"{v:.2f}"
+        return str(v)
+
+    def _render_alert_template(self, alert_type: str, payload: dict | None = None) -> str:
+        p = payload or {}
+        t = (alert_type or "GENERIC_ALERT").upper()
+        if t == "MCP_RESULT_CAPTURED":
+            return (
+                "📡 <b>MCP RESULT CAPTURED</b>\n"
+                f"Tool: <code>{html.escape(self._fmt_value(p.get('tool')))}</code>\n"
+                f"Freshness: <b>{html.escape(self._fmt_value(p.get('freshness')))}</b>\n"
+                f"Timestamp: <code>{html.escape(self._fmt_value(p.get('timestamp')))}</code>\n"
+                f"Summary: {html.escape(self._fmt_value(p.get('summary')))}"
+            )
+        if t == "MCP_RESULT_MISSING":
+            return (
+                "⚠️ <b>MCP RESULT MISSING</b>\n"
+                f"Tool: <code>{html.escape(self._fmt_value(p.get('tool')))}</code>\n"
+                f"Reason: {html.escape(self._fmt_value(p.get('reason')))}"
+            )
+        if t == "MCP_CALL_FAILED":
+            return (
+                "❌ <b>MCP CALL FAILED</b>\n"
+                f"Tool: <code>{html.escape(self._fmt_value(p.get('tool')))}</code>\n"
+                f"Error: {html.escape(self._fmt_value(p.get('error')))}"
+            )
+        if t == "WEBHOOK_ALERT_READY":
+            return (
+                "🔔 <b>WEBHOOK ALERT READY</b>\n"
+                f"Type: <code>{html.escape(self._fmt_value(p.get('alert_kind')))}</code>\n"
+                f"Instrument: <code>{html.escape(self._fmt_value(p.get('instrument')))}</code>\n"
+                f"Timeframe: <code>{html.escape(self._fmt_value(p.get('timeframe')))}</code>\n"
+                f"Condition: {html.escape(self._fmt_value(p.get('condition')))}"
+            )
+        if t == "WEBHOOK_ALERT_SENT":
+            return (
+                "✅ <b>WEBHOOK ALERT SENT</b>\n"
+                f"Type: <code>{html.escape(self._fmt_value(p.get('alert_kind')))}</code>\n"
+                f"Delivery: <code>{html.escape(self._fmt_value(p.get('delivery')))}</code>\n"
+                f"Notes: {html.escape(self._fmt_value(p.get('notes')))}"
+            )
+        if t == "WEBHOOK_ALERT_FAILED":
+            return (
+                "🚨 <b>WEBHOOK ALERT FAILED</b>\n"
+                f"Type: <code>{html.escape(self._fmt_value(p.get('alert_kind')))}</code>\n"
+                f"Failure: {html.escape(self._fmt_value(p.get('failure')))}\n"
+                f"Retryable: <b>{html.escape(self._fmt_value(p.get('retryable')))}</b>"
+            )
+        return (
+            "ℹ️ <b>SYSTEM ALERT</b>\n"
+            f"Type: <code>{html.escape(t)}</code>\n"
+            f"Payload: {html.escape(json.dumps(p, default=str)[:1000])}"
+        )
+
+    def send_alert(self, alert_type: str, payload: dict | None = None) -> bool:
+        msg = self._render_alert_template(alert_type, payload)
+        return self.send(msg)
 
     def send(self, text: str, parse_mode: str = "HTML") -> bool:
         """Sync wrapper — safe to call from anywhere."""
