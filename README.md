@@ -1,6 +1,6 @@
 # ⚒ SIGNAL SYSTEM v1.0
 > XAUUSD signal-following scalper with AI intelligence layer.
-> macOS + MetaTrader 5 native. 10 components. 5 operating modes.
+> macOS + MetaTrader 5 native. 11 components. 6 operating modes.
 
 ---
 ## External Dependencies
@@ -24,6 +24,7 @@ Core architecture and operations docs:
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
 - **Vision validation runbook**: [docs/VISION_CLI_RUNBOOK.md](docs/VISION_CLI_RUNBOOK.md)
 - **Signal room policy**: [docs/SIGNAL_ROOM_POLICY.md](docs/SIGNAL_ROOM_POLICY.md)
+- **Draw.io architecture source**: [docs/assets/trading-system-architecture.xml](docs/assets/trading-system-architecture.xml)
 
 Recent behavior notes:
 - Signal-room media uploads are archived and replayable via `scripts/replay_signal_uploads.py`, with channel-aware summary notifications to Telegram.
@@ -31,17 +32,52 @@ Recent behavior notes:
 - BRIDGE logs unmanaged/manual MT5 positions into SCRIBE as `MANUAL_MT5` lifecycle records.
 
 ```text
-LISTENER · LENS · SENTINEL          ← Signal Intake + Protection
-         BRIDGE                     ← Orchestration + Closure Detection
-   AEGIS · FORGE · SCRIBE           ← Risk + Execution + Data
- ATHENA · HERALD · AURUM            ← Interface + Notifications + AI
-         RECONCILER                 ← Hourly Position Audit
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        SIGNAL INTAKE + PROTECTION                          │
+│                                                                             │
+│  LISTENER (Telegram + Claude)   LENS (TradingView MCP)   SENTINEL (News)   │
+│          │                               │                         │         │
+│          └──────────────┬────────────────┴──────────────┬──────────┘         │
+│                         │                               │                    │
+│              parsed_signal.json               lens_snapshot.json             │
+│                         │                               │                    │
+│                         └──────────────┬────────────────┘                    │
+│                                        ▼                                     │
+│                               BRIDGE (Orchestrator)                          │
+│                  • mode state machine • dispatch • closures                  │
+│                  • unmanaged/manual tracking • session logic                 │
+└────────────────────────────────────────┬─────────────────────────────────────┘
+                                         │ command.json / config.json
+                                         ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                               EXECUTION                                      │
+│                                                                             │
+│                         FORGE (MT5 EA, XAUUSD)                              │
+│                 • order placement • TP/SL/BE • market export               │
+│                          market_data.json (3s loop)                         │
+└────────────────────────────────────────┬─────────────────────────────────────┘
+                                         │
+                    ┌────────────────────┼────────────────────┐
+                    ▼                    ▼                    ▼
+                 AEGIS                SCRIBE              RECONCILER
+              (risk gate)         (SQLite audit)        (hourly audit)
+
+                    ┌────────────────────┼────────────────────┐
+                    ▼                    ▼                    ▼
+                 ATHENA                HERALD               AURUM
+              (API + UI)        (Telegram alerts)      (AI operator)
 ```
+## System Design Rationale (SCRIBE-first)
+- The system was designed **SCRIBE-first** so every decision path is auditable before automation scale-up.
+- Starting with persistent event/trade logs enabled a safe WATCH-first rollout, then evidence-based progression into live execution modes.
+- BRIDGE, AEGIS, FORGE, LISTENER, and AURUM are layered as a closed loop: ingest → validate → execute → reconcile → learn.
+- New features (including unmanaged/manual MT5 trade tracking and session/open alert telemetry) are added as schema-backed events to preserve traceability over time.
+- Operational query workflows are documented in [docs/SCRIBE_QUERY_EXAMPLES.md](docs/SCRIBE_QUERY_EXAMPLES.md).
 
 ## Components
 | # | Name | File | Role |
 |---|---|---|---|
-| 1 | SCRIBE | `python/scribe.py` | SQLite data logger (7 tables, ML-ready) |
+| 1 | SCRIBE | `python/scribe.py` | SQLite intelligence logger (11 tables, ML/ops-ready) |
 | 2 | FORGE | `ea/FORGE.mq5` | MT5 EA — 5 modes, trade groups, backtest |
 | 3 | HERALD | `python/herald.py` | Telegram notifications |
 | 4 | SENTINEL | `python/sentinel.py` | News guard, economic calendar |
@@ -51,6 +87,7 @@ LISTENER · LENS · SENTINEL          ← Signal Intake + Protection
 | 8 | AURUM | `python/aurum.py` | Claude AI agent (`SOUL.md` + `SKILL.md`) |
 | 9 | BRIDGE | `python/bridge.py` | Orchestrator + mode state machine |
 | 10 | ATHENA | `python/athena_api.py` | Flask API + React dashboard |
+| 11 | RECONCILER | `python/reconciler.py` | Hourly MT5↔SCRIBE consistency audit |
 
 ## Operating Modes
 - **OFF** — Completely dormant
@@ -58,6 +95,7 @@ LISTENER · LENS · SENTINEL          ← Signal Intake + Protection
 - **SIGNAL** — Executes Telegram signals only
 - **SCALPER** — BRIDGE scalper + FORGE native scalper
 - **HYBRID** — SIGNAL + SCALPER combined
+- **AUTO_SCALPER** — AURUM-driven autonomous scalping loop
 
 ## Quick Start
 ```bash
@@ -76,8 +114,9 @@ From Telegram:
 > "Show me LENS analysis"
 
 ## Data Schema (SCRIBE)
-SCRIBE uses 9 SQLite tables, and every row is tagged with `mode`:
+SCRIBE uses 11 SQLite tables, and every row is tagged with `mode` when applicable:
 - `system_events` — mode switches, startups, shutdowns
+- `trading_sessions` — session windows and rolled-up performance
 - `market_snapshots` — OHLCV + indicators (LENS + MT5)
 - `signals_received` — every Telegram signal + parse result
 - `trade_groups` — parent record for N-trade groups
@@ -86,6 +125,7 @@ SCRIBE uses 9 SQLite tables, and every row is tagged with `mode`:
 - `aurum_conversations` — all AURUM queries + responses
 - `trade_closures` — SL/TP hit log with inferred close reason
 - `component_heartbeats` — per-component liveness
+- `vision_extractions` — LISTENER/AURUM image extraction lineage + confidence
 
 ## License
 For personal use only. Not financial advice. Always test on demo first.

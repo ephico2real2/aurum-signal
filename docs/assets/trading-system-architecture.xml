@@ -1,0 +1,220 @@
+<mxfile>
+  <diagram name="Trading System Architecture" id="arch1">
+    <mxGraphModel dx="1400" dy="2000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="2200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ===== SECTION 1: SIGNAL INTAKE + PROTECTION ===== -->
+        <mxCell id="s1" value="SIGNAL INTAKE + PROTECTION" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#999999;strokeWidth=1;dashed=1;arcSize=6;align=center;verticalAlign=top;spacingTop=8;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="50" y="20" width="900" height="280" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="11" value="&lt;b&gt;LISTENER&lt;/b&gt;&lt;br&gt;Telegram + Claude Parser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="100" y="70" width="180" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="12" value="&lt;b&gt;LENS&lt;/b&gt;&lt;br&gt;TradingView MCP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="410" y="70" width="180" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="13" value="&lt;b&gt;SENTINEL&lt;/b&gt;&lt;br&gt;News Guard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="720" y="70" width="180" height="70" as="geometry"/>
+        </mxCell>
+
+        <!-- Output labels -->
+        <mxCell id="14" value="parsed_signal.json" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="120" y="160" width="140" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="15" value="lens_snapshot.json" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="430" y="160" width="140" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="16" value="sentinel_status.json" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="740" y="160" width="140" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- VISION module -->
+        <mxCell id="17" value="VISION module (shared by LISTENER + AURUM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;arcSize=8;align=center;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="210" width="300" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="17a" value="" style="edgeStyle=none;dashed=1;strokeColor=#999999;exitX=0.5;exitY=1;entryX=0.2;entryY=0;" edge="1" source="14" target="17" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Arrows from intake to orchestration -->
+        <mxCell id="a11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" source="11" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="190" y="330" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="a12" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" source="12" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="500" y="330" as="targetPoint"/></mxGeometry>
+        </mxCell>
+        <mxCell id="a13" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" source="13" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="810" y="330" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- ===== SECTION 2: ORCHESTRATION ===== -->
+        <mxCell id="s2" value="ORCHESTRATION" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#999999;strokeWidth=1;dashed=1;arcSize=6;align=center;verticalAlign=top;spacingTop=8;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="50" y="340" width="900" height="340" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="21" value="&lt;b&gt;BRIDGE&lt;/b&gt;&lt;br&gt;&lt;br&gt;• Mode state machine&lt;br&gt;• Signal dispatch&lt;br&gt;• Position tracker&lt;br&gt;• Closure detection&lt;br&gt;• Session management" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;arcSize=10;align=left;verticalAlign=middle;spacingLeft=16;spacingRight=16;" vertex="1" parent="1">
+          <mxGeometry x="200" y="380" width="260" height="170" as="geometry"/>
+        </mxCell>
+
+        <!-- AURUM + ATHENA cmd inputs -->
+        <mxCell id="22a" value="aurum_cmd.json ← AURUM" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="530" y="400" width="170" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="22b" value="aurum_cmd.json ← ATHENA" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="530" y="425" width="170" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="a22a" value="" style="edgeStyle=none;exitX=0;exitY=0.5;entryX=1;entryY=0.25;" edge="1" source="22a" target="21" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a22b" value="" style="edgeStyle=none;exitX=0;exitY=0.5;entryX=1;entryY=0.35;" edge="1" source="22b" target="21" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- AEGIS -->
+        <mxCell id="23" value="&lt;b&gt;AEGIS&lt;/b&gt;&lt;br&gt;(Risk gate)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="570" y="470" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="a23a" value="" style="edgeStyle=none;exitX=1;exitY=0.6;entryX=0;entryY=0.5;" edge="1" source="21" target="23" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a23b" value="" style="edgeStyle=none;exitX=0;exitY=0.5;entryX=1;entryY=0.65;dashed=1;" edge="1" source="23" target="21" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- RECONCILER -->
+        <mxCell id="24" value="&lt;b&gt;RECONCILER&lt;/b&gt;&lt;br&gt;(hourly)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="570" y="540" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="a24a" value="" style="edgeStyle=none;exitX=1;exitY=0.8;entryX=0;entryY=0.5;" edge="1" source="21" target="24" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a24b" value="" style="edgeStyle=none;exitX=0;exitY=0.5;entryX=1;entryY=0.85;dashed=1;" edge="1" source="24" target="21" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Output label -->
+        <mxCell id="25" value="command.json + config.json" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="240" y="570" width="180" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Arrow to Execution -->
+        <mxCell id="a25" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" source="21" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="330" y="720" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- ===== SECTION 3: EXECUTION ===== -->
+        <mxCell id="s3" value="EXECUTION" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#999999;strokeWidth=1;dashed=1;arcSize=6;align=center;verticalAlign=top;spacingTop=8;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="50" y="720" width="900" height="300" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="31" value="&lt;b&gt;FORGE (MT5 EA)&lt;/b&gt;&lt;br&gt;&lt;br&gt;• Opens trades&lt;br&gt;• TP split (70/30)&lt;br&gt;• SL/TP/BE management&lt;br&gt;• Exports market data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;arcSize=10;align=left;verticalAlign=middle;spacingLeft=16;spacingRight=16;" vertex="1" parent="1">
+          <mxGeometry x="270" y="760" width="260" height="130" as="geometry"/>
+        </mxCell>
+
+        <!-- market_data.json label -->
+        <mxCell id="32" value="market_data.json (every 3s)&lt;br&gt;price, account, indicators, open_positions[], pending_orders[]" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="230" y="910" width="340" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="a31" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;exitX=0.5;exitY=1;" edge="1" source="31" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="400" y="910" as="targetPoint"/></mxGeometry>
+        </mxCell>
+
+        <!-- Fan-out arrows to 3 consumers -->
+        <mxCell id="a32a" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="960" as="sourcePoint"/>
+            <mxPoint x="190" y="1090" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a32b" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="960" as="sourcePoint"/>
+            <mxPoint x="500" y="1090" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a32c" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="960" as="sourcePoint"/>
+            <mxPoint x="810" y="1090" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- 3 consumers -->
+        <mxCell id="41" value="&lt;b&gt;BRIDGE&lt;/b&gt;&lt;br&gt;(reads back)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="110" y="1090" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="42" value="&lt;b&gt;ATHENA&lt;/b&gt;&lt;br&gt;(API + UI)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="420" y="1090" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="43" value="&lt;b&gt;AURUM&lt;/b&gt;&lt;br&gt;(AI Agent)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="730" y="1090" width="160" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- ===== SECTION 4: DATA + NOTIFICATIONS + AI ===== -->
+        <mxCell id="s4" value="DATA + NOTIFICATIONS + AI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#999999;strokeWidth=1;dashed=1;arcSize=6;align=center;verticalAlign=top;spacingTop=8;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="50" y="1200" width="900" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="51" value="&lt;b&gt;SCRIBE&lt;/b&gt;&lt;br&gt;SQLite · 9 tables" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1250" width="160" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="52" value="&lt;b&gt;HERALD&lt;/b&gt;&lt;br&gt;Telegram Alerts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="290" y="1250" width="160" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="53" value="&lt;b&gt;AURUM&lt;/b&gt;&lt;br&gt;Claude Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="500" y="1250" width="160" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="54" value="&lt;b&gt;ATHENA&lt;/b&gt;&lt;br&gt;Flask + React" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;arcSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="710" y="1250" width="160" height="55" as="geometry"/>
+        </mxCell>
+
+        <!-- ===== LEGEND ===== -->
+        <mxCell id="L0" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#999999;arcSize=6;align=left;verticalAlign=top;spacingTop=4;spacingLeft=8;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1380" width="700" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="L1" value="" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="120" y="1405" width="14" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="L1t" value="Intake / Exec" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="138" y="1402" width="80" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="L2" value="" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="230" y="1405" width="14" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="L2t" value="Orchestration" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="248" y="1402" width="80" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="L3" value="" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="345" y="1405" width="14" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="L3t" value="Guards" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="363" y="1402" width="50" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="L4" value="" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="430" y="1405" width="14" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="L4t" value="UI" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="448" y="1402" width="30" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="L5" value="" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="495" y="1405" width="14" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="L5t" value="AI" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="513" y="1402" width="30" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="L6" value="" style="rounded=1;fillColor=#f5f5f5;strokeColor=#999999;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1405" width="14" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="L6t" value="Data / Utility" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="578" y="1402" width="80" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
