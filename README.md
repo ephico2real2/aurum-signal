@@ -24,6 +24,8 @@ Core architecture and operations docs:
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
 - **Vision validation runbook**: [docs/VISION_CLI_RUNBOOK.md](docs/VISION_CLI_RUNBOOK.md)
 - **Signal room policy**: [docs/SIGNAL_ROOM_POLICY.md](docs/SIGNAL_ROOM_POLICY.md)
+- **Architecture diagram (PNG)**: [docs/assets/trading-system-architecture.png](docs/assets/trading-system-architecture.png)
+- **Architecture diagram (interactive HTML)**: [docs/assets/trading-system-architecture.drawio.html](docs/assets/trading-system-architecture.drawio.html)
 - **Architecture diagram source (Draw.io)**: [docs/assets/trading-system-architecture.drawio](docs/assets/trading-system-architecture.drawio)
 - **Architecture diagram source (XML)**: [docs/assets/trading-system-architecture.xml](docs/assets/trading-system-architecture.xml)
 
@@ -32,42 +34,7 @@ Recent behavior notes:
 - FORGE market export includes all account positions using `forge_managed=true/false`.
 - BRIDGE logs unmanaged/manual MT5 positions into SCRIBE as `MANUAL_MT5` lifecycle records.
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        SIGNAL INTAKE + PROTECTION                          │
-│                                                                             │
-│  LISTENER (Telegram + Claude)   LENS (TradingView MCP)   SENTINEL (News)   │
-│          │                               │                         │         │
-│          └──────────────┬────────────────┴──────────────┬──────────┘         │
-│                         │                               │                    │
-│              parsed_signal.json               lens_snapshot.json             │
-│                         │                               │                    │
-│                         └──────────────┬────────────────┘                    │
-│                                        ▼                                     │
-│                               BRIDGE (Orchestrator)                          │
-│                  • mode state machine • dispatch • closures                  │
-│                  • unmanaged/manual tracking • session logic                 │
-└────────────────────────────────────────┬─────────────────────────────────────┘
-                                         │ command.json / config.json
-                                         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                               EXECUTION                                      │
-│                                                                             │
-│                         FORGE (MT5 EA, XAUUSD)                              │
-│                 • order placement • TP/SL/BE • market export               │
-│                          market_data.json (3s loop)                         │
-└────────────────────────────────────────┬─────────────────────────────────────┘
-                                         │
-                    ┌────────────────────┼────────────────────┐
-                    ▼                    ▼                    ▼
-                 AEGIS                SCRIBE              RECONCILER
-              (risk gate)         (SQLite audit)        (hourly audit)
-
-                    ┌────────────────────┼────────────────────┐
-                    ▼                    ▼                    ▼
-                 ATHENA                HERALD               AURUM
-              (API + UI)        (Telegram alerts)      (AI operator)
-```
+![Trading System Architecture](docs/assets/trading-system-architecture.png)
 ## System Design Rationale (SCRIBE-first)
 - The system was designed **SCRIBE-first** so every decision path is auditable before automation scale-up.
 - Starting with persistent event/trade logs enabled a safe WATCH-first rollout, then evidence-based progression into live execution modes.
