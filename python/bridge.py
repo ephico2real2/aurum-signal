@@ -76,6 +76,7 @@ BROKER_INFO_FILE = _under_root(os.environ.get("MT5_BROKER_FILE",    "MT5/broker_
 
 VERSION     = "1.1.0"
 VALID_MODES = ("OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID", "AUTO_SCALPER")
+BRIDGE_PIN_MODE = os.environ.get("BRIDGE_PIN_MODE", "").upper().strip()
 
 # AUTO_SCALPER config
 AUTO_SCALPER_LOT_SIZE      = float(os.environ.get("AUTO_SCALPER_LOT_SIZE",      "0.01"))
@@ -88,6 +89,9 @@ SIGNAL_LOT_SIZE    = float(os.environ.get("SIGNAL_LOT_SIZE",    "0.01"))
 SIGNAL_NUM_TRADES  = int(os.environ.get("SIGNAL_NUM_TRADES",    "4"))
 SIGNAL_EXPIRY_SEC  = int(os.environ.get("SIGNAL_EXPIRY_SEC",    "60"))   # 60s default — scalping signals must be fresh
 PENDING_ORDER_TIMEOUT_SEC = int(os.environ.get("PENDING_ORDER_TIMEOUT_SEC", "120"))  # 2min — auto-cancel unfilled pending orders
+# BRIDGE scalper path config (no AEGIS gating)
+SCALPER_LOT_SIZE   = float(os.environ.get("SCALPER_LOT_SIZE", "0.01"))
+SCALPER_NUM_TRADES = max(1, int(os.environ.get("SCALPER_NUM_TRADES", "4")))
 
 # Mode persistence across restarts
 RESTORE_MODE_ON_RESTART = os.environ.get("RESTORE_MODE_ON_RESTART", "true").lower() == "true"
@@ -251,6 +255,24 @@ def _session() -> str:
     return get_trading_session_utc()
 
 
+def _resolve_forge_scalper_mode(mode: str) -> str:
+    """
+    FORGE native scalper should only be enabled when the strategy mode includes
+    scalping logic (SCALPER or HYBRID). Other modes force NONE.
+    """
+    return FORGE_SCALPER_MODE if mode in ("SCALPER", "HYBRID") else "NONE"
+
+
+def _build_entry_ladder(entry_low: float, entry_high: float, trades: int) -> list[float]:
+    trades = max(1, int(trades))
+    lo = float(entry_low)
+    hi = float(entry_high)
+    if trades == 1 or hi <= lo:
+        return [round((lo + hi) / 2 if hi > 0 else lo, 2)]
+    step = (hi - lo) / (trades - 1)
+    return [round(lo + i * step, 2) for i in range(trades)]
+
+
 class Bridge:
     def __init__(self):
         self.scribe   = get_scribe()
@@ -294,12 +316,17 @@ class Bridge:
         self._last_loss_close_ts   = 0
         # Position tracker
         self._known_positions: dict[int, dict] = {}   # ticket → snapshot
+        self._known_unmanaged_positions: dict[int, dict] = {}   # ticket → snapshot (manual/non-FORGE)
         self._known_pendings:  dict[int, dict] = {}   # ticket → snapshot
         self._tracker_seeded = False
         # Session tracking
         self._current_session    = "OFF_HOURS"
         self._current_session_id = None    # SCRIBE trading_sessions row id
         self._broker_info        = {}      # from FORGE broker_info.json
+    def _pinned_mode(self) -> str | None:
+        if BRIDGE_PIN_MODE in VALID_MODES:
+            return BRIDGE_PIN_MODE
+        return None
 
     # ── Position tracker ─────────────────────────────────────────
     def _resolve_group_for_magic(self, magic: int) -> int | None:
@@ -325,13 +352,21 @@ class Bridge:
             )
             for r in open_pos:
                 t = int(r["ticket"])
-                self._known_positions[t] = {
+                magic = int(r.get("magic_number") or 0)
+                target = (
+                    self._known_positions
+                    if FORGE_MAGIC_BASE <= magic < FORGE_MAGIC_BASE + FORGE_MAGIC_MAX + 1
+                    else self._known_unmanaged_positions
+                )
+                target[t] = {
                     "group_id": r["trade_group_id"],
-                    "magic": r["magic_number"],
+                    "magic": magic,
                     "direction": r["direction"],
                     "open_price": r["entry_price"],
                     "last_profit": 0,
                     "current_price": r["entry_price"],
+                    "lot_size": 0,
+                    "symbol": None,
                     "sl": r.get("sl"), "tp": r.get("tp"),
                 }
         except Exception as e:
@@ -339,13 +374,32 @@ class Bridge:
 
         # Also seed from current market_data to catch positions SCRIBE doesn't know about yet
         for p in mt5.get("open_positions") or []:
-            magic = p.get("magic", 0)
-            if magic >= FORGE_MAGIC_BASE and magic < FORGE_MAGIC_BASE + FORGE_MAGIC_MAX + 1:
+            magic = int(p.get("magic", 0) or 0)
+            forge_managed = p.get("forge_managed")
+            if forge_managed is None:
+                forge_managed = (
+                    magic >= FORGE_MAGIC_BASE and magic < FORGE_MAGIC_BASE + FORGE_MAGIC_MAX + 1
+                )
+            if forge_managed:
                 t = int(p["ticket"])
                 if t not in self._known_positions:
                     self._known_positions[t] = {
                         "group_id": self._resolve_group_for_magic(magic),
                         "magic": magic,
+                        "direction": p.get("type", "SELL"),
+                        "open_price": p.get("open_price"),
+                        "last_profit": p.get("profit", 0),
+                        "current_price": p.get("current_price"),
+                        "lot_size": p.get("lots", 0),
+                        "sl": p.get("sl"), "tp": p.get("tp"),
+                    }
+            else:
+                t = int(p["ticket"])
+                if t not in self._known_unmanaged_positions:
+                    self._known_unmanaged_positions[t] = {
+                        "group_id": None,
+                        "magic": magic,
+                        "symbol": p.get("symbol"),
                         "direction": p.get("type", "SELL"),
                         "open_price": p.get("open_price"),
                         "last_profit": p.get("profit", 0),
@@ -360,15 +414,20 @@ class Bridge:
             t = int(o["ticket"])
             if t not in self._known_pendings:
                 magic = o.get("magic", 0)
-                self._known_pendings[t] = {
+            self._known_pendings[t] = {
                     "group_id": self._resolve_group_for_magic(magic),
                     "magic": magic,
                     "order_type": o.get("order_type"),
                     "price": o.get("price"),
+                    "tracked_since": time.time(),  # start timeout from restart
                 }
 
-        log.info("TRACKER seeded: %d positions, %d pendings from SCRIBE + market_data",
-                 len(self._known_positions), len(self._known_pendings))
+        log.info(
+            "TRACKER seeded: %d managed positions, %d unmanaged positions, %d pendings from SCRIBE + market_data",
+            len(self._known_positions),
+            len(self._known_unmanaged_positions),
+            len(self._known_pendings),
+        )
         self._tracker_seeded = True
 
     def _infer_close_reason(self, close_price: float, sl: float, tp: float,
@@ -451,9 +510,24 @@ class Bridge:
         # ── Current MT5 state (FORGE-managed only) ─────────────────
         live_positions: dict[int, dict] = {}
         for p in mt5.get("open_positions") or []:
-            magic = p.get("magic", 0)
-            if magic >= FORGE_MAGIC_BASE and magic < FORGE_MAGIC_BASE + FORGE_MAGIC_MAX + 1:
+            magic = int(p.get("magic", 0) or 0)
+            forge_managed = p.get("forge_managed")
+            if forge_managed is None:
+                forge_managed = (
+                    magic >= FORGE_MAGIC_BASE and magic < FORGE_MAGIC_BASE + FORGE_MAGIC_MAX + 1
+                )
+            if forge_managed:
                 live_positions[int(p["ticket"])] = p
+        live_unmanaged_positions: dict[int, dict] = {}
+        for p in mt5.get("open_positions") or []:
+            magic = int(p.get("magic", 0) or 0)
+            forge_managed = p.get("forge_managed")
+            if forge_managed is None:
+                forge_managed = (
+                    magic >= FORGE_MAGIC_BASE and magic < FORGE_MAGIC_BASE + FORGE_MAGIC_MAX + 1
+                )
+            if not forge_managed:
+                live_unmanaged_positions[int(p["ticket"])] = p
 
         live_pendings: dict[int, dict] = {}
         for o in mt5.get("pending_orders") or []:
@@ -540,6 +614,140 @@ class Bridge:
             }
             _tlog("TRACKER", "FILL", f"{direction} {p.get('lots',0):.2f}lot @ {p.get('open_price')} SL={p.get('sl')} TP={p.get('tp')}",
                   group_id=gid, ticket=ticket)
+
+        # ── New unmanaged/manual positions (log into SCRIBE) ──────
+        for ticket, p in live_unmanaged_positions.items():
+            if ticket in self._known_unmanaged_positions:
+                snap = self._known_unmanaged_positions[ticket]
+                snap["last_profit"] = p.get("profit", 0)
+                snap["current_price"] = p.get("current_price")
+                snap["sl"] = p.get("sl")
+                snap["tp"] = p.get("tp")
+                gid = snap.get("group_id")
+                magic = int(p.get("magic", 0) or 0)
+                if gid is None:
+                    existing = self.scribe.query(
+                        "SELECT trade_group_id FROM trade_positions WHERE ticket=? LIMIT 1",
+                        (ticket,),
+                    )
+                    if existing:
+                        gid = existing[0].get("trade_group_id")
+                    else:
+                        direction = p.get("type", "SELL")
+                        entry_price = p.get("open_price")
+                        lot_size = p.get("lots", 0)
+                        group_data = {
+                            "source": "MANUAL_MT5",
+                            "direction": direction,
+                            "entry_low": entry_price,
+                            "entry_high": entry_price,
+                            "sl": p.get("sl"),
+                            "tp1": p.get("tp"),
+                            "tp2": None,
+                            "tp3": None,
+                            "num_trades": 1,
+                            "lot_per_trade": lot_size,
+                            "risk_pct": 0,
+                            "account_balance": (mt5.get("account") or {}).get("balance"),
+                            "lens_rating": None,
+                            "lens_rsi": None,
+                            "lens_confirmed": 0,
+                        }
+                        gid = self.scribe.log_trade_group(group_data, mode)
+                        self.scribe.update_trade_group_magic(gid, magic)
+                        self.scribe.log_trade_position(gid, {
+                            "ticket": ticket,
+                            "magic": magic,
+                            "direction": direction,
+                            "lot_size": lot_size,
+                            "entry_price": entry_price,
+                            "sl": p.get("sl"),
+                            "tp": p.get("tp"),
+                        }, mode)
+                        self._bridge_activity(
+                            "UNMANAGED_POSITION_OPEN",
+                            reason="Tracked manual/non-FORGE MT5 position",
+                            notes=json.dumps({
+                                "ticket": ticket,
+                                "group_id": gid,
+                                "symbol": p.get("symbol"),
+                                "direction": p.get("type"),
+                                "lots": p.get("lots"),
+                                "open_price": p.get("open_price"),
+                                "sl": p.get("sl"),
+                                "tp": p.get("tp"),
+                                "magic": magic,
+                            }, default=str),
+                        )
+                    snap["group_id"] = gid
+                continue
+            magic = int(p.get("magic", 0) or 0)
+            existing = self.scribe.query(
+                "SELECT trade_group_id FROM trade_positions WHERE ticket=? LIMIT 1",
+                (ticket,),
+            )
+            gid = None
+            if existing:
+                gid = existing[0].get("trade_group_id")
+            else:
+                direction = p.get("type", "SELL")
+                entry_price = p.get("open_price")
+                lot_size = p.get("lots", 0)
+                group_data = {
+                    "source": "MANUAL_MT5",
+                    "direction": direction,
+                    "entry_low": entry_price,
+                    "entry_high": entry_price,
+                    "sl": p.get("sl"),
+                    "tp1": p.get("tp"),
+                    "tp2": None,
+                    "tp3": None,
+                    "num_trades": 1,
+                    "lot_per_trade": lot_size,
+                    "risk_pct": 0,
+                    "account_balance": (mt5.get("account") or {}).get("balance"),
+                    "lens_rating": None,
+                    "lens_rsi": None,
+                    "lens_confirmed": 0,
+                }
+                gid = self.scribe.log_trade_group(group_data, mode)
+                self.scribe.update_trade_group_magic(gid, magic)
+                self.scribe.log_trade_position(gid, {
+                    "ticket": ticket,
+                    "magic": magic,
+                    "direction": direction,
+                    "lot_size": lot_size,
+                    "entry_price": entry_price,
+                    "sl": p.get("sl"),
+                    "tp": p.get("tp"),
+                }, mode)
+            self._known_unmanaged_positions[ticket] = {
+                "group_id": gid,
+                "magic": magic,
+                "symbol": p.get("symbol"),
+                "direction": p.get("type", "SELL"),
+                "open_price": p.get("open_price"),
+                "last_profit": p.get("profit", 0),
+                "current_price": p.get("current_price"),
+                "lot_size": p.get("lots", 0),
+                "sl": p.get("sl"),
+                "tp": p.get("tp"),
+            }
+            self._bridge_activity(
+                "UNMANAGED_POSITION_OPEN",
+                reason="Tracked manual/non-FORGE MT5 position",
+                notes=json.dumps({
+                    "ticket": ticket,
+                    "group_id": gid,
+                    "symbol": p.get("symbol"),
+                    "direction": p.get("type"),
+                    "lots": p.get("lots"),
+                    "open_price": p.get("open_price"),
+                    "sl": p.get("sl"),
+                    "tp": p.get("tp"),
+                    "magic": magic,
+                }, default=str),
+            )
 
         # ── New pending orders ─────────────────────────────────────
         for ticket, o in live_pendings.items():
@@ -658,6 +866,118 @@ class Bridge:
                     pips=pips, pnl=pnl,
                     be_moved=False,
                 )
+
+        # ── Disappeared unmanaged/manual positions → closed ───────
+        unmanaged_closed_tickets = (
+            set(self._known_unmanaged_positions) - set(live_unmanaged_positions)
+        )
+        for ticket in unmanaged_closed_tickets:
+            snap = self._known_unmanaged_positions.pop(ticket)
+            gid = snap.get("group_id")
+            if gid is None:
+                direction_seed = snap.get("direction", "SELL")
+                entry_seed = snap.get("open_price")
+                lot_seed = snap.get("lot_size", 0)
+                group_data = {
+                    "source": "MANUAL_MT5",
+                    "direction": direction_seed,
+                    "entry_low": entry_seed,
+                    "entry_high": entry_seed,
+                    "sl": snap.get("sl"),
+                    "tp1": snap.get("tp"),
+                    "tp2": None,
+                    "tp3": None,
+                    "num_trades": 1,
+                    "lot_per_trade": lot_seed,
+                    "risk_pct": 0,
+                    "account_balance": (mt5.get("account") or {}).get("balance"),
+                    "lens_rating": None,
+                    "lens_rsi": None,
+                    "lens_confirmed": 0,
+                }
+                gid = self.scribe.log_trade_group(group_data, mode)
+                self.scribe.update_trade_group_magic(gid, int(snap.get("magic", 0) or 0))
+                self.scribe.log_trade_position(gid, {
+                    "ticket": ticket,
+                    "magic": int(snap.get("magic", 0) or 0),
+                    "direction": direction_seed,
+                    "lot_size": lot_seed,
+                    "entry_price": entry_seed,
+                    "sl": snap.get("sl"),
+                    "tp": snap.get("tp"),
+                }, mode)
+            pnl = snap.get("last_profit", 0)
+            close_price = snap.get("current_price") or 0
+            open_price = snap.get("open_price") or 0
+            direction = snap.get("direction", "?")
+            sl = snap.get("sl") or 0
+            tp = snap.get("tp") or 0
+            lot_size = snap.get("lot_size", 0)
+            pips = 0.0
+            if open_price and close_price:
+                raw = close_price - open_price
+                if direction == "SELL":
+                    raw = -raw
+                pips = round(raw / 0.01, 1)  # XAUUSD pip
+            close_reason = self._infer_close_reason(
+                close_price, sl, tp, direction, gid
+            )
+            tp_stage = None
+            if close_reason == "TP1_HIT":
+                tp_stage = 1
+            elif close_reason == "TP2_HIT":
+                tp_stage = 2
+            elif close_reason == "TP3_HIT":
+                tp_stage = 3
+            self.scribe.close_trade_position(
+                ticket=ticket,
+                close_price=close_price,
+                close_reason=close_reason,
+                pnl=pnl,
+                pips=pips,
+                tp_stage=tp_stage,
+            )
+            self.scribe.log_trade_closure(
+                ticket=ticket,
+                trade_group_id=gid or 0,
+                direction=direction,
+                lot_size=lot_size,
+                entry_price=open_price,
+                close_price=close_price,
+                sl=sl,
+                tp=tp,
+                close_reason=close_reason,
+                pnl=pnl,
+                pips=pips,
+                session=_session(),
+                mode=mode,
+            )
+            if gid is not None:
+                self.scribe.update_trade_group(
+                    gid,
+                    "CLOSED",
+                    total_pnl=round(pnl, 2),
+                    pips=round(pips, 1),
+                    trades_closed=1,
+                    close_reason=close_reason,
+                )
+            self._bridge_activity(
+                "UNMANAGED_POSITION_CLOSED",
+                reason="Tracked manual/non-FORGE MT5 position closed",
+                notes=json.dumps({
+                    "ticket": ticket,
+                    "group_id": gid,
+                    "symbol": snap.get("symbol"),
+                    "direction": direction,
+                    "lots": lot_size,
+                    "open_price": open_price,
+                    "close_price": close_price,
+                    "pnl": pnl,
+                    "pips": pips,
+                    "close_reason": close_reason,
+                    "magic": snap.get("magic", 0),
+                }, default=str),
+            )
 
         # ── Disappeared pendings → filled or cancelled ────────────
         gone_pendings = set(self._known_pendings) - set(live_pendings)
@@ -797,8 +1117,16 @@ class Bridge:
         else:
             log.info(f"BRIDGE: restored mode '{self._mode}' from previous session")
 
+        pinned = self._pinned_mode()
+        if BRIDGE_PIN_MODE and not pinned:
+            log.warning("BRIDGE_PIN_MODE='%s' invalid; expected one of %s", BRIDGE_PIN_MODE, VALID_MODES)
+        if pinned and self._mode != pinned:
+            log.warning("BRIDGE: mode pin active — forcing mode %s (was %s)", pinned, self._mode)
+            self._mode = pinned
+
         restored = "(restored)" if RESTORE_MODE_ON_RESTART else "(default)"
-        log.info(f"BRIDGE v{VERSION} starting — mode={self._mode} {restored} "
+        pin_note = f" pin={pinned}" if pinned else ""
+        log.info(f"BRIDGE v{VERSION} starting — mode={self._mode} {restored}{pin_note} "
                  f"account={self._broker_info.get('account_type','?')} "
                  f"broker={self._broker_info.get('broker','?')}")
         _cmd_a = os.path.abspath(CMD_FILE_MT5)
@@ -1428,53 +1756,44 @@ class Bridge:
             "entry_high": round(entry + 0.5, 2),
             "sl": sl, "tp1": tp1, "tp2": None,
             "signal_id": None,
-            "source": "SCALPER",
+            "source": "SCALPER_SUBPATH_DIRECT",
         }
         _tlog("SCALPER", "SETUP", f"{direction} @ {entry:.2f} SL={sl} TP1={tp1}")
         account = mt5.get("account", {}) if mt5 else {}
         account["open_groups_count"] = len(self._open_groups)
-        approval = self.aegis.validate(signal, account, price, mt5_data=mt5)
-        if approval.approved:
-            group_data = {**signal, "lot_per_trade": approval.lot_per_trade,
-                          "num_trades": approval.num_trades,
-                          "risk_pct": approval.risk_pct,
-                          "account_balance": account.get("balance",0),
-                          "source": "SCALPER"}
-            gid = self.scribe.log_trade_group(group_data, "SCALPER")
-            magic = FORGE_MAGIC_BASE + gid
-            self.scribe.update_trade_group_magic(gid, magic)
-            self._open_groups[gid] = {**group_data, "magic_number": magic}
-            cmd = {"action":"OPEN_GROUP","group_id":gid,"direction":direction,
-                   "entry_ladder":approval.entry_ladder,
-                   "lot_per_trade":approval.lot_per_trade,
-                   "sl":sl,"tp1":tp1,"tp2":None,"tp3":None,
-                   "tp1_close_pct":TP1_CLOSE_PCT,
-                   "move_be_on_tp1":MOVE_BE_ON_TP1,
-                   "timestamp":_now()}
-            _write_forge_command(cmd)
-            self._bridge_activity(
-                "TRADE_QUEUED",
-                reason="OPEN_GROUP",
-                notes=json.dumps(
-                    {
-                        "source": "SCALPER",
-                        "group_id": gid,
-                        "direction": direction,
-                        "num_trades": approval.num_trades,
-                        "lot_per_trade": approval.lot_per_trade,
-                    },
-                    default=str,
-                ),
-            )
-        else:
-            self._bridge_activity(
-                "TRADE_REJECTED",
-                reason=approval.reject_reason,
-                notes=json.dumps(
-                    {"source": "SCALPER", "direction": direction, "gate": "AEGIS"},
-                    default=str,
-                ),
-            )
+        entry_ladder = _build_entry_ladder(signal["entry_low"], signal["entry_high"], SCALPER_NUM_TRADES)
+        group_data = {**signal, "lot_per_trade": SCALPER_LOT_SIZE,
+                      "num_trades": SCALPER_NUM_TRADES,
+                      "risk_pct": None,
+                      "account_balance": account.get("balance",0),
+                      "source": "SCALPER_SUBPATH_DIRECT"}
+        gid = self.scribe.log_trade_group(group_data, self._effective_mode())
+        magic = FORGE_MAGIC_BASE + gid
+        self.scribe.update_trade_group_magic(gid, magic)
+        self._open_groups[gid] = {**group_data, "magic_number": magic}
+        cmd = {"action":"OPEN_GROUP","group_id":gid,"direction":direction,
+               "entry_ladder":entry_ladder,
+               "lot_per_trade":SCALPER_LOT_SIZE,
+               "sl":sl,"tp1":tp1,"tp2":None,"tp3":None,
+               "tp1_close_pct":TP1_CLOSE_PCT,
+               "move_be_on_tp1":MOVE_BE_ON_TP1,
+               "timestamp":_now()}
+        _write_forge_command(cmd)
+        self._bridge_activity(
+            "TRADE_QUEUED",
+            reason="OPEN_GROUP_SCALPER_SUBPATH_DIRECT",
+            notes=json.dumps(
+                {
+                    "source": "SCALPER_SUBPATH_DIRECT",
+                    "gate": "DIRECT_NO_AEGIS",
+                    "group_id": gid,
+                    "direction": direction,
+                    "num_trades": SCALPER_NUM_TRADES,
+                    "lot_per_trade": SCALPER_LOT_SIZE,
+                },
+                default=str,
+            ),
+        )
 
     # ── DRAWDOWN PROTECTION ─────────────────────────────────
     def _check_drawdown(self, mt5: dict, now: float) -> None:
@@ -2017,7 +2336,22 @@ class Bridge:
             return "WATCH"
         return self._mode
 
-    def _change_mode(self, new_mode: str, triggered_by: str = "USER"):
+    def _change_mode(self, new_mode: str, triggered_by: str = "USER", allow_pin_override: bool = False):
+        pinned = self._pinned_mode()
+        if pinned and not allow_pin_override and new_mode != pinned:
+            log.warning(
+                "BRIDGE: blocked mode change %s -> %s by %s (pin active: %s)",
+                self._mode, new_mode, triggered_by, pinned
+            )
+            self.scribe.log_system_event(
+                "MODE_CHANGE_BLOCKED",
+                prev_mode=self._mode,
+                new_mode=new_mode,
+                triggered_by=triggered_by,
+                reason=f"BRIDGE_PIN_MODE={pinned}",
+                session=_session(),
+            )
+            return
         if new_mode == self._mode:
             return
         prev = self._mode
@@ -2067,6 +2401,7 @@ class Bridge:
 
     def _write_config(self):
         """Write config.json for FORGE to read (and mirror next to MT5_CMD_FILE_MIRROR if set)."""
+        scalper_mode = _resolve_forge_scalper_mode(self._mode)
         body = {
             "mode":            self._mode,
             "effective_mode":  self._effective_mode(),
@@ -2074,7 +2409,7 @@ class Bridge:
             "tp1_close_pct":   TP1_CLOSE_PCT,
             "tp2_close_pct":   TP2_CLOSE_PCT,
             "move_be_on_tp1":  MOVE_BE_ON_TP1,
-            "scalper_mode":    FORGE_SCALPER_MODE,
+            "scalper_mode":    scalper_mode,
             "timestamp":       _now(),
         }
         for pth in _forge_config_targets():
@@ -2083,7 +2418,6 @@ class Bridge:
     def _write_status(self, mt5: dict = None, lens_snap=None):
         """Write status.json for ATHENA + AURUM."""
         acc = (mt5 or {}).get("account", {})
-        sent = _read_json(SENTINEL_FILE) if not hasattr(self, '_sent_cache') else {}
         _now_ts = time.time()
         _mt5_age = _now_ts - (mt5 or {}).get("timestamp_unix", 0) if mt5 else 9999
         _mt5_fresh = bool(mt5 and _mt5_age < MT5_STALE_SEC)

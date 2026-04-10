@@ -819,7 +819,7 @@ void WriteMarketData() {
    j += "\"open_positions_count\":" + IntegerToString(PositionsTotal()) + ",";
    double fp = 0;
    for(int i=0;i<PositionsTotal();i++) {
-      if(g_pos.SelectByIndex(i) && ChartSymbolMatches(g_pos.Symbol()))
+      if(g_pos.SelectByIndex(i))
          fp += g_pos.Profit() + g_pos.Swap() + g_pos.Commission();
    }
    j += "\"total_floating_pnl\":" + DoubleToString(fp,2) + ",";
@@ -852,14 +852,20 @@ void WriteMarketData() {
    for(int ti = 0; ti < 3; ti++) {
       j += "\"indicators_" + g_mtf[ti].label + "\":" + WriteMTFBlock(ti) + ",";
    }
-   // Open positions
+   // Open positions: ALL account positions (not chart-symbol filtered).
+   // Include forge_managed so BRIDGE/ATHENA can distinguish FORGE vs manual.
    j += "\"open_positions\":[";
    bool first = true;
+   int posForge = 0;
    for(int i=0;i<PositionsTotal();i++) {
-      if(!g_pos.SelectByIndex(i) || !ChartSymbolMatches(g_pos.Symbol())) continue;
+      if(!g_pos.SelectByIndex(i)) continue;
+      int pm = (int)g_pos.Magic();
+      bool forgeManaged = (pm >= MagicNumber && pm < MagicNumber + 10000);
+      if(forgeManaged) posForge++;
       if(!first) j += ","; first=false;
       j += "{";
       j += "\"ticket\":"       + IntegerToString(g_pos.Ticket()) + ",";
+      j += "\"symbol\":\""     + JsonEscape(g_pos.Symbol()) + "\",";
       j += "\"type\":\""       + (g_pos.PositionType()==POSITION_TYPE_BUY?"BUY":"SELL") + "\",";
       j += "\"lots\":"         + DoubleToString(g_pos.Volume(),2) + ",";
       j += "\"open_price\":"   + DoubleToString(g_pos.PriceOpen(),2) + ",";
@@ -867,10 +873,12 @@ void WriteMarketData() {
       j += "\"sl\":"           + DoubleToString(g_pos.StopLoss(),2) + ",";
       j += "\"tp\":"           + DoubleToString(g_pos.TakeProfit(),2) + ",";
       j += "\"profit\":"       + DoubleToString(g_pos.Profit()+g_pos.Swap()+g_pos.Commission(),2) + ",";
-      j += "\"magic\":"        + IntegerToString(g_pos.Magic());
+      j += "\"magic\":"        + IntegerToString(pm) + ",";
+      j += "\"forge_managed\":";
+      j += forgeManaged ? "true" : "false";
       j += "}";
    }
-   j += "],";
+   j += "],\"open_positions_forge_count\":" + IntegerToString(posForge) + ",";
    // Pending orders: ALL limits/stops on this chart symbol (ATHENA). Previously we filtered
    // by FORGE magic only — that hid broker magic=0 or non-standard magics from the dashboard.
    j += "\"pending_orders\":[";
