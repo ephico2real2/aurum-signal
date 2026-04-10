@@ -72,6 +72,10 @@ In all these cases, FORGE receives `effective_mode=WATCH`; native scalper setup 
   - `forge_managed=true`: normal FORGE strategy lifecycle.
   - `forge_managed=false`: unmanaged/manual lifecycle.
 - Unmanaged/manual positions are persisted in SCRIBE as synthetic groups (`trade_groups.source='MANUAL_MT5'`) and audited with `UNMANAGED_POSITION_OPEN` / `UNMANAGED_POSITION_CLOSED`.
+## Sydney kill-zone and daily open alert
+- BRIDGE session logic now emits a distinct `SYDNEY` session label using `Australia/Sydney` local hours (`SESSION_SYDNEY_LOCAL_START/END`), so DST shifts are handled automatically.
+- Daily Sydney-open alert is also DST-aware and fires once per Sydney local date (`SYDNEY_OPEN_ALERT_ENABLED`).
+- Audit event: `SYDNEY_OPEN_ALERT` in `system_events`.
 
 ## Per-mode ASCII diagrams
 ### OFF mode

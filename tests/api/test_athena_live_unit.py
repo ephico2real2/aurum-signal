@@ -20,7 +20,7 @@ def test_api_live_has_execution_and_tradingview():
     assert "mt5_quote_stale" in d
     assert "stale" in d["execution"] and "usable" in d["execution"]
     assert d.get("session_utc") in (
-        "ASIAN", "LONDON", "LONDON_NY", "NEW_YORK", "OFF_HOURS",
+        "SYDNEY", "ASIAN", "LONDON", "LONDON_NY", "NEW_YORK", "OFF_HOURS",
     )
     ag = d.get("aegis") or {}
     assert ag.get("pnl_day_reset_hour_utc") in range(24)

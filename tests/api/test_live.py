@@ -94,3 +94,9 @@ class TestLiveEndpoint:
     def test_live_performance_has_fields(self, live_data):
         perf = live_data.get("performance", {})
         assert isinstance(perf, dict)
+
+    def test_live_session_utc_valid(self, live_data):
+        valid = {"SYDNEY", "ASIAN", "LONDON", "LONDON_NY", "NEW_YORK", "OFF_HOURS"}
+        su = live_data.get("session_utc")
+        if su is not None:
+            assert su in valid, f"Unexpected session_utc: {su}"

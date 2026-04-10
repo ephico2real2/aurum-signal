@@ -19,7 +19,7 @@ from listener    import Listener
 from aurum       import get_aurum
 from reconciler  import get_reconciler
 from status_report import report_component_status
-from trading_session import get_trading_session_utc
+from trading_session import get_trading_session_utc, sydney_open_alert_info
 
 log = logging.getLogger("bridge")
 
@@ -101,6 +101,7 @@ SENTINEL_OVERRIDE_DURATION = int(os.environ.get("SENTINEL_OVERRIDE_DURATION_SEC"
 
 # Native scalper mode (passed to FORGE via config.json)
 FORGE_SCALPER_MODE = os.environ.get("FORGE_SCALPER_MODE", "NONE").upper()
+SYDNEY_OPEN_ALERT_ENABLED = os.environ.get("SYDNEY_OPEN_ALERT_ENABLED", "true").lower() == "true"
 
 # Drawdown protection
 DD_EQUITY_CLOSE_ALL_PCT  = float(os.environ.get("DD_EQUITY_CLOSE_ALL_PCT",  "3.0"))
@@ -308,6 +309,7 @@ class Bridge:
         self._last_recon_ts      = 0
         self._open_groups        = {}
         self._last_auto_scalper_ts  = 0
+        self._last_sydney_open_alert_key = None
         self._sentinel_user_override = False   # user manually bypassed sentinel
         self._sentinel_override_until = 0      # auto-revert timestamp
         # Drawdown protection state
@@ -1281,6 +1283,7 @@ class Bridge:
         new_session = _session()
         if new_session != self._current_session:
             self._on_session_change(new_session, mt5)
+        self._check_sydney_open_alert()
 
         # ── 4. BROKER INFO from FORGE ──────────────────────────────
         broker_info = _read_json(BROKER_INFO_FILE)
@@ -1350,6 +1353,35 @@ class Bridge:
 
         # ── 7. Update status ──────────────────────────────────────
         self._write_status(mt5, lens_snap)
+
+    def _check_sydney_open_alert(self):
+        if not SYDNEY_OPEN_ALERT_ENABLED:
+            return
+        info = sydney_open_alert_info()
+        if not info.get("should_fire"):
+            return
+        key = info.get("alert_key")
+        if key == self._last_sydney_open_alert_key:
+            return
+        self._last_sydney_open_alert_key = key
+        self.scribe.log_system_event(
+            "SYDNEY_OPEN_ALERT",
+            triggered_by="BRIDGE",
+            reason="daily_sydney_open",
+            session=self._current_session,
+            notes=json.dumps(
+                {
+                    "sydney_local_now": info.get("sydney_now"),
+                    "sydney_open_utc": info.get("open_utc"),
+                },
+                default=str,
+            ),
+        )
+        self.herald.send(
+            "🦘 <b>SYDNEY OPEN</b>\n"
+            "Liquidity transition active — watch for Asian-session sweep behavior on XAUUSD.\n"
+            f"Sydney open (UTC): <code>{info.get('open_utc')}</code>"
+        )
 
     def _on_session_change(self, new_session: str, mt5: dict):
         """Called whenever the trading session changes."""
