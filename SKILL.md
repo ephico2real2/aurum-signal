@@ -119,11 +119,15 @@ BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supp
 - **CLOSE_LOSING** → close only positions in loss
 
 **Modify commands:**
-- **MODIFY_SL** → change SL on all positions + pending orders: `{"action":"MODIFY_SL","sl":4660.00}`
-- **MODIFY_TP** → change TP on all positions + pending orders: `{"action":"MODIFY_TP","tp":4648.50}`
+- **MODIFY_SL** → change SL globally or per-group:
+  - Global: `{\"action\":\"MODIFY_SL\",\"sl\":4660.00}`
+  - Per-group: `{\"action\":\"MODIFY_SL\",\"sl\":4660.00,\"group_id\":15}`
+- **MODIFY_TP** → change TP globally or per-group:
+  - Global: `{\"action\":\"MODIFY_TP\",\"tp\":4648.50}`
+  - Per-group: `{\"action\":\"MODIFY_TP\",\"tp\":4648.50,\"group_id\":15}`
 - **MOVE_BE** → move all SL to breakeven (entry price): `{"action":"MOVE_BE"}`
 
-**Note on MODIFY_SL/TP scope:** FORGE v1.3.0 applies MODIFY_SL and MODIFY_TP to **all** EA positions (no per-group filtering). If you include `group_id`, BRIDGE passes the magic number in the JSON, but FORGE currently ignores it and modifies all. Per-group SL/TP modification requires a FORGE update.
+**Note on MODIFY_SL/TP scope:** When `group_id` is present, BRIDGE resolves the group's magic and FORGE applies MODIFY_SL/MODIFY_TP only to that group. If `group_id` is omitted, the modify action remains global by design.
 
 **Mode control:**
 - **MODE_CHANGE** → operating mode (also triggered by exact phrases like *Switching to SCALPER mode.*)
@@ -225,7 +229,7 @@ Example manual scalp (after user confirms; include in a single \`\`\`json fence 
 {"action":"OPEN_GROUP","direction":"SELL","entry_low":4610.7,"entry_high":4610.8,"sl":4614.0,"tp1":4607.0,"tp2":4604.0,"lot_per_trade":0.01,"reason":"test","timestamp":"..."}
 ```
 
-`CLOSE_GROUP` / `MOVE_BE_ALL` in management flows use **MT5/command.json** from BRIDGE signal paths — not wired from `aurum_cmd.json` yet.
+All management actions above are wired from `aurum_cmd.json` → BRIDGE → `MT5/command.json`.
 
 ### 6. Evaluate Signal Quality
 Given a raw signal text, I evaluate:

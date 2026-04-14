@@ -21,7 +21,8 @@
     "broker": { "type": "string" },
     "account": { "type": "object" },
     "open_groups": { "type": "integer" },
-    "lens": { "type": "object" }
+    "lens": { "type": "object" },
+    "regime": { "type": "object" }
   },
   "additionalProperties": true
 }

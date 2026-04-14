@@ -173,7 +173,7 @@ Treat this as market-state behavior, not automatically as FORGE/BRIDGE failure.
 BRIDGE tracks individual position fills and closes by diffing `open_positions` and `pending_orders` against SCRIBE each tick.
 - `forge_managed=true` positions follow standard strategy lifecycle:
   - New tickets → `log_trade_position()`
-  - Disappeared tickets → `close_trade_position()` with inferred close reason
+  - Disappeared tickets → `close_trade_position()` using broker close-deal metadata first (`recent_closed_deals`) and SL/TP inference fallback when broker hints are unavailable
   - Group totals auto-rollup when all exposure is gone
 - `forge_managed=false` positions (manual/non-FORGE) are still logged:
   - synthetic `trade_groups.source='MANUAL_MT5'`

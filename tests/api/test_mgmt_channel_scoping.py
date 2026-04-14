@@ -195,6 +195,25 @@ def test_channel_close_all_with_group_id_scopes_to_group(monkeypatch, tmp_path):
     stub.scribe.update_trade_group.assert_called_once()
     assert stub.scribe.update_trade_group.call_args[0][0] == 10
 
+@pytest.mark.unit
+def test_channel_modify_tp_with_group_id_scopes_to_group_magic(monkeypatch, tmp_path):
+    """LISTENER MODIFY_TP with group_id should emit magic-scoped FORGE command."""
+    groups = {
+        10: {"source": "SIGNAL", "direction": "BUY"},
+        11: {"source": "AURUM", "direction": "SELL"},
+    }
+    stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, groups)
+    _write_mgmt(mgmt_path, "MODIFY_TP", source="LISTENER", group_id=10, tp=4755.3)
+
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        bm.Bridge._process_mgmt_command(stub, {})
+
+    mock_forge.assert_called_once()
+    cmd = mock_forge.call_args[0][0]
+    assert cmd["action"] == "MODIFY_TP"
+    assert cmd["tp"] == 4755.3
+    assert cmd["magic"] == 202411
+
 
 # ── _resolve_channel_group finds the right group ─────────────────
 

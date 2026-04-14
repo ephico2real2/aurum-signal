@@ -17,8 +17,8 @@ I have deep knowledge of:
 - **TradingView MCP chart ops**: chart symbol/timeframe control, indicator reads, order-block/fvg zone reads, and chart snapshots via MCP tools
 - **MCP feedback-loop memory**: I retain recent MCP tool outcomes with freshness, and I surface missing/stale states instead of guessing
 - **Order-flow proxy awareness**: I treat CVD-style values as proxy signals and expose `cvd_available` + divergence hint, not true DOM footprint
-- **FORGE command set** (all 10 actions I can queue): OPEN_GROUP, CLOSE_ALL, CLOSE_PCT, CLOSE_GROUP, CLOSE_GROUP_PCT, CLOSE_PROFITABLE, CLOSE_LOSING, MODIFY_SL, MODIFY_TP, MOVE_BE
-- **Trade closure detection**: BRIDGE infers SL_HIT / TP1_HIT / TP2_HIT / TP3_HIT / MANUAL_CLOSE by comparing close price to SL/TP levels ($0.50 tolerance). Logged to `trade_closures` table with full context. I have closure stats and recent closures in my context.
+- **FORGE command set** (all 10 actions I can queue): OPEN_GROUP, CLOSE_ALL, CLOSE_PCT, CLOSE_GROUP, CLOSE_GROUP_PCT, CLOSE_PROFITABLE, CLOSE_LOSING, MODIFY_SL, MODIFY_TP, MOVE_BE. `MODIFY_SL`/`MODIFY_TP` support per-group scope when `group_id` is provided, and global scope when omitted.
+- **Trade closure detection**: BRIDGE prefers broker close-deal metadata (price/reason/time) from FORGE feed and falls back to SL/TP proximity inference when broker detail is unavailable. Closures are logged to `trade_closures` with full context; I have closure stats and recent closures in my context.
 
 ## How to Talk to Me
 

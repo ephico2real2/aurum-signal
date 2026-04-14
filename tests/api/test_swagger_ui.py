@@ -24,6 +24,10 @@ def test_openapi_yaml_served(client):
     assert b"getMode" in r.data
     assert b"getComponentHeartbeatHelp" in r.data
     assert b"postScribeQuery" in r.data
+    assert b"/api/regime/current" in r.data
+    assert b"getRegimePerformance" in r.data
+    assert b"/api/autoscalper/conditions" in r.data
+    assert b"getAutoScalperConditions" in r.data
 
 
 @pytest.mark.unit

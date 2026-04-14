@@ -80,7 +80,31 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     pending_entry_threshold_points REAL,
     trend_strength_atr_threshold REAL,
     breakout_buffer_points REAL,
+    regime_label TEXT,
+    regime_confidence REAL,
+    regime_model TEXT,
     outcome_label TEXT, label_filled INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS market_regimes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL,
+    mode            TEXT,
+    session         TEXT,
+    symbol          TEXT DEFAULT 'XAUUSD',
+    regime_label    TEXT NOT NULL,
+    confidence      REAL,
+    posterior_json  TEXT,
+    model_name      TEXT,
+    model_version   TEXT,
+    stale           INTEGER DEFAULT 0,
+    age_sec         REAL,
+    fallback_reason TEXT,
+    entry_mode      TEXT,
+    apply_entry_policy INTEGER DEFAULT 0,
+    entry_gate_reason TEXT,
+    feature_hash    TEXT,
+    feature_json    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS signals_received (
@@ -101,6 +125,12 @@ CREATE TABLE IF NOT EXISTS signals_received (
     signal_source_type TEXT DEFAULT 'TEXT',
     vision_extraction_id INTEGER,
     vision_confidence TEXT,
+    regime_label    TEXT,
+    regime_confidence REAL,
+    regime_model    TEXT,
+    regime_entry_mode TEXT,
+    regime_policy   TEXT,
+    regime_fallback_reason TEXT,
     action_taken   TEXT,
     skip_reason    TEXT,
     trade_group_id INTEGER
@@ -128,6 +158,12 @@ CREATE TABLE IF NOT EXISTS trade_groups (
     pending_entry_threshold_points REAL,
     trend_strength_atr_threshold REAL,
     breakout_buffer_points REAL,
+    regime_label    TEXT,
+    regime_confidence REAL,
+    regime_model    TEXT,
+    regime_entry_mode TEXT,
+    regime_policy   TEXT,
+    regime_fallback_reason TEXT,
     magic_number   INTEGER,
     status         TEXT DEFAULT 'OPEN',
     closed_at      TEXT,
@@ -272,6 +308,28 @@ class Scribe:
 
     def _migrate(self, conn):
         """Additive migrations -- safe to re-run."""
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS market_regimes (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp       TEXT NOT NULL,
+                mode            TEXT,
+                session         TEXT,
+                symbol          TEXT DEFAULT 'XAUUSD',
+                regime_label    TEXT NOT NULL,
+                confidence      REAL,
+                posterior_json  TEXT,
+                model_name      TEXT,
+                model_version   TEXT,
+                stale           INTEGER DEFAULT 0,
+                age_sec         REAL,
+                fallback_reason TEXT,
+                entry_mode      TEXT,
+                apply_entry_policy INTEGER DEFAULT 0,
+                entry_gate_reason TEXT,
+                feature_hash    TEXT,
+                feature_json    TEXT
+            )"""
+        )
         # v1.2.4+: magic_number column on trade_groups
         cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
         if "magic_number" not in cols:
@@ -287,6 +345,24 @@ class Scribe:
         if "vision_confidence" not in sig_cols:
             conn.execute("ALTER TABLE signals_received ADD COLUMN vision_confidence TEXT")
             log.info("SCRIBE migration: added vision_confidence to signals_received")
+        if "regime_label" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN regime_label TEXT")
+            log.info("SCRIBE migration: added regime_label to signals_received")
+        if "regime_confidence" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN regime_confidence REAL")
+            log.info("SCRIBE migration: added regime_confidence to signals_received")
+        if "regime_model" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN regime_model TEXT")
+            log.info("SCRIBE migration: added regime_model to signals_received")
+        if "regime_entry_mode" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN regime_entry_mode TEXT")
+            log.info("SCRIBE migration: added regime_entry_mode to signals_received")
+        if "regime_policy" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN regime_policy TEXT")
+            log.info("SCRIBE migration: added regime_policy to signals_received")
+        if "regime_fallback_reason" not in sig_cols:
+            conn.execute("ALTER TABLE signals_received ADD COLUMN regime_fallback_reason TEXT")
+            log.info("SCRIBE migration: added regime_fallback_reason to signals_received")
         ms_cols = [r[1] for r in conn.execute("PRAGMA table_info(market_snapshots)").fetchall()]
         if "pending_entry_threshold_points" not in ms_cols:
             conn.execute("ALTER TABLE market_snapshots ADD COLUMN pending_entry_threshold_points REAL")
@@ -297,6 +373,15 @@ class Scribe:
         if "breakout_buffer_points" not in ms_cols:
             conn.execute("ALTER TABLE market_snapshots ADD COLUMN breakout_buffer_points REAL")
             log.info("SCRIBE migration: added breakout_buffer_points to market_snapshots")
+        if "regime_label" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN regime_label TEXT")
+            log.info("SCRIBE migration: added regime_label to market_snapshots")
+        if "regime_confidence" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN regime_confidence REAL")
+            log.info("SCRIBE migration: added regime_confidence to market_snapshots")
+        if "regime_model" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN regime_model TEXT")
+            log.info("SCRIBE migration: added regime_model to market_snapshots")
         tg_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
         if "pending_entry_threshold_points" not in tg_cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN pending_entry_threshold_points REAL")
@@ -307,6 +392,24 @@ class Scribe:
         if "breakout_buffer_points" not in tg_cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN breakout_buffer_points REAL")
             log.info("SCRIBE migration: added breakout_buffer_points to trade_groups")
+        if "regime_label" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN regime_label TEXT")
+            log.info("SCRIBE migration: added regime_label to trade_groups")
+        if "regime_confidence" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN regime_confidence REAL")
+            log.info("SCRIBE migration: added regime_confidence to trade_groups")
+        if "regime_model" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN regime_model TEXT")
+            log.info("SCRIBE migration: added regime_model to trade_groups")
+        if "regime_entry_mode" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN regime_entry_mode TEXT")
+            log.info("SCRIBE migration: added regime_entry_mode to trade_groups")
+        if "regime_policy" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN regime_policy TEXT")
+            log.info("SCRIBE migration: added regime_policy to trade_groups")
+        if "regime_fallback_reason" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN regime_fallback_reason TEXT")
+            log.info("SCRIBE migration: added regime_fallback_reason to trade_groups")
 
     @staticmethod
     def _now() -> str:
@@ -364,8 +467,9 @@ class Scribe:
                  open_m1,high_m1,low_m1,close_m1,volume_m1,
                  rsi_14,macd_hist,ema_20,ema_50,bb_upper,bb_mid,bb_lower,bb_width,
                  adx,tv_rating,timeframe,session,news_guard_active,
-                 pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points,
+                 regime_label,regime_confidence,regime_model)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, source,
                  data.get("symbol","XAUUSD"),
                  data.get("bid"), data.get("ask"), data.get("spread"),
@@ -380,7 +484,44 @@ class Scribe:
                  data.get("session"), int(data.get("news_guard",False)),
                  data.get("pending_entry_threshold_points"),
                  data.get("trend_strength_atr_threshold"),
-                 data.get("breakout_buffer_points")))
+                 data.get("breakout_buffer_points"),
+                 data.get("regime_label"),
+                 data.get("regime_confidence"),
+                 data.get("regime_model")))
+
+    def log_market_regime(self, snapshot: dict, mode: str = None, session: str = None) -> int:
+        if not snapshot:
+            return 0
+        posterior_json = json.dumps(snapshot.get("posterior") or {}, default=str)
+        feature_json = json.dumps(snapshot.get("features") or {}, default=str)
+        with self._conn() as c:
+            cur = c.execute(
+                """INSERT INTO market_regimes
+                (timestamp,mode,session,symbol,regime_label,confidence,posterior_json,
+                 model_name,model_version,stale,age_sec,fallback_reason,
+                 entry_mode,apply_entry_policy,entry_gate_reason,feature_hash,feature_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    snapshot.get("timestamp") or self._now(),
+                    mode,
+                    session,
+                    snapshot.get("symbol", "XAUUSD"),
+                    snapshot.get("label", "UNKNOWN"),
+                    snapshot.get("confidence"),
+                    posterior_json,
+                    snapshot.get("model_name"),
+                    snapshot.get("model_version"),
+                    int(bool(snapshot.get("stale"))),
+                    snapshot.get("age_sec"),
+                    snapshot.get("fallback_reason"),
+                    snapshot.get("entry_mode"),
+                    int(bool(snapshot.get("apply_entry_policy"))),
+                    snapshot.get("entry_gate_reason"),
+                    snapshot.get("feature_hash"),
+                    feature_json,
+                ),
+            )
+            return cur.lastrowid
 
     def log_signal(self, raw: str, parsed: dict, mode: str,
                    channel: str = None, msg_id: int = None,
@@ -418,6 +559,31 @@ class Scribe:
             c.execute("""UPDATE signals_received
                 SET action_taken=?, skip_reason=?, trade_group_id=?
                 WHERE id=?""", (action, skip_reason, group_id, signal_id))
+
+    def update_signal_regime(self, signal_id: int, metadata: dict):
+        if not signal_id:
+            return
+        md = metadata or {}
+        with self._conn() as c:
+            c.execute(
+                """UPDATE signals_received
+                   SET regime_label=?,
+                       regime_confidence=?,
+                       regime_model=?,
+                       regime_entry_mode=?,
+                       regime_policy=?,
+                       regime_fallback_reason=?
+                   WHERE id=?""",
+                (
+                    md.get("label"),
+                    md.get("confidence"),
+                    md.get("model_name"),
+                    md.get("entry_mode"),
+                    md.get("regime_policy") or md.get("policy_name"),
+                    md.get("fallback_reason") or md.get("entry_gate_reason"),
+                    signal_id,
+                ),
+            )
 
     def log_vision_extraction(self, data: dict) -> int:
         structured = data.get("structured_data")
@@ -462,8 +628,9 @@ class Scribe:
                  num_trades,lot_per_trade,risk_pct,account_balance,
                  lens_rating,lens_rsi,lens_confirmed,
                  pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points,
+                 regime_label,regime_confidence,regime_model,regime_entry_mode,regime_policy,regime_fallback_reason,
                  magic_number,trades_opened,trades_closed)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, data.get("source","SIGNAL"),
                  data.get("signal_id"), data.get("direction"),
                  data.get("entry_low"), data.get("entry_high"),
@@ -475,6 +642,12 @@ class Scribe:
                  data.get("pending_entry_threshold_points"),
                  data.get("trend_strength_atr_threshold"),
                  data.get("breakout_buffer_points"),
+                 data.get("regime_label"),
+                 data.get("regime_confidence"),
+                 data.get("regime_model"),
+                 data.get("regime_entry_mode"),
+                 data.get("regime_policy"),
+                 data.get("regime_fallback_reason"),
                  magic_number,
                  data.get("num_trades",8), 0))
             return cur.lastrowid
@@ -529,16 +702,43 @@ class Scribe:
             elif tp is not None:
                 c.execute("UPDATE trade_positions SET tp=? WHERE ticket=? AND status='OPEN'",
                           (tp, ticket))
+    def update_group_sl_tp(self, group_id: int, sl: float = None, tp: float = None):
+        """Sync group-level and open position SL/TP for a specific trade group."""
+        if sl is None and tp is None:
+            return
+        with self._conn() as c:
+            if sl is not None:
+                c.execute(
+                    "UPDATE trade_groups SET sl=? WHERE id=?",
+                    (sl, group_id),
+                )
+                c.execute(
+                    "UPDATE trade_positions SET sl=? WHERE trade_group_id=? AND status='OPEN'",
+                    (sl, group_id),
+                )
+            if tp is not None:
+                c.execute(
+                    """UPDATE trade_groups
+                       SET tp1=?,
+                           tp2=CASE WHEN tp2 IS NULL OR tp2=0 THEN tp2 ELSE ? END,
+                           tp3=CASE WHEN tp3 IS NULL OR tp3=0 THEN tp3 ELSE ? END
+                       WHERE id=?""",
+                    (tp, tp, tp, group_id),
+                )
+                c.execute(
+                    "UPDATE trade_positions SET tp=? WHERE trade_group_id=? AND status='OPEN'",
+                    (tp, group_id),
+                )
 
     def close_trade_position(self, ticket: int, close_price: float,
                               close_reason: str, pnl: float, pips: float,
-                              tp_stage: int = None):
+                              tp_stage: int = None, close_time: str = None):
         with self._conn() as c:
             c.execute("""UPDATE trade_positions
                 SET status='CLOSED', close_price=?, close_time=?,
                     close_reason=?, pnl=?, pips=?, tp_stage=?
                 WHERE ticket=?""",
-                (close_price, self._now(), close_reason, pnl, pips, tp_stage, ticket))
+                (close_price, close_time or self._now(), close_reason, pnl, pips, tp_stage, ticket))
 
     def log_trade_closure(self, ticket: int, trade_group_id: int,
                           direction: str, lot_size: float,
@@ -604,6 +804,136 @@ class Scribe:
                 "avg_pips": round(row[8] or 0, 1),
                 "avg_duration_sec": round(row[9] or 0, 0),
             }
+
+    @staticmethod
+    def _decode_regime_row(row: dict) -> dict:
+        out = dict(row or {})
+        if "label" not in out and "regime_label" in out:
+            out["label"] = out.get("regime_label")
+        if "confidence" not in out and "regime_confidence" in out:
+            out["confidence"] = out.get("regime_confidence")
+        try:
+            out["posterior"] = json.loads(out.get("posterior_json") or "{}")
+        except Exception:
+            out["posterior"] = {}
+        try:
+            out["features"] = json.loads(out.get("feature_json") or "{}")
+        except Exception:
+            out["features"] = {}
+        ts = out.get("timestamp")
+        age = None
+        if ts:
+            try:
+                dt = datetime.fromisoformat(str(ts))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - dt).total_seconds()
+            except Exception:
+                age = None
+        out["age_sec"] = round(age, 1) if age is not None else out.get("age_sec")
+        return out
+
+    def get_latest_regime(self) -> dict:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM market_regimes ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return self._decode_regime_row(dict(row)) if row else {}
+
+    def get_regime_history(self, limit: int = 50, hours: int = 24) -> list:
+        lim = max(1, min(int(limit), 2000))
+        hrs = max(1, min(int(hours), 24 * 30))
+        with self._conn() as c:
+            rows = c.execute(
+                """SELECT * FROM market_regimes
+                   WHERE timestamp >= datetime('now', ?)
+                   ORDER BY id DESC LIMIT ?""",
+                (f"-{hrs} hours", lim),
+            ).fetchall()
+            return [self._decode_regime_row(dict(r)) for r in rows]
+
+    def get_regime_transitions(self, hours: int = 24, limit: int = 20) -> list:
+        hrs = max(1, min(int(hours), 24 * 30))
+        lim = max(1, min(int(limit), 500))
+        with self._conn() as c:
+            rows = c.execute(
+                """SELECT timestamp, regime_label, confidence, model_name, stale
+                   FROM market_regimes
+                   WHERE timestamp >= datetime('now', ?)
+                   ORDER BY timestamp ASC""",
+                (f"-{hrs} hours",),
+            ).fetchall()
+        transitions: list[dict] = []
+        prev_label = None
+        for r in rows:
+            cur = r["regime_label"]
+            if prev_label is not None and cur != prev_label:
+                transitions.append(
+                    {
+                        "timestamp": r["timestamp"],
+                        "from": prev_label,
+                        "to": cur,
+                        "confidence": r["confidence"],
+                        "model_name": r["model_name"],
+                        "stale": bool(r["stale"]),
+                    }
+                )
+            prev_label = cur
+        return list(reversed(transitions[-lim:]))
+
+    def get_regime_performance(self, days: int = 30) -> dict:
+        d = max(1, min(int(days), 366))
+        with self._conn() as c:
+            rows = c.execute(
+                """SELECT COALESCE(regime_label,'UNKNOWN') AS regime_label,
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN total_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                          SUM(CASE WHEN total_pnl < 0 THEN 1 ELSE 0 END) AS losses,
+                          COALESCE(SUM(total_pnl), 0) AS total_pnl,
+                          COALESCE(AVG(total_pnl), 0) AS avg_pnl,
+                          COALESCE(AVG(pips_captured), 0) AS avg_pips
+                   FROM trade_groups
+                   WHERE status NOT IN ('OPEN','PARTIAL')
+                     AND closed_at IS NOT NULL
+                     AND closed_at >= datetime('now', ?)
+                   GROUP BY COALESCE(regime_label,'UNKNOWN')
+                   ORDER BY total DESC""",
+                (f"-{d} days",),
+            ).fetchall()
+            fb = c.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN fallback_reason IS NOT NULL
+                                   AND TRIM(fallback_reason) <> ''
+                                   THEN 1 ELSE 0 END) AS fallback_count
+                   FROM market_regimes
+                   WHERE timestamp >= datetime('now', ?)""",
+                (f"-{d} days",),
+            ).fetchone()
+        by_regime = []
+        for r in rows:
+            total = int(r["total"] or 0)
+            wins = int(r["wins"] or 0)
+            by_regime.append(
+                {
+                    "regime_label": r["regime_label"],
+                    "total": total,
+                    "wins": wins,
+                    "losses": int(r["losses"] or 0),
+                    "win_rate": round((wins / total) * 100, 1) if total else None,
+                    "total_pnl": round(r["total_pnl"] or 0, 2),
+                    "avg_pnl": round(r["avg_pnl"] or 0, 2),
+                    "avg_pips": round(r["avg_pips"] or 0, 1),
+                }
+            )
+        total_snaps = int((fb["total"] if fb else 0) or 0)
+        fallback_count = int((fb["fallback_count"] if fb else 0) or 0)
+        return {
+            "days": d,
+            "by_regime": by_regime,
+            "snapshot_count": total_snaps,
+            "fallback_count": fallback_count,
+            "fallback_rate": round((fallback_count / total_snaps) * 100, 1) if total_snaps else 0.0,
+        }
 
     def get_open_positions_by_group(self, group_id: int) -> list:
         """Return all OPEN positions for a given trade group."""

@@ -7,7 +7,7 @@ Parses every message with Claude API — no brittle regex.
 Writes parsed_signal.json and management_cmd.json for BRIDGE.
 """
 
-import os, json, logging, asyncio, tempfile, shutil, re
+import os, json, logging, asyncio, tempfile, shutil, re, unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,13 +50,59 @@ LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR = (
     if os.path.isabs(_LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR_RAW)
     else os.path.join(os.path.dirname(os.path.abspath(__file__)), _LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR_RAW)
 )
-_raw_trade_rooms = [
-    r.strip() for r in os.environ.get("SIGNAL_TRADE_ROOMS", "").split(",") if r.strip()
-]
-SIGNAL_TRADE_ROOMS = {r.lower() for r in _raw_trade_rooms}
+
+
+def _normalize_allowlist_token(value: str) -> str:
+    value = unicodedata.normalize("NFKC", value or "")
+    value = re.sub(r"\s+", " ", value).strip().lower()
+    return value
+
+
+def _parse_signal_trade_rooms() -> tuple[set[str], str]:
+    """
+    Parse trade-room allowlist from env vars.
+    Backward compatibility:
+      - SIGNAL_TRADE_ROOMS (legacy/current)
+      - ACTIVE_SIGNAL_TRADE_ROOMS (alias)
+    If both are set, union both lists.
+    """
+    env_sources = (
+        ("SIGNAL_TRADE_ROOMS", os.environ.get("SIGNAL_TRADE_ROOMS", "")),
+        ("ACTIVE_SIGNAL_TRADE_ROOMS", os.environ.get("ACTIVE_SIGNAL_TRADE_ROOMS", "")),
+    )
+    rooms: set[str] = set()
+    used_sources: list[str] = []
+    for source_name, raw_value in env_sources:
+        if not raw_value or not raw_value.strip():
+            continue
+        tokens = [
+            _normalize_allowlist_token(token)
+            for token in str(raw_value).split(",")
+            if token and token.strip()
+        ]
+        if tokens:
+            rooms.update(tokens)
+            used_sources.append(source_name)
+    if len(used_sources) == 2:
+        source_label = "SIGNAL_TRADE_ROOMS+ACTIVE_SIGNAL_TRADE_ROOMS"
+    elif len(used_sources) == 1:
+        source_label = used_sources[0]
+    else:
+        source_label = "NONE"
+    return rooms, source_label
+
+
+SIGNAL_TRADE_ROOMS, SIGNAL_TRADE_ROOMS_SOURCE = _parse_signal_trade_rooms()
+SIGNAL_TRADE_ROOMS_ENV_NAMES = "SIGNAL_TRADE_ROOMS/ACTIVE_SIGNAL_TRADE_ROOMS"
+
+# How long (seconds) without any ingest before LISTENER is considered stale.
+LISTENER_STALE_THRESHOLD_SEC = int(os.environ.get("LISTENER_STALE_THRESHOLD_SEC", "600"))
 
 SIGNAL_FILE  = os.environ.get("LISTENER_SIGNAL_FILE", "config/parsed_signal.json")
 MGMT_FILE    = os.environ.get("LISTENER_MGMT_FILE",   "config/management_cmd.json")
+LISTENER_META_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "config", "listener_meta.json"
+)
 SESSION_FILE = "config/telegram_session"
 
 Path("config").mkdir(parents=True, exist_ok=True)
@@ -113,8 +159,21 @@ class Listener:
         self.vision  = Vision(self.claude)
         self._mode   = "SIGNAL"   # set by BRIDGE via set_mode()
         self._last_signal_id: set = set()   # dedup
+        self._last_ingest_at: datetime | None = None  # last message received timestamp
         if not self.claude:
             log.warning("LISTENER: ANTHROPIC_API_KEY not set — parsing disabled")
+        if SIGNAL_TRADE_ROOMS:
+            log.info(
+                "LISTENER: trade-room allowlist active — %d entries from %s: %s",
+                len(SIGNAL_TRADE_ROOMS),
+                SIGNAL_TRADE_ROOMS_SOURCE,
+                sorted(SIGNAL_TRADE_ROOMS),
+            )
+        else:
+            log.info(
+                "LISTENER: %s empty — all rooms are tradable",
+                SIGNAL_TRADE_ROOMS_ENV_NAMES,
+            )
         log.info(f"LISTENER initialised — watching {len(CHANNELS)} channels")
 
     def set_mode(self, mode: str):
@@ -144,15 +203,64 @@ class Listener:
         while True:
             await asyncio.sleep(interval)
             try:
+                now = datetime.now(timezone.utc)
+                if self._last_ingest_at is not None:
+                    age = (now - self._last_ingest_at).total_seconds()
+                    last_ingest_str = self._last_ingest_at.isoformat()
+                    if age > LISTENER_STALE_THRESHOLD_SEC:
+                        status = "WARN"
+                        note = (
+                            f"LISTENER_STALE_OR_DISCONNECTED: no message in {age:.0f}s "
+                            f"(threshold {LISTENER_STALE_THRESHOLD_SEC}s)"
+                        )
+                        log.warning("LISTENER: %s", note)
+                    else:
+                        status = "OK"
+                        note = f"monitoring {len(CHANNELS)} channels, last_ingest {age:.0f}s ago"
+                else:
+                    status = "OK"
+                    last_ingest_str = None
+                    note = f"monitoring {len(CHANNELS)} channels, no message yet"
+
                 report_component_status(
                     "LISTENER",
-                    "OK",
+                    status,
                     mode=self._mode,
-                    note=f"monitoring {len(CHANNELS)} channels",
+                    note=note,
                     last_action=f"idle heartbeat ({interval}s)",
                 )
+                self._write_listener_meta(status=status, last_ingest_at=last_ingest_str)
             except Exception:
                 pass
+
+    def _write_listener_meta(self, *, status: str = "OK",
+                             last_ingest_at: str | None = None,
+                             resolved_rooms: list | None = None):
+        """Write listener_meta.json for ATHENA API consumption."""
+        try:
+            existing: dict = {}
+            try:
+                with open(LISTENER_META_FILE) as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+            meta = {
+                **existing,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "status": status,
+                "channels_count": len(CHANNELS),
+                "signal_trade_rooms_active": bool(SIGNAL_TRADE_ROOMS),
+                "signal_trade_rooms_count": len(SIGNAL_TRADE_ROOMS),
+                "signal_trade_rooms_source": SIGNAL_TRADE_ROOMS_SOURCE,
+            }
+            if last_ingest_at is not None:
+                meta["last_ingest_at"] = last_ingest_at
+            if resolved_rooms is not None:
+                meta["resolved_rooms"] = resolved_rooms
+            with open(LISTENER_META_FILE, "w") as f:
+                json.dump(meta, f, indent=2)
+        except Exception as e:
+            log.debug("LISTENER meta write failed: %s", e)
 
     async def start(self):
         if not all([API_ID, API_HASH, PHONE]):
@@ -179,13 +287,24 @@ class Listener:
         log.info("LISTENER: Telegram connected")
 
         # Resolve channel names and write to file for ATHENA API
+        resolved_rooms: list[dict] = []
         try:
             names = {}
             for ch_id in CHANNELS:
                 entity = await client.get_entity(ch_id)
                 name = getattr(entity, 'title', str(ch_id))
                 names[str(ch_id)] = name
-                log.info(f"LISTENER: channel {ch_id} = {name}")
+                allowed, match_reason = self._is_trade_room_allowed(name, ch_id)
+                resolved_rooms.append({
+                    "chat_id": str(ch_id),
+                    "title": name,
+                    "is_trade_room": allowed,
+                    "match_reason": match_reason,
+                })
+                log.info(
+                    "LISTENER: channel %s = %r  trade_room=%s (%s)",
+                    ch_id, name, allowed, match_reason,
+                )
             with open("config/channel_names.json", "w") as f:
                 json.dump(names, f, indent=2)
         except Exception as e:
@@ -213,6 +332,7 @@ class Listener:
             note=f"monitoring {len(CHANNELS)} channels",
             last_action="Telegram connected",
         )
+        self._write_listener_meta(status="OK", resolved_rooms=resolved_rooms)
         asyncio.create_task(self._idle_heartbeat_loop())
         asyncio.create_task(self._refresh_message_cache(client))
 
@@ -231,17 +351,69 @@ class Listener:
         return bool(getattr(msg, "photo", None) or getattr(msg, "document", None))
 
     @staticmethod
-    def _is_trade_room_allowed(channel_name: str, chat_id) -> bool:
+    def _normalize_room_name(s: str) -> str:
+        """Lowercase + collapse whitespace + normalize Unicode (handles curly quotes etc.)."""
+        return _normalize_allowlist_token(s)
+
+    @staticmethod
+    def _chat_id_variants(chat_id) -> list[str]:
+        """
+        Return candidate string forms of a Telethon chat_id to match against SIGNAL_TRADE_ROOMS.
+        Telethon supergroup IDs are large negatives like -1001234567890.
+        Operators may configure just the base id (1234567890) or the full form.
+        """
+        if chat_id is None:
+            return []
+        raw = str(chat_id).strip()
+        variants = {raw}
+        # Negative → also try without sign and without the -100 prefix
+        if raw.startswith("-100"):
+            variants.add(raw[4:])       # 1234567890
+            variants.add(raw[1:])       # 1001234567890
+        elif raw.startswith("-"):
+            variants.add(raw[1:])       # positive form
+        else:
+            variants.add(f"-100{raw}")  # add -100 prefix form
+        return [v.lower() for v in variants]
+
+    @staticmethod
+    def _is_trade_room_allowed(channel_name: str, chat_id) -> tuple[bool, str]:
         """
         Room-priority policy:
-        - SIGNAL_TRADE_ROOMS empty => legacy behavior (all rooms tradable)
-        - otherwise only allow exact match by channel title or chat_id string
+        - SIGNAL_TRADE_ROOMS empty → all rooms tradable (returns True, "ALLOWED_ALL")
+        - otherwise match by normalized title OR any chat_id variant
+
+        Returns:
+            (allowed: bool, reason_code: str)
+            reason_code is one of:
+              "ALLOWED_ALL"          – SIGNAL_TRADE_ROOMS not configured
+              "ALLOWED_TITLE_MATCH"  – title matched
+              "ALLOWED_ID_MATCH"     – chat_id matched
+              "WATCH_ONLY_ROOM_FILTER" – not in allowlist
         """
         if not SIGNAL_TRADE_ROOMS:
-            return True
-        channel_key = (channel_name or "").strip().lower()
-        chat_key = str(chat_id).strip().lower() if chat_id is not None else ""
-        return channel_key in SIGNAL_TRADE_ROOMS or chat_key in SIGNAL_TRADE_ROOMS
+            return True, "ALLOWED_ALL"
+
+        # Title match (normalized for Unicode, whitespace, case)
+        channel_key = Listener._normalize_room_name(channel_name)
+        if channel_key in SIGNAL_TRADE_ROOMS:
+            return True, "ALLOWED_TITLE_MATCH"
+
+        # chat_id match (try multiple forms to handle supergroup prefix differences)
+        for id_variant in Listener._chat_id_variants(chat_id):
+            if id_variant in SIGNAL_TRADE_ROOMS:
+                log.info(
+                    "LISTENER: room %r (chat_id=%s) matched by id_variant=%s",
+                    channel_name, chat_id, id_variant,
+                )
+                return True, "ALLOWED_ID_MATCH"
+
+        log.warning(
+            "LISTENER: room %r (chat_id=%s) not in trade-room allowlist (%s) — "
+            "reason=WATCH_ONLY_ROOM_FILTER  configured_entries=%s",
+            channel_name, chat_id, SIGNAL_TRADE_ROOMS_ENV_NAMES, sorted(SIGNAL_TRADE_ROOMS),
+        )
+        return False, "WATCH_ONLY_ROOM_FILTER"
 
     @staticmethod
     def _normalize_parsed(parsed: dict) -> dict:
@@ -372,6 +544,9 @@ class Listener:
         if not text.strip() and not has_media:
             return
 
+        # Track last ingest timestamp for staleness detection
+        self._last_ingest_at = datetime.now(timezone.utc)
+
         # Dedup by Telegram message identity (ignore edited flag).
         # Same message often arrives as NewMessage then MessageEdited a few seconds later.
         # We should process it once for execution safety.
@@ -488,6 +663,24 @@ class Listener:
                             log.warning("LISTENER media summary send failed: %s", e)
 
         if not parsed or parsed.get("type") == "IGNORE":
+            if text.strip():
+                # Non-empty text was received but not parsed as a signal — log for diagnostics
+                log.info(
+                    "LISTENER: PARSE_FAILED/IGNORE — channel=%s chat_id=%s msg_id=%s text=%r",
+                    channel, msg.chat_id, msg.id, text[:120],
+                )
+                try:
+                    self.scribe.log_system_event(
+                        event_type="SIGNAL_PARSE_FAILED",
+                        triggered_by="LISTENER",
+                        reason="PARSE_FAILED",
+                        notes=(
+                            f"channel={channel} chat_id={msg.chat_id} msg_id={msg.id} "
+                            f"text_len={len(text)} has_media={has_media}"
+                        ),
+                    )
+                except Exception:
+                    pass
             if vision_id:
                 self.scribe.update_vision_extraction_result(vision_id, "IGNORED")
             return
@@ -538,9 +731,9 @@ class Listener:
 
         # Dispatch
         if parsed["type"] == "ENTRY":
-            if not self._is_trade_room_allowed(channel, msg.chat_id):
-                reason = f"ROOM_NOT_PRIORITY:{channel}"
-                self.scribe.update_signal_action(signal_id, "WATCH_ONLY", reason)
+            allowed, allow_reason = self._is_trade_room_allowed(channel, msg.chat_id)
+            if not allowed:
+                self.scribe.update_signal_action(signal_id, "WATCH_ONLY", "WATCH_ONLY_ROOM_FILTER")
                 if vision_id:
                     self.scribe.update_vision_extraction_result(
                         vision_id, "WATCH_ONLY", linked_signal_id=signal_id
@@ -549,23 +742,46 @@ class Listener:
                     self.scribe.log_system_event(
                         event_type="SIGNAL_ROOM_WATCH_ONLY",
                         triggered_by="LISTENER",
-                        reason="ROOM_PRIORITY_POLICY",
+                        reason="WATCH_ONLY_ROOM_FILTER",
                         notes=(
                             f"channel={channel} chat_id={msg.chat_id} "
-                            f"signal_id={signal_id} mode={self._mode}"
+                            f"signal_id={signal_id} mode={self._mode} "
+                            f"configured_rooms={sorted(SIGNAL_TRADE_ROOMS)}"
                         ),
                     )
                 except Exception:
                     pass
-                log.info("LISTENER: watch-only room policy applied for %s", channel)
+                log.warning(
+                    "LISTENER: WATCH_ONLY_ROOM_FILTER — channel=%r chat_id=%s "
+                    "not in trade-room allowlist (%s) (signal_id=%s)",
+                    channel, msg.chat_id, SIGNAL_TRADE_ROOMS_ENV_NAMES, signal_id,
+                )
                 return
             parsed["signal_id"]  = signal_id
             parsed["channel"]    = channel
             parsed["timestamp"]  = datetime.now(timezone.utc).isoformat()
             parsed["edited"]     = edited
             self._write_signal(parsed)
-            log.info(f"LISTENER → parsed_signal.json: {parsed.get('direction')} "
-                     f"@ {parsed.get('entry_low')}–{parsed.get('entry_high')}")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            self._last_ingest_at = datetime.now(timezone.utc)
+            log.info(
+                "LISTENER: SIGNAL_DISPATCHED — %s @ %s–%s channel=%r chat_id=%s "
+                "match=%s signal_id=%s",
+                parsed.get("direction"), parsed.get("entry_low"), parsed.get("entry_high"),
+                channel, msg.chat_id, allow_reason, signal_id,
+            )
+            try:
+                self.scribe.log_system_event(
+                    event_type="SIGNAL_DISPATCHED",
+                    triggered_by="LISTENER",
+                    reason="SIGNAL_DISPATCHED",
+                    notes=(
+                        f"channel={channel} chat_id={msg.chat_id} signal_id={signal_id} "
+                        f"direction={parsed.get('direction')} match={allow_reason}"
+                    ),
+                )
+            except Exception:
+                pass
             if vision_id:
                 self.scribe.update_vision_extraction_result(vision_id, "DISPATCHED_ENTRY", linked_signal_id=signal_id)
             try:
@@ -576,6 +792,7 @@ class Listener:
                     note=f"monitoring {len(CHANNELS)} channels",
                     last_action=f"parsed {parsed.get('type','?')} {parsed.get('direction','')} from {channel}",
                 )
+                self._write_listener_meta(status="OK", last_ingest_at=now_iso)
             except Exception as _he:
                 log.debug(f"LISTENER heartbeat error: {_he}")
 

@@ -35,14 +35,15 @@
 │                      │    machine       │◄──── aurum_cmd.json ◄── ATHENA  │
 │                      │  • Signal        │                                  │
 │                      │    dispatch      │     ┌──────────────┐            │
-│                      │  • Position      │     │   AEGIS      │            │
-│                      │    tracker       │◄───►│ (Risk gate)  │            │
-│                      │  • Closure       │     └──────────────┘            │
-│                      │    detection     │                                  │
-│                      │  • Session       │     ┌──────────────┐            │
-│                      │    management    │◄───►│ RECONCILER   │            │
-│                      │                  │     │ (hourly)     │            │
-│                      └───────┬──────────┘     └──────────────┘            │
+│                      │  • Position      │◄───►│   AEGIS      │            │
+│                      │    tracker       │     │ (Risk gate)  │            │
+│                      │  • Regime        │     └──────────────┘            │
+│                      │    inference     │     ┌──────────────┐            │
+│                      │  • Closure       │◄───►│ RECONCILER   │            │
+│                      │    detection     │     │ (hourly)     │            │
+│                      │  • Session       │     └──────────────┘            │
+│                      │    management    │                                  │
+│                      └───────┬──────────┘                                  │
 │                              │                                             │
 │                    command.json + config.json                               │
 └──────────────────────────────┼─────────────────────────────────────────────┘
@@ -83,7 +84,7 @@
 │  │  SCRIBE  │     │  HERALD  │     │  AURUM   │     │  ATHENA  │         │
 │  │ (SQLite) │     │(Telegram │     │ (Claude  │     │ (Flask + │         │
 │  │          │     │  Alerts) │     │  Agent)  │     │  React)  │         │
-│  │ 9 tables │     │          │     │          │     │          │         │
+│  │12 tables │     │          │     │          │     │          │         │
 │  └──────────┘     └──────────┘     └──────────┘     └──────────┘         │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -174,16 +175,15 @@
   Position DISAPPEARED from market_data.json?
         │
         ▼
-  ┌─────────────────────────────────────────┐
-  │  _infer_close_reason()                  │
-  │                                         │
-  │  close_price ≈ SL ($0.50 tol)  → SL_HIT│
-  │  close_price ≈ TP  ──┐                 │
-  │                       ├→ match TP1/2/3  │
-  │                       │  from group     │
-  │                       │  record         │
-  │  otherwise           → MANUAL_CLOSE    │
-  └──────────┬──────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────┐
+  │  broker-first close attribution                          │
+  │                                                          │
+  │  recent_closed_deals has ticket?                         │
+  │    ├─ yes → use broker close_price/profit/reason/time   │
+  │    │        TP reason mapped to TP1/2/3 by group target │
+  │    └─ no  → fallback _infer_close_reason()              │
+  │            (SL/TP proximity, $0.50 tolerance)           │
+  └──────────┬───────────────────────────────────────────────┘
              │
      ┌───────┼───────┬──────────────┐
      ▼       ▼       ▼              ▼
@@ -199,6 +199,39 @@
   SCRIBE: trade_groups → status=CLOSED, total_pnl, pips
   HERALD: "✅ GROUP CLOSED — G19 BUY +$12.50"
 ```
+
+---
+
+## Regime inference and policy flow
+
+`python/regime.py` runs inside BRIDGE and produces a per-tick regime snapshot used by AEGIS and ATHENA.
+
+```
+MT5 market_data + LENS snapshot + session/mode
+                    │
+                    ▼
+         RegimeEngine.infer() (BRIDGE tick)
+         • HMM-primary inference (when model/data ready)
+         • Gaussian fallback (deterministic safety path)
+         • confidence/staleness gate
+                    │
+                    ▼
+      BRIDGE _regime_snapshot (status.json + /api/live)
+                    │
+        ┌───────────┴────────────┐
+        ▼                        ▼
+SCRIBE market_regimes      AEGIS validate(...)
+(history/transitions)      (regime_context for entry policy)
+        │                        │
+        ▼                        ▼
+/api/regime/current|history|performance
+ATHENA dashboard regime panel + trade/group regime metadata
+```
+
+Rollout behavior (`REGIME_ENTRY_MODE`):
+- `off`: legacy entry policy only
+- `shadow`: compute/log regime context without enforcing entry policy
+- `active`: apply regime-conditioned entry policy when confidence and freshness pass
 
 ---
 
@@ -247,7 +280,7 @@
 
 ---
 
-## SCRIBE Database Schema (11 tables)
+## SCRIBE Database Schema (12 tables)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -265,14 +298,18 @@
 ├─────────────────────┼───────────────────────────────────────┤
 │ market_snapshots    │ LENS + MT5 indicator snapshots        │
 ├─────────────────────┼───────────────────────────────────────┤
+│ market_regimes      │ Regime snapshots (label, confidence,  │
+│                     │ posterior, model, fallback/staleness, │
+│                     │ entry gate metadata + feature hash)    │
+├─────────────────────┼───────────────────────────────────────┤
 │ trade_groups        │ N-trade groups: entry zone, SL, TP,   │
 │                     │ status, total P&L, magic_number       │
 ├─────────────────────┼───────────────────────────────────────┤
 │ trade_positions     │ Individual MT5 tickets: entry, close, │
 │                     │ pnl, pips, close_reason, tp_stage     │
 ├─────────────────────┼───────────────────────────────────────┤
-│ trade_closures      │ SL/TP hit log: close_reason inferred  │
-│ (NEW v1.3.1)       │ (SL_HIT/TP1_HIT/TP2_HIT/MANUAL),    │
+│ trade_closures      │ SL/TP/manual close log: broker-first │
+│ (NEW v1.3.1)       │ attribution + inference fallback      │
 │                     │ full context: pnl, pips, session      │
 ├─────────────────────┼───────────────────────────────────────┤
 │ news_events         │ SENTINEL guard activations +          │

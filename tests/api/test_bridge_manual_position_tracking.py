@@ -100,6 +100,47 @@ def test_sync_positions_closes_unmanaged_position_in_scribe():
     stub.scribe.update_trade_group.assert_called_once()
     assert 1146212583 not in stub._known_unmanaged_positions
 
+@pytest.mark.unit
+def test_sync_positions_uses_broker_recent_closed_deal_for_managed_close():
+    stub, bm = _make_stub()
+    stub.scribe.query.return_value = []
+    stub._known_positions[1148548493] = {
+        "group_id": 24,
+        "magic": 202425,
+        "direction": "BUY",
+        "open_price": 4750.15,
+        "last_profit": 0.0,
+        "current_price": 4750.25,
+        "lot_size": 0.01,
+        "symbol": "XAUUSD",
+        "sl": 4744.3,
+        "tp": 4755.3,
+    }
+    mt5 = {
+        "account": {"balance": 100000.0},
+        "open_positions": [],
+        "pending_orders": [],
+        "recent_closed_deals": [
+            {
+                "position_ticket": 1148548493,
+                "close_price": 4755.3,
+                "profit": 5.42,
+                "close_reason": "TP_HIT",
+                "time_unix": 1893456000,
+            }
+        ],
+    }
+
+    bm.Bridge._sync_positions(stub, mt5)
+
+    stub.scribe.close_trade_position.assert_called_once()
+    close_kwargs = stub.scribe.close_trade_position.call_args.kwargs
+    assert close_kwargs["ticket"] == 1148548493
+    assert close_kwargs["close_price"] == 4755.3
+    assert close_kwargs["pnl"] == 5.42
+    assert close_kwargs["close_reason"] == "TP1_HIT"
+    assert close_kwargs["close_time"].startswith("2030-01-01T00:00:00")
+
 
 @pytest.mark.unit
 def test_pending_timeout_cancels_pending_only_when_positions_exist(monkeypatch):

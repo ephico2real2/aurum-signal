@@ -150,6 +150,55 @@ def test_aegis_non_signal_keeps_even_spread_ladder():
 
 
 @pytest.mark.unit
+def test_aegis_signal_regime_active_applies_non_legacy_ladder():
+    import aegis
+
+    ladder, meta = aegis.Aegis._build_entry_ladder(
+        direction="BUY",
+        entry_low=4750.0,
+        entry_high=4760.0,
+        num_trades=4,
+        source="SIGNAL",
+        regime_context={
+            "label": "TREND_BULL",
+            "confidence": 0.9,
+            "model_name": "HMM_GAUSSIAN",
+            "entry_mode": "active",
+            "apply_entry_policy": True,
+        },
+        include_meta=True,
+    )
+    assert meta["applied"] is True
+    assert len(set(ladder)) > 1
+    assert min(ladder) >= 4750.0
+    assert max(ladder) <= 4760.0
+
+
+@pytest.mark.unit
+def test_aegis_signal_regime_shadow_keeps_legacy_endpoint():
+    import aegis
+
+    ladder, meta = aegis.Aegis._build_entry_ladder(
+        direction="SELL",
+        entry_low=4750.0,
+        entry_high=4760.0,
+        num_trades=4,
+        source="SIGNAL",
+        regime_context={
+            "label": "TREND_BEAR",
+            "confidence": 0.95,
+            "model_name": "HMM_GAUSSIAN",
+            "entry_mode": "shadow",
+            "apply_entry_policy": False,
+            "entry_gate_reason": "entry_mode_shadow",
+        },
+        include_meta=True,
+    )
+    assert meta["applied"] is False
+    assert ladder == [4760.0, 4760.0, 4760.0, 4760.0]
+
+
+@pytest.mark.unit
 def test_aegis_signal_buy_above_market_is_rejected_for_limit_policy():
     import aegis
 
@@ -189,3 +238,75 @@ def test_aegis_signal_limit_orientation_accepts_buy_below_market():
         source="SIGNAL",
     )
     assert reason is None
+
+
+@pytest.mark.unit
+def test_aegis_signal_limit_orientation_off_disables_buy_and_sell_rejects(monkeypatch):
+    import aegis
+
+    monkeypatch.setattr(aegis, "AEGIS_SIGNAL_LIMIT_ORIENTATION", "off")
+
+    buy_reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="BUY",
+        entry_low=4773.5,
+        entry_high=4774.5,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    sell_reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="SELL",
+        entry_low=4769.0,
+        entry_high=4770.0,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    assert buy_reason is None
+    assert sell_reason is None
+
+
+@pytest.mark.unit
+def test_aegis_signal_limit_orientation_buy_only(monkeypatch):
+    import aegis
+
+    monkeypatch.setattr(aegis, "AEGIS_SIGNAL_LIMIT_ORIENTATION", "buy")
+
+    buy_reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="BUY",
+        entry_low=4773.5,
+        entry_high=4774.5,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    sell_reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="SELL",
+        entry_low=4769.0,
+        entry_high=4770.0,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    assert buy_reason and buy_reason.startswith("SIGNAL_BUY_LIMIT_REQUIRED")
+    assert sell_reason is None
+
+
+@pytest.mark.unit
+def test_aegis_signal_limit_orientation_sell_only(monkeypatch):
+    import aegis
+
+    monkeypatch.setattr(aegis, "AEGIS_SIGNAL_LIMIT_ORIENTATION", "sell")
+
+    buy_reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="BUY",
+        entry_low=4773.5,
+        entry_high=4774.5,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    sell_reason = aegis.Aegis._signal_limit_orientation_reject_reason(
+        direction="SELL",
+        entry_low=4769.0,
+        entry_high=4770.0,
+        current_price=4772.3,
+        source="SIGNAL",
+    )
+    assert buy_reason is None
+    assert sell_reason and sell_reason.startswith("SIGNAL_SELL_LIMIT_REQUIRED")

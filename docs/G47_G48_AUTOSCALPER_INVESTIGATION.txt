@@ -1,0 +1,107 @@
+G47/G48 AUTO_SCALPER Investigation
+Date: 2026-04-14 (UTC)
+
+Purpose
+- Confirm whether G47 and G48 were manual/simulated triggers or AUTO_SCALPER triggers.
+- Capture exact sqlite3 evidence and final conclusions.
+
+Query 1 — trade group source/mode and signal linkage
+Command:
+sqlite3 /Users/olasumbo/signal_system/python/data/aurum_intelligence.db "SELECT id, timestamp, source, mode, direction, signal_id, status, close_reason, total_pnl FROM trade_groups WHERE id IN (47,48) ORDER BY id; SELECT '---'; SELECT id, timestamp, channel_name, signal_type, direction, action_taken, skip_reason, trade_group_id FROM signals_received WHERE trade_group_id IN (47,48) ORDER BY id;"
+
+Result:
+47|2026-04-13T23:15:43.038057+00:00|AURUM|AUTO_SCALPER|SELL||CLOSED|ALL_CLOSED|25.43
+48|2026-04-13T23:17:45.795817+00:00|AURUM|AUTO_SCALPER|SELL||CLOSED|ALL_CLOSED|17.8
+---
+
+Interpretation:
+- Both groups were created with source=AURUM and mode=AUTO_SCALPER.
+- No linked signals_received rows exist for trade_group_id IN (47,48) in this query output.
+
+Query 2 — event trail around group IDs
+Command:
+sqlite3 /Users/olasumbo/signal_system/python/data/aurum_intelligence.db "SELECT id, timestamp, event_type, reason, notes FROM system_events WHERE notes LIKE '%\"group_id\": 47%' OR notes LIKE '%\"group_id\": 48%' ORDER BY id;"
+
+Result:
+2074|2026-04-13T23:15:43.042155+00:00|TRADE_QUEUED|OPEN_GROUP|{"source": "AURUM", "group_id": 47, "direction": "SELL", "num_trades": 4, "lot_per_trade": 0.01, "regime": {"label": null, "confidence": null, "model_name": null, "entry_mode": "off", "policy": "LEGACY_SIGNAL_FAVORABLE_ENDPOINT", "applied": false}, "command_path": "/Users/olasumbo/signal_system/MT5/command.json", "command_paths": ["/Users/olasumbo/signal_system/MT5/command.json"]}
+2078|2026-04-13T23:17:45.799976+00:00|TRADE_QUEUED|OPEN_GROUP|{"source": "AURUM", "group_id": 48, "direction": "SELL", "num_trades": 4, "lot_per_trade": 0.01, "regime": {"label": null, "confidence": null, "model_name": null, "entry_mode": "off", "policy": "LEGACY_SIGNAL_FAVORABLE_ENDPOINT", "applied": false}, "command_path": "/Users/olasumbo/signal_system/MT5/command.json", "command_paths": ["/Users/olasumbo/signal_system/MT5/command.json"]}
+2080|2026-04-13T23:34:03.820145+00:00|MGMT_COMMAND|MODIFY_TP|{"tp": 4755.3, "group_id": 47, "via": "AURUM"}
+2081|2026-04-13T23:34:04.834335+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161460848, "group_id": 47, "old_sl": 4767.68, "new_sl": 4767.68, "old_tp": 4750.72, "new_tp": 4755.3}
+2082|2026-04-13T23:34:04.838517+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161460854, "group_id": 47, "old_sl": 4767.68, "new_sl": 4767.68, "old_tp": 4750.72, "new_tp": 4755.3}
+2083|2026-04-13T23:34:04.843214+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161460862, "group_id": 47, "old_sl": 4767.68, "new_sl": 4767.68, "old_tp": 4750.72, "new_tp": 4755.3}
+2084|2026-04-13T23:34:04.848418+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161460869, "group_id": 47, "old_sl": 4767.68, "new_sl": 4767.68, "old_tp": 4742.91, "new_tp": 4755.3}
+2085|2026-04-13T23:34:04.854178+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161466945, "group_id": 48, "old_sl": 4766.04, "new_sl": 4766.04, "old_tp": 4750.63, "new_tp": 4755.3}
+2086|2026-04-13T23:34:04.858660+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161467060, "group_id": 48, "old_sl": 4766.04, "new_sl": 4766.04, "old_tp": 4750.63, "new_tp": 4755.3}
+2087|2026-04-13T23:34:04.864323+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161467237, "group_id": 48, "old_sl": 4766.04, "new_sl": 4766.04, "old_tp": 4750.63, "new_tp": 4755.3}
+2088|2026-04-13T23:34:04.868901+00:00|POSITION_MODIFIED|SL/TP changed (manual or FORGE)|{"ticket": 1161467256, "group_id": 48, "old_sl": 4766.04, "new_sl": 4766.04, "old_tp": 4742.81, "new_tp": 4755.3}
+2089|2026-04-13T23:34:09.314952+00:00|MGMT_COMMAND|MODIFY_TP|{"tp": 4755.3, "group_id": 48, "via": "AURUM"}
+2090|2026-04-13T23:34:54.046453+00:00|TRADE_GROUP_CLOSED|ALL_CLOSED|{"group_id": 48, "trades_closed": 4, "total_pnl": 17.8, "total_pips": 1780.0}
+2091|2026-04-13T23:34:54.620696+00:00|TRADE_GROUP_CLOSED|ALL_CLOSED|{"group_id": 47, "trades_closed": 4, "total_pnl": 25.43, "total_pips": 2543.0}
+
+Interpretation:
+- Both groups were explicitly queued as OPEN_GROUP with source=AURUM.
+- Subsequent management updates were also via AURUM, then both groups closed.
+
+Query 3 — AUTO_SCALPER conversation payloads for IDs 403 and 405
+Command:
+sqlite3 /Users/olasumbo/signal_system/python/data/aurum_intelligence.db "SELECT id, timestamp, source, response FROM aurum_conversations WHERE id IN (403,405);"
+
+Result:
+403|2026-04-13T23:15:42.021443+00:00|AUTO_SCALPER|M5 RSI has cooled from 82 to 74.5 and price has pulled back ~$2 from the highs. M15 is now sitting exactly at BB upper (100% of range) — that's a meaningful rejection zone. H1 BEAR bias intact. Setup qualifies for a new SELL entry.
+
+SL: 1.5× M5 ATR ($3.49) = $5.24 above entry → $4767.68
+TP1: M5 BB mid at $4750.72 (~$11.72 away) → R:R ≈ 2.2 ✓
+TP2: M15 BB mid at $4742.91
+
+```json
+{"action":"OPEN_GROUP","direction":"SELL","entry_low":4762.30,"entry_high":4762.57,"sl":4767.68,"tp1":4750.72,"tp2":4742.91,"lot_per_trade":0.01,"num_trades":4,"reason":"M15 at BB upper (100% range), M5 RSI cooling 82→74 with price pullback ~$2 from high, H1 BEAR bias, R:R 2.2","timestamp":"2026-04-13T23:15:00Z"}
+```
+405|2026-04-13T23:17:44.630104+00:00|AUTO_SCALPER|Price has dropped ~$2 from last entry (4762.44) — meaningful displacement. M5 RSI cooling further to 69.5 (from 82 peak), M15 at 96% of BB range still in rejection zone, H1 BEAR intact. TV Recommend dropping to 0.35 adds confirmation. New SELL entry justified.
+
+SL: 1.5× M5 ATR ($3.64) = $5.46 above entry → $4766.04
+TP1: M5 BB mid $4750.63 (~$9.95 away) → R:R ≈ 1.8 ✓
+TP2: M15 BB mid $4742.81
+
+```json
+{"action":"OPEN_GROUP","direction":"SELL","entry_low":4760.45,"entry_high":4760.71,"sl":4766.04,"tp1":4750.63,"tp2":4742.81,"lot_per_trade":0.01,"num_trades":4,"reason":"Price -$2 from last entry, M5 RSI cooled 82→69.5, M15 at BB upper 96%, H1 BEAR, TV 0.35, R:R 1.8","timestamp":"2026-04-13T23:17:00Z"}
+```
+
+Interpretation:
+- AUTO_SCALPER produced explicit OPEN_GROUP JSON for both windows.
+- Reasons were based on bearish bias + BB rejection context + RSI cooling + acceptable R:R.
+
+Query 4 — exact persisted levels for G47/G48
+Command:
+sqlite3 /Users/olasumbo/signal_system/python/data/aurum_intelligence.db "SELECT id,timestamp,entry_low,entry_high,sl,tp1,tp2,num_trades,lot_per_trade,status,total_pnl FROM trade_groups WHERE id IN (47,48) ORDER BY id;"
+
+Result:
+47|2026-04-13T23:15:43.038057+00:00|4762.3|4762.57|4767.68|4750.72|4742.91|4|0.01|CLOSED|25.43
+48|2026-04-13T23:17:45.795817+00:00|4760.45|4760.71|4766.04|4750.63|4742.81|4|0.01|CLOSED|17.8
+
+Final conclusion for G47/G48
+1) BRIDGE-side preconditions were satisfied, and AUTO_SCALPER path was active:
+   - groups are `source=AURUM`, `mode=AUTO_SCALPER`,
+   - no linked `signals_received` rows for group_id 47/48 in the evidence query,
+   - event trail shows `TRADE_QUEUED|OPEN_GROUP` from AURUM.
+
+2) Trigger decisions came from AUTO_SCALPER/AURUM trade rationale (not manual simulation):
+   - AURUM conversation responses (IDs 403 and 405) contain OPEN_GROUP JSON commands
+     with explicit SELL rationale (H1 BEAR alignment, M15 near upper BB rejection zone,
+     M5 RSI cooling, and valid R:R).
+
+Requested trigger summary (G47/G48)
+For G47/G48, AUTO_SCALPER triggered because both layers passed:
+
+1. BRIDGE pre-filters (must be true before asking AURUM):
+◦  no sentinel block
+◦  no loss cooldown
+◦  open groups below max
+◦  MT5 data available
+◦  H1 bias not FLAT/UNKNOWN (it was BEAR)
+◦  lower-TF RSIs not all neutral
+
+2. AURUM setup decision returned OPEN_GROUP (not PASS):
+◦  G47: M15 at BB upper (~100% range), M5 RSI cooled 82 → 74.5, price pulled back about $2 from highs, H1 still BEAR, estimated R:R ~2.2.
+◦  G48: further meaningful displacement (~$2 from prior entry), M5 RSI cooled to 69.5, M15 still near BB upper (~96%), H1 BEAR, TV recommendation weakening, estimated R:R ~1.8.
+
+So the trigger condition was essentially: bearish higher-timeframe bias + lower-timeframe rejection/cooling at upper BB + acceptable RR + all bridge safety gates clear.

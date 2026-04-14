@@ -35,6 +35,14 @@ MIN_SL_PIPS       = float(os.environ.get("AEGIS_MIN_SL_PIPS",       "3.0"))
 AEGIS_SIGNAL_MAX_SLIPPAGE = float(os.environ.get("AEGIS_SIGNAL_MAX_SLIPPAGE", str(MAX_SLIPPAGE)))
 AEGIS_SIGNAL_MIN_RR = float(os.environ.get("AEGIS_SIGNAL_MIN_RR", str(MIN_RR)))
 AEGIS_SIGNAL_MIN_SL_PIPS = float(os.environ.get("AEGIS_SIGNAL_MIN_SL_PIPS", str(MIN_SL_PIPS)))
+# SIGNAL limit-orientation gate:
+#   both (default): enforce BUY below market and SELL above market
+#   buy: enforce BUY only
+#   sell: enforce SELL only
+#   off: disable orientation gate for SIGNAL source
+AEGIS_SIGNAL_LIMIT_ORIENTATION = os.environ.get(
+    "AEGIS_SIGNAL_LIMIT_ORIENTATION", "both"
+).strip().lower()
 H1_TREND_FILTER   = os.environ.get("AEGIS_H1_TREND_FILTER", "true").lower() == "true"
 H1_FLAT_THRESHOLD = float(os.environ.get("AEGIS_H1_FLAT_THRESHOLD", "1.0"))  # $ diff for FLAT
 # Lot sizing mode: "fixed" = use source lot_per_trade as-is, "risk_based" = compute from balance/risk%
@@ -62,6 +70,7 @@ class TradeApproval:
     rr_ratio:       float = 0.0
     scale_factor:   float = 1.0   # current lot scaling multiplier
     scale_reason:   str   = ""
+    regime_metadata: dict = field(default_factory=dict)
 
 
 class Aegis:
@@ -80,7 +89,92 @@ class Aegis:
             log.debug(f"AEGIS heartbeat init error: {e}")
 
     @staticmethod
-    def _build_entry_ladder(direction: str, entry_low: float, entry_high: float, num_trades: int, source: str = "") -> list[float]:
+    def _score_entry_ratio(direction: str, ratio: float, fill_weight: float, edge_weight: float, target_ratio: float) -> float:
+        d = (direction or "").upper()
+        fill_score = ratio if d == "BUY" else (1.0 - ratio)
+        edge_score = (1.0 - ratio) if d == "BUY" else ratio
+        target_bonus = max(0.0, 1.0 - abs(ratio - target_ratio))
+        return (fill_weight * fill_score) + (edge_weight * edge_score) + (0.15 * target_bonus)
+
+    @staticmethod
+    def _resolve_signal_regime_policy(direction: str, regime_context: dict | None) -> dict:
+        ctx = dict(regime_context or {})
+        label = (ctx.get("label") or "UNKNOWN").upper()
+        confidence = max(0.0, min(1.0, float(ctx.get("confidence") or 0.0)))
+        entry_mode = (ctx.get("entry_mode") or "off").lower()
+        apply_policy = bool(ctx.get("apply_entry_policy"))
+        d = (direction or "").upper()
+
+        if label == "RANGE":
+            target = 0.20 if d == "BUY" else 0.80
+            dispersion = 0.16
+            fill_w, edge_w = 0.35, 0.65
+            policy_name = "MEAN_REVERSION_PULLBACK"
+        elif label == "VOLATILE":
+            target = 0.50
+            dispersion = 0.45
+            fill_w, edge_w = 0.62, 0.38
+            policy_name = "VOLATILITY_BALANCED"
+        elif label == "TREND_BULL":
+            if d == "BUY":
+                target = 0.78
+                dispersion = 0.28
+                fill_w, edge_w = 0.72, 0.28
+            else:
+                target = 0.84
+                dispersion = 0.12
+                fill_w, edge_w = 0.30, 0.70
+            policy_name = "TREND_FOLLOW_BULL"
+        elif label == "TREND_BEAR":
+            if d == "SELL":
+                target = 0.22
+                dispersion = 0.28
+                fill_w, edge_w = 0.72, 0.28
+            else:
+                target = 0.16
+                dispersion = 0.12
+                fill_w, edge_w = 0.30, 0.70
+            policy_name = "TREND_FOLLOW_BEAR"
+        else:
+            target = 0.35 if d == "BUY" else 0.65
+            dispersion = 0.20
+            fill_w, edge_w = 0.50, 0.50
+            policy_name = "LEGACY_SIGNAL_FAVORABLE_ENDPOINT"
+
+        # Blend toward neutral as confidence drops.
+        blend = confidence
+        neutral = 0.50
+        target = (blend * target) + ((1.0 - blend) * neutral)
+        fill_w = (blend * fill_w) + ((1.0 - blend) * 0.50)
+        edge_w = (blend * edge_w) + ((1.0 - blend) * 0.50)
+        norm = max(0.0001, fill_w + edge_w)
+        fill_w, edge_w = fill_w / norm, edge_w / norm
+
+        return {
+            "label": label,
+            "confidence": confidence,
+            "entry_mode": entry_mode,
+            "apply_policy": apply_policy,
+            "policy_name": policy_name,
+            "fill_weight": fill_w,
+            "edge_weight": edge_w,
+            "target_ratio": target,
+            "dispersion_ratio": max(0.0, min(0.50, dispersion)),
+            "model_name": ctx.get("model_name"),
+            "fallback_reason": ctx.get("fallback_reason"),
+            "entry_gate_reason": ctx.get("entry_gate_reason"),
+        }
+
+    @staticmethod
+    def _build_entry_ladder(
+        direction: str,
+        entry_low: float,
+        entry_high: float,
+        num_trades: int,
+        source: str = "",
+        regime_context: dict | None = None,
+        include_meta: bool = False,
+    ) -> list[float] | tuple[list[float], dict]:
         """
         Build entry prices for group legs.
         For SIGNAL source, prioritize favorable endpoint:
@@ -93,14 +187,79 @@ class Aegis:
         dir_u = (direction or "").upper()
         src_u = (source or "").upper()
 
+        meta = {
+            "label": None,
+            "confidence": None,
+            "model_name": None,
+            "entry_mode": "off",
+            "policy_name": "LEGACY_SIGNAL_FAVORABLE_ENDPOINT",
+            "fallback_reason": None,
+            "entry_gate_reason": None,
+            "applied": False,
+        }
+
         if src_u == "SIGNAL" and hi > lo and trades > 1:
+            policy = Aegis._resolve_signal_regime_policy(dir_u, regime_context)
+            meta.update(
+                {
+                    "label": policy.get("label"),
+                    "confidence": policy.get("confidence"),
+                    "model_name": policy.get("model_name"),
+                    "entry_mode": policy.get("entry_mode"),
+                    "policy_name": policy.get("policy_name"),
+                    "fallback_reason": policy.get("fallback_reason"),
+                    "entry_gate_reason": policy.get("entry_gate_reason"),
+                }
+            )
+
+            if policy.get("apply_policy"):
+                ratios = [i / 10.0 for i in range(1, 10)]
+                target_ratio = float(policy.get("target_ratio") or 0.5)
+                fill_w = float(policy.get("fill_weight") or 0.5)
+                edge_w = float(policy.get("edge_weight") or 0.5)
+                best_ratio = max(
+                    ratios,
+                    key=lambda r: Aegis._score_entry_ratio(
+                        dir_u,
+                        r,
+                        fill_w,
+                        edge_w,
+                        target_ratio,
+                    ),
+                )
+                span = hi - lo
+                anchor = lo + (span * best_ratio)
+                dispersion = span * float(policy.get("dispersion_ratio") or 0.0)
+                lo_b = max(lo, anchor - (dispersion / 2.0))
+                hi_b = min(hi, anchor + (dispersion / 2.0))
+                if trades == 1 or hi_b <= lo_b:
+                    ladder = [round(anchor, 2)] * trades
+                else:
+                    step = (hi_b - lo_b) / (trades - 1)
+                    ladder = [round(lo_b + i * step, 2) for i in range(trades)]
+                meta["applied"] = True
+                meta["target_ratio"] = round(best_ratio, 4)
+                if include_meta:
+                    return ladder, meta
+                return ladder
+
+            # shadow/off/blocked gate -> keep legacy endpoint behavior
             favored = lo if dir_u == "BUY" else hi
-            return [round(favored, 2)] * trades
+            ladder = [round(favored, 2)] * trades
+            if include_meta:
+                return ladder, meta
+            return ladder
 
         if hi > lo and trades > 1:
             step = (hi - lo) / (trades - 1)
-            return [round(lo + i * step, 2) for i in range(trades)]
-        return [round(lo, 2)] * trades
+            ladder = [round(lo + i * step, 2) for i in range(trades)]
+            if include_meta:
+                return ladder, meta
+            return ladder
+        ladder = [round(lo, 2)] * trades
+        if include_meta:
+            return ladder, meta
+        return ladder
 
     @staticmethod
     def _signal_limit_orientation_reject_reason(
@@ -123,17 +282,25 @@ class Aegis:
             hi = float(entry_high)
         except (TypeError, ValueError):
             return None
+        mode = AEGIS_SIGNAL_LIMIT_ORIENTATION
+        if mode in ("off", "none", "false", "0", "disabled"):
+            return None
+        if mode not in ("both", "buy", "sell"):
+            mode = "both"
         d = (direction or "").upper()
-        if d == "BUY" and lo >= cp:
+        enforce_buy = mode in ("both", "buy")
+        enforce_sell = mode in ("both", "sell")
+        if d == "BUY" and enforce_buy and lo >= cp:
             return f"SIGNAL_BUY_LIMIT_REQUIRED:entry_low={lo:.2f}>=market={cp:.2f}"
-        if d == "SELL" and hi <= cp:
+        if d == "SELL" and enforce_sell and hi <= cp:
             return f"SIGNAL_SELL_LIMIT_REQUIRED:entry_high={hi:.2f}<=market={cp:.2f}"
         return None
 
     # ── Public API ─────────────────────────────────────────────────
     def validate(self, signal: dict, account: dict,
                  current_price: float = None,
-                 mt5_data: dict = None) -> TradeApproval:
+                 mt5_data: dict = None,
+                 regime_context: dict | None = None) -> TradeApproval:
         """
         Validate signal and return approval with lot sizes.
         signal keys: direction, entry_low, entry_high, sl, tp1
@@ -142,15 +309,16 @@ class Aegis:
         """
         direction   = signal.get("direction", "")
         source      = signal.get("source", "")
+        source_u    = (source or "").upper()
         entry_low   = float(signal.get("entry_low", 0))
         entry_high  = float(signal.get("entry_high", entry_low))
         sl          = float(signal.get("sl", 0))
         tp1         = float(signal.get("tp1", 0))
         balance     = float(account.get("balance", 0))
         open_groups = int(account.get("open_groups_count", 0))
-        min_rr_req = AEGIS_SIGNAL_MIN_RR if source == "SIGNAL" else MIN_RR
-        min_sl_req = AEGIS_SIGNAL_MIN_SL_PIPS if source == "SIGNAL" else MIN_SL_PIPS
-        max_slippage_req = AEGIS_SIGNAL_MAX_SLIPPAGE if source == "SIGNAL" else MAX_SLIPPAGE
+        min_rr_req = AEGIS_SIGNAL_MIN_RR if source_u == "SIGNAL" else MIN_RR
+        min_sl_req = AEGIS_SIGNAL_MIN_SL_PIPS if source_u == "SIGNAL" else MIN_SL_PIPS
+        max_slippage_req = AEGIS_SIGNAL_MAX_SLIPPAGE if source_u == "SIGNAL" else MAX_SLIPPAGE
 
         # ── Guard 1: Completeness ──────────────────────────────────
         if not all([direction, entry_low, sl, tp1, balance]):
@@ -255,7 +423,15 @@ class Aegis:
             lot_per_trade = round(MAX_LOT_TOTAL / num_trades, 2)
 
         # ── Entry ladder ───────────────────────────────────────────
-        ladder = self._build_entry_ladder(direction, entry_low, entry_high, num_trades, source=source)
+        ladder, ladder_meta = self._build_entry_ladder(
+            direction,
+            entry_low,
+            entry_high,
+            num_trades,
+            source=source,
+            regime_context=regime_context,
+            include_meta=True,
+        )
 
         total_risk = lot_per_trade * num_trades * sl_pips * PIP_VALUE_PER_LOT
 
@@ -285,6 +461,7 @@ class Aegis:
             rr_ratio=round(rr, 2),
             scale_factor=scale_factor,
             scale_reason=scale_reason,
+            regime_metadata=ladder_meta,
         )
 
     # ── Multi-TF trend cascade ───────────────────────────────

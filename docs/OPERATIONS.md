@@ -37,6 +37,8 @@ make restart
 # or: python3 services/install_services.py --restart
 ```
 
+Common runtime toggles that require this restart: `REGIME_ENGINE_ENABLED`, `REGIME_ENTRY_MODE`, `REGIME_MIN_CONFIDENCE`, and other `REGIME_*` knobs.
+
 This re-renders `services/macos/rendered/*.plist` from templates + `.env`, then reloads launchd.
 
 **How plists work:** Templates live at `services/macos/*.plist`. The installer renders them (injecting `.env` values) into `services/macos/rendered/`. `~/Library/LaunchAgents/` entries are **symlinks** to the rendered files — not copies — so changes are always traceable from the repo.
@@ -191,7 +193,7 @@ Reply in 2–4 sentences: current mode, whether MT5/context looks connected, and
 
 For **mode switches** and **command JSON** examples, see repo root **SKILL.md** (sections 4–5).
 
-**After editing `SKILL.md` or `SOUL.md`:** restart the **aurum** service (or `make restart`) so the running process reloads them — they are read once at AURUM startup.
+**After editing `SKILL.md` or `SOUL.md`:** no restart is required for prompt behavior updates — AURUM re-reads them on each query. Restart only if you changed service/env/runtime wiring.
 
 ---
 

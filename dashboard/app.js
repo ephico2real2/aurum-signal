@@ -535,6 +535,8 @@ function ATHENA(){
   const [pnlCurve,setPnlCurve]=useState([]);
   const [mgmtNote,setMgmtNote]=useState('');
   const [mgmtBusy,setMgmtBusy]=useState(false);
+  const [autoscalperConditions,setAutoscalperConditions]=useState(null);
+  const [autoscalperConditionsError,setAutoscalperConditionsError]=useState(null);
 
   useEffect(()=>{
     const poll=async()=>{
@@ -554,6 +556,28 @@ function ATHENA(){
           if(rp.ok){const curve=await rp.json();
             if(Array.isArray(curve))setPnlCurve(curve.map(x=>Number(x.cumulative)).filter(v=>!Number.isNaN(v)));}}
         catch(e){}
+        try{
+          const ra=await fetch(`${API}/api/autoscalper/conditions?responses=5`);
+          const ct=(ra.headers.get('content-type')||'').toLowerCase();
+          if(ra.ok&&ct.includes('application/json')){
+            const aj=await ra.json();
+            if(aj&&typeof aj==='object'&&!Array.isArray(aj)&&!aj.error){
+              setAutoscalperConditions(aj);setAutoscalperConditionsError(null);
+            }else{
+              setAutoscalperConditions(null);
+              setAutoscalperConditionsError((aj&&aj.error)?String(aj.error):'invalid_payload');
+            }
+          }else if(ra.ok){
+            setAutoscalperConditions(null);
+            setAutoscalperConditionsError('non_json_response');
+          }else{
+            setAutoscalperConditions(null);
+            setAutoscalperConditionsError(`HTTP ${ra.status}`);
+          }
+        }catch(e){
+          setAutoscalperConditions(null);
+          setAutoscalperConditionsError('unreachable');
+        }
       }catch(e){setConnected(false);}
     };
     poll();const t=setInterval(poll,3000);return()=>clearInterval(t);
@@ -616,6 +640,12 @@ function ATHENA(){
     performance:{total_pnl:0,total:0,wins:0,losses:0,win_rate:null,avg_pips:0},
     performance_window:null,
     aegis:{scale_factor:1,scale_reason:'UNKNOWN',session_pnl:0,streak:0,streak_type:'NONE'},
+    regime:{
+      config:{enabled:false,entry_mode:'off',min_confidence:0.6,stale_sec:180,retrain_interval_sec:3600,min_train_samples:120},
+      current:{label:'UNKNOWN',confidence:0,model_name:null,entry_mode:'off',age_sec:null,stale:true},
+      transitions_24h:[],
+      performance_30d:{days:30,by_regime:[],fallback_count:0,snapshot_count:0,fallback_rate:0},
+    },
     reconciler:null,
     components:{},
   };
@@ -641,6 +671,26 @@ function ATHENA(){
   const winRateLbl=(perf.win_rate==null||!perf.total)?'—':`${perf.win_rate}%`;
   const avgPipsVal=perf.avg_pips!=null?Number(perf.avg_pips):0;
   const avgPipsLbl=`${avgPipsVal>=0?'+':''}${avgPipsVal.toFixed(1)}`;
+  const regime=D.regime||{};
+  const regimeCfg=regime.config||{};
+  const regimeCurrent=regime.current||{};
+  const regimeTransitions=Array.isArray(regime.transitions_24h)?regime.transitions_24h:[];
+  const regimePerf=regime.performance_30d||{};
+  const regimeRows=Array.isArray(regimePerf.by_regime)?regimePerf.by_regime:[];
+  const regimeMode=((regimeCfg.entry_mode||regimeCurrent.entry_mode||'off')+'').toUpperCase();
+  const regimeModeColor=regimeMode==='ACTIVE'?T.green:regimeMode==='SHADOW'?T.amber:T.textD;
+  const regimeConfPct=(regimeCurrent.confidence==null||Number.isNaN(Number(regimeCurrent.confidence)))
+    ?'—':`${Math.round(Number(regimeCurrent.confidence)*100)}%`;
+  const asr=autoscalperConditions||{};
+  const asrPref=asr.bridge_prefilters||{};
+  const asrSetup=asr.setup_snapshot||{};
+  const asrOverall=asr.overall||{};
+  const asrLatest=(Array.isArray(asr.latest_autoscalper_responses)&&asr.latest_autoscalper_responses.length>0)
+    ?asr.latest_autoscalper_responses[0]:null;
+  const asrFailed=Array.isArray(asrOverall.failed_checks)?asrOverall.failed_checks:[];
+  const asrReady=asrOverall.g47_g48_sell_pattern_match===true;
+  const asrReadyColor=asrReady?T.green:T.red;
+  const asrPrefilterPass=asrPref.prefilter_pass===true;
 
   return(<div style={{background:T.bg,height:'100vh',color:T.textB,
     fontFamily:'Georgia,serif',display:'flex',flexDirection:'column',overflow:'hidden'}}>
@@ -978,15 +1028,18 @@ function ATHENA(){
               {/* Recent closures list */}
               {(D.recent_closures||[]).length>0?(
                 (D.recent_closures||[]).map((c,i)=>{
-                  const isSL=c.close_reason==='SL_HIT';
-                  const isTP=c.close_reason&&c.close_reason.startsWith('TP');
+                  const reasonRaw=c.close_reason||'?';
+                  const reasonLabel=(['SL_HIT','TP1_HIT','TP2_HIT','TP3_HIT','MANUAL_CLOSE'].includes(reasonRaw))
+                    ?reasonRaw:'MANUAL_CLOSE';
+                  const isSL=reasonLabel==='SL_HIT';
+                  const isTP=reasonLabel&&reasonLabel.startsWith('TP');
                   const reasonColor=isSL?T.red:isTP?T.green:T.amber;
                   return(
                     <div key={c.id||i} className="fade" style={{display:'flex',alignItems:'center',
                       gap:10,padding:'6px 10px',marginBottom:4,
                       background:T.card,border:`1px solid ${T.border2}`,borderRadius:5,
                       borderLeft:`3px solid ${reasonColor}`}}>
-                      <Tag lbl={c.close_reason||'?'} color={reasonColor}/>
+                      <Tag lbl={reasonLabel} color={reasonColor}/>
                       <Tag lbl={c.direction||'?'} color={c.direction==='BUY'?T.green:T.red} xs/>
                       <span style={{fontFamily:T.mono,fontSize:9,color:T.textD}}>#{c.ticket}</span>
                       <span style={{fontFamily:T.mono,fontSize:9,color:T.textD}}>G{c.trade_group_id}</span>
@@ -1343,6 +1396,102 @@ function ATHENA(){
               </div>
             </div>
           )}
+          <PT ch="🧪 AUTO_SCALPER readiness" color={asrReady?T.green:T.amber}/>
+          <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4,marginBottom:6}}>
+            {autoscalperConditions?(
+              <>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                  <Tag lbl={asrReady?'READY':'BLOCKED'} color={asrReadyColor}/>
+                  <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
+                    {fmtDateTime(asr.timestamp)}
+                  </span>
+                </div>
+                <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
+                  prefilters <span style={{color:asrPrefilterPass?T.green:T.red}}>{asrPrefilterPass?'PASS':'FAIL'}</span>
+                  {' · '}h1 {asrPref.h1_bias||'UNKNOWN'}
+                  {' · '}upperBB {asrSetup.near_upper_bb===true?'YES':asrSetup.near_upper_bb===false?'NO':'—'}
+                </div>
+                <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:3}}>
+                  quality {asrSetup.indicator_data_quality||'—'}
+                  {' · '}open {asrPref.open_groups!=null?asrPref.open_groups:'—'}/{asrPref.max_groups!=null?asrPref.max_groups:'—'}
+                  {' · '}mt5 {asrPref.mt5_fresh===true?'fresh':asrPref.mt5_fresh===false?'stale':'—'}
+                </div>
+                {asrFailed.length>0&&(
+                  <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
+                    failed: {asrFailed.slice(0,4).join(', ')}
+                  </div>
+                )}
+                {asrLatest&&(
+                  <div style={{fontSize:7,color:T.cyan,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
+                    latest: {asrLatest.decision||'—'} · {fmtDateTime(asrLatest.timestamp)}
+                  </div>
+                )}
+              </>
+            ):(
+              <div style={{fontSize:8,color:T.textD,fontFamily:T.mono,lineHeight:1.35}}>
+                Endpoint unavailable{autoscalperConditionsError?`: ${autoscalperConditionsError}`:''}
+              </div>
+            )}
+          </div>
+
+          <PT ch="🧭 Regime Engine" color={T.purple}/>
+          <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4,marginBottom:6}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+              <Tag lbl={regimeMode} color={regimeModeColor}/>
+              <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                {regimeCfg.enabled?'enabled':'disabled'}
+              </span>
+            </div>
+            <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.45}}>
+              <span style={{color:T.textD}}>Regime:</span> {regimeCurrent.label||'UNKNOWN'} ·
+              <span style={{color:T.gold}}> {regimeConfPct}</span>
+              <br/>
+              <span style={{color:T.textD}}>Model:</span> {regimeCurrent.model_name||'—'}
+              <span style={{color:T.textD}}> · age </span>{fmtAgeSec(regimeCurrent.age_sec)}
+              {regimeCurrent.stale&&<span style={{color:T.amber}}> · stale</span>}
+            </div>
+            {(regimeCurrent.entry_gate_reason||regimeCurrent.fallback_reason)&&(
+              <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,marginTop:5,lineHeight:1.35}}>
+                gate: {regimeCurrent.entry_gate_reason||'—'}
+                {regimeCurrent.fallback_reason?` · fallback: ${regimeCurrent.fallback_reason}`:''}
+              </div>
+            )}
+          </div>
+
+          <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4,marginBottom:6}}>
+            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
+              TRANSITIONS (24H)
+            </div>
+            {regimeTransitions.slice(0,4).map((tr,i)=>(
+              <div key={`${tr.timestamp||i}-${i}`} style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.35,marginBottom:3}}>
+                {tr.from||'?'} → <span style={{color:T.cyan}}>{tr.to||'?'}</span>
+                <span style={{color:T.textD}}> · {fmtDateTime(tr.timestamp)}</span>
+              </div>
+            ))}
+            {regimeTransitions.length===0&&(
+              <div style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>No transitions in window</div>
+            )}
+          </div>
+
+          <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
+            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
+              REGIME METRICS ({regimePerf.days||30}D)
+            </div>
+            <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.4,marginBottom:4}}>
+              snapshots {regimePerf.snapshot_count||0} · fallback {regimePerf.fallback_rate||0}%
+            </div>
+            {regimeRows.slice(0,3).map((row,i)=>(
+              <div key={`${row.regime_label||i}-${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:8,fontFamily:T.mono,lineHeight:1.45}}>
+                <span style={{color:T.textB}}>{row.regime_label||'UNKNOWN'} ({row.total||0})</span>
+                <span style={{color:(row.total_pnl||0)>=0?T.green:T.red}}>
+                  {(row.total_pnl||0)>=0?'+':''}{Number(row.total_pnl||0).toFixed(2)}
+                </span>
+              </div>
+            ))}
+            {regimeRows.length===0&&(
+              <div style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>No closed trades with regime labels yet</div>
+            )}
+          </div>
         </div>
       </div>
     </div>

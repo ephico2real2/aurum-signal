@@ -21,9 +21,9 @@ test.describe('ATHENA Closures Tab', () => {
     await closuresTab.click();
     await page.waitForTimeout(500);
     // Should show either closure rows or empty state
-    const hasClosures = await page.locator('text=SL_HIT').isVisible().catch(() => false) ||
-                        await page.locator('text=TP1_HIT').isVisible().catch(() => false) ||
-                        await page.locator('text=MANUAL_CLOSE').isVisible().catch(() => false);
+    const hasClosures = await page.locator('text=SL_HIT').first().isVisible().catch(() => false) ||
+                        await page.locator('text=TP1_HIT').first().isVisible().catch(() => false) ||
+                        await page.locator('text=MANUAL_CLOSE').first().isVisible().catch(() => false);
     const hasEmpty = await page.locator('text=No closures recorded yet').isVisible().catch(() => false);
     expect(hasClosures || hasEmpty).toBe(true);
   });

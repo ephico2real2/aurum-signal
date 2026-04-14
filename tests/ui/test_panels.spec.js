@@ -24,6 +24,14 @@ test.describe('ATHENA Panel Interactions', () => {
     }
   });
 
+  test('right panel shows AUTO_SCALPER readiness panel', async ({ page }) => {
+    await expect(page.locator('text=AUTO_SCALPER readiness').first()).toBeVisible();
+    const ready = await page.locator('text=READY').first().isVisible().catch(() => false);
+    const blocked = await page.locator('text=BLOCKED').first().isVisible().catch(() => false);
+    const unavailable = await page.locator('text=Endpoint unavailable').first().isVisible().catch(() => false);
+    expect(ready || blocked || unavailable).toBe(true);
+  });
+
   test('Activity tab switches content', async ({ page }) => {
     const activityTab = page.locator('text=Activity').first();
     await expect(activityTab).toBeVisible();
@@ -65,7 +73,7 @@ test.describe('ATHENA Panel Interactions', () => {
   });
 
   test('Performance tab shows stats', async ({ page }) => {
-    const perfTab = page.locator('text=Performance').first();
+    const perfTab = page.locator('[data-testid="tab-perf"]');
     await expect(perfTab).toBeVisible();
     await perfTab.click();
     await page.waitForTimeout(500);

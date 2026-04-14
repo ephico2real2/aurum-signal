@@ -8,7 +8,7 @@ SCRIBE is the audit backbone of the system. This guide exists so operators can q
 - what was executed in MT5,
 - and how outcomes were recorded.
 
-It also includes newer telemetry paths such as unmanaged/manual MT5 position tracking (`MANUAL_MT5`), inferred close reasons, and session/open alert events.
+It also includes newer telemetry paths such as unmanaged/manual MT5 position tracking (`MANUAL_MT5`), broker-first close attribution (with inference fallback), and session/open alert events.
 
 ## API contract and guardrails
 - Endpoint accepts **read-only SQL** in request body: `{"sql":"SELECT ..."}`.
@@ -36,10 +36,11 @@ curl -sS -X POST "http://localhost:7842/api/scribe/query" \
 - `system_events`: lifecycle/audit events (mode changes, session changes, alerts, circuit events)
 - `trading_sessions`: per-session rollups and boundaries
 - `market_snapshots`: periodic market+indicator snapshots
+- `market_regimes`: inferred regime snapshots (label, confidence, posterior, model/fallback metadata)
 - `signals_received`: parsed signal intake + disposition
 - `trade_groups`: logical trade bundles
 - `trade_positions`: ticket-level position lifecycle
-- `trade_closures`: closure reason ledger (SL/TP/manual inference)
+- `trade_closures`: closure reason ledger (broker-close hints first; SL/TP/manual inference fallback)
 - `news_events`: news guard windows and context
 - `aurum_conversations`: AI interaction audit
 - `component_heartbeats`: per-component liveness
@@ -261,6 +262,50 @@ LEFT JOIN vision_extractions ve ON ve.id = sr.vision_extraction_id
 WHERE sr.signal_source_type IN ('IMAGE','MIXED')
 ORDER BY sr.id DESC
 LIMIT 100;
+```
+
+## Regime diagnostics queries
+### 18) Latest inferred regime snapshot
+```sql
+SELECT
+  id, timestamp, mode, session, regime_label, confidence, model_name, model_version,
+  stale, age_sec, fallback_reason, entry_mode, apply_entry_policy, entry_gate_reason
+FROM market_regimes
+ORDER BY id DESC
+LIMIT 20;
+```
+
+### 19) Regime transition tape (last 24h)
+```sql
+SELECT
+  timestamp,
+  regime_label,
+  confidence,
+  model_name,
+  stale,
+  entry_mode,
+  fallback_reason
+FROM market_regimes
+WHERE timestamp >= datetime('now', '-24 hours')
+ORDER BY timestamp DESC
+LIMIT 200;
+```
+
+### 20) Closed-group performance by regime (30d)
+```sql
+SELECT
+  COALESCE(regime_label, 'UNKNOWN') AS regime_label,
+  COUNT(*) AS groups_closed,
+  SUM(CASE WHEN total_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+  SUM(CASE WHEN total_pnl < 0 THEN 1 ELSE 0 END) AS losses,
+  ROUND(SUM(total_pnl), 2) AS pnl_total,
+  ROUND(AVG(total_pnl), 2) AS pnl_avg
+FROM trade_groups
+WHERE status NOT IN ('OPEN','PARTIAL')
+  AND closed_at IS NOT NULL
+  AND closed_at >= datetime('now', '-30 days')
+GROUP BY COALESCE(regime_label, 'UNKNOWN')
+ORDER BY groups_closed DESC;
 ```
 
 ## Query hygiene notes

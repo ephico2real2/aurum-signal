@@ -50,7 +50,7 @@
     "london_start_utc": 7,
     "london_end_utc": 12,
     "ny_start_utc": 12,
-    "ny_end_utc": 22,
+    "ny_end_utc": 24,
     "skip_asian": true
   },
   "safety": {

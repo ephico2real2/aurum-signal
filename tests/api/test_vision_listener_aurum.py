@@ -351,7 +351,7 @@ class TestListenerImageFlow:
 
         assert scribe.signal_updates
         assert scribe.signal_updates[-1][1] == "WATCH_ONLY"
-        assert "ROOM_NOT_PRIORITY" in (scribe.signal_updates[-1][2] or "")
+        assert scribe.signal_updates[-1][2] == "WATCH_ONLY_ROOM_FILTER"
         assert any(e.get("event_type") == "SIGNAL_ROOM_WATCH_ONLY" for e in scribe.system_events)
 
     def test_same_message_id_edit_is_deduped_for_execution(self, monkeypatch):

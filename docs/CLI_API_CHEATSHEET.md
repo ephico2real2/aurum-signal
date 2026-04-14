@@ -127,34 +127,35 @@ curl -sS -X POST http://127.0.0.1:7842/api/aurum/ask \
 ### 6) Replay/submit and verify decision immediately
 After writing `python/config/parsed_signal.json`, check:
 ```bash
-tail -n 50 logs/bridge.log | grep -iE 'New signal|APPROVED|REJECTED|SKIPPED|TREND_CONFLICT|LOW_RR|OPEN_GROUP'
+tail -n 50 logs/bridge.log | grep -iE 'New signal|APPROVED|AEGIS_REJECTED|SKIPPED|TREND_CONFLICT|LOW_RR|OPEN_GROUP|SIGNAL_DISPATCHED|WATCH_ONLY'
 ```
 ```bash
 curl -sS http://127.0.0.1:7842/api/live
 ```
 If rejected, use `skip_reason` as the exact fix target for the next attempt.
 ### Common AEGIS reject reasons → what to change
-- `TREND_CONFLICT:M5=..._M15=..._vs_<DIRECTION>(scalp_cascade)`
+In SCRIBE `signals_received.skip_reason` and bridge.log, AEGIS rejections are prefixed `AEGIS_REJECTED:`.
+- `AEGIS_REJECTED:TREND_CONFLICT:M5=..._M15=..._vs_<DIRECTION>(scalp_cascade)`
   - Change direction to match M5/M15 bias, or wait for M5/M15 to realign.
   - For SIGNAL source, if both M5 and M15 oppose your direction, it will be skipped.
-- `LOW_RR:<value><1.2`
+- `AEGIS_REJECTED:LOW_RR:<value><1.2`
   - Tighten SL or widen TP1 so TP1 distance is at least ~1.2× SL distance.
-- `SL_TOO_TIGHT:<value><MIN_SL_PIPS`
+- `AEGIS_REJECTED:SL_TOO_TIGHT:<value><MIN_SL_PIPS`
   - Increase SL distance from entry so it exceeds minimum SL pips threshold.
-- `INVALID_SL:SL_BEYOND_ENTRY` / `INVALID_TP1:TP_BEYOND_ENTRY`
+- `AEGIS_REJECTED:INVALID_SL:SL_BEYOND_ENTRY` / `AEGIS_REJECTED:INVALID_TP1:TP_BEYOND_ENTRY`
   - Fix directional math:
     - BUY: `sl < entry` and `tp1 > entry`
     - SELL: `sl > entry` and `tp1 < entry`
-- `MAX_GROUPS:<open>/<limit>`
+- `AEGIS_REJECTED:MAX_GROUPS:<open>/<limit>`
   - Close or reduce existing open groups, then retry.
-- `DAILY_LOSS_LIMIT:$x/$y`
+- `AEGIS_REJECTED:DAILY_LOSS_LIMIT:$x/$y`
   - Wait for next session reset or lower risk/exposure before retrying.
-- `FLOATING_DD:<pct>%>=<limit>%`
+- `AEGIS_REJECTED:FLOATING_DD:<pct>%>=<limit>%`
   - Reduce current drawdown (close/reduce losing exposure) before opening new group.
-- `SLIPPAGE:<value>><max>`
+- `AEGIS_REJECTED:SLIPPAGE:<value>><max>`
   - Re-issue with a closer/current entry zone; avoid stale entries.
 
-Simulate a MODIFY_TP management command (moves TP on all open positions):
+Simulate a MODIFY_TP management command (global by default; add `group_id` to scope to one group):
 ```bash
 python3 -c "
 import json
@@ -165,6 +166,7 @@ cmd = {
     'type': 'MANAGEMENT',
     'intent': 'MODIFY_TP',     # or MODIFY_SL, CLOSE_ALL, MOVE_BE, CLOSE_PCT
     'tp': 4665.50,             # new TP price (for MODIFY_TP)
+    'group_id': 9,             # optional: scope to one group; omit for global modify
     'sl': None,                # new SL price (for MODIFY_SL)
     'pct': None,               # percentage (for CLOSE_PCT)
     'tp_stage': None,
@@ -182,7 +184,7 @@ python3 -c "
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-cmd = {'type':'MANAGEMENT','intent':'MODIFY_SL','sl':4662.00,'tp':None,'pct':None,'tp_stage':None,'signal_id':9999,'timestamp':datetime.now(timezone.utc).isoformat()}
+cmd = {'type':'MANAGEMENT','intent':'MODIFY_SL','sl':4662.00,'group_id':9,'tp':None,'pct':None,'tp_stage':None,'signal_id':9999,'timestamp':datetime.now(timezone.utc).isoformat()}
 Path('python/config/management_cmd.json').write_text(json.dumps(cmd, indent=2))
 print('MODIFY_SL → 4662.00 written')
 "
@@ -281,7 +283,7 @@ for k,l in [('indicators_h1','H1'),('indicators_m15','M15'),('indicators_m5','M5
 - FLAT (EMA20 ≈ EMA50 within $1) counts as agreement — allows either direction
 - Lot sizing uses `SIGNAL_LOT_SIZE` (default 0.01) when `AEGIS_LOT_MODE=fixed`
 - Num trades uses `SIGNAL_NUM_TRADES` (default 4)
-- MODIFY_SL/MODIFY_TP require FORGE v1.3.0 (reattach after compile)
+- MODIFY_SL/MODIFY_TP execution requires FORGE v1.3.0+; per-group scoping via `group_id` requires FORGE v1.4.1+ (reattach/reload EA after compile)
 - TP split: 75% of positions get TP1, 25% get TP2 (controlled by `TP1_CLOSE_PCT`)
 - Test parser via API: `POST /api/signals/parse {"text": "SELL Gold @4691..."}`
 - Swagger UI: `http://localhost:7842/api/docs/`
@@ -335,14 +337,14 @@ print(f'TOTAL: {len(d[\"rows\"])} trades | P&L: \${total_pnl:+.2f}')
 
 Example output:
 ```
-#1120041582 | BUY 0.01lot | entry=4663.39 → close=4668.95 | pnl=$+5.56 | reason=BROKER
-#1120041605 | BUY 0.01lot | entry=4663.41 → close=4668.95 | pnl=$+5.54 | reason=BROKER
-#1120041630 | BUY 0.01lot | entry=4663.39 → close=4668.95 | pnl=$+5.56 | reason=BROKER
-#1120041654 | BUY 0.01lot | entry=4663.46 → close=4668.95 | pnl=$+5.49 | reason=BROKER
+#1120041582 | BUY 0.01lot | entry=4663.39 → close=4668.95 | pnl=$+5.56 | reason=TP1_HIT
+#1120041605 | BUY 0.01lot | entry=4663.41 → close=4668.95 | pnl=$+5.54 | reason=TP1_HIT
+#1120041630 | BUY 0.01lot | entry=4663.39 → close=4668.95 | pnl=$+5.56 | reason=TP1_HIT
+#1120041654 | BUY 0.01lot | entry=4663.46 → close=4668.95 | pnl=$+5.49 | reason=TP1_HIT
 TOTAL: 4 trades | P&L: $+22.15
 ```
 
-**Interpreting G9:** 4 BUY positions entered at ~$4663.40 (0.01 lot each, from a simulated channel signal). All 4 closed at $4668.95 — just under the original TP of $4669.00. Each trade made ~$5.50 profit. close_reason=BROKER means MT5 closed them (TP hit), not a manual CLOSE_ALL.
+**Interpreting G9:** 4 BUY positions entered at ~$4663.40 (0.01 lot each, from a simulated channel signal). All 4 closed at $4668.95 — just under the original TP of $4669.00. Each trade made ~$5.50 profit. `close_reason=TP1_HIT` means broker closure data mapped these exits to the group TP stage (not a manual CLOSE_ALL).
 
 ### Step 3: Full portfolio summary
 
@@ -387,6 +389,27 @@ ALL-TIME P&L: $-17.39
 
 ```bash
 curl -s http://localhost:7842/api/health | python3 -m json.tool
+```
+
+## AUTO_SCALPER Condition Diagnostics
+
+Current readiness report (BRIDGE pre-filters + setup snapshot + recent AUTO_SCALPER reasoning):
+```bash
+curl -s http://localhost:7842/api/autoscalper/conditions | python3 -m json.tool
+```
+
+Tune classifier thresholds while querying:
+```bash
+curl -s "http://localhost:7842/api/autoscalper/conditions?responses=5&h1_flat_threshold=1.0&upper_bb_threshold_pct=90" | python3 -m json.tool
+```
+
+Compact readiness summary:
+```bash
+curl -s http://localhost:7842/api/autoscalper/conditions | python3 -c "\
+import sys,json; d=json.load(sys.stdin); \
+b=d.get('bridge_prefilters',{}); o=d.get('overall',{}); \
+print(f\"prefilter_pass={b.get('prefilter_pass')} h1_bias={b.get('h1_bias')} near_upper_bb={d.get('setup_snapshot',{}).get('near_upper_bb')} pattern_match={o.get('g47_g48_sell_pattern_match')} failed={o.get('failed_checks')}\")\
+"
 ```
 
 ## Live System State
@@ -871,16 +894,116 @@ curl -s -X POST http://localhost:7842/api/sentinel/override \
 # Auto-reverted after 300s
 ```
 
-## Signal Channels
+## Signal Channels & LISTENER Diagnostics
 
-Configured channels and their stats:
+### Check LISTENER health and room allowlist
 ```bash
 curl -s http://localhost:7842/api/channels | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-print(f'Configured: {d[\"total_configured\"]} channels ({d[\"configured_ids\"]})')
+print(f'LISTENER status: {d.get(\"listener_status\")}  last_ingest: {d.get(\"listener_last_ingest_at\")}')
+print(f'trade_rooms_active: {d[\"signal_trade_rooms_active\"]}  channels: {d[\"total_configured\"]}')
 for ch in d.get('channels', []):
-    print(f'  {ch[\"channel_name\"]}: {ch[\"total\"]} signals (exec={ch[\"executed\"]} skip={ch[\"skipped\"]}) last={ch.get(\"last_signal\",\"never\")[:19]}')
+    print(f'  {ch[\"name\"]:30s} trade_room={str(ch[\"is_trade_room\"]):5s} ({ch[\"match_reason\"]}) '
+          f'signals={ch[\"total_signals\"]} exec={ch[\"executed\"]} watch={ch[\"watch_only\"]} skip={ch[\"skipped\"]} last={str(ch.get(\"last_signal\") or \"never\")[:19]}')
+"
+```
+Key fields:
+- `is_trade_room=False` + `match_reason=WATCH_ONLY_ROOM_FILTER` → room is NOT in allowlist (`SIGNAL_TRADE_ROOMS` / `ACTIVE_SIGNAL_TRADE_ROOMS`) — add its title or chat_id to `.env` and `make restart`
+- `watch_only > 0` → signals arriving from this room but being held — check `SIGNAL_TRADE_ROOMS` / `ACTIVE_SIGNAL_TRADE_ROOMS` config
+- `listener_status=WARN` → no message received recently — check if Telegram session is alive
+
+### Check message cache staleness
+```bash
+curl -s http://localhost:7842/api/channels/messages | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f'cache_age={d.get(\"cache_age_sec\")}s  stale={d.get(\"listener_stale\")}  last_ingest={d.get(\"listener_last_ingest_at\")}')
+for ch in d.get('channels', []):
+    print(f'  {ch[\"name\"]}: {len(ch.get(\"messages\",[])) } msgs cached')
+    for m in ch.get('messages', [])[:3]:
+        print(f'    [{m[\"date\"]}] {m[\"text\"][:100]}')
+"
+```
+If `listener_stale=true` or `cache_age_sec > 900`, LISTENER may be disconnected — run `make logs-listener`.
+
+### Diagnose "no trades from room" in 60 seconds
+```bash
+# Step 1 — which rooms are allowed to trade?
+curl -sS http://127.0.0.1:7842/api/channels | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+[print(f'  {ch[\"name\"]}: is_trade_room={ch[\"is_trade_room\"]} match={ch[\"match_reason\"]} watch_only={ch[\"watch_only\"]}') for ch in d['channels']]
+"
+
+# Step 2 — recent signal pipeline trace (last 20 signals)
+curl -sS -X POST http://127.0.0.1:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT id,timestamp,channel_name,action_taken,skip_reason FROM signals_received ORDER BY id DESC LIMIT 20"}' \
+  | python3 -c "
+import sys,json
+for r in json.load(sys.stdin)['rows']:
+    print(f'{r[\"timestamp\"][:19]} | {(r[\"channel_name\"] or \"?\"):25s} | {r[\"action_taken\"]:12s} | {r[\"skip_reason\"] or \"-\"}')
+"
+
+# Step 3 — watch_only events (room not in allowlist)
+curl -sS -X POST http://127.0.0.1:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT timestamp,reason,notes FROM system_events WHERE event_type='\''SIGNAL_ROOM_WATCH_ONLY'\'' ORDER BY id DESC LIMIT 10"}' \
+  | python3 -c "import sys,json; [print(r['timestamp'][:19], r['notes'][:120]) for r in json.load(sys.stdin)['rows']]"
+
+# Step 4 — parse failures (messages received but not recognized as signals)
+curl -sS -X POST http://127.0.0.1:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT timestamp,notes FROM system_events WHERE event_type='\''SIGNAL_PARSE_FAILED'\'' ORDER BY id DESC LIMIT 10"}' \
+  | python3 -c "import sys,json; [print(r['timestamp'][:19], r['notes'][:120]) for r in json.load(sys.stdin)['rows']]"
+
+# Step 5 — confirmed dispatches (LISTENER → parsed_signal.json)
+curl -sS -X POST http://127.0.0.1:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT timestamp,notes FROM system_events WHERE event_type='\''SIGNAL_DISPATCHED'\'' ORDER BY id DESC LIMIT 10"}' \
+  | python3 -c "import sys,json; [print(r['timestamp'][:19], r['notes'][:120]) for r in json.load(sys.stdin)['rows']]"
+
+# Step 6 — AEGIS rejections (signal reached BRIDGE but was gated)
+curl -sS -X POST http://127.0.0.1:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT timestamp,channel_name,action_taken,skip_reason FROM signals_received WHERE skip_reason LIKE '\''AEGIS_REJECTED%'\'' ORDER BY id DESC LIMIT 10"}' \
+  | python3 -c "
+import sys,json
+for r in json.load(sys.stdin)['rows']:
+    print(f'{r[\"timestamp\"][:19]} | {(r[\"channel_name\"] or \"?\"):25s} | {r[\"skip_reason\"]}')
+"
+```
+
+### Replay a signal and confirm LISTENER pickup
+Safe pickup-only replay (no dispatch/trade):
+```bash
+python3 scripts/replay_signal_pickup.py \
+  --text "Sell Gold @ 4780-4776 SL 4786 TP1 4772 TP2 4768" \
+  --chat-id -1002034822451 \
+  --channel-name "Ben's VIP Club" \
+  --mode WATCH \
+  --expect-action LOGGED_ONLY
+```
+Replay a historical signal row and verify live-mode pipeline action:
+```bash
+python3 scripts/replay_signal_pickup.py \
+  --from-signal-id 220 \
+  --mode HYBRID \
+  --wait-bridge-sec 20
+```
+What success looks like in output JSON:
+- `picked_up=true`
+- `signal_row.id` present
+- `signal_row.action_taken` populated (`LOGGED_ONLY`, `WATCH_ONLY`, `SKIPPED`, `EXECUTED`, etc.)
+
+### Signal Channel Stats (original)
+```bash
+curl -s http://localhost:7842/api/channels | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f'Configured: {d[\"total_configured\"]} channels')
+for ch in d.get('channels', []):
+    print(f'  {ch[\"name\"]}: {ch[\"total_signals\"]} signals (exec={ch[\"executed\"]} skip={ch[\"skipped\"]} watch={ch[\"watch_only\"]}) last={str(ch.get(\"last_signal\") or \"never\")[:19]}')
 "
 ```
 
@@ -888,7 +1011,9 @@ Recent messages from all channels (via API — no Telegram lock needed):
 ```bash
 curl -s http://localhost:7842/api/channels/messages | python3 -c "
 import sys, json
-for ch in json.load(sys.stdin).get('channels', []):
+d = json.load(sys.stdin)
+print(f'cache_age={d.get(\"cache_age_sec\")}s  stale={d.get(\"listener_stale\")}')
+for ch in d.get('channels', []):
     print(f'=== {ch[\"name\"]} ({ch[\"id\"]}) ===')
     for m in ch.get('messages', [])[:5]:
         print(f'  [{m[\"date\"]}] {m[\"text\"][:100]}')

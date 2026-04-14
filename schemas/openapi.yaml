@@ -11,7 +11,7 @@ info:
     **SCRIBE ad-hoc SQL:** see `docs/SCRIBE_QUERY_EXAMPLES.md` and the **Examples** on `POST /api/scribe/query`.
 
     Bundle version aligns with `schemas/manifest.json` (HTTP portion only).
-  version: 1.3.0
+  version: 1.4.0
   license:
     name: Proprietary
 
@@ -34,6 +34,8 @@ tags:
     description: Liveness
   - name: live
     description: Aggregated dashboard payload
+  - name: regime
+    description: Regime inference snapshots and analytics
   - name: components
     description: Component heartbeats
   - name: trading
@@ -72,6 +74,101 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LiveResponse"
+
+  /api/regime/current:
+    get:
+      tags: [regime]
+      summary: Current regime snapshot + rollout config + hints
+      operationId: getRegimeCurrent
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp: { type: string }
+                  config: { $ref: "#/components/schemas/RegimeConfig" }
+                  current: { $ref: "#/components/schemas/RegimeSnapshot" }
+                  transitions_24h:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  performance_30d: { type: object, additionalProperties: true }
+
+  /api/regime/history:
+    get:
+      tags: [regime]
+      summary: Historical regime snapshots
+      operationId: getRegimeHistory
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 120, minimum: 1, maximum: 2000 }
+        - name: hours
+          in: query
+          schema: { type: integer, default: 72, minimum: 1, maximum: 720 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history:
+                    type: array
+                    items: { $ref: "#/components/schemas/RegimeSnapshot" }
+                  limit: { type: integer }
+                  hours: { type: integer }
+
+  /api/regime/performance:
+    get:
+      tags: [regime]
+      summary: Regime-conditioned performance summary
+      operationId: getRegimePerformance
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 30, minimum: 1, maximum: 366 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/autoscalper/conditions:
+    get:
+      tags: [trading]
+      summary: AUTO_SCALPER trigger readiness diagnostics
+      description: |
+        Evaluates BRIDGE pre-filters and setup quality markers used for AUTO_SCALPER-style
+        entries (including G47/G48 pattern checks), plus recent AUTO_SCALPER reasoning previews.
+      operationId: getAutoScalperConditions
+      parameters:
+        - name: responses
+          in: query
+          schema: { type: integer, default: 3, minimum: 1, maximum: 20 }
+          description: Number of recent AUTO_SCALPER responses to include.
+        - name: h1_flat_threshold
+          in: query
+          schema: { type: number, default: 1.0 }
+          description: Flat threshold for EMA20-EMA50 H1 bias classification.
+        - name: upper_bb_threshold_pct
+          in: query
+          schema: { type: number, default: 90.0 }
+          description: Percentile threshold for considering M15 price near upper Bollinger band.
+      responses:
+        \"200\":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutoScalperConditionsResponse"
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: \"#/components/schemas/ErrorBody\"
 
   /api/components:
     get:
@@ -740,6 +837,62 @@ components:
         stale_reason: {}
       additionalProperties: true
 
+    RegimeConfig:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        entry_mode: { type: string, enum: [off, shadow, active] }
+        min_confidence: { type: number }
+        stale_sec: { type: integer }
+        retrain_interval_sec: { type: integer }
+        min_train_samples: { type: integer }
+      additionalProperties: true
+
+    RegimeSnapshot:
+      type: object
+      properties:
+        timestamp: { type: string }
+        label: { type: string }
+        confidence: { type: number }
+        posterior: { type: object, additionalProperties: true }
+        model_name: { type: string }
+        model_version: { type: string }
+        stale: { type: boolean }
+        age_sec: {}
+        fallback_reason: {}
+        entry_mode: { type: string }
+        apply_entry_policy: { type: boolean }
+        entry_gate_reason: {}
+        feature_hash: { type: string }
+        features: { type: object, additionalProperties: true }
+        transition: { type: boolean }
+      additionalProperties: true
+
+    RegimeLiveBlock:
+      type: object
+      properties:
+        config: { $ref: "#/components/schemas/RegimeConfig" }
+        current: { $ref: "#/components/schemas/RegimeSnapshot" }
+        transitions_24h:
+          type: array
+          items: { type: object, additionalProperties: true }
+        performance_30d: { type: object, additionalProperties: true }
+      additionalProperties: true
+
+    AutoScalperConditionsResponse:
+      type: object
+      properties:
+        timestamp: { type: string }
+        config: { type: object, additionalProperties: true }
+        data_sources: { type: object, additionalProperties: true }
+        bridge_prefilters: { type: object, additionalProperties: true }
+        setup_snapshot: { type: object, additionalProperties: true }
+        latest_autoscalper_responses:
+          type: array
+          items: { type: object, additionalProperties: true }
+        overall: { type: object, additionalProperties: true }
+      additionalProperties: true
+
     LiveResponse:
       type: object
       required:
@@ -793,6 +946,7 @@ components:
         performance: { type: object, additionalProperties: true }
         performance_window: { type: object }
         aegis: { type: object, additionalProperties: true }
+        regime: { $ref: "#/components/schemas/RegimeLiveBlock" }
         components: { type: object, additionalProperties: true }
         reconciler: {}
         indicators_h1: { type: object }

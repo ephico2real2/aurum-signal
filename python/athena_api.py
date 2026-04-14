@@ -10,7 +10,7 @@ Run: python athena_api.py
 Dashboard: http://localhost:7842
 """
 
-import os, json, logging, time
+import os, json, logging, time, re, unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, Response
@@ -20,6 +20,7 @@ from flask_swagger_ui import get_swaggerui_blueprint
 from scribe import get_scribe
 from status_report import KNOWN_COMPONENTS
 from market_data import MT5_STALE_SEC, build_execution_quote, safe_float
+from autoscalper_condition_service import build_autoscalper_condition_report
 from trading_session import get_trading_session_utc, trading_day_reset_hour_utc
 
 log = logging.getLogger("athena_api")
@@ -93,6 +94,65 @@ def _read_json(path: str) -> dict:
     except:
         return {}
 
+def _normalize_allowlist_token(value: str) -> str:
+    value = unicodedata.normalize("NFKC", str(value or ""))
+    value = re.sub(r"\s+", " ", value)
+    return value.strip().lower()
+
+
+def _chat_id_variants(chat_id) -> list[str]:
+    if chat_id is None:
+        return []
+    raw = str(chat_id).strip()
+    variants = {raw}
+    if raw.startswith("-100"):
+        variants.add(raw[4:])
+        variants.add(raw[1:])
+    elif raw.startswith("-"):
+        variants.add(raw[1:])
+    else:
+        variants.add(f"-100{raw}")
+    return [v.lower() for v in variants]
+
+
+def _parse_signal_trade_rooms_from_env() -> tuple[set[str], str]:
+    env_sources = (
+        ("SIGNAL_TRADE_ROOMS", os.environ.get("SIGNAL_TRADE_ROOMS", "")),
+        ("ACTIVE_SIGNAL_TRADE_ROOMS", os.environ.get("ACTIVE_SIGNAL_TRADE_ROOMS", "")),
+    )
+    rooms: set[str] = set()
+    used_sources: list[str] = []
+    for source_name, raw_value in env_sources:
+        if not raw_value or not raw_value.strip():
+            continue
+        tokens = [
+            _normalize_allowlist_token(token)
+            for token in str(raw_value).split(",")
+            if token and token.strip()
+        ]
+        if tokens:
+            rooms.update(tokens)
+            used_sources.append(source_name)
+    if len(used_sources) == 2:
+        source_label = "SIGNAL_TRADE_ROOMS+ACTIVE_SIGNAL_TRADE_ROOMS"
+    elif len(used_sources) == 1:
+        source_label = used_sources[0]
+    else:
+        source_label = "NONE"
+    return rooms, source_label
+
+
+def _is_trade_room_allowed(channel_name: str, chat_id, trade_rooms: set[str]) -> tuple[bool, str]:
+    if not trade_rooms:
+        return True, "ALLOWED_ALL"
+    channel_key = _normalize_allowlist_token(channel_name)
+    if channel_key in trade_rooms:
+        return True, "ALLOWED_TITLE_MATCH"
+    for variant in _chat_id_variants(chat_id):
+        if variant in trade_rooms:
+            return True, "ALLOWED_ID_MATCH"
+    return False, "WATCH_ONLY_ROOM_FILTER"
+
 
 FORGE_MAGIC_NUMBER_DEFAULT = 202401  # must match ea/FORGE.mq5 input MagicNumber unless overridden
 
@@ -158,6 +218,15 @@ def _build_tradingview_panel(lens_raw: dict) -> dict:
         return {"last": None, "timeframe": None, "age_seconds": None}
     out = {k: lens_raw.get(k) for k in TV_KEYS}
     out["last"] = safe_float(lens_raw.get("price"))
+    ts_raw = out.get("timestamp")
+    if ts_raw:
+        try:
+            ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            out["age_seconds"] = round(max(0.0, (datetime.now(timezone.utc) - ts).total_seconds()), 1)
+        except Exception:
+            pass
     return out
 
 
@@ -165,6 +234,8 @@ def _build_lens_backward_compat(lens_raw: dict, execution: dict, tv: dict) -> di
     """Flat lens dict for AURUM/tests; bid/ask omitted when MT5 file is stale."""
     lens = dict(lens_raw) if isinstance(lens_raw, dict) else {}
     tv_last = tv.get("last")
+    if tv.get("age_seconds") is not None:
+        lens["age_seconds"] = tv.get("age_seconds")
     if tv_last is not None:
         lens["tradingview_close"] = tv_last
     if execution.get("usable"):
@@ -199,6 +270,46 @@ def _build_lens_backward_compat(lens_raw: dict, execution: dict, tv: dict) -> di
             b is not None and tv_last is not None and abs(float(tv_last) - float(b)) > 2.0
         )
     return lens
+
+
+def _regime_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _regime_config_block() -> dict:
+    return {
+        "enabled": _regime_bool("REGIME_ENGINE_ENABLED", True),
+        "entry_mode": (os.environ.get("REGIME_ENTRY_MODE", "off") or "off").lower(),
+        "min_confidence": float(os.environ.get("REGIME_MIN_CONFIDENCE", "0.60")),
+        "stale_sec": int(os.environ.get("REGIME_STALE_SEC", "180")),
+        "retrain_interval_sec": int(os.environ.get("REGIME_RETRAIN_INTERVAL_SEC", "3600")),
+        "min_train_samples": int(os.environ.get("REGIME_MIN_TRAIN_SAMPLES", "120")),
+    }
+
+
+def _build_regime_block(scribe, status: dict | None = None) -> dict:
+    status = status or {}
+    cfg = _regime_config_block()
+    current = {}
+    transitions = []
+    perf = {"days": 30, "by_regime": [], "fallback_count": 0, "snapshot_count": 0, "fallback_rate": 0.0}
+    try:
+        current = scribe.get_latest_regime() or {}
+        transitions = scribe.get_regime_transitions(hours=24, limit=6)
+        perf = scribe.get_regime_performance(days=30)
+    except Exception as e:
+        log.warning("Regime read error: %s", e)
+    if not current and isinstance(status.get("regime"), dict):
+        current = dict(status.get("regime") or {})
+    return {
+        "config": cfg,
+        "current": current,
+        "transitions_24h": transitions,
+        "performance_30d": perf,
+    }
 
 
 # ── Live data endpoint ─────────────────────────────────────────────
@@ -279,6 +390,7 @@ def api_live():
     open_groups_confirmed, open_groups_queued = partition_open_groups_for_athena(
         scribe_open_all, mt5, _forge_magic
     )
+    regime = _build_regime_block(scribe, status)
 
     return jsonify({
         "timestamp":       datetime.now(timezone.utc).isoformat(),
@@ -347,6 +459,7 @@ def api_live():
 
         # AEGIS risk state
         "aegis": aegis_state,
+        "regime": regime,
 
         # Component health (from heartbeats)
         "components": heartbeats,
@@ -360,6 +473,76 @@ def api_live():
             "scribe_open": recon.get("scribe_open_count", 0),
         } if recon else None,
     })
+
+@app.route("/api/regime/current")
+def api_regime_current():
+    scribe = get_scribe()
+    status = _read_json(STATUS_FILE)
+    block = _build_regime_block(scribe, status)
+    return jsonify(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "config": block.get("config", {}),
+            "current": block.get("current", {}),
+            "transitions_24h": block.get("transitions_24h", []),
+            "performance_30d": block.get("performance_30d", {}),
+        }
+    )
+
+
+@app.route("/api/regime/history")
+def api_regime_history():
+    limit = max(1, min(int(request.args.get("limit", 120)), 2000))
+    hours = max(1, min(int(request.args.get("hours", 72)), 24 * 30))
+    scribe = get_scribe()
+    try:
+        rows = scribe.get_regime_history(limit=limit, hours=hours)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"history": rows, "limit": limit, "hours": hours})
+
+
+@app.route("/api/regime/performance")
+def api_regime_performance():
+    days = max(1, min(int(request.args.get("days", 30)), 366))
+    scribe = get_scribe()
+    try:
+        perf = scribe.get_regime_performance(days=days)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify(perf)
+
+
+@app.route("/api/autoscalper/conditions")
+def api_autoscalper_conditions():
+    """Query current AUTO_SCALPER trigger readiness + recent reasoning context."""
+    try:
+        responses_limit = max(1, min(int(request.args.get("responses", 3)), 20))
+    except (TypeError, ValueError):
+        responses_limit = 3
+    try:
+        h1_flat_threshold = float(request.args.get("h1_flat_threshold", 1.0))
+    except (TypeError, ValueError):
+        h1_flat_threshold = 1.0
+    try:
+        upper_bb_threshold_pct = float(request.args.get("upper_bb_threshold_pct", 90.0))
+    except (TypeError, ValueError):
+        upper_bb_threshold_pct = 90.0
+
+    scribe = get_scribe()
+    try:
+        report = build_autoscalper_condition_report(
+            status_path=STATUS_FILE,
+            sentinel_path=SENTINEL_FILE,
+            market_path=MARKET_FILE,
+            db_path=scribe.db_path,
+            responses_limit=responses_limit,
+            h1_flat_threshold=h1_flat_threshold,
+            upper_bb_threshold_pct=upper_bb_threshold_pct,
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify(report)
 
 # ── TradingView brief endpoint ─────────────────────────────────────
 @app.route("/api/brief")
@@ -712,8 +895,24 @@ def api_channel_messages():
     """Recent messages from configured Telegram channels (cached by LISTENER every 5min)."""
     msgs_file = os.path.join(_HERE, "config", "channel_messages.json")
     names_file = os.path.join(_HERE, "config", "channel_names.json")
+    meta_file  = os.path.join(_HERE, "config", "listener_meta.json")
     messages = _read_json(msgs_file)
-    names = _read_json(names_file)
+    names    = _read_json(names_file)
+    meta     = _read_json(meta_file)
+
+    # Determine cache age from file mtime
+    cache_age_sec = None
+    try:
+        mtime = os.path.getmtime(msgs_file)
+        cache_age_sec = round(time.time() - mtime, 1)
+    except OSError:
+        pass
+
+    listener_stale = False
+    if cache_age_sec is not None:
+        listener_cache_refresh_sec = int(os.environ.get("LISTENER_CACHE_REFRESH_SEC", "300"))
+        listener_stale = cache_age_sec > listener_cache_refresh_sec * 3
+
     result = []
     for ch_id, msgs in messages.items():
         result.append({
@@ -721,13 +920,19 @@ def api_channel_messages():
             "name": names.get(ch_id, f"channel_{ch_id}"),
             "messages": msgs,
         })
-    return jsonify({"channels": result})
+    return jsonify({
+        "channels": result,
+        "cache_age_sec": cache_age_sec,
+        "listener_stale": listener_stale,
+        "listener_last_ingest_at": meta.get("last_ingest_at"),
+        "listener_status": meta.get("status"),
+    })
 
 
 # ── Configured signal channels ────────────────────────────
 @app.route("/api/channels")
 def api_channels():
-    """Return configured Telegram channels with names and recent signal counts."""
+    """Return configured Telegram channels with names, signal counts, and trade-room status."""
     scribe = get_scribe()
     # Get channel names + counts from SCRIBE signal history
     rows = scribe.query(
@@ -735,7 +940,8 @@ def api_channels():
                MAX(timestamp) as last_signal,
                SUM(CASE WHEN action_taken='EXECUTED' THEN 1 ELSE 0 END) as executed,
                SUM(CASE WHEN action_taken='SKIPPED' THEN 1 ELSE 0 END) as skipped,
-               SUM(CASE WHEN action_taken='LOGGED_ONLY' THEN 1 ELSE 0 END) as logged_only
+               SUM(CASE WHEN action_taken='LOGGED_ONLY' THEN 1 ELSE 0 END) as logged_only,
+               SUM(CASE WHEN action_taken='WATCH_ONLY' THEN 1 ELSE 0 END) as watch_only
            FROM signals_received
            WHERE channel_name IS NOT NULL
            GROUP BY channel_name
@@ -747,7 +953,18 @@ def api_channels():
 
     # Merge Telethon-resolved names (written by LISTENER on connect)
     names_file = os.path.join(_HERE, "config", "channel_names.json")
+    meta_file  = os.path.join(_HERE, "config", "listener_meta.json")
     resolved_names = _read_json(names_file)
+    meta = _read_json(meta_file)
+
+    # Build a map of chat_id → room allowlist status from listener_meta resolved_rooms
+    resolved_rooms_map: dict[str, dict] = {}
+    for rr in (meta.get("resolved_rooms") or []):
+        resolved_rooms_map[str(rr.get("chat_id", ""))] = rr
+
+    # SIGNAL_TRADE_ROOMS env (for is_trade_room indicator when meta not yet written)
+    raw_trade_rooms, trade_rooms_source = _parse_signal_trade_rooms_from_env()
+    trade_rooms_active = bool(raw_trade_rooms)
 
     # Build full channel list: known names + SCRIBE stats
     scribe_map = {r["channel_name"]: r for r in rows}
@@ -755,6 +972,13 @@ def api_channels():
     for cid in configured:
         name = resolved_names.get(cid, resolved_names.get(str(cid)))
         stats = scribe_map.get(name, {})
+        # Prefer listener_meta resolved_rooms for trade room status; fall back to env check
+        rr_entry = resolved_rooms_map.get(str(cid), {})
+        if rr_entry:
+            is_trade_room = rr_entry.get("is_trade_room", True)
+            match_reason  = rr_entry.get("match_reason")
+        else:
+            is_trade_room, match_reason = _is_trade_room_allowed(name or "", cid, raw_trade_rooms)
         all_channels.append({
             "id": cid,
             "name": name or f"channel_{cid}",
@@ -762,13 +986,22 @@ def api_channels():
             "executed": stats.get("executed", 0),
             "skipped": stats.get("skipped", 0),
             "logged_only": stats.get("logged_only", 0),
+            "watch_only": stats.get("watch_only", 0),
             "last_signal": stats.get("last_signal"),
+            "is_trade_room": is_trade_room,
+            "match_reason": match_reason,
         })
 
     return jsonify({
         "configured_ids": configured,
         "channels": all_channels,
         "total_configured": len(configured),
+        "signal_trade_rooms_active": trade_rooms_active,
+        "signal_trade_rooms_source": (
+            meta.get("signal_trade_rooms_source") or trade_rooms_source
+        ),
+        "listener_last_ingest_at": meta.get("last_ingest_at"),
+        "listener_status": meta.get("status"),
     })
 
 

@@ -39,7 +39,8 @@ AEGIS evaluates **Guards 1 → 6** in order. The **first** failure wins; later c
 
 ### Guard 1a — SIGNAL limit-orientation (new)
 
-Applied only when `source=SIGNAL` and `current_price` is available:
+Applied only when `source=SIGNAL` and `current_price` is available.
+This means it affects LISTENER room entries in both **SIGNAL** and **HYBRID** modes.
 
 - **BUY** entries must be **below** market (`entry_low < current_price`) — buy-limit orientation.
 - **SELL** entries must be **above** market (`entry_high > current_price`) — sell-limit orientation.
@@ -47,6 +48,13 @@ Applied only when `source=SIGNAL` and `current_price` is available:
 Reject codes:
 - **`SIGNAL_BUY_LIMIT_REQUIRED:entry_low=...>=market=...`**
 - **`SIGNAL_SELL_LIMIT_REQUIRED:entry_high=...<=market=...`**
+
+Config:
+- `AEGIS_SIGNAL_LIMIT_ORIENTATION=both|buy|sell|off` (default `both`)
+  - `both`: enforce BUY and SELL orientation checks
+  - `buy`: enforce BUY check only
+  - `sell`: enforce SELL check only
+  - `off`: disable orientation checks for both BUY and SELL (signal still goes through all other AEGIS guards)
 
 ### Guard 2 — Max open groups
 
@@ -119,10 +127,12 @@ If all guards pass:
 4. **`PIP_VALUE_PER_LOT`** is fixed at **100.0** in code (XAUUSD assumption: **$100 per 1.0 lot per $1.00 adverse move** in the simplified model — align your mental model with your broker’s contract specs).
 
 5. **Entry ladder**:
-   - For `source=SIGNAL` with a range and multiple trades:
-     - **BUY**: all legs use the cheapest endpoint (`entry_low`)
-     - **SELL**: all legs use the highest endpoint (`entry_high`)
-   - Other sources keep linear spacing between `entry_low` and `entry_high`.
+   - For `source=SIGNAL` with a range and multiple trades, AEGIS now supports **regime-conditioned placement**:
+     - `REGIME_ENTRY_MODE=active`: ladder anchor/dispersion is selected from regime label + confidence (`TREND_*`, `RANGE`, `VOLATILE`) using a fill-vs-edge score across candidate entry ratios.
+     - `REGIME_ENTRY_MODE=shadow|off` (or confidence/staleness gate fail): AEGIS falls back to legacy endpoint behavior:
+       - **BUY** → cheapest endpoint (`entry_low`)
+       - **SELL** → highest endpoint (`entry_high`)
+   - Non-SIGNAL sources keep linear spacing between `entry_low` and `entry_high`.
 
 ---
 
@@ -201,6 +211,7 @@ Set these in **repo root `.env`** (or the environment of **bridge** / launchd pl
 | `AEGIS_SIGNAL_MIN_RR` | `AEGIS_MIN_RR` | Override min R:R for `source=SIGNAL` only |
 | `AEGIS_SIGNAL_MIN_SL_PIPS` | `AEGIS_MIN_SL_PIPS` | Override min SL distance for `source=SIGNAL` only |
 | `AEGIS_SIGNAL_MAX_SLIPPAGE` | `AEGIS_MAX_SLIPPAGE` | Override max slippage for `source=SIGNAL` only |
+| `AEGIS_SIGNAL_LIMIT_ORIENTATION` | `both` | SIGNAL orientation gate mode (`both|buy|sell|off`) for LISTENER room entries in SIGNAL/HYBRID |
 
 When `source=SIGNAL` (LISTENER room entries), AEGIS evaluates Guard 4, Guard 5, and Guard 6 using `AEGIS_SIGNAL_*` values when set. Non-SIGNAL sources (`AURUM`, `AUTO_SCALPER`, internal `SCALPER`) continue using base `AEGIS_*` thresholds.
 
@@ -212,6 +223,18 @@ When `source=SIGNAL` (LISTENER room entries), AEGIS evaluates Guard 4, Guard 5, 
 | `risk_based` | Computes lot dynamically: `(balance × risk% × scale_factor) / (num_trades × SL_pips × PIP_VALUE_PER_LOT)`. Ignores source lot_per_trade. |
 
 Risk-based computation always runs internally for logging (`total_risk` in approval). The toggle only controls which value goes to FORGE.
+
+### Regime-aware entry rollout
+
+| Variable | Default | Role |
+|---|---|---|
+| `REGIME_ENGINE_ENABLED` | `true` | Enable regime inference snapshots (HMM primary, Gaussian fallback) |
+| `REGIME_ENTRY_MODE` | `off` | `off`/`shadow`/`active` policy switch for regime-conditioned ladders |
+| `REGIME_MIN_CONFIDENCE` | `0.60` | Minimum confidence required to apply regime ladder in `active` |
+| `REGIME_STALE_SEC` | `180` | Maximum snapshot age (seconds) before regime policy is blocked |
+| `REGIME_RETRAIN_INTERVAL_SEC` | `3600` | HMM retraining cadence |
+| `REGIME_MIN_TRAIN_SAMPLES` | `120` | Minimum samples before HMM training is attempted |
+| `REGIME_LOG_INTERVAL_SEC` | `30` | Snapshot persistence cadence into `market_regimes` |
 
 ### Per-signal overrides
 

@@ -56,7 +56,7 @@
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
 input int     MagicNumber    = 202401;       // EA magic number
-input int     TimerSeconds   = 3;            // OnTimer interval (seconds)
+input int     TimerSeconds   = 1;            // OnTimer interval (seconds)
 input bool    EnableBacktest = false;        // Enable Strategy Tester mode
 input bool    LogTicks       = true;         // Log ticks in WATCH mode
 input string  InputMode      = "WATCH";      // Startup mode: OFF|WATCH|SIGNAL|SCALPER|HYBRID
@@ -87,6 +87,7 @@ int    g_scalper_group_counter = 5000;  // native groups start at 5000+ to avoid
 int    g_scalper_session_trades = 0;
 datetime g_scalper_last_loss_time = 0;
 datetime g_scalper_last_entry_bar = 0;  // prevent multiple entries on same bar
+datetime g_scalper_last_reset_day = 0;  // UTC day marker for session counter reset
 
 // Scalper config (from scalper_config.json or defaults)
 struct ScalperConfig {
@@ -163,6 +164,7 @@ struct TradeGroup {
 TradeGroup g_groups[];
 
 string JsonEscape(const string s);
+bool JsonHasKey(const string &json, const string &key);
 
 struct EntryLeg {
    string order_type;      // AUTO | BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP | BUY_STOP_LIMIT | SELL_STOP_LIMIT
@@ -191,6 +193,9 @@ bool PlaceOpenGroupLeg(
 double NormalizeLot(const double lot);
 bool ValidateStops(const double entry, const double sl, const double tp, const ENUM_ORDER_TYPE type);
 void RebuildGroups();
+void ResetScalperSessionStateIfNeeded();
+string DealCloseReasonHint(const long reason_code);
+string BuildRecentClosedDealsJson(const int max_items = 40);
 
 // SYMBOL MATCHING — handles broker suffixes (XAUUSD vs XAUUSDm vs XAUUSD.r)
 // Used to filter positions/orders to only those on the chart symbol
@@ -380,6 +385,7 @@ bool WriteJsonFileDual(const string filename, const string body) {
 //+------------------------------------------------------------------+
 void OnTimer() {
    g_cycle++;
+   ResetScalperSessionStateIfNeeded();
    EnsureIndicators();
    ReadConfig();
    if(BrokerInfoEveryCycles > 0) {
@@ -403,6 +409,7 @@ void OnTimer() {
 //+------------------------------------------------------------------+
 void OnTick() {
    if(g_mode == "OFF") return;
+   ResetScalperSessionStateIfNeeded();
    if(g_mode == "WATCH") { WriteTickData(); return; }
    ManageOpenGroups();
    // Native scalper: check for setups on each tick
@@ -437,8 +444,10 @@ void ReadConfig() {
    if(v > 0) g_sc.pending_entry_threshold_points = v;
    v = JsonGetDouble(content, "trend_strength_atr_threshold");
    if(v > 0) g_sc.trend_strength_atr_threshold = v;
-   v = JsonGetDouble(content, "breakout_buffer_points");
-   if(v >= 0) g_sc.breakout_buffer_points = v;
+   if(JsonHasKey(content, "breakout_buffer_points")) {
+      v = JsonGetDouble(content, "breakout_buffer_points");
+      if(v >= 0) g_sc.breakout_buffer_points = v;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -843,11 +852,15 @@ void ExecuteCloseLosing() {
 void ExecuteModifySL(const string &json) {
    double new_sl = JsonGetDouble(json, "sl");
    if(new_sl <= 0) { Print("FORGE: MODIFY_SL aborted — invalid sl"); return; }
+   int target_magic = (int)JsonGetDouble(json, "magic");
+   bool scoped = (target_magic > 0);
    int modified = 0;
+   int pending_modified = 0;
    for(int i = 0; i < PositionsTotal(); i++) {
       if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
          int pm = (int)g_pos.Magic();
-         if(pm >= MagicNumber && pm < MagicNumber + 10000) {
+         bool in_scope = scoped ? (pm == target_magic) : (pm >= MagicNumber && pm < MagicNumber + 10000);
+         if(in_scope) {
             if(g_trade.PositionModify(g_pos.Ticket(), NormalizeDouble(new_sl, _Digits), g_pos.TakeProfit()))
                modified++;
          }
@@ -859,13 +872,22 @@ void ExecuteModifySL(const string &json) {
       if(ot == 0 || !OrderSelect(ot)) continue;
       if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
       long om = OrderGetInteger(ORDER_MAGIC);
-      if(om >= MagicNumber && om < MagicNumber + 10000) {
-         g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
+      bool in_scope = scoped ? ((int)om == target_magic) : (om >= MagicNumber && om < MagicNumber + 10000);
+      if(in_scope) {
+         if(g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
             NormalizeDouble(new_sl, _Digits), OrderGetDouble(ORDER_TP),
-            ORDER_TIME_GTC, 0);
+            ORDER_TIME_GTC, 0)) {
+            pending_modified++;
+         }
       }
    }
-   Print("FORGE: MODIFY_SL to ", DoubleToString(new_sl, _Digits), " — ", modified, " positions modified");
+   if(scoped) {
+      Print("FORGE: MODIFY_SL magic=", target_magic, " to ", DoubleToString(new_sl, _Digits),
+            " — ", modified, " positions, ", pending_modified, " pending modified");
+   } else {
+      Print("FORGE: MODIFY_SL to ", DoubleToString(new_sl, _Digits),
+            " — ", modified, " positions, ", pending_modified, " pending modified");
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -874,11 +896,15 @@ void ExecuteModifySL(const string &json) {
 void ExecuteModifyTP(const string &json) {
    double new_tp = JsonGetDouble(json, "tp");
    if(new_tp <= 0) { Print("FORGE: MODIFY_TP aborted — invalid tp"); return; }
+   int target_magic = (int)JsonGetDouble(json, "magic");
+   bool scoped = (target_magic > 0);
    int modified = 0;
+   int pending_modified = 0;
    for(int i = 0; i < PositionsTotal(); i++) {
       if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
          int pm = (int)g_pos.Magic();
-         if(pm >= MagicNumber && pm < MagicNumber + 10000) {
+         bool in_scope = scoped ? (pm == target_magic) : (pm >= MagicNumber && pm < MagicNumber + 10000);
+         if(in_scope) {
             if(g_trade.PositionModify(g_pos.Ticket(), g_pos.StopLoss(), NormalizeDouble(new_tp, _Digits)))
                modified++;
          }
@@ -890,15 +916,75 @@ void ExecuteModifyTP(const string &json) {
       if(ot == 0 || !OrderSelect(ot)) continue;
       if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
       long om = OrderGetInteger(ORDER_MAGIC);
-      if(om >= MagicNumber && om < MagicNumber + 10000) {
-         g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
+      bool in_scope = scoped ? ((int)om == target_magic) : (om >= MagicNumber && om < MagicNumber + 10000);
+      if(in_scope) {
+         if(g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
             OrderGetDouble(ORDER_SL), NormalizeDouble(new_tp, _Digits),
-            ORDER_TIME_GTC, 0);
+            ORDER_TIME_GTC, 0)) {
+            pending_modified++;
+         }
       }
    }
-   Print("FORGE: MODIFY_TP to ", DoubleToString(new_tp, _Digits), " — ", modified, " positions modified");
+   if(scoped) {
+      Print("FORGE: MODIFY_TP magic=", target_magic, " to ", DoubleToString(new_tp, _Digits),
+            " — ", modified, " positions, ", pending_modified, " pending modified");
+   } else {
+      Print("FORGE: MODIFY_TP to ", DoubleToString(new_tp, _Digits),
+            " — ", modified, " positions, ", pending_modified, " pending modified");
+   }
 }
 
+string DealCloseReasonHint(const long reason_code) {
+   if(reason_code == DEAL_REASON_TP) return "TP_HIT";
+   if(reason_code == DEAL_REASON_SL) return "SL_HIT";
+   return "MANUAL_CLOSE";
+}
+
+string BuildRecentClosedDealsJson(const int max_items) {
+   int lim = (max_items > 0) ? max_items : 40;
+   datetime to_time = TimeCurrent();
+   datetime from_time = to_time - 172800; // last 48h
+   if(!HistorySelect(from_time, to_time)) return "[]";
+   int total = (int)HistoryDealsTotal();
+   if(total <= 0) return "[]";
+
+   string arr = "[";
+   int added = 0;
+   int d = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   for(int i = total - 1; i >= 0 && added < lim; i--) {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      string sym = HistoryDealGetString(deal, DEAL_SYMBOL);
+      if(!ChartSymbolMatches(sym)) continue;
+      long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY) continue;
+
+      long pos_id = HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(pos_id <= 0) continue;
+      long reason = HistoryDealGetInteger(deal, DEAL_REASON);
+      long magic = HistoryDealGetInteger(deal, DEAL_MAGIC);
+      double close_price = HistoryDealGetDouble(deal, DEAL_PRICE);
+      double profit = HistoryDealGetDouble(deal, DEAL_PROFIT)
+                    + HistoryDealGetDouble(deal, DEAL_SWAP)
+                    + HistoryDealGetDouble(deal, DEAL_COMMISSION);
+      long t_unix = HistoryDealGetInteger(deal, DEAL_TIME);
+
+      if(added > 0) arr += ",";
+      arr += "{";
+      arr += "\"deal_ticket\":" + IntegerToString((long)deal) + ",";
+      arr += "\"position_ticket\":" + IntegerToString((long)pos_id) + ",";
+      arr += "\"magic\":" + IntegerToString((int)magic) + ",";
+      arr += "\"close_price\":" + DoubleToString(close_price, d) + ",";
+      arr += "\"profit\":" + DoubleToString(profit, 2) + ",";
+      arr += "\"reason_code\":" + IntegerToString((int)reason) + ",";
+      arr += "\"close_reason\":\"" + DealCloseReasonHint(reason) + "\",";
+      arr += "\"time_unix\":" + IntegerToString((long)t_unix);
+      arr += "}";
+      added++;
+   }
+   arr += "]";
+   return arr;
+}
 //+------------------------------------------------------------------+
 //| Write market_data.json
 //+------------------------------------------------------------------+
@@ -1035,7 +1121,8 @@ void WriteMarketData() {
       j += "\"comment\":\"" + JsonEscape(OrderGetString(ORDER_COMMENT)) + "\"";
       j += "}";
    }
-   j += "],\"pending_orders_forge_count\":" + IntegerToString(pendForge);
+   j += "],\"pending_orders_forge_count\":" + IntegerToString(pendForge) + ",";
+   j += "\"recent_closed_deals\":" + BuildRecentClosedDealsJson(40);
    j += "}";
 
    WriteJsonFileDual("market_data.json", j);
@@ -1172,18 +1259,58 @@ void ReadScalperConfig() {
    v = JsonGetDouble(content, "tight_tp_atr_mult"); if(v > 0) g_sc.dd_tight_tp_atr = v;
    v = JsonGetDouble(content, "pending_entry_threshold_points"); if(v > 0) g_sc.pending_entry_threshold_points = v;
    v = JsonGetDouble(content, "trend_strength_atr_threshold"); if(v > 0) g_sc.trend_strength_atr_threshold = v;
-   v = JsonGetDouble(content, "breakout_buffer_points"); if(v >= 0) g_sc.breakout_buffer_points = v;
-   PrintFormat("FORGE config reloaded: pending_entry_threshold_points=%.2f trend_strength_atr_threshold=%.4f breakout_buffer_points=%.2f",
+   if(JsonHasKey(content, "breakout_buffer_points")) {
+      v = JsonGetDouble(content, "breakout_buffer_points");
+      if(v >= 0) g_sc.breakout_buffer_points = v;
+   }
+   if(JsonHasKey(content, "london_start_utc")) {
+      v = JsonGetDouble(content, "london_start_utc");
+      if(v >= 0 && v <= 23) g_sc.london_start = (int)v;
+   }
+   if(JsonHasKey(content, "london_end_utc")) {
+      v = JsonGetDouble(content, "london_end_utc");
+      if(v >= 0 && v <= 24) g_sc.london_end = (int)v;
+   }
+   if(JsonHasKey(content, "ny_start_utc")) {
+      v = JsonGetDouble(content, "ny_start_utc");
+      if(v >= 0 && v <= 23) g_sc.ny_start = (int)v;
+   }
+   if(JsonHasKey(content, "ny_end_utc")) {
+      v = JsonGetDouble(content, "ny_end_utc");
+      if(v >= 0 && v <= 24) g_sc.ny_end = (int)v;
+   }
+   PrintFormat("FORGE config reloaded: pending_entry_threshold_points=%.2f trend_strength_atr_threshold=%.4f breakout_buffer_points=%.2f session=%d-%d/%d-%d",
                g_sc.pending_entry_threshold_points,
                g_sc.trend_strength_atr_threshold,
-               g_sc.breakout_buffer_points);
+               g_sc.breakout_buffer_points,
+               g_sc.london_start,
+               g_sc.london_end,
+               g_sc.ny_start,
+               g_sc.ny_end);
+}
+void ResetScalperSessionStateIfNeeded() {
+   MqlDateTime dt;
+   TimeGMT(dt);
+   datetime today = StringToTime(StringFormat("%04d.%02d.%02d 00:00", dt.year, dt.mon, dt.day));
+   if(today <= 0) return;
+   if(g_scalper_last_reset_day == 0) {
+      g_scalper_last_reset_day = today;
+      return;
+   }
+   if(today != g_scalper_last_reset_day) {
+      g_scalper_last_reset_day = today;
+      g_scalper_session_trades = 0;
+      g_scalper_last_entry_bar = 0;
+      Print("FORGE SCALPER: session counters reset for new UTC day");
+   }
 }
 
 bool ScalperSessionOK() {
    MqlDateTime dt;
    TimeGMT(dt);
    int h = dt.hour;
-   return (h >= g_sc.london_start && h < g_sc.ny_end);
+   return ((h >= g_sc.london_start && h < g_sc.london_end)
+           || (h >= g_sc.ny_start && h < g_sc.ny_end));
 }
 
 bool ScalperSpreadOK() {
@@ -1192,17 +1319,43 @@ bool ScalperSpreadOK() {
 }
 
 int ScalperOpenGroupCount() {
-   // Count FORGE-managed positions as proxy for open groups
-   int count = 0;
+   // Count unique FORGE group magics across positions and pending orders.
+   int magics[];
+   ArrayResize(magics, 0);
    for(int i = 0; i < PositionsTotal(); i++) {
-      if(g_pos.SelectByIndex(i) && ChartSymbolMatches(g_pos.Symbol())) {
-         int pm = (int)g_pos.Magic();
-         if(pm >= MagicNumber && pm < MagicNumber + 10000)
-            count++;
+      if(!g_pos.SelectByIndex(i) || !ChartSymbolMatches(g_pos.Symbol())) continue;
+      int pm = (int)g_pos.Magic();
+      if(pm < MagicNumber || pm >= MagicNumber + 10000) continue;
+      bool exists = false;
+      for(int j = 0; j < ArraySize(magics); j++) {
+         if(magics[j] == pm) { exists = true; break; }
+      }
+      if(!exists) {
+         int n = ArraySize(magics);
+         ArrayResize(magics, n + 1);
+         magics[n] = pm;
       }
    }
-   // Each group has ScalperTrades positions
-   return (ScalperTrades > 0) ? count / ScalperTrades : count;
+
+   int noc = (int)OrdersTotal();
+   for(int i = 0; i < noc; i++) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      int om = (int)OrderGetInteger(ORDER_MAGIC);
+      if(om < MagicNumber || om >= MagicNumber + 10000) continue;
+      bool exists = false;
+      for(int j = 0; j < ArraySize(magics); j++) {
+         if(magics[j] == om) { exists = true; break; }
+      }
+      if(!exists) {
+         int n = ArraySize(magics);
+         ArrayResize(magics, n + 1);
+         magics[n] = om;
+      }
+   }
+
+   return ArraySize(magics);
 }
 
 bool ScalperCooldownOK() {
@@ -1218,12 +1371,36 @@ bool ScalperOnePerBar() {
 }
 
 void CheckNativeScalperSetups() {
+   MqlDateTime dt;
+   TimeGMT(dt);
+   int hour = dt.hour;
+   double spread = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / _Point;
+   int open_groups = ScalperOpenGroupCount();
+
    // Safety guards
-   if(!ScalperSessionOK()) return;
-   if(!ScalperSpreadOK()) return;
-   if(ScalperOpenGroupCount() >= g_sc.max_open_groups) return;
-   if(g_scalper_session_trades >= g_sc.max_trades_per_session) return;
-   if(!ScalperCooldownOK()) return;
+   if(!ScalperSessionOK()) {
+      PrintFormat("FORGE SCALPER: skip gate=session_off hour=%d london=%d-%d ny=%d-%d",
+                  hour, g_sc.london_start, g_sc.london_end, g_sc.ny_start, g_sc.ny_end);
+      return;
+   }
+   if(spread > g_sc.max_spread_points) {
+      PrintFormat("FORGE SCALPER: skip gate=spread spread=%.1f max=%.1f", spread, g_sc.max_spread_points);
+      return;
+   }
+   if(open_groups >= g_sc.max_open_groups) {
+      PrintFormat("FORGE SCALPER: skip gate=open_groups open=%d max=%d", open_groups, g_sc.max_open_groups);
+      return;
+   }
+   if(g_scalper_session_trades >= g_sc.max_trades_per_session) {
+      PrintFormat("FORGE SCALPER: skip gate=session_trade_cap trades=%d max=%d",
+                  g_scalper_session_trades, g_sc.max_trades_per_session);
+      return;
+   }
+   if(!ScalperCooldownOK()) {
+      int remaining = (int)MathMax(0, g_sc.loss_cooldown_sec - (int)(TimeGMT() - g_scalper_last_loss_time));
+      PrintFormat("FORGE SCALPER: skip gate=cooldown remaining_sec=%d", remaining);
+      return;
+   }
    if(!ScalperOnePerBar()) return;
 
    // Read M5 indicators
@@ -1247,13 +1424,19 @@ void CheckNativeScalperSetups() {
    double h1_ema50 = (CopyBuffer(g_h_ma50,0,0,1,buf)==1) ? buf[0] : 0;
    double h1_atr   = (CopyBuffer(g_h_atr, 0,0,1,buf)==1) ? buf[0] : 0;
 
-   if(m5_rsi == 0 || m5_atr == 0 || m5_bb_u == 0) return;  // indicators not ready
+   if(m5_rsi == 0 || m5_atr == 0 || m5_bb_u == 0) {
+      Print("FORGE SCALPER: skip reason=indicators_not_ready");
+      return;
+   }
 
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double mid = (bid + ask) / 2.0;
    double bb_range = m5_bb_u - m5_bb_l;
-   if(bb_range <= 0) return;
+   if(bb_range <= 0) {
+      Print("FORGE SCALPER: skip reason=invalid_bb_range");
+      return;
+   }
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double prev_close = iClose(_Symbol, PERIOD_M5, 1);
    double breakout_buffer = g_sc.breakout_buffer_points * point;
@@ -1269,7 +1452,10 @@ void CheckNativeScalperSetups() {
    string sent_content = "";
    if(ReadTextFileDual("sentinel_status.json", sent_content) && sent_content != "") {
       string active = JsonGetString(sent_content, "active");
-      if(active == "true" || active == "True") return;  // sentinel active — no new trades
+      if(active == "true" || active == "True") {
+         Print("FORGE SCALPER: skip gate=sentinel_active");
+         return;
+      }
       double mins = JsonGetDouble(sent_content, "next_in_min");
       if(mins > 0 && mins <= g_sc.sentinel_min_threshold)
          sentinel_tight = true;  // news approaching — tighten TP
@@ -1278,6 +1464,8 @@ void CheckNativeScalperSetups() {
    string direction = "";
    double sl = 0, tp1 = 0, tp2 = 0;
    string setup_type = "";
+   double m5_trend_strength = (m5_ema20 - m5_ema50) / MathMax(m5_atr, point);
+   double m15_trend_strength = (m15_ema20 - m15_ema50) / MathMax(m15_atr, point);
 
    // ── BB BOUNCE (Range Mode) ─────────────────────────────────
    if((g_scalper_mode == "BB_BOUNCE" || g_scalper_mode == "DUAL")
@@ -1308,9 +1496,6 @@ void CheckNativeScalperSetups() {
    // ── BB BREAKOUT (Trend Mode) ───────────────────────────────
    if(direction == "" && (g_scalper_mode == "BB_BREAKOUT" || g_scalper_mode == "DUAL")
       && g_sc.breakout_enabled && m5_adx >= g_sc.breakout_adx_min) {
-
-      double m5_trend_strength = (m5_ema20 - m5_ema50) / MathMax(m5_atr, point);
-      double m15_trend_strength = (m15_ema20 - m15_ema50) / MathMax(m15_atr, point);
       bool m5_bull  = m5_trend_strength > g_sc.trend_strength_atr_threshold;
       bool m5_bear  = m5_trend_strength < -g_sc.trend_strength_atr_threshold;
       bool m15_bull = m15_trend_strength > g_sc.trend_strength_atr_threshold;
@@ -1339,7 +1524,12 @@ void CheckNativeScalperSetups() {
       }
    }
 
-   if(direction == "") return;  // no setup
+   if(direction == "") {
+      PrintFormat("FORGE SCALPER: no setup mode=%s adx=%.1f rsi=%.1f prev=%.2f bb=[%.2f,%.2f] h1=%.4f m5=%.4f m15=%.4f",
+                  g_scalper_mode, m5_adx, m5_rsi, prev_close, m5_bb_l, m5_bb_u,
+                  h1_trend_strength, m5_trend_strength, m15_trend_strength);
+      return;
+   }
 
    // DD event: tighten TP
    if(sentinel_tight) {
@@ -1355,7 +1545,7 @@ void CheckNativeScalperSetups() {
    double reward = MathAbs(tp1 - (direction == "BUY" ? ask : bid));
    if(risk <= 0 || reward / risk < 1.2) {
       Print("FORGE SCALPER: ", setup_type, " ", direction, " skipped — R:R ",
-            DoubleToString(reward/risk, 2), " < 1.2");
+            DoubleToString(reward / risk, 2), " < 1.2");
       return;
    }
 
@@ -1379,24 +1569,30 @@ void CheckNativeScalperSetups() {
       bool ok = false;
       if(direction == "BUY") {
          if(!ValidateStops(ask, sl, tp_for_this, ORDER_TYPE_BUY)) {
-            Print("FORGE SCALPER: invalid BUY stops for group ", group_id);
+            Print("FORGE SCALPER: invalid BUY stops for group ", group_id, " leg ", i + 1);
             continue;
          }
          ok = g_trade.Buy(lot, _Symbol, ask, NormalizeDouble(sl, _Digits),
                           NormalizeDouble(tp_for_this, _Digits), comment);
       } else {
          if(!ValidateStops(bid, sl, tp_for_this, ORDER_TYPE_SELL)) {
-            Print("FORGE SCALPER: invalid SELL stops for group ", group_id);
+            Print("FORGE SCALPER: invalid SELL stops for group ", group_id, " leg ", i + 1);
             continue;
          }
          ok = g_trade.Sell(lot, _Symbol, bid, NormalizeDouble(sl, _Digits),
                            NormalizeDouble(tp_for_this, _Digits), comment);
       }
       if(ok) opened++;
+      else Print("FORGE SCALPER: leg failed retcode=", g_trade.ResultRetcode(), " group=", group_id, " leg=", i + 1);
       Sleep(50);
    }
 
    g_trade.SetExpertMagicNumber(MagicNumber);
+   if(opened <= 0) {
+      Print("FORGE SCALPER: ", setup_type, " ", direction, " rejected — no orders opened");
+      return;
+   }
+
    g_scalper_session_trades++;
    g_scalper_last_entry_bar = iTime(_Symbol, PERIOD_M5, 0);
 
@@ -1411,7 +1607,7 @@ void CheckNativeScalperSetups() {
    g_groups[gi].tp1_close_pct = tp1_split_pct;
    g_groups[gi].tp1_hit       = false;
    g_groups[gi].be_moved      = false;
-   g_groups[gi].move_be_on_tp1 = g_sc.breakout_move_be;
+   g_groups[gi].move_be_on_tp1 = (setup_type == "BB_BREAKOUT") ? g_sc.breakout_move_be : true;
    g_groups[gi].magic_offset  = group_magic;
 
    Print("FORGE SCALPER: ", setup_type, " ", direction, " G", group_id,
@@ -1772,6 +1968,10 @@ bool PlaceOpenGroupLeg(
    }
    fail_reason = "unsupported order_type";
    return false;
+}
+bool JsonHasKey(const string &json, const string &key) {
+   string search = "\"" + key + "\"";
+   return StringFind(json, search) >= 0;
 }
 // Tolerant of Python json.dump(indent=2): space after colon, newlines inside arrays.
 string JsonGetString(const string &json, const string &key) {

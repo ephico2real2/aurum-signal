@@ -27,3 +27,9 @@ def test_api_live_has_execution_and_tradingview():
     pw = d.get("performance_window") or {}
     assert pw.get("days") == 7
     assert "label" in pw
+    reg = d.get("regime") or {}
+    assert isinstance(reg, dict)
+    assert "config" in reg and isinstance(reg["config"], dict)
+    assert "current" in reg and isinstance(reg["current"], dict)
+    assert "transitions_24h" in reg and isinstance(reg["transitions_24h"], list)
+    assert "performance_30d" in reg and isinstance(reg["performance_30d"], dict)

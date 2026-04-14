@@ -15,6 +15,7 @@ from herald      import get_herald
 from sentinel    import Sentinel
 from lens        import get_lens
 from aegis       import get_aegis
+from regime      import get_regime_engine
 from listener    import Listener
 from aurum       import get_aurum
 from reconciler  import get_reconciler
@@ -62,6 +63,9 @@ SENTINEL_FILE   = _under_python(os.environ.get("SENTINEL_STATUS_FILE","config/se
 AURUM_CMD_FILE  = _under_python(os.environ.get("AURUM_CMD_FILE",      "config/aurum_cmd.json"))
 SCALPER_ENTRY_FILE = _under_root(os.environ.get("SCALPER_ENTRY_FILE",  "MT5/scalper_entry.json"))
 SCALPER_CONFIG_FILE = os.path.join(_ROOT, "config", "scalper_config.json")
+LENS_SNAPSHOT_FILE = _under_python(
+    os.environ.get("LENS_SNAPSHOT_FILE", os.environ.get("LENS_SNAPSHOT", "config/lens_snapshot.json"))
+)
 
 # TP close percentages
 TP1_CLOSE_PCT   = float(os.environ.get("TP1_CLOSE_PCT", "70"))
@@ -343,6 +347,75 @@ def _calc_pips(symbol: str | None, direction: str, open_price: float, close_pric
         pip_size = 1.0
     return round(raw / pip_size, 1)
 
+def _safe_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recent_closed_deals_by_ticket(mt5_data: dict) -> dict[int, dict]:
+    """
+    Build latest-close-deal map keyed by position ticket from market_data.recent_closed_deals.
+    """
+    out: dict[int, dict] = {}
+    for row in (mt5_data or {}).get("recent_closed_deals") or []:
+        if not isinstance(row, dict):
+            continue
+        tval = _safe_float(row.get("position_ticket", row.get("ticket")))
+        if tval is None:
+            continue
+        ticket = int(tval)
+        if ticket <= 0:
+            continue
+        row_ts = _safe_float(row.get("time_unix")) or 0.0
+        prev = out.get(ticket)
+        prev_ts = _safe_float((prev or {}).get("time_unix")) or 0.0
+        if prev is not None and prev_ts >= row_ts:
+            continue
+        out[ticket] = dict(row)
+    return out
+
+
+def _deal_close_time_iso(deal_row: dict) -> str | None:
+    ts = _safe_float((deal_row or {}).get("time_unix"))
+    if ts is None or ts <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _close_reason_from_broker_hint(
+    reason_hint: str,
+    close_price: float,
+    group_id: int | None,
+    match_tp_stage_fn,
+) -> str | None:
+    hint = (reason_hint or "").strip().upper()
+    if not hint:
+        return None
+    if hint in ("SL_HIT", "DEAL_REASON_SL"):
+        return "SL_HIT"
+    if hint in ("TP1_HIT", "TP2_HIT", "TP3_HIT"):
+        return hint
+    if hint in ("TP_HIT", "DEAL_REASON_TP"):
+        return match_tp_stage_fn(close_price, group_id, 1.2)
+    if hint in (
+        "MANUAL_CLOSE",
+        "DEAL_REASON_CLIENT",
+        "DEAL_REASON_EXPERT",
+        "DEAL_REASON_MOBILE",
+        "DEAL_REASON_WEB",
+    ):
+        return "MANUAL_CLOSE"
+    if hint in ("DEAL_REASON_SO", "STOP_OUT", "DEAL_REASON_VMARGIN"):
+        return "UNKNOWN"
+    return None
+
 
 def _entry_legs_from_ladder(entry_ladder: list[float]) -> list[dict]:
     return [
@@ -365,6 +438,7 @@ class Bridge:
         self.sentinel    = Sentinel()
         self.lens        = get_lens()
         self.aegis       = get_aegis()
+        self.regime_engine = get_regime_engine()
         self.listener    = Listener()
         self.aurum       = get_aurum()
         self.reconciler  = get_reconciler()
@@ -412,6 +486,7 @@ class Bridge:
         self._pending_entry_threshold_points = FORGE_PENDING_ENTRY_THRESHOLD_POINTS
         self._trend_strength_atr_threshold = FORGE_TREND_STRENGTH_ATR_THRESHOLD
         self._breakout_buffer_points = FORGE_BREAKOUT_BUFFER_POINTS
+        self._regime_snapshot: dict = {}
     def _pinned_mode(self) -> str | None:
         if BRIDGE_PIN_MODE in VALID_MODES:
             return BRIDGE_PIN_MODE
@@ -623,6 +698,7 @@ class Bridge:
             if not o.get("forge_managed"):
                 continue
             live_pendings[int(o["ticket"])] = o
+        recent_closed_deals = _recent_closed_deals_by_ticket(mt5)
 
         # ── New filled positions ───────────────────────────────────
         for ticket, p in live_positions.items():
@@ -653,8 +729,13 @@ class Bridge:
                         self.scribe.update_position_sl_tp(ticket, sl=live_sl, tp=live_tp)
                     except Exception as e:
                         log.debug("TRACKER: SCRIBE SL/TP update failed: %s", e)
-                    # Log as system event for audit
                     gid = self._known_positions[ticket].get("group_id")
+                    self._sync_group_targets(
+                        gid,
+                        sl=live_sl if sl_changed else None,
+                        tp=live_tp if tp_changed else None,
+                    )
+                    # Log as system event for audit
                     self._bridge_activity(
                         "POSITION_MODIFIED",
                         reason="SL/TP changed (manual or FORGE)",
@@ -931,6 +1012,14 @@ class Bridge:
             gid = snap["group_id"]
             pnl = snap.get("last_profit", 0)
             close_price = snap.get("current_price") or 0
+            deal_row = recent_closed_deals.get(int(ticket))
+            if deal_row:
+                broker_price = _safe_float(deal_row.get("close_price"))
+                if broker_price is not None and broker_price > 0:
+                    close_price = broker_price
+                broker_pnl = _safe_float(deal_row.get("profit"))
+                if broker_pnl is not None:
+                    pnl = broker_pnl
             open_price = snap.get("open_price") or 0
             direction = snap.get("direction", "?")
             symbol = snap.get("symbol")
@@ -940,8 +1029,19 @@ class Bridge:
             pips = _calc_pips(symbol, direction, open_price, close_price)
 
             # ── Infer close reason from SL/TP proximity ────────────
-            close_reason = self._infer_close_reason(
-                close_price, sl, tp, direction, gid)
+            close_reason = None
+            close_time = None
+            if deal_row:
+                close_time = _deal_close_time_iso(deal_row)
+                close_reason = _close_reason_from_broker_hint(
+                    str(deal_row.get("close_reason") or deal_row.get("reason") or ""),
+                    close_price,
+                    gid,
+                    self._match_tp_stage,
+                )
+            if not close_reason:
+                close_reason = self._infer_close_reason(
+                    close_price, sl, tp, direction, gid)
 
             # Determine TP stage for SCRIBE trade_positions
             tp_stage = None
@@ -959,6 +1059,7 @@ class Bridge:
                 pnl=pnl,
                 pips=pips,
                 tp_stage=tp_stage,
+                close_time=close_time,
             )
 
             # Log to trade_closures table
@@ -1038,6 +1139,14 @@ class Bridge:
                 }, mode)
             pnl = snap.get("last_profit", 0)
             close_price = snap.get("current_price") or 0
+            deal_row = recent_closed_deals.get(int(ticket))
+            if deal_row:
+                broker_price = _safe_float(deal_row.get("close_price"))
+                if broker_price is not None and broker_price > 0:
+                    close_price = broker_price
+                broker_pnl = _safe_float(deal_row.get("profit"))
+                if broker_pnl is not None:
+                    pnl = broker_pnl
             open_price = snap.get("open_price") or 0
             direction = snap.get("direction", "?")
             symbol = snap.get("symbol")
@@ -1045,9 +1154,17 @@ class Bridge:
             tp = snap.get("tp") or 0
             lot_size = snap.get("lot_size", 0)
             pips = _calc_pips(symbol, direction, open_price, close_price)
-            close_reason = self._infer_close_reason(
-                close_price, sl, tp, direction, gid
+            close_time = _deal_close_time_iso(deal_row) if deal_row else None
+            close_reason = _close_reason_from_broker_hint(
+                str((deal_row or {}).get("close_reason") or (deal_row or {}).get("reason") or ""),
+                close_price,
+                gid,
+                self._match_tp_stage,
             )
+            if not close_reason:
+                close_reason = self._infer_close_reason(
+                    close_price, sl, tp, direction, gid
+                )
             tp_stage = None
             if close_reason == "TP1_HIT":
                 tp_stage = 1
@@ -1062,6 +1179,7 @@ class Bridge:
                 pnl=pnl,
                 pips=pips,
                 tp_stage=tp_stage,
+                close_time=close_time,
             )
             self.scribe.log_trade_closure(
                 ticket=ticket,
@@ -1203,6 +1321,45 @@ class Bridge:
             if candidate not in in_use:
                 return candidate
         raise RuntimeError("BRIDGE: magic number pool exhausted (9999 open groups)")
+
+    def _refresh_regime_snapshot(self, mt5: dict):
+        try:
+            lens_snapshot = _read_json(LENS_SNAPSHOT_FILE)
+            snap = self.regime_engine.infer(
+                mt5 or {},
+                session=self._current_session,
+                mode=self._effective_mode(),
+                lens=lens_snapshot if isinstance(lens_snapshot, dict) else None,
+            )
+            if not snap:
+                return
+            self._regime_snapshot = dict(snap)
+            if snap.get("emit_snapshot"):
+                self.scribe.log_market_regime(
+                    self._regime_snapshot,
+                    mode=self._effective_mode(),
+                    session=self._current_session,
+                )
+        except Exception as e:
+            log.warning("BRIDGE: regime inference failed: %s", e)
+
+    def _regime_context_for_trade(self, direction: str) -> dict:
+        snap = dict(self._regime_snapshot or {})
+        if not snap:
+            snap = {"entry_mode": "off", "apply_entry_policy": False, "label": "UNKNOWN"}
+        return {
+            "label": snap.get("label"),
+            "confidence": snap.get("confidence"),
+            "posterior": snap.get("posterior"),
+            "model_name": snap.get("model_name"),
+            "entry_mode": snap.get("entry_mode", "off"),
+            "apply_entry_policy": bool(snap.get("apply_entry_policy")),
+            "fallback_reason": snap.get("fallback_reason"),
+            "entry_gate_reason": snap.get("entry_gate_reason"),
+            "stale": snap.get("stale"),
+            "age_sec": snap.get("age_sec"),
+            "direction": (direction or "").upper(),
+        }
 
     def _bridge_activity(
         self,
@@ -1419,11 +1576,14 @@ class Bridge:
         # ── 4b. Open groups from SCRIBE (source of truth vs in-memory dict) ─
         self._sync_open_groups_from_scribe()
 
+        # ── 4c. Regime snapshot (HMM primary + fallback) ──────────
+        self._refresh_regime_snapshot(mt5)
+
         # ── 5. AURUM command check ──────────────────────────────
         self._check_aurum_command(mt5)
 
         # ── 5c. FORGE native scalper entry detection ─────────────
-        self._check_forge_scalper_entry()
+        self._check_forge_scalper_entry(mt5 or {})
 
         # ── 5b. Management (ATHENA / Telegram LISTENER) — all modes incl. SCALPER/WATCH
         self._process_mgmt_command(mt5)
@@ -1592,26 +1752,47 @@ class Bridge:
         account = mt5.get("account", {}) if mt5 else {}
         account["open_groups_count"] = len(self._open_groups)
         current_price = mt5.get("price", {}).get("bid") if mt5 else None
+        regime_context = self._regime_context_for_trade(signal.get("direction"))
 
-        approval = self.aegis.validate(signal, account, current_price, mt5_data=mt5)
+        approval = self.aegis.validate(
+            signal,
+            account,
+            current_price,
+            mt5_data=mt5,
+            regime_context=regime_context,
+        )
+        regime_meta = {**regime_context, **(approval.regime_metadata or {})}
+        if signal.get("signal_id"):
+            self.scribe.update_signal_regime(signal.get("signal_id"), regime_meta)
 
         if not approval.approved:
-            log.warning(f"BRIDGE: Signal REJECTED — {approval.reject_reason}")
+            aegis_reason = f"AEGIS_REJECTED:{approval.reject_reason}"
+            log.warning(
+                "BRIDGE: AEGIS_REJECTED — signal_id=%s direction=%s reason=%s",
+                signal.get("signal_id"), signal.get("direction"), approval.reject_reason,
+            )
             self._bridge_activity(
                 "SIGNAL_REJECTED",
-                reason=approval.reject_reason,
+                reason=aegis_reason,
                 notes=json.dumps(
                     {
                         "source": "SIGNAL",
                         "direction": signal.get("direction"),
                         "signal_id": signal.get("signal_id"),
                         "gate": "AEGIS",
+                        "reason": approval.reject_reason,
+                        "regime": {
+                            "label": regime_meta.get("label"),
+                            "confidence": regime_meta.get("confidence"),
+                            "policy": regime_meta.get("policy_name"),
+                            "entry_mode": regime_meta.get("entry_mode"),
+                        },
                     },
                     default=str,
                 ),
             )
             self.scribe.update_signal_action(
-                signal.get("signal_id"), "SKIPPED", approval.reject_reason)
+                signal.get("signal_id"), "SKIPPED", aegis_reason)
             self.herald.signal_skipped(
                 signal.get("direction","?"),
                 approval.reject_reason,
@@ -1655,6 +1836,12 @@ class Bridge:
                 mt5.get("indicators_h1",{}).get("rsi_14",50) if mt5 else 50,
                 current_price or 0)["conflict"]) else 0,
             "source": "SIGNAL",
+            "regime_label": regime_meta.get("label"),
+            "regime_confidence": regime_meta.get("confidence"),
+            "regime_model": regime_meta.get("model_name"),
+            "regime_entry_mode": regime_meta.get("entry_mode"),
+            "regime_policy": regime_meta.get("policy_name"),
+            "regime_fallback_reason": regime_meta.get("fallback_reason") or regime_meta.get("entry_gate_reason"),
         }
 
         group_id = self.scribe.log_trade_group(
@@ -1698,6 +1885,14 @@ class Bridge:
                     "num_trades": approval.num_trades,
                     "lot_per_trade": approval.lot_per_trade,
                     "signal_id": signal.get("signal_id"),
+                    "regime": {
+                        "label": regime_meta.get("label"),
+                        "confidence": regime_meta.get("confidence"),
+                        "model_name": regime_meta.get("model_name"),
+                        "entry_mode": regime_meta.get("entry_mode"),
+                        "policy": regime_meta.get("policy_name"),
+                        "applied": regime_meta.get("applied"),
+                    },
                     "command_path": cmd_paths[0],
                     "command_paths": cmd_paths,
                 },
@@ -1823,7 +2018,8 @@ class Bridge:
                     for pos in positions:
                         ep = pos.get("entry_price")
                         if ep and ep > 100:
-                            cmd = {"action": "MODIFY_SL", "sl": float(ep), "timestamp": _now()}
+                            cmd = {"action": "MODIFY_SL", "magic": magic, "sl": float(ep), "timestamp": _now()}
+                            self._sync_group_targets(int(mgmt_gid), sl=float(ep))
                     _tlog("MGMT", "MOVE_BE", f"scoped to G{mgmt_gid}", group_id=mgmt_gid)
             elif mgmt_source == "ATHENA":
                 cmd = {"action": "MOVE_BE_ALL", "timestamp": _now()}
@@ -1842,7 +2038,15 @@ class Bridge:
                         for pos in positions:
                             ep = pos.get("entry_price")
                             if ep and ep > 100:
-                                _write_forge_command({"action": "MODIFY_SL", "sl": float(ep), "timestamp": _now()})
+                                _write_forge_command(
+                                    {
+                                        "action": "MODIFY_SL",
+                                        "magic": magic,
+                                        "sl": float(ep),
+                                        "timestamp": _now(),
+                                    }
+                                )
+                                self._sync_group_targets(int(gid), sl=float(ep))
                         _tlog("MGMT", "MOVE_BE", f"channel scoped to SIGNAL group", group_id=gid)
                 return  # Don't send global MOVE_BE_ALL
 
@@ -1870,12 +2074,28 @@ class Bridge:
         elif intent == "MODIFY_SL":
             sl = mgmt.get("sl")
             if sl:
-                cmd = {"action": "MODIFY_SL", "sl": float(sl), "timestamp": _now()}
+                slv = float(sl)
+                cmd = {"action": "MODIFY_SL", "sl": slv, "timestamp": _now()}
+                if mgmt_gid:
+                    magic = self._lookup_group_magic(int(mgmt_gid))
+                    if magic:
+                        cmd["magic"] = magic
+                    self._sync_group_targets(int(mgmt_gid), sl=slv)
+                else:
+                    self._sync_all_open_group_targets(sl=slv)
 
         elif intent == "MODIFY_TP":
             tp = mgmt.get("tp")
             if tp:
-                cmd = {"action": "MODIFY_TP", "tp": float(tp), "timestamp": _now()}
+                tpv = float(tp)
+                cmd = {"action": "MODIFY_TP", "tp": tpv, "timestamp": _now()}
+                if mgmt_gid:
+                    magic = self._lookup_group_magic(int(mgmt_gid))
+                    if magic:
+                        cmd["magic"] = magic
+                    self._sync_group_targets(int(mgmt_gid), tp=tpv)
+                else:
+                    self._sync_all_open_group_targets(tp=tpv)
 
         elif intent == "CLOSE_GROUP":
             gid = mgmt.get("group_id")
@@ -2052,6 +2272,48 @@ class Bridge:
             return int(rows[0]["magic_number"])
         return FORGE_MAGIC_BASE + group_id  # fallback
 
+    def _sync_group_targets(self, group_id: int | None, sl: float = None, tp: float = None):
+        """Persist group-level target edits so ATHENA reflects live modified SL/TP."""
+        if group_id is None:
+            return
+        try:
+            gid = int(group_id)
+        except (TypeError, ValueError):
+            return
+        try:
+            self.scribe.update_group_sl_tp(gid, sl=sl, tp=tp)
+        except Exception as e:
+            log.debug("BRIDGE: update_group_sl_tp failed for G%s: %s", gid, e)
+        g = self._open_groups.get(gid)
+        if isinstance(g, dict):
+            if sl is not None:
+                g["sl"] = sl
+            if tp is not None:
+                g["tp1"] = tp
+                if g.get("tp2") not in (None, 0, 0.0, ""):
+                    g["tp2"] = tp
+                if g.get("tp3") not in (None, 0, 0.0, ""):
+                    g["tp3"] = tp
+
+    def _sync_all_open_group_targets(self, sl: float = None, tp: float = None):
+        """Apply target sync across all currently open groups (global MODIFY actions)."""
+        gids = set()
+        for gid in self._open_groups.keys():
+            try:
+                gids.add(int(gid))
+            except (TypeError, ValueError):
+                continue
+        if not gids:
+            try:
+                for g in self.scribe.get_open_groups():
+                    gid = g.get("id")
+                    if gid is not None:
+                        gids.add(int(gid))
+            except Exception:
+                pass
+        for gid in sorted(gids):
+            self._sync_group_targets(gid, sl=sl, tp=tp)
+
     # ── AUTO_SCALPER: AURUM-driven autonomous scalping ──────────
     def _auto_scalper_tick(self, mt5: dict) -> None:
         """Called every AUTO_SCALPER_POLL_INTERVAL. Pre-filters, then asks AURUM."""
@@ -2216,12 +2478,17 @@ class Bridge:
             tp = cmd.get("tp")
             gid = cmd.get("group_id")
             if tp:
-                forge_cmd = {"action": "MODIFY_TP", "tp": float(tp), "timestamp": _now()}
+                tpv = float(tp)
+                forge_cmd = {"action": "MODIFY_TP", "tp": tpv, "timestamp": _now()}
                 if gid:
                     magic = self._lookup_group_magic(int(gid))
                     if magic:
                         forge_cmd["magic"] = magic
                 _write_forge_command(forge_cmd)
+                if gid:
+                    self._sync_group_targets(int(gid), tp=tpv)
+                else:
+                    self._sync_all_open_group_targets(tp=tpv)
                 self._bridge_activity(
                     "MGMT_COMMAND", reason="MODIFY_TP",
                     notes=json.dumps({"tp": tp, "group_id": gid, "via": "AURUM"}, default=str))
@@ -2231,12 +2498,17 @@ class Bridge:
             sl = cmd.get("sl")
             gid = cmd.get("group_id")
             if sl:
-                forge_cmd = {"action": "MODIFY_SL", "sl": float(sl), "timestamp": _now()}
+                slv = float(sl)
+                forge_cmd = {"action": "MODIFY_SL", "sl": slv, "timestamp": _now()}
                 if gid:
                     magic = self._lookup_group_magic(int(gid))
                     if magic:
                         forge_cmd["magic"] = magic
                 _write_forge_command(forge_cmd)
+                if gid:
+                    self._sync_group_targets(int(gid), sl=slv)
+                else:
+                    self._sync_all_open_group_targets(sl=slv)
                 self._bridge_activity(
                     "MGMT_COMMAND", reason="MODIFY_SL",
                     notes=json.dumps({"sl": sl, "group_id": gid, "via": "AURUM"}, default=str))
@@ -2299,7 +2571,7 @@ class Bridge:
         except:
             pass
 
-    def _check_forge_scalper_entry(self):
+    def _check_forge_scalper_entry(self, mt5: dict | None = None):
         """Detect native FORGE scalper entries and log them to SCRIBE."""
         entry = _read_json(SCALPER_ENTRY_FILE)
         if not entry:
@@ -2310,11 +2582,73 @@ class Bridge:
         self._last_scalper_entry_ts = ts
 
         gid = entry.get("group_id")
-        magic = entry.get("magic")
+        try:
+            magic = int(entry.get("magic") or 0)
+        except (TypeError, ValueError):
+            magic = 0
         direction = entry.get("direction", "?")
         setup_type = entry.get("setup_type", "UNKNOWN")
+        trades_opened = int(entry.get("trades_opened") or 0)
+        requested_trades = int(entry.get("num_trades") or 0)
+
+        live_magics: set[int] = set()
+        mt5_data = mt5 or {}
+        for p in mt5_data.get("open_positions") or []:
+            try:
+                live_magics.add(int(p.get("magic") or 0))
+            except (TypeError, ValueError):
+                continue
+        for o in mt5_data.get("pending_orders") or []:
+            try:
+                live_magics.add(int(o.get("magic") or 0))
+            except (TypeError, ValueError):
+                continue
+        has_live_exposure = bool(magic and magic in live_magics)
+        if trades_opened <= 0 or not has_live_exposure:
+            reason = "no_trades_opened" if trades_opened <= 0 else "no_mt5_exposure_for_magic"
+            self._bridge_activity(
+                "FORGE_SCALP_ENTRY_IGNORED",
+                reason=reason,
+                notes=json.dumps(
+                    {
+                        "forge_group_id": gid,
+                        "magic": magic,
+                        "setup_type": setup_type,
+                        "direction": direction,
+                        "trades_opened": trades_opened,
+                        "requested_trades": requested_trades,
+                    },
+                    default=str,
+                ),
+            )
+            log.warning(
+                "BRIDGE: ignore FORGE native scalper entry gid=%s magic=%s reason=%s",
+                gid,
+                magic,
+                reason,
+            )
+            return
+
+        existing_open = self.scribe.query(
+            "SELECT id FROM trade_groups "
+            "WHERE source='FORGE_NATIVE_SCALP' AND magic_number=? "
+            "AND status IN ('OPEN','PARTIAL') "
+            "ORDER BY id DESC LIMIT 1",
+            (magic,),
+        )
+        if existing_open:
+            self._bridge_activity(
+                "FORGE_SCALP_ENTRY_IGNORED",
+                reason="duplicate_open_group_magic",
+                notes=json.dumps(
+                    {"forge_group_id": gid, "magic": magic, "existing_group_id": existing_open[0].get("id")},
+                    default=str,
+                ),
+            )
+            return
 
         # Log trade group to SCRIBE
+        effective_trades = trades_opened if trades_opened > 0 else max(1, requested_trades)
         group_data = {
             "direction": direction,
             "entry_low": entry.get("entry_price", 0),
@@ -2322,7 +2656,7 @@ class Bridge:
             "sl": entry.get("sl", 0),
             "tp1": entry.get("tp1", 0),
             "tp2": entry.get("tp2"),
-            "num_trades": entry.get("num_trades", 4),
+            "num_trades": effective_trades,
             "lot_per_trade": entry.get("lot_per_trade", 0.01),
             "source": "FORGE_NATIVE_SCALP",
             "signal_id": None,
@@ -2344,6 +2678,7 @@ class Bridge:
                 "setup_type": setup_type,
                 "sl": entry.get("sl"),
                 "tp1": entry.get("tp1"),
+                "trades_opened": trades_opened,
                 "rsi": entry.get("m5_rsi"),
                 "adx": entry.get("m5_adx"),
                 "sentinel_tight": entry.get("sentinel_tight"),
@@ -2459,15 +2794,33 @@ class Bridge:
             cur = float(cur) if cur is not None else None
         except (TypeError, ValueError):
             cur = None
+        regime_context = self._regime_context_for_trade(direction)
 
-        approval = self.aegis.validate(signal, account, cur, mt5_data=mt5)
+        approval = self.aegis.validate(
+            signal,
+            account,
+            cur,
+            mt5_data=mt5,
+            regime_context=regime_context,
+        )
+        regime_meta = {**regime_context, **(approval.regime_metadata or {})}
         if not approval.approved:
             log.warning("BRIDGE: AURUM OPEN_GROUP rejected — %s", approval.reject_reason)
             self._bridge_activity(
                 "TRADE_REJECTED",
                 reason=approval.reject_reason,
                 notes=json.dumps(
-                    {"source": "AURUM", "direction": direction, "gate": "AEGIS"},
+                    {
+                        "source": "AURUM",
+                        "direction": direction,
+                        "gate": "AEGIS",
+                        "regime": {
+                            "label": regime_meta.get("label"),
+                            "confidence": regime_meta.get("confidence"),
+                            "policy": regime_meta.get("policy_name"),
+                            "entry_mode": regime_meta.get("entry_mode"),
+                        },
+                    },
                     default=str,
                 ),
             )
@@ -2499,6 +2852,12 @@ class Bridge:
             "risk_pct": approval.risk_pct,
             "account_balance": account.get("balance", 0),
             "source": "AURUM",
+            "regime_label": regime_meta.get("label"),
+            "regime_confidence": regime_meta.get("confidence"),
+            "regime_model": regime_meta.get("model_name"),
+            "regime_entry_mode": regime_meta.get("entry_mode"),
+            "regime_policy": regime_meta.get("policy_name"),
+            "regime_fallback_reason": regime_meta.get("fallback_reason") or regime_meta.get("entry_gate_reason"),
         }
         gid = self.scribe.log_trade_group(group_data, eff)
         magic = FORGE_MAGIC_BASE + gid
@@ -2537,6 +2896,14 @@ class Bridge:
                     "direction": direction,
                     "num_trades": approval.num_trades,
                     "lot_per_trade": lot_pt,
+                    "regime": {
+                        "label": regime_meta.get("label"),
+                        "confidence": regime_meta.get("confidence"),
+                        "model_name": regime_meta.get("model_name"),
+                        "entry_mode": regime_meta.get("entry_mode"),
+                        "policy": regime_meta.get("policy_name"),
+                        "applied": regime_meta.get("applied"),
+                    },
                     "command_path": cmd_paths[0],
                     "command_paths": cmd_paths,
                 },
@@ -2591,12 +2958,7 @@ class Bridge:
         """
         LENS snapshot row for ATHENA grid in WATCH/OFF (main loop skips MCP refresh).
         """
-        lens_rel = os.environ.get(
-            "LENS_SNAPSHOT",
-            os.environ.get("LENS_SNAPSHOT_FILE", "config/lens_snapshot.json"),
-        )
-        lens_path = lens_rel if os.path.isabs(lens_rel) else _under_python(lens_rel)
-        ld = _read_json(lens_path)
+        ld = _read_json(LENS_SNAPSHOT_FILE)
         mode_eff = self._effective_mode()
         if ld:
             rsi = float(ld.get("rsi", 0) or 0)
@@ -2668,6 +3030,7 @@ class Bridge:
             "lens": {"price": lens_snap.price if lens_snap else None,
                      "rsi":   lens_snap.rsi if lens_snap else None,
                      "bb":    lens_snap.bb_rating if lens_snap else None},
+            "regime": self._regime_snapshot or {},
         })
         try:
             report_component_status(

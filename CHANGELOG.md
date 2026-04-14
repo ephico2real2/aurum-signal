@@ -1,4 +1,134 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.4.3] — 2026-04-14
+
+### Regime engine rollout surfaced end-to-end
+- Added `python/regime.py` (HMM-primary inference with Gaussian fallback safety path).
+- BRIDGE now computes regime snapshots each tick and persists emitted snapshots to SCRIBE `market_regimes`.
+- SIGNAL/AURUM entry validation now carries regime context through AEGIS and records regime metadata on `signals_received` and `trade_groups`.
+- ATHENA now serves regime surfaces via `GET /api/regime/current`, `GET /api/regime/history`, `GET /api/regime/performance`, and includes a `regime` block in `GET /api/live`.
+- Added regime coverage tests:
+  - `tests/services/test_regime_engine.py`
+  - `tests/api/test_scribe_regime.py`
+  - `tests/api/test_athena_regime_api.py`
+
+### Execution-management and tracker hardening
+- `MODIFY_SL` / `MODIFY_TP` support global and per-group execution:
+  - no `magic` => global apply,
+  - resolved `magic` from `group_id` => scoped apply.
+- BRIDGE now syncs modified group targets into SCRIBE group + open-position rows (`update_group_sl_tp`) so ATHENA reflects live SL/TP edits immediately.
+- FORGE exports `recent_closed_deals[]` in `market_data.json`; BRIDGE tracker now uses broker close metadata first (price, PnL, reason, close time) with inference fallback only when broker hints are missing.
+- Added regression coverage:
+  - `tests/api/test_mgmt_channel_scoping.py`
+  - `tests/api/test_bridge_manual_position_tracking.py`
+  - `tests/api/test_threshold_persistence.py`
+
+### Documentation updates
+- Updated `docs/ARCHITECTURE.md` with regime engine flow and `market_regimes` table coverage.
+- Updated `docs/FORGE_TRADING_RULES.md` with regime rollout, scoped modify semantics, and broker-first closure attribution.
+- Updated `docs/CLI_API_CHEATSHEET.md` and `docs/SCRIBE_QUERY_EXAMPLES.md` for TP-stage close reason examples and regime diagnostics queries.
+
+---
+## [1.4.2] — 2026-04-13
+
+### LISTENER Signal Room Ingestion — Hardening & Observability
+
+Root cause: signals from configured Telegram rooms were silently dropped as `WATCH_ONLY`
+due to brittle room matching, a free-text reason code that was hard to grep, and zero
+observability of where in the pipeline signals stopped flowing.
+
+#### Room Allowlist Logic (`python/listener.py`)
+
+- **Robust `_is_trade_room_allowed`** — now returns `(bool, reason_code)` tuple:
+  - `ALLOWED_ALL` — `SIGNAL_TRADE_ROOMS` not set (legacy; all rooms trade)
+  - `ALLOWED_TITLE_MATCH` — title matched after NFKC normalization + whitespace collapse + lowercase
+  - `ALLOWED_ID_MATCH` — chat_id matched; tries all Telethon supergroup ID variants automatically (`-1001234567890`, `1001234567890`, `1234567890`)
+  - `WATCH_ONLY_ROOM_FILTER` — not in allowlist (replaces old free-text `ROOM_NOT_PRIORITY:<room>`)
+- **Unicode normalization** (`_normalize_room_name`): NFKC + whitespace-collapse + lowercase — handles curly apostrophes, non-breaking spaces, and other Unicode mismatches between operator config and Telethon-resolved titles.
+- **chat_id variant matching** (`_chat_id_variants`): auto-tries bare ID, signed ID with `-100` prefix, and positive form — eliminates "configured `1234567890` but Telethon returns `-1001234567890`" silent misses.
+- `WATCH_ONLY` blocks now log at **WARNING** (was INFO), making them visible in `make logs-errors`.
+
+#### New Structured Reason Codes
+
+| Reason Code | Where it appears | Meaning |
+|---|---|---|
+| `WATCH_ONLY_ROOM_FILTER` | `signals_received.skip_reason` | Room not in `SIGNAL_TRADE_ROOMS` allowlist |
+| `SIGNAL_DISPATCHED` | `system_events.event_type` | Entry signal written to `parsed_signal.json` |
+| `SIGNAL_PARSE_FAILED` | `system_events.event_type` | Non-empty text received but Claude returned IGNORE |
+| `AEGIS_REJECTED:<reason>` | `signals_received.skip_reason` | AEGIS blocked the signal (prefixed, not bare reason) |
+
+The old free-text `ROOM_NOT_PRIORITY:<room>` reason code is **removed**.
+
+#### Staleness Detection
+
+- `_last_ingest_at` tracked per LISTENER instance — updated on every received message.
+- `_idle_heartbeat_loop` now checks age against `LISTENER_STALE_THRESHOLD_SEC` (default 600s):
+  - `> threshold` → reports `status=WARN` with reason `LISTENER_STALE_OR_DISCONNECTED`
+  - Normal → reports `status=OK` with "last_ingest Xs ago"
+
+#### New File: `python/config/listener_meta.json`
+
+Written by LISTENER on connect and updated each heartbeat/dispatch. Fields:
+- `status` — `OK` | `WARN`
+- `last_ingest_at` — ISO-8601 UTC of last processed message
+- `signal_trade_rooms_active` / `signal_trade_rooms_count`
+- `resolved_rooms[]` — per-channel `{chat_id, title, is_trade_room, match_reason}`
+
+#### Startup Logging
+
+LISTENER logs each resolved channel at startup with trade_room status:
+```
+LISTENER: channel -100xxx = 'Ben's VIP Club'  trade_room=True (ALLOWED_TITLE_MATCH)
+LISTENER: channel -100yyy = 'Other Room'       trade_room=False (WATCH_ONLY_ROOM_FILTER)
+```
+
+#### ATHENA API Changes (`python/athena_api.py`)
+
+- **`GET /api/channels`**: new fields per channel — `watch_only` (SCRIBE count), `is_trade_room`, `match_reason`; top-level — `signal_trade_rooms_active`, `listener_last_ingest_at`, `listener_status`.
+- **`GET /api/channels/messages`**: new fields — `cache_age_sec` (mtime-based), `listener_stale` (true if cache > 3× refresh interval), `listener_last_ingest_at`, `listener_status`.
+
+#### BRIDGE (`python/bridge.py`)
+
+- AEGIS rejection `skip_reason` now prefixed with `AEGIS_REJECTED:` for unambiguous SCRIBE query filtering (was bare reject_reason string, indistinguishable from LENS/expiry skips).
+
+#### Tests (`tests/api/test_listener_room_filter.py`) — new file, 21 tests
+
+| Test class | Coverage |
+|---|---|
+| `TestIsTradeRoomAllowed` | empty allowlist; title case/whitespace/Unicode; chat_id variants (bare, -100 prefix, positive form); mismatch → WATCH_ONLY_ROOM_FILTER |
+| `TestHandleMessageRoomFilter` | unallowed room → WATCH_ONLY + correct reason; old ROOM_NOT_PRIORITY absent; chat_id match dispatches despite title change; allowed room → SIGNAL_DISPATCHED event; empty allowlist → all dispatch |
+| `TestParseFailed` | non-signal text → SIGNAL_PARSE_FAILED event; empty text → no PARSE_FAILED |
+| `TestListenerStaleness` | `_last_ingest_at` updated on message; updated on dispatch; threshold config |
+| `TestWatchOnlyEventDetails` | event notes contain channel+chat_id; reason field is structured code |
+
+Updated `tests/api/test_vision_listener_aurum.py`: `test_non_priority_room_is_watch_only_in_signal_mode` assertion changed from `ROOM_NOT_PRIORITY` to `WATCH_ONLY_ROOM_FILTER`.
+
+All 195 tests pass (`tests/api/` + `tests/services/`).
+
+#### Documentation Updated
+
+- `docs/SIGNAL_ROOM_POLICY.md` — new matching semantics, startup log to expect, `api/channels` quick check, updated verification queries for new reason codes, added `SIGNAL_DISPATCHED` / `SIGNAL_PARSE_FAILED` queries.
+- `docs/DATA_CONTRACT.md` — `listener_meta.json`, `channel_names.json`, `channel_messages.json` added to file bus table; `listener_meta.json` shape documented.
+- `docs/CLI_API_CHEATSHEET.md` — replaced `## Signal Channels` with `## Signal Channels & LISTENER Diagnostics`; added 60-second "no trades from room" runbook; AEGIS reject reasons updated to `AEGIS_REJECTED:` prefix; bridge.log grep patterns updated.
+
+#### Runtime Verification
+
+```bash
+# Confirm room allowlist status after restart
+curl -s http://localhost:7842/api/channels | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+print(f'listener={d[\"listener_status\"]} last_ingest={d[\"listener_last_ingest_at\"]}')
+[print(f'  {ch[\"name\"]}: trade_room={ch[\"is_trade_room\"]} match={ch[\"match_reason\"]} watch_only={ch[\"watch_only\"]}') for ch in d['channels']]
+"
+
+# Confirm no signals stuck in WATCH_ONLY unexpectedly
+curl -s -X POST http://localhost:7842/api/scribe/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT channel_name, action_taken, skip_reason, COUNT(*) as n FROM signals_received GROUP BY channel_name, action_taken ORDER BY channel_name, n DESC"}' \
+  | python3 -c "import sys,json; [print(r) for r in json.load(sys.stdin)['rows']]"
+```
+
+---
+
 ## [1.4.1] — 2026-04-10
 
 ### FORGE Threshold Hardening

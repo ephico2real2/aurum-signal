@@ -22,6 +22,7 @@ class TestLiveEndpoint:
         required = ["timestamp", "mode", "session", "session_utc", "cycle", "account",
                     "price", "chart_symbol", "execution", "tradingview", "mt5_quote_stale",
                     "lens", "sentinel", "open_groups", "open_groups_queued", "open_groups_policy",
+                    "regime",
                     "performance", "performance_window",
                     "recent_closures", "closure_stats",
                     "mt5_connected", "pending_orders"]
@@ -40,6 +41,14 @@ class TestLiveEndpoint:
         assert "pnl_day_reset_hour_utc" in aegis, "AEGIS should expose trading-day boundary (trading_session.py)"
         h = aegis["pnl_day_reset_hour_utc"]
         assert isinstance(h, int) and 0 <= h <= 23
+
+    def test_live_has_regime_block(self, live_data):
+        reg = live_data.get("regime")
+        assert isinstance(reg, dict), "Missing/invalid regime block"
+        assert isinstance(reg.get("config", {}), dict)
+        assert isinstance(reg.get("current", {}), dict)
+        assert isinstance(reg.get("transitions_24h", []), list)
+        assert isinstance(reg.get("performance_30d", {}), dict)
 
     def test_live_has_broker_info(self, live_data):
         assert "account_type" in live_data, "Missing account_type"

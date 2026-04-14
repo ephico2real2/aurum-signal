@@ -81,10 +81,14 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 | `MT5/market_data.json` | FORGE | BRIDGE, ATHENA | `schemas/files/market_data.schema.json` |
 | `python/config/parsed_signal.json` | LISTENER | BRIDGE | *(documented in LISTENER prompt; extend schema when stable)* |
 | `python/config/lens_snapshot.json` | LENS MCP (via `lens.py`) | BRIDGE, ATHENA | *(partial; TV snapshot fields)* |
+| `python/config/listener_meta.json` | LISTENER | ATHENA (`/api/channels`, `/api/channels/messages`) | *(see below)* |
+| `python/config/channel_names.json` | LISTENER (on connect) | ATHENA | `{ "<chat_id>": "<title>", … }` |
+| `python/config/channel_messages.json` | LISTENER (every 5min) | ATHENA | `{ "<chat_id>": [ {date,text,id}, … ], … }` |
 `MT5/market_data.json` semantics (current runtime):
 - `account.open_positions_count` is account-wide.
 - `open_positions[]` exports all account positions and includes `forge_managed` (`true` for FORGE magic-range positions, `false` for manual/non-FORGE).
 - `pending_orders[]` exports symbol-scope pending orders and includes `forge_managed`.
+- `recent_closed_deals[]` exports recent broker deal closures by position ticket (`position_ticket`, `close_price`, `profit`, `close_reason`, `time_unix`) for broker-exact close attribution in BRIDGE.
 - `forge_config` exports active threshold-hardening values:
   - `pending_entry_threshold_points`
   - `trend_strength_atr_threshold`
@@ -95,6 +99,19 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 - consumed by BRIDGE and persisted into SCRIBE `trade_groups`
 - includes threshold-hardening fields above plus derived decision metrics (`h1_trend_strength`, `prev_close`, `m5_bb_upper`, `m5_bb_lower`)
 
+`python/config/listener_meta.json` semantics (written by LISTENER):
+- `status` — `"OK"` | `"WARN"` (WARN = no message received for > `LISTENER_STALE_THRESHOLD_SEC`, default 600s)
+- `last_ingest_at` — ISO-8601 UTC timestamp of the last message that was received and processed (any type, including IGNORE)
+- `updated_at` — ISO-8601 UTC of the last meta write
+- `channels_count` — number of channels currently monitored
+- `signal_trade_rooms_active` — boolean; true if `SIGNAL_TRADE_ROOMS` is non-empty
+- `signal_trade_rooms_count` — number of entries in the allowlist
+- `resolved_rooms[]` — per-channel allowlist resolution, written once on Telegram connect:
+  - `chat_id` — string form of Telethon chat ID
+  - `title` — resolved channel title
+  - `is_trade_room` — boolean
+  - `match_reason` — `ALLOWED_ALL` | `ALLOWED_TITLE_MATCH` | `ALLOWED_ID_MATCH` | `WATCH_ONLY_ROOM_FILTER`
+
 BRIDGE tracker semantics:
 - `forge_managed=true` positions follow standard strategy trade-group lifecycle.
 - `forge_managed=false` positions are persisted as synthetic manual groups (`trade_groups.source='MANUAL_MT5'`) with `trade_positions`/`trade_closures` rows and audit events `UNMANAGED_POSITION_OPEN` / `UNMANAGED_POSITION_CLOSED`.
@@ -102,6 +119,10 @@ BRIDGE tracker semantics:
 **Ephemeral queue:** `aurum_cmd.json` is a **drop box**, not a status file. BRIDGE **removes** it after handling. If the mode already changed, the file is often **gone** — that is **normal**.
 
 **Python validators:** `python/contracts/aurum_forge.py` implements **`validate_aurum_cmd`** and **`validate_forge_command`** aligned with `schemas/files/*.schema.json`. Keep them in sync when the JSON Schema changes.
+
+`MT5/command.json` modify semantics (runtime behavior):
+- `{"action":"MODIFY_SL","sl":...}` or `{"action":"MODIFY_TP","tp":...}` without `magic` applies globally to EA-managed exposure.
+- When BRIDGE resolves a `group_id`, it writes `magic` into modify commands; FORGE applies the change only to that group's positions/pending orders.
 
 **Copy-paste shapes (minimal valid examples):**
 
@@ -148,7 +169,10 @@ Base URL: `http://<host>:7842` (default). Responses are JSON unless noted.
 | Method | Path | Notes |
 |--------|------|--------|
 | GET | `/api/health` | Liveness |
-| GET | `/api/live` | Aggregates status + MT5 + LENS + SCRIBE |
+| GET | `/api/live` | Aggregates status + MT5 + LENS + SCRIBE + `regime` block (`config/current/transitions/performance`) |
+| GET | `/api/regime/current` | Current regime snapshot + rollout config + transition/performance hints |
+| GET | `/api/regime/history` | Historical regime snapshots (`limit`, `hours`) |
+| GET | `/api/regime/performance` | Regime-conditioned closed-trade summary (`days`) |
 | GET | `/api/components` | Synthetic FORGE row from `market_data.json` |
 | GET | `/api/mode` | Current `mode` / `effective_mode` from `config/status.json` (read-only; same source as `/api/live`) |
 | GET | `/api/components/heartbeat` | JSON “help” only — **POST** ingests a heartbeat (browser GET avoids a blank page) |
