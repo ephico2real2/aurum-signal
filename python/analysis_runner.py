@@ -493,8 +493,10 @@ def _handler_trade_group_review(params: dict) -> dict:
     schema_misses: list[str] = []
     group_row: sqlite3.Row | None = None
     signal_text = ""
+    signal_meta: dict = {}
     aegis_line = ""
     fills: list[sqlite3.Row] = []
+    closures: list[sqlite3.Row] = []
 
     if db_path.exists():
         try:
@@ -509,19 +511,36 @@ def _handler_trade_group_review(params: dict) -> dict:
                     group_row = rows[0]
                 sig_rows = _safe_select(
                     conn,
-                    """SELECT raw_text, parsed_json FROM signals_received
+                    """SELECT raw_text, channel_name, signal_type, direction,
+                              entry_low, entry_high, sl, tp1, tp2, tp3,
+                              skip_reason, action_taken, regime_label,
+                              regime_confidence
+                       FROM signals_received
                        WHERE id = (SELECT signal_id FROM trade_groups WHERE id = ?)
                        LIMIT 1""",
                     (group_id,),
                     schema_misses,
                 )
-                if sig_rows:
-                    signal_text = (sig_rows[0]["raw_text"] or "")[:1000]
+                signal_meta = dict(sig_rows[0]) if sig_rows else {}
+                if signal_meta:
+                    signal_text = (signal_meta.get("raw_text") or "")[:1000]
                 fills = _safe_select(
                     conn,
-                    """SELECT ticket, direction, lot, entry_price, sl, tp, status,
-                              close_reason, close_price, pnl, pips
+                    """SELECT ticket, direction, lot_size, entry_price, sl, tp,
+                              status, close_reason, close_price, close_time,
+                              pnl, pips, tp_stage
                        FROM trade_positions
+                       WHERE trade_group_id = ?
+                       ORDER BY ticket ASC""",
+                    (group_id,),
+                    schema_misses,
+                )
+                closures = _safe_select(
+                    conn,
+                    """SELECT ticket, direction, lot_size, entry_price,
+                              close_price, close_reason, pnl, pips,
+                              duration_seconds
+                       FROM trade_closures
                        WHERE trade_group_id = ?
                        ORDER BY ticket ASC""",
                     (group_id,),
@@ -540,15 +559,27 @@ def _handler_trade_group_review(params: dict) -> dict:
     if group_row is not None:
         parts.append("")
         parts.append("## Group meta")
-        for key in ("direction", "num_trades", "lot_per_trade", "entry_low",
-                    "entry_high", "sl", "tp1", "tp2", "tp3", "status",
-                    "total_pnl", "regime_label", "regime_confidence",
-                    "regime_policy"):
+        for key in ("direction", "source", "num_trades", "lot_per_trade",
+                    "entry_low", "entry_high", "sl", "tp1", "tp2", "tp3",
+                    "status", "close_reason", "total_pnl", "pips_captured",
+                    "trades_opened", "trades_closed", "regime_label",
+                    "regime_confidence", "regime_policy"):
             try:
                 v = group_row[key]
             except (IndexError, KeyError):
                 continue
             if v is None:
+                continue
+            parts.append(f"- **{key}**: {v}")
+
+    if signal_meta:
+        parts.append("")
+        parts.append("## Signal meta")
+        for key in ("channel_name", "signal_type", "direction", "entry_low",
+                    "entry_high", "sl", "tp1", "tp2", "tp3", "action_taken",
+                    "skip_reason", "regime_label", "regime_confidence"):
+            v = signal_meta.get(key)
+            if v is None or v == "":
                 continue
             parts.append(f"- **{key}**: {v}")
 
@@ -559,24 +590,29 @@ def _handler_trade_group_review(params: dict) -> dict:
         parts.append(signal_text.strip())
         parts.append("```")
 
-    # AEGIS line — first matching line from bridge log
-    aegis_re = re.compile(r"AEGIS APPROVED.*$|AEGIS REJECT.*$|AEGIS:.*allowed.*$", re.IGNORECASE)
-    for line in bridge_lines:
-        if aegis_re.search(line):
-            aegis_line = line.split(" ", 3)[-1] if " " in line else line
-            break
-    if not aegis_line:
-        # also scan a small recent slice of the bridge log generally
-        if _BRIDGE_LOG.exists():
-            try:
-                with open(_BRIDGE_LOG, "r", encoding="utf-8", errors="replace") as f:
-                    tail = f.readlines()[-2000:]
-                for line in tail:
-                    if re.search(rf"AEGIS.*\bSELL\b|AEGIS.*\bBUY\b", line) and re.search(r"AEGIS APPROVED|AEGIS REJECT", line):
+    # AEGIS line — scan a sliding window of the bridge log immediately
+    # preceding the first OPEN_GROUP G<id> line. AEGIS logs the approval/reject
+    # ~10–20 lines before the OPEN_GROUP marker for the same signal.
+    aegis_pat = re.compile(r"AEGIS\s+(APPROVED|REJECT|REJECTED|REJECT_REASON|allowed)", re.IGNORECASE)
+    open_marker = re.compile(rf"\[SIGNAL\|OPEN_GROUP\]\s+G{int(group_id)}\b")
+    if _BRIDGE_LOG.exists():
+        try:
+            with open(_BRIDGE_LOG, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
+            # find first OPEN_GROUP for this group
+            anchor = -1
+            for i, line in enumerate(all_lines):
+                if open_marker.search(line):
+                    anchor = i
+                    break
+            if anchor >= 0:
+                window = all_lines[max(0, anchor - 80):anchor + 1]
+                for line in reversed(window):
+                    if aegis_pat.search(line):
                         aegis_line = line.rstrip()
                         break
-            except Exception:
-                pass
+        except Exception as e:
+            log.debug("analysis_runner: AEGIS scope scan failed: %s", e)
     if aegis_line:
         parts.append("")
         parts.append("## AEGIS decision")
@@ -584,20 +620,35 @@ def _handler_trade_group_review(params: dict) -> dict:
 
     # Fills + closes
     parts.append("")
-    parts.append("## Fills / closes (from SCRIBE)")
+    parts.append("## Positions (from SCRIBE `trade_positions`)")
     if fills:
         for r in fills:
             try:
                 parts.append(
-                    f"- #{r['ticket']} {r['direction']} {r['lot']}lot "
+                    f"- #{r['ticket']} {r['direction']} {r['lot_size']}lot "
                     f"entry@{r['entry_price']} SL={r['sl']} TP={r['tp']} "
                     f"status={r['status']} close_reason={r['close_reason']} "
-                    f"close@{r['close_price']} pnl={r['pnl']} pips={r['pips']}"
+                    f"close@{r['close_price']} pnl={r['pnl']} pips={r['pips']} "
+                    f"tp_stage={r['tp_stage']}"
                 )
             except Exception:
                 continue
     else:
         parts.append("_no rows from `trade_positions` for this group_")
+
+    if closures:
+        parts.append("")
+        parts.append("## Closures (from SCRIBE `trade_closures`)")
+        for r in closures:
+            try:
+                parts.append(
+                    f"- #{r['ticket']} {r['direction']} {r['lot_size']}lot "
+                    f"entry@{r['entry_price']} close@{r['close_price']} "
+                    f"reason={r['close_reason']} pnl={r['pnl']} pips={r['pips']} "
+                    f"dur={r['duration_seconds']}s"
+                )
+            except Exception:
+                continue
 
     parts.append("")
     parts.append("## Bridge log events")
@@ -609,11 +660,17 @@ def _handler_trade_group_review(params: dict) -> dict:
     else:
         parts.append("_no matching lines in `logs/bridge.log`_")
 
-    # Fill ratio + realised PnL
+    # Fill ratio + realised PnL — prefer trade_positions, fall back to closures.
     realised_pnl = 0.0
     filled = 0
     closed = 0
     total = 0
+    intended_n = None
+    if group_row is not None:
+        try:
+            intended_n = int(group_row["num_trades"]) if group_row["num_trades"] is not None else None
+        except Exception:
+            intended_n = None
     if fills:
         for r in fills:
             total += 1
@@ -622,6 +679,13 @@ def _handler_trade_group_review(params: dict) -> dict:
                     filled += 1
                 if r["status"] == "CLOSED":
                     closed += 1
+                if r["pnl"] is not None:
+                    realised_pnl += float(r["pnl"] or 0)
+            except Exception:
+                continue
+    if closures and realised_pnl == 0.0:
+        for r in closures:
+            try:
                 if r["pnl"] is not None:
                     realised_pnl += float(r["pnl"] or 0)
             except Exception:
@@ -641,10 +705,16 @@ def _handler_trade_group_review(params: dict) -> dict:
                     except ValueError:
                         pass
 
-    fill_ratio = (filled / total) if total else 0.0
+    denom = intended_n if intended_n else total
+    fill_ratio = (filled / denom) if denom else 0.0
     parts.append("")
     parts.append("## Summary")
-    parts.append(f"- Filled: {filled}/{total}  (ratio {fill_ratio:.0%})")
+    if intended_n is not None and intended_n != total:
+        parts.append(
+            f"- Filled: {filled}/{intended_n} intended  (positions row count {total}, ratio {fill_ratio:.0%})"
+        )
+    else:
+        parts.append(f"- Filled: {filled}/{denom}  (ratio {fill_ratio:.0%})")
     parts.append(f"- Closed: {closed}")
     parts.append(f"- Realised PnL: ${realised_pnl:+.2f}")
 

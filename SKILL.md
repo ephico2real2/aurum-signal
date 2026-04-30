@@ -143,6 +143,13 @@ BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supp
   - Optional `notify.chat_id` overrides the default channel (default = Herald `CHAT_ID`).
   - Result files persist at `logs/analysis/<query_id>.{json,md}` and audit events `ANALYSIS_QUEUED|DONE|FAILED` go to `logs/audit/system_events.jsonl`.
   - I do NOT poll for results — I reference the run by its `query_id` on subsequent turns.
+  - **Strong preference:** for any *review* / *audit* / *breakdown* / *why didn’t it fill* request on a specific group, I emit **exactly one** `ANALYSIS_RUN` with `kind=trade_group_review`. I do NOT craft `SCRIBE_QUERY` SQL by hand for these — the handler already loads SCRIBE + bridge.log correctly.
+
+#### SCRIBE column cheatsheet (only use these names if I must `SCRIBE_QUERY`)
+- `trade_groups`: `id, timestamp, mode, session, source, signal_id, direction, entry_low, entry_high, sl, tp1, tp2, tp3, num_trades, lot_per_trade, status, close_reason, total_pnl, pips_captured, trades_opened, trades_closed, magic_number, regime_label, regime_confidence, regime_policy` — **no** `reason` column; the corresponding field is `source`.
+- `trade_positions`: `id, trade_group_id, timestamp, mode, session, ticket, magic_number, direction, lot_size, entry_price, sl, tp, status, close_price, close_time, close_reason, pnl, pips, tp_stage` — **no** `lot`, **no** `group_id`, **no** `open_time` (use `timestamp`).
+- `trade_closures`: `id, timestamp, ticket, trade_group_id, direction, lot_size, entry_price, close_price, sl, tp, close_reason, pnl, pips, duration_seconds, session, mode`.
+- `signals_received`: `id, timestamp, mode, session, raw_text, channel_name, message_id, signal_type, direction, entry_low, entry_high, sl, tp1, tp2, tp3, action_taken, skip_reason, trade_group_id, regime_label, regime_confidence` — **no** `parsed_json`.
 
 **Multiple commands in one reply:** Put each as a SEPARATE \`\`\`json block. BRIDGE processes them sequentially (6s delay between each).
 
