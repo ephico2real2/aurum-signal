@@ -141,14 +141,19 @@ PENDING_CANCEL_ON_GROUP_CLOSE = os.environ.get("PENDING_CANCEL_ON_GROUP_CLOSE", 
 # Opt-in (default false) so existing groups behave exactly as before unless the
 # operator explicitly enables it. See docs/CLI_API_CHEATSHEET.md § "Profit ratchet".
 PROFIT_RATCHET_ENABLED = os.environ.get("PROFIT_RATCHET_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+# IMPORTANT: pip math here uses _pip_size_for_symbol which returns 0.01 for
+# XAUUSD (broker-point convention). So PROFIT_RATCHET_TRIGGER_PIPS=30 means
+# trigger at $0.30 of unrealised profit, and LOCK_PIPS=5 means SL lands $0.05
+# past entry. Those are the realistic XAU scalping defaults; tweak per
+# instrument volatility.
 try:
-    PROFIT_RATCHET_TRIGGER_PIPS = float(os.environ.get("PROFIT_RATCHET_TRIGGER_PIPS", "3"))
+    PROFIT_RATCHET_TRIGGER_PIPS = float(os.environ.get("PROFIT_RATCHET_TRIGGER_PIPS", "30"))
 except (TypeError, ValueError):
-    PROFIT_RATCHET_TRIGGER_PIPS = 3.0
+    PROFIT_RATCHET_TRIGGER_PIPS = 30.0
 try:
-    PROFIT_RATCHET_LOCK_PIPS = float(os.environ.get("PROFIT_RATCHET_LOCK_PIPS", "1"))
+    PROFIT_RATCHET_LOCK_PIPS = float(os.environ.get("PROFIT_RATCHET_LOCK_PIPS", "5"))
 except (TypeError, ValueError):
-    PROFIT_RATCHET_LOCK_PIPS = 1.0
+    PROFIT_RATCHET_LOCK_PIPS = 5.0
 if PROFIT_RATCHET_TRIGGER_PIPS <= PROFIT_RATCHET_LOCK_PIPS:
     # The trigger must exceed the lock or the move is meaningless.
     PROFIT_RATCHET_LOCK_PIPS = max(0.0, PROFIT_RATCHET_TRIGGER_PIPS - 1.0)

@@ -349,7 +349,7 @@ for k,l in [('indicators_h1','H1'),('indicators_m15','M15'),('indicators_m5','M5
 - Lot sizing uses `SIGNAL_LOT_SIZE` (default 0.01) when `AEGIS_LOT_MODE=fixed`
 - Num trades uses `SIGNAL_NUM_TRADES` (default 4)
 - MODIFY_SL/MODIFY_TP execution requires FORGE v1.3.0+; per-group scoping via `group_id` requires FORGE v1.4.1+; per-stage (`tp_stage`) and per-ticket (`ticket`) scoping requires **FORGE v1.5.0+** (reattach/reload EA after compile)
-- **Profit ratchet** (BRIDGE 1.5.1+): set `PROFIT_RATCHET_ENABLED=true` in `.env` to auto-lock SL on green legs. Tunables: `PROFIT_RATCHET_TRIGGER_PIPS=3` (when to fire), `PROFIT_RATCHET_LOCK_PIPS=1` (where SL lands relative to entry). Watch with `tail -f logs/bridge.log | grep PROFIT_RATCHET`.
+- **Profit ratchet** (BRIDGE 1.5.1+): set `PROFIT_RATCHET_ENABLED=true` in `.env` to auto-lock SL on green legs. Tunables: `PROFIT_RATCHET_TRIGGER_PIPS=30` (XAU pip = `$0.01` → fire at +$0.30 unrealised), `PROFIT_RATCHET_LOCK_PIPS=5` (SL lands `$0.05` past entry). Watch with `tail -f logs/bridge.log | grep PROFIT_RATCHET`.
 - TP split: 75% of positions get TP1, 25% get TP2 (controlled by `TP1_CLOSE_PCT`)
 - Test parser via API: `POST /api/signals/parse {"text": "SELL Gold @4691..."}`
 - Swagger UI: `http://localhost:7842/api/docs/`
