@@ -458,19 +458,22 @@ function AurumChat({liveData}){
     const text=inp.trim();if(!text||loading)return;
     setInp('');if(taRef.current)taRef.current.style.height='auto';
     const nm=[...msgs,{role:'user',text}];setMsgs(nm);setLoading(true);
+    // ALWAYS route through ATHENA backend — never call Anthropic from the browser.
+    // The backend is what writes aurum_cmd.json and triggers ANALYSIS_RUN / OPEN_GROUP / etc.
+    // Bypassing it produces a chat reply that never reaches BRIDGE.
     try{
-      let reply;
-      try{const r=await fetch(`${API}/api/aurum/ask`,{method:'POST',
+      const r=await fetch(`${API}/api/aurum/ask`,{method:'POST',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({query:text})});
-        if(r.ok){const d=await r.json();reply=d.response;}}catch(e){}
-      if(!reply){const r=await fetch('https://api.anthropic.com/v1/messages',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,
-          system:`${SOUL}\n\nLIVE:\n${ctx()}`,
-          messages:nm.map(m=>({role:m.role==='user'?'user':'assistant',content:m.text}))})});
-        const d=await r.json();reply=d.content?.find(b=>b.type==='text')?.text||'No response.';}
+      if(!r.ok){
+        const errBody=await r.text().catch(()=> '');
+        throw new Error(`backend HTTP ${r.status}${errBody?` — ${errBody.slice(0,200)}`:''}`);
+      }
+      const d=await r.json();
+      const reply=d.response||'(empty AURUM response)';
       setMsgs(p=>[...p,{role:'assistant',text:reply}]);
-    }catch(e){setMsgs(p=>[...p,{role:'assistant',text:`Error: ${e.message}`}]);}
+    }catch(e){
+      setMsgs(p=>[...p,{role:'assistant',text:`AURUM backend unreachable — ${e.message}. Verify ATHENA at ${API}/api/health.`}]);
+    }
     finally{setLoading(false);}
   };
   return(<div style={{display:'flex',flexDirection:'column',height:'100%',gap:6}}>
