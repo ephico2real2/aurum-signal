@@ -6,9 +6,10 @@ Central nervous system. Mode state machine. Coordinates everything.
 Entry point: python bridge.py
 """
 
-import os, json, logging, time, sys
+import os, json, logging, time, sys, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from aeb_executor import execute_action, format_result_for_telegram
 
 from scribe      import get_scribe
 from herald      import get_herald
@@ -49,6 +50,10 @@ LENS_INTERVAL   = int(os.environ.get("BRIDGE_LENS_SEC",     "60"))
 LENS_WATCH_REFRESH_SEC = int(os.environ.get("LENS_WATCH_REFRESH_SEC", "60"))
 SENTINEL_INTERVAL = int(os.environ.get("BRIDGE_SENTINEL_SEC","60"))
 MT5_STALE_SEC   = int(os.environ.get("BRIDGE_MT5_STALE",    "120"))
+MT5_STALE_RELAXED_SEC = int(os.environ.get("BRIDGE_MT5_STALE_RELAXED", str(MT5_STALE_SEC)))
+if MT5_STALE_RELAXED_SEC < MT5_STALE_SEC:
+    MT5_STALE_RELAXED_SEC = MT5_STALE_SEC
+MT5_READ_FAIL_STREAK = max(1, int(os.environ.get("BRIDGE_MT5_READ_FAIL_STREAK", "2")))
 
 STATUS_FILE     = _under_python(os.environ.get("BRIDGE_STATUS_FILE", "config/status.json"))
 CMD_FILE_MT5    = _under_root(os.environ.get("MT5_CMD_FILE",        "MT5/command.json"))
@@ -61,6 +66,16 @@ SIGNAL_FILE     = _under_python(os.environ.get("LISTENER_SIGNAL_FILE","config/pa
 MGMT_FILE       = _under_python(os.environ.get("LISTENER_MGMT_FILE",  "config/management_cmd.json"))
 SENTINEL_FILE   = _under_python(os.environ.get("SENTINEL_STATUS_FILE","config/sentinel_status.json"))
 AURUM_CMD_FILE  = _under_python(os.environ.get("AURUM_CMD_FILE",      "config/aurum_cmd.json"))
+ATHENA_PORT     = int(os.environ.get("ATHENA_PORT", "7842"))
+AURUM_EXEC_BASE_URL = os.environ.get("AURUM_EXEC_BASE_URL", f"http://127.0.0.1:{ATHENA_PORT}").strip()
+AURUM_EXEC_TIMEOUT_SEC = max(1, int(os.environ.get("AURUM_EXEC_TIMEOUT_SEC", "15")))
+AURUM_EXEC_SECRET = (os.environ.get("ATHENA_AURUM_EXEC_SECRET") or "").strip()
+AEB_TELEGRAM_MAX_CHARS = max(256, int(os.environ.get("AEB_TELEGRAM_MAX_CHARS", "3000")))
+AEB_SHELL_EXEC_BLOCKED_SOURCES = {
+    x.strip().upper()
+    for x in os.environ.get("AEB_SHELL_EXEC_BLOCKED_SOURCES", "TELEGRAM").split(",")
+    if x and x.strip()
+}
 SCALPER_ENTRY_FILE = _under_root(os.environ.get("SCALPER_ENTRY_FILE",  "MT5/scalper_entry.json"))
 SCALPER_CONFIG_FILE = os.path.join(_ROOT, "config", "scalper_config.json")
 LENS_SNAPSHOT_FILE = _under_python(
@@ -136,6 +151,28 @@ def _write_json(path: str, data: dict):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+def _coerce_unix_ts(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_legacy_aurum_exec_payload(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    action = str(payload.get("action") or "").upper().strip()
+    if action:
+        return payload
+    script = str(payload.get("script") or "").strip().lower()
+    if script == "health_check":
+        normalized = dict(payload)
+        normalized["action"] = "HEALTH_CHECK"
+        return normalized
+    return payload
 
 
 # ── Structured trade log ─────────────────────────────────────────
@@ -464,6 +501,9 @@ class Bridge:
         self._last_lens_ts       = 0
         self._last_sentinel_ts   = 0
         self._last_mt5_alert_ts  = 0
+        self._mt5_read_fail_streak = 0
+        self._last_mt5_good_unix = 0.0
+        self._last_mt5_snapshot = {}
         self._last_recon_ts      = 0
         self._open_groups        = {}
         self._last_auto_scalper_ts  = 0
@@ -1478,11 +1518,56 @@ class Bridge:
 
     def _tick(self):
         now = time.time()
-        mt5 = _read_json(MARKET_FILE)
+        mt5 = {}
+        mt5_read_error = None
+        try:
+            with open(MARKET_FILE, encoding="utf-8") as fh:
+                parsed = json.load(fh)
+            if isinstance(parsed, dict):
+                mt5 = parsed
+            else:
+                mt5_read_error = "non_object_json"
+        except Exception as exc:
+            mt5_read_error = type(exc).__name__
+
+        mt5_age = 9999.0
+        mt5_fresh = False
+        used_snapshot_fallback = False
+
         if mt5:
             mt5.update(_extract_forge_thresholds(mt5))
-        mt5_age = now - mt5.get("timestamp_unix", 0) if mt5 else 9999
-        mt5_fresh = mt5 and mt5_age < MT5_STALE_SEC
+            ts_unix = _coerce_unix_ts(mt5.get("timestamp_unix"))
+            if ts_unix is None:
+                mt5_read_error = "invalid_timestamp_unix"
+                self._mt5_read_fail_streak += 1
+            else:
+                mt5_age = max(0.0, now - ts_unix)
+                mt5_fresh = mt5_age < MT5_STALE_SEC
+                self._last_mt5_good_unix = ts_unix
+                self._last_mt5_snapshot = dict(mt5)
+                self._mt5_read_fail_streak = 0
+        else:
+            self._mt5_read_fail_streak += 1
+
+        # Transient file-write/read races can briefly return invalid JSON.
+        # Reuse the last-known-good snapshot for a short grace window.
+        if (
+            not mt5_fresh
+            and mt5_read_error is not None
+            and self._last_mt5_snapshot
+            and self._last_mt5_good_unix > 0
+        ):
+            fallback_age = max(0.0, now - self._last_mt5_good_unix)
+            if (
+                self._mt5_read_fail_streak < MT5_READ_FAIL_STREAK
+                and fallback_age < MT5_STALE_RELAXED_SEC
+            ):
+                mt5 = dict(self._last_mt5_snapshot)
+                mt5_age = fallback_age
+                mt5_fresh = True
+                used_snapshot_fallback = True
+            else:
+                mt5_age = fallback_age
 
         # ── CIRCUIT BREAKER: MT5 staleness check ──────────────────
         # If market_data.json hasn't updated in MT5_STALE_SEC, FORGE
@@ -1495,7 +1580,15 @@ class Bridge:
                     "CIRCUIT_BREAKER_ON",
                     prev_mode=self._mode, new_mode="WATCH",
                     triggered_by="BRIDGE",
-                    reason=f"MT5 market_data.json stale: {mt5_age:.0f}s > {MT5_STALE_SEC}s",
+                    reason=(
+                        f"MT5 market_data.json stale: {mt5_age:.0f}s > {MT5_STALE_SEC}s"
+                        + (
+                            f" (read_error={mt5_read_error}, fail_streak={self._mt5_read_fail_streak}, "
+                            f"relaxed={MT5_STALE_RELAXED_SEC}s)"
+                            if mt5_read_error is not None
+                            else ""
+                        )
+                    ),
                 )
                 # Throttle alerts — only fire once per 5 minutes
                 if now - self._last_mt5_alert_ts > 300:
@@ -1505,6 +1598,15 @@ class Bridge:
                         f"Check FORGE EA on XAUUSD chart."
                     )
                     self._last_mt5_alert_ts = now
+        elif used_snapshot_fallback and (self._cycle % 30 == 0):
+            log.warning(
+                "BRIDGE: transient MT5 market_data read error (%s); "
+                "using last good snapshot age=%.1fs (fail_streak=%d, relaxed=%ss)",
+                mt5_read_error,
+                mt5_age,
+                self._mt5_read_fail_streak,
+                MT5_STALE_RELAXED_SEC,
+            )
         elif mt5_fresh and self._mt5_blind_override:
             # MT5 recovered — lift circuit breaker
             self._mt5_blind_override = False
@@ -2415,6 +2517,7 @@ class Bridge:
         if not cmd:
             return
         action = (cmd.get("action") or "").upper()
+        origin_source = str(cmd.get("origin_source") or cmd.get("source") or "").strip().upper()
         ts     = cmd.get("timestamp")
         if not action or ts == getattr(self, "_last_aurum_ts", None):
             return
@@ -2565,11 +2668,174 @@ class Bridge:
                                   notes=json.dumps({"via": "AURUM"}, default=str))
             log.info("BRIDGE: AURUM CLOSE_LOSING")
 
+        elif action in ("SCRIBE_QUERY", "SHELL_EXEC", "ANALYSIS_RUN"):
+            if action == "SHELL_EXEC" and origin_source and origin_source in AEB_SHELL_EXEC_BLOCKED_SOURCES:
+                result = {
+                    "ok": False,
+                    "action": "SHELL_EXEC",
+                    "summary": "SHELL_EXEC blocked",
+                    "error": f"SHELL_EXEC not permitted from source: {origin_source}",
+                    "security_blocked": True,
+                    "duration_ms": 0,
+                }
+            else:
+                result = execute_action(
+                    cmd,
+                    db_path=self.scribe.db_path,
+                    project_root=_ROOT,
+                )
+            self._report_aeb_result(result, via="BRIDGE_LOCAL")
+
+        elif action == "AURUM_EXEC":
+            payload = cmd.get("payload")
+            if isinstance(payload, dict):
+                payload_norm = _normalize_legacy_aurum_exec_payload(payload)
+                if payload_norm is not payload:
+                    cmd = dict(cmd)
+                    cmd["payload"] = payload_norm
+                    payload = payload_norm
+            nested_action = ""
+            if isinstance(payload, dict):
+                nested_action = str(payload.get("action") or "").upper()
+            if (
+                nested_action == "SHELL_EXEC"
+                and origin_source
+                and origin_source in AEB_SHELL_EXEC_BLOCKED_SOURCES
+            ):
+                result = {
+                    "ok": False,
+                    "action": "SHELL_EXEC",
+                    "summary": "SHELL_EXEC blocked",
+                    "error": f"SHELL_EXEC not permitted from source: {origin_source}",
+                    "security_blocked": True,
+                    "duration_ms": 0,
+                }
+                self._report_aeb_result(result, via="BRIDGE_LOCAL")
+            else:
+                result = self._dispatch_aurum_exec(cmd)
+                self._report_aeb_result(result, via="ATHENA_HTTP")
+
         # Consume the file so we don't reprocess
         try:
             os.remove(AURUM_CMD_FILE)
         except:
             pass
+
+    def _report_aeb_result(self, result: dict, *, via: str):
+        if not isinstance(result, dict):
+            result = {
+                "ok": False,
+                "action": "AEB",
+                "summary": "AEB result malformed",
+                "error": "result is not an object",
+                "security_blocked": False,
+                "duration_ms": 0,
+            }
+        action = str(result.get("action") or "AEB")
+        ok = bool(result.get("ok"))
+        blocked = bool(result.get("security_blocked"))
+        level = logging.INFO if ok else logging.WARNING
+        log.log(
+            level,
+            "BRIDGE: %s via %s ok=%s blocked=%s summary=%s",
+            action,
+            via,
+            ok,
+            blocked,
+            result.get("summary"),
+        )
+        try:
+            self.herald.send(
+                format_result_for_telegram(result, max_chars=AEB_TELEGRAM_MAX_CHARS),
+                parse_mode=None,
+            )
+        except Exception as e:
+            log.debug("BRIDGE: AEB herald notification failed: %s", e)
+        event_type = "AEB_EXEC_OK" if ok else ("AEB_EXEC_BLOCKED" if blocked else "AEB_EXEC_FAILED")
+        self._bridge_activity(
+            event_type,
+            reason=f"{action} via {via}",
+            notes=json.dumps(result, default=str)[:3000],
+        )
+
+    def _dispatch_aurum_exec(self, cmd: dict) -> dict:
+        started = time.monotonic()
+
+        def _fail(summary: str, error: str) -> dict:
+            return {
+                "ok": False,
+                "action": "AURUM_EXEC",
+                "summary": summary,
+                "error": error,
+                "security_blocked": False,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            }
+
+        endpoint = str(cmd.get("endpoint") or "/api/aurum/exec").strip()
+        payload = cmd.get("payload")
+        if not isinstance(payload, dict):
+            payload = {
+                k: v
+                for k, v in cmd.items()
+                if k not in {"action", "timestamp", "endpoint", "reply_to"}
+            }
+        if not isinstance(payload, dict) or not payload:
+            return _fail("AURUM_EXEC payload missing", "AURUM_EXEC requires payload object")
+
+        if endpoint.startswith("http://") or endpoint.startswith("https://"):
+            url = endpoint
+        else:
+            ep = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+            url = f"{AURUM_EXEC_BASE_URL.rstrip('/')}{ep}"
+
+        timeout_sec = cmd.get("timeout_sec", AURUM_EXEC_TIMEOUT_SEC)
+        try:
+            timeout_i = max(1, min(int(timeout_sec), 120))
+        except (TypeError, ValueError):
+            timeout_i = AURUM_EXEC_TIMEOUT_SEC
+
+        body = json.dumps(payload, default=str).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if AURUM_EXEC_SECRET:
+            headers["X-ATHENA-AURUM-EXEC-TOKEN"] = AURUM_EXEC_SECRET
+            headers["Authorization"] = f"Bearer {AURUM_EXEC_SECRET}"
+        req = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_i) as resp:
+                status = int(resp.status or 200)
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                detail = str(e)
+            return _fail("AURUM_EXEC HTTP failed", f"status={e.code} detail={detail}")
+        except urllib.error.URLError as e:
+            return _fail("AURUM_EXEC transport failed", str(e.reason))
+        except Exception as e:
+            return _fail("AURUM_EXEC failed", str(e))
+
+        if not raw.strip():
+            return _fail("AURUM_EXEC invalid response", "empty HTTP body")
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            return _fail("AURUM_EXEC invalid response", f"non-JSON body: {e}")
+
+        if not isinstance(parsed, dict):
+            return _fail("AURUM_EXEC invalid response", "response body must be JSON object")
+        result = parsed.get("result") if isinstance(parsed.get("result"), dict) else parsed
+        if not isinstance(result, dict):
+            return _fail("AURUM_EXEC invalid response", "result must be JSON object")
+
+        out = dict(result)
+        out.setdefault("action", str((payload or {}).get("action") or "AURUM_EXEC"))
+        out.setdefault("summary", f"AURUM_EXEC HTTP {status}")
+        out.setdefault("ok", status < 400 and not out.get("error"))
+        out.setdefault("security_blocked", False)
+        out.setdefault("duration_ms", int((time.monotonic() - started) * 1000))
+        return out
 
     def _check_forge_scalper_entry(self, mt5: dict | None = None):
         """Detect native FORGE scalper entries and log them to SCRIBE."""

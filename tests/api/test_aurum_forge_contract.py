@@ -48,6 +48,45 @@ class TestAurumCmdContract:
         cmd = {"action": "CLOSE_ALL", "timestamp": "2026-04-06T12:00:00+00:00"}
         assert validate_aurum_cmd(cmd) == []
 
+    def test_scribe_query_valid(self):
+        cmd = {
+            "action": "SCRIBE_QUERY",
+            "sql": "SELECT id, status FROM trade_groups ORDER BY id DESC LIMIT 5",
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert validate_aurum_cmd(cmd) == []
+
+    def test_shell_exec_program_args_valid(self):
+        cmd = {
+            "action": "SHELL_EXEC",
+            "program": "python3",
+            "args": ["scripts/analyse_performance.py", "--days", "7"],
+            "timeout_sec": 30,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert validate_aurum_cmd(cmd) == []
+
+    def test_shell_exec_missing_exec_fields_invalid(self):
+        cmd = {"action": "SHELL_EXEC", "timestamp": "2026-04-06T12:00:00+00:00"}
+        errs = validate_aurum_cmd(cmd)
+        assert any("program+args or cmd" in e for e in errs)
+
+    def test_aurum_exec_valid(self):
+        cmd = {
+            "action": "AURUM_EXEC",
+            "payload": {"action": "SCRIBE_QUERY", "sql": "SELECT COUNT(*) AS n FROM trade_positions"},
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert validate_aurum_cmd(cmd) == []
+
+    def test_aurum_exec_health_check_valid(self):
+        cmd = {
+            "action": "AURUM_EXEC",
+            "payload": {"action": "HEALTH_CHECK"},
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert validate_aurum_cmd(cmd) == []
+
     def test_open_group_valid(self):
         cmd = {
             "action": "OPEN_GROUP",

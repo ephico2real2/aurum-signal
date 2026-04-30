@@ -173,7 +173,13 @@ class Aurum:
 
             # Check if response contains a command
             self._check_for_command(answer)
-            self._extract_json_commands_from_response(answer)
+            try:
+                self._extract_json_commands_from_response(answer, source=source)
+            except TypeError as e:
+                if "unexpected keyword argument 'source'" in str(e):
+                    self._extract_json_commands_from_response(answer)
+                else:
+                    raise
 
             # Execute chart commands via TradingView MCP
             chart_result = self._execute_chart_commands(answer)
@@ -213,6 +219,12 @@ class Aurum:
             "Supported JSON actions:",
             '- MODE_CHANGE: {"action":"MODE_CHANGE","new_mode":"SCALPER","reason":"..."}',
             '- OPEN_GROUP (preferred): {"action":"OPEN_GROUP","direction":"SELL","entry_low":4610.7,"entry_high":4610.9,"sl":4614.0,"tp1":4607.0,"tp2":null,"lot_per_trade":0.01,"reason":"..."}',
+            '- SCRIBE_QUERY: {"action":"SCRIBE_QUERY","sql":"SELECT id,status,timestamp FROM trade_groups ORDER BY id DESC LIMIT 5","reply_to":"TELEGRAM"}',
+            '- SHELL_EXEC (preferred): {"action":"SHELL_EXEC","program":"python3","args":["scripts/analyse_performance.py","--days","7"],"timeout_sec":30,"reply_to":"TELEGRAM"}',
+            '- SHELL_EXEC (legacy): {"action":"SHELL_EXEC","cmd":"python3 scripts/analyse_performance.py --days 7","reply_to":"TELEGRAM"}',
+            '- AURUM_EXEC (HTTP bridge): {"action":"AURUM_EXEC","payload":{"action":"SCRIBE_QUERY","sql":"SELECT COUNT(*) AS n FROM trade_positions"},"reply_to":"TELEGRAM"}',
+            '- ANALYSIS_RUN (deferred async analysis, results posted to Telegram by query_id): '
+            '{"action":"ANALYSIS_RUN","kind":"trade_group_review","params":{"group_id":56},"notify":{"telegram":true},"reason":"..."}',
             '- MODIFY_TP: {"action":"MODIFY_TP","tp":4648.50,"group_id":15,"reason":"..."}',
             '- MODIFY_SL: {"action":"MODIFY_SL","sl":4660.00,"group_id":15,"reason":"..."}',
             '- CLOSE_GROUP: {"action":"CLOSE_GROUP","group_id":15,"reason":"..."}',
@@ -251,6 +263,18 @@ class Aurum:
             "- If **positions = 0** but **open groups > 0**, list possibilities: (1) FORGE placed **limit** entries still waiting, (2) orders filled and closed already while SCRIBE still OPEN, (3) mismatch — recommend checking MT5 **Trade**: Positions vs **Orders** (pendings).",
             "- **session_pnl** (MT5): **realized** P&L vs session-start balance from the EA — includes closed trades, fees, spread on closes; it is **not** the same as summing SCRIBE group lines (those may show $0 until positions exist or close).",
             "- **OPEN_GROUP / entry ladder**: FORGE may use **market** or **limit** from ladder vs live bid/ask; 'SELL with entries above bid' often becomes **Sell Limit**. Use correct terms when explaining risk.",
+            "---",
+            "## DEFERRED ANALYSIS RUNS (ANALYSIS_RUN)",
+            "Use this when the operator asks for an analysis/report that takes time or that you want delivered to Telegram as a self-contained message.",
+            "Emit a JSON command:",
+            '  {"action":"ANALYSIS_RUN","kind":"<registered_kind>","params":{...},"notify":{"telegram":true},"reason":"..."}',
+            "Behaviour:",
+            "- BRIDGE returns immediately with a `query_id` and `status:PENDING`. Do NOT poll or block; the run is async.",
+            "- The handler writes `logs/analysis/<query_id>.{json,md}` and the result body is posted to the existing Telegram channel via Herald (no new bot, no extra config).",
+            "- On your **next** turn, the CURRENT SYSTEM STATE will list pending and recent runs by `query_id` in the `Pending analysis runs` / `Recent analysis runs` sections. Reference runs by their query_id.",
+            "Registered kinds (built-in):",
+            "- `trade_group_review` — params `{\"group_id\": <int>}`. Reads SCRIBE + bridge.log, returns markdown review (signal text, AEGIS decision, fills, fill ratio, PnL).",
+            "You may pass an optional client `query_id` for idempotency; while a run is PENDING, re-submitting the same query_id is rejected with `ANALYSIS_RUN duplicate query_id`.",
             "---",
             "Always refer to this context when answering. "
             "If data seems stale or missing, say so rather than guessing.",
@@ -593,8 +617,41 @@ class Aurum:
             log.debug("AURUM closure context error: %s", e)
         mcp_ctx = self._build_mcp_context_lines()
         if mcp_ctx:
-            lines.append("\nMCP FEEDBACK LOOP (latest):")
+            lines.append("\nAURUM CHART_COMMAND MCP CACHE (not LENS feed):")
             lines.extend(mcp_ctx)
+
+        # ── Deferred Analysis Runs (pending + recent) ────────────────
+        try:
+            import analysis_runner
+            pending = analysis_runner.list_pending() or []
+            recent = analysis_runner.list_recent(limit=5) or []
+        except Exception as e:
+            log.debug("AURUM analysis_runner context error: %s", e)
+            pending, recent = [], []
+
+        if pending or recent:
+            ar_lines: list[str] = []
+            if pending:
+                ar_lines.append("Pending analysis runs:")
+                for row in pending[:10]:
+                    ar_lines.append(
+                        f"  - {row.get('query_id')}  kind={row.get('kind')}  age={row.get('age_sec')}s"
+                    )
+            if recent:
+                ar_lines.append("Recent analysis runs (last 5):")
+                for row in recent[:5]:
+                    qid = row.get("query_id")
+                    kind = row.get("kind")
+                    status = row.get("status")
+                    finished = (row.get("finished_at") or "")[:19]
+                    summary = (row.get("summary") or "").strip().replace("\n", " ")[:120]
+                    ar_lines.append(
+                        f"  - {qid}  kind={kind}  status={status}  finished={finished}  summary={summary}"
+                    )
+            # Cap total appended lines at 20 to keep the prompt lean.
+            ar_lines = ar_lines[:20]
+            lines.append("\nDEFERRED ANALYSIS RUNS:")
+            lines.extend(ar_lines)
 
         return "\n".join(lines)
 
@@ -637,14 +694,43 @@ class Aurum:
 
     def _build_mcp_context_lines(self) -> list[str]:
         out: list[str] = []
-        if not self._mcp_last_results:
-            out.append("  No recent MCP results captured in this runtime.")
-            return out
         now = time.time()
+
+        def _age_from_iso(ts_raw) -> float | None:
+            if not ts_raw:
+                return None
+            try:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+            except Exception:
+                return None
+
+        lens = _read_json(LENS_FILE)
+        lens_age = None
+        if isinstance(lens, dict):
+            lens_age = self._to_float(lens.get("age_seconds"))
+            if lens_age is None:
+                lens_age = _age_from_iso(lens.get("timestamp"))
+        lens_fresh = lens_age is not None and lens_age <= MCP_RESULT_STALE_SEC
+        if not self._mcp_last_results:
+            if lens_age is None:
+                out.append("  No recent chart_command MCP results captured in this runtime.")
+            else:
+                state = "fresh" if lens_fresh else "stale"
+                out.append(
+                    f"  No recent chart_command MCP results captured in this runtime. "
+                    f"LENS TradingView snapshot is {state} ({int(lens_age)}s old)."
+                )
+            return out
+        stale_count = 0
         for row in self._mcp_last_results[-5:]:
             tsu = float(row.get("timestamp_unix", 0) or 0)
             age = max(0.0, now - tsu) if tsu else 9999.0
             freshness = "fresh" if age <= MCP_RESULT_STALE_SEC else "stale"
+            if freshness == "stale":
+                stale_count += 1
             tool = row.get("tool", "?")
             summary = row.get("summary", "")
             out.append(f"  - {tool}: {freshness} ({int(age)}s old) — {summary}")
@@ -659,6 +745,11 @@ class Aurum:
                         f"    CVD proxy: method={norm.get('cvd_proxy_method')} "
                         f"last={norm.get('cvd_proxy_last')}"
                     )
+        if stale_count > 0 and lens_fresh:
+            out.append(
+                "  Note: stale items above are from prior AURUM chart_command cache; "
+                "live LENS TradingView snapshot is currently fresh."
+            )
         return out
 
     @staticmethod
@@ -1134,7 +1225,7 @@ class Aurum:
 
         return "\n".join(results) if results else None
 
-    def _extract_json_commands_from_response(self, text: str) -> None:
+    def _extract_json_commands_from_response(self, text: str, source: str = "") -> None:
         """Parse ```json ... ``` fences and write actionable commands to aurum_cmd.json.
 
         IMPORTANT: aurum_cmd.json holds ONE command at a time. If the response
@@ -1148,7 +1239,7 @@ class Aurum:
             "MODE_CHANGE", "CLOSE_ALL", "OPEN_GROUP", "OPEN_TRADE",
             "MODIFY_TP", "MODIFY_SL", "CLOSE_GROUP", "CLOSE_GROUP_PCT",
             "MOVE_BE", "CLOSE_PROFITABLE", "CLOSE_LOSING",
-            "SENTINEL_OVERRIDE",
+            "SENTINEL_OVERRIDE", "SCRIBE_QUERY", "SHELL_EXEC", "AURUM_EXEC",
         )
         commands_found: list[dict] = []
         for i in range(1, len(chunks), 2):
@@ -1167,6 +1258,8 @@ class Aurum:
                 obj["action"] = "OPEN_GROUP"
                 act = "OPEN_GROUP"
             if act in valid_actions:
+                if source and not obj.get("origin_source"):
+                    obj["origin_source"] = str(source).upper().strip()
                 obj["timestamp"] = datetime.now(timezone.utc).isoformat()
                 commands_found.append(obj)
 
@@ -1208,6 +1301,51 @@ class Aurum:
             cmd["timestamp"] = datetime.now(timezone.utc).isoformat()
             self.write_command(cmd)
             log.info(f"AURUM wrote command: {cmd}")
+
+    @staticmethod
+    def _is_telegram_health_check_request(text: str) -> bool:
+        t = re.sub(r"\s+", " ", (text or "").strip().lower())
+        if not t:
+            return False
+        # Ignore raw JSON payload pastes; those are handled by normal JSON extraction.
+        if "\"action\"" in t and "{" in t:
+            return False
+        if "health status" in t:
+            return True
+        if "health check" in t:
+            return True
+        if "system health" in t and any(k in t for k in ("check", "status", "run", "report", "show")):
+            return True
+        return False
+
+    @staticmethod
+    def _telegram_health_check_command(source: str = "TELEGRAM") -> dict:
+        return {
+            "action": "AURUM_EXEC",
+            "payload": {"action": "HEALTH_CHECK"},
+            "reply_to": "TELEGRAM",
+            "origin_source": str(source or "TELEGRAM").upper().strip(),
+        }
+
+    def _handle_telegram_natural_language_command(self, text: str, source: str = "TELEGRAM") -> str | None:
+        if not self._is_telegram_health_check_request(text):
+            return None
+        cmd = self._telegram_health_check_command(source=source)
+        self.write_command(cmd)
+        log.info("AURUM: mapped Telegram NL health request to %s", json.dumps(cmd, default=str))
+        try:
+            self.scribe.log_system_event(
+                event_type="AURUM_NL_HEALTH_CHECK_QUEUED",
+                triggered_by="AURUM",
+                reason="TELEGRAM_NL_INTENT",
+                notes=f"source={source}",
+            )
+        except Exception:
+            pass
+        return (
+            "Running system health check now. "
+            "Queued via AURUM_EXEC HEALTH_CHECK; results will be posted shortly."
+        )
 
     def write_command(self, cmd: dict):
         """Write a command for BRIDGE to execute."""
@@ -1312,6 +1450,11 @@ class Aurum:
                 update, text, image_path = await msg_queue.get()
                 try:
                     query = text or "Analyze this image in context of the current trading session."
+                    if text and not image_path:
+                        nl_reply = self._handle_telegram_natural_language_command(text, source="TELEGRAM")
+                        if nl_reply:
+                            await update.message.reply_text(nl_reply)
+                            continue
                     log.info(f"AURUM query from Telegram (bot): {query[:60]}")
                     # Show typing indicator while thinking
                     await update.message.chat.send_action("typing")
@@ -1399,6 +1542,11 @@ class Aurum:
                 except Exception:
                     pass
             query = text or "Analyze this image in context of the current trading session."
+            if text and not has_media:
+                nl_reply = self._handle_telegram_natural_language_command(text, source="TELEGRAM")
+                if nl_reply:
+                    await event.respond(nl_reply)
+                    return
             reply = None
             image_path = None
             if has_media and VISION_ENABLED:

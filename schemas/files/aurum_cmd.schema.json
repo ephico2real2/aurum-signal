@@ -29,6 +29,61 @@
     },
     {
       "type": "object",
+      "required": ["action", "sql", "timestamp"],
+      "properties": {
+        "action": { "const": "SCRIBE_QUERY" },
+        "sql": { "type": "string", "minLength": 1 },
+        "max_rows": { "type": "integer", "minimum": 1, "maximum": 50000 },
+        "busy_timeout_ms": { "type": "integer", "minimum": 0, "maximum": 120000 },
+        "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "reply_to": { "type": "string" },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["action", "timestamp"],
+      "properties": {
+        "action": { "const": "SHELL_EXEC" },
+        "program": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": ["string", "number", "boolean"] }
+        },
+        "cmd": { "type": "string", "minLength": 1 },
+        "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "reply_to": { "type": "string" },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "anyOf": [
+        { "required": ["program"] },
+        { "required": ["cmd"] }
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["action", "payload", "timestamp"],
+      "properties": {
+        "action": { "const": "AURUM_EXEC" },
+        "endpoint": { "type": "string" },
+        "payload": {
+          "type": "object",
+          "required": ["action"],
+          "properties": {
+            "action": { "type": "string", "enum": ["SCRIBE_QUERY", "SHELL_EXEC", "HEALTH_CHECK"] }
+          },
+          "additionalProperties": true
+        },
+        "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "reply_to": { "type": "string" },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
       "required": ["action", "direction", "sl", "tp1", "timestamp"],
       "properties": {
         "action": { "type": "string", "enum": ["OPEN_GROUP", "OPEN_TRADE"] },

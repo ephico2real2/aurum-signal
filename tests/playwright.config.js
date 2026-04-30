@@ -1,4 +1,5 @@
 const { defineConfig, devices } = require('@playwright/test');
+const slowMo = Number.parseInt(process.env.PLAYWRIGHT_SLOW_MO || '0', 10);
 module.exports = defineConfig({
   testDir:       './ui',
   testMatch:     '**/*.spec.js',
@@ -12,6 +13,7 @@ module.exports = defineConfig({
   use: {
     baseURL:           process.env.ATHENA_URL || 'http://localhost:7842',
     ...devices['Desktop Chrome'],
+    ...(Number.isFinite(slowMo) && slowMo > 0 ? { launchOptions: { slowMo } } : {}),
     trace:             'on-first-retry',
     screenshot:        'only-on-failure',
     video:             'on-first-retry',

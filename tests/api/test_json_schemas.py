@@ -57,6 +57,17 @@ class TestFileBusSchemas:
                 "timestamp": "2026-04-06T00:00:00Z",
             }
         )
+    def test_aurum_aurum_exec_health_check_payload(self):
+        s = _load_schema("files/aurum_cmd.schema.json")
+        _v(s).validate(
+            {
+                "action": "AURUM_EXEC",
+                "payload": {
+                    "action": "HEALTH_CHECK",
+                },
+                "timestamp": "2026-04-06T00:00:00Z",
+            }
+        )
 
     def test_forge_open_group(self):
         s = _load_schema("files/forge_command.schema.json")
@@ -84,6 +95,41 @@ class TestFileBusSchemas:
                 "action": "MODE_CHANGE",
                 "new_mode": "WATCH",
                 "reason": "test",
+                "timestamp": "2026-04-06T00:00:00Z",
+            }
+        )
+
+    def test_aurum_scribe_query(self):
+        s = _load_schema("files/aurum_cmd.schema.json")
+        _v(s).validate(
+            {
+                "action": "SCRIBE_QUERY",
+                "sql": "SELECT id, status FROM trade_groups ORDER BY id DESC LIMIT 5",
+                "timestamp": "2026-04-06T00:00:00Z",
+            }
+        )
+
+    def test_aurum_shell_exec_program_args(self):
+        s = _load_schema("files/aurum_cmd.schema.json")
+        _v(s).validate(
+            {
+                "action": "SHELL_EXEC",
+                "program": "python3",
+                "args": ["scripts/analyse_performance.py", "--days", "7"],
+                "timeout_sec": 30,
+                "timestamp": "2026-04-06T00:00:00Z",
+            }
+        )
+
+    def test_aurum_aurum_exec_wrapped_payload(self):
+        s = _load_schema("files/aurum_cmd.schema.json")
+        _v(s).validate(
+            {
+                "action": "AURUM_EXEC",
+                "payload": {
+                    "action": "SCRIBE_QUERY",
+                    "sql": "SELECT COUNT(*) AS n FROM trade_positions",
+                },
                 "timestamp": "2026-04-06T00:00:00Z",
             }
         )

@@ -96,6 +96,7 @@ def run(args):
         sys.exit(1)
 
     cmd = ["npx", "playwright", "test"]
+    child_env = playwright_subprocess_env()
 
     if args.file:
         spec = TESTS_DIR / "ui" / f"test_{args.file}.spec.js"
@@ -113,7 +114,7 @@ def run(args):
     if args.grep:
         cmd += ["--grep", args.grep]
     if args.slow:
-        cmd += [f"--slow-mo={args.slow}"]
+        child_env["PLAYWRIGHT_SLOW_MO"] = str(args.slow)
 
     cmd += ["--reporter=html,list"]
 
@@ -121,7 +122,7 @@ def run(args):
     print(f"   Target: {ATHENA_URL}")
     print(f"   Command: {' '.join(cmd)}\n")
 
-    result = subprocess.run(cmd, cwd=str(TESTS_DIR), env=playwright_subprocess_env())
+    result = subprocess.run(cmd, cwd=str(TESTS_DIR), env=child_env)
 
     if result.returncode == 0:
         print("\n✅ All UI tests passed")

@@ -117,6 +117,12 @@ BRIDGE tracker semantics:
 - `forge_managed=false` positions are persisted as synthetic manual groups (`trade_groups.source='MANUAL_MT5'`) with `trade_positions`/`trade_closures` rows and audit events `UNMANAGED_POSITION_OPEN` / `UNMANAGED_POSITION_CLOSED`.
 
 **Ephemeral queue:** `aurum_cmd.json` is a **drop box**, not a status file. BRIDGE **removes** it after handling. If the mode already changed, the file is often **gone** — that is **normal**.
+In addition to trading/mode actions, `aurum_cmd.json` now supports AEB execution actions:
+- `SCRIBE_QUERY` (read-only SQL against SCRIBE; guarded in executor),
+- `SHELL_EXEC` (allowlisted host command execution),
+- `AURUM_EXEC` (HTTP bridge to `POST /api/aurum/exec`).
+When AURUM emits JSON commands, it stamps `origin_source` (for example `TELEGRAM`, `ATHENA`, `AUTO_SCALPER`).
+BRIDGE can block `SHELL_EXEC` by command origin via `AEB_SHELL_EXEC_BLOCKED_SOURCES` (default: `TELEGRAM`), including nested `AURUM_EXEC` payloads that request `SHELL_EXEC`.
 
 **Python validators:** `python/contracts/aurum_forge.py` implements **`validate_aurum_cmd`** and **`validate_forge_command`** aligned with `schemas/files/*.schema.json`. Keep them in sync when the JSON Schema changes.
 
@@ -134,6 +140,17 @@ BRIDGE tracker semantics:
   "new_mode": "WATCH",
   "reason": "operator",
   "timestamp": "2026-04-06T12:00:00+00:00"
+}
+```
+
+`python/config/aurum_cmd.json` — AEB SQL query:
+
+```json
+{
+  "action": "SCRIBE_QUERY",
+  "sql": "SELECT id, status, timestamp FROM trade_groups ORDER BY id DESC LIMIT 5",
+  "reply_to": "TELEGRAM",
+  "timestamp": "2026-04-14T19:30:00+00:00"
 }
 ```
 
@@ -190,7 +207,8 @@ Base URL: `http://<host>:7842` (default). Responses are JSON unless noted.
 | POST | `/api/mode` | Writes **`aurum_cmd.json`** with `MODE_CHANGE` for BRIDGE |
 | POST | `/api/components/heartbeat` | Persists heartbeat via SCRIBE |
 | POST | `/api/aurum/ask` | Body `{ "query": "..." }`; AURUM may write `aurum_cmd.json` from fenced JSON |
-| POST | `/api/scribe/query` | Body `{ "sql": "SELECT ..." }` — **SELECT only**. Examples: **`docs/SCRIBE_QUERY_EXAMPLES.md`**, **`schemas/scribe_query_examples.json`** (`make sync-openapi-scribe` → OpenAPI). Optional **`ATHENA_SCRIBE_QUERY_SECRET`**; row cap **`SCRIBE_QUERY_MAX_ROWS`**; response includes **`truncated`** / **`max_rows`** |
+| POST | `/api/aurum/exec` | Executes AEB payload (`SCRIBE_QUERY` / `SHELL_EXEC`) through ATHENA shared executor; optional auth via `ATHENA_AURUM_EXEC_SECRET` |
+| POST | `/api/scribe/query` | Body `{ "sql": "SELECT ..." }` — read-only SQL (`SELECT`/`WITH`), guarded by read-only SQLite + authorizer. Examples: **`docs/SCRIBE_QUERY_EXAMPLES.md`**, **`schemas/scribe_query_examples.json`** (`make sync-openapi-scribe` → OpenAPI). Optional **`ATHENA_SCRIBE_QUERY_SECRET`**; row cap **`SCRIBE_QUERY_MAX_ROWS`**; response includes **`truncated`** / **`max_rows`** |
 
 **Important:** `POST /api/mode` does **not** switch mode inside Flask; it only enqueues the same file contract as AURUM.
 
@@ -220,7 +238,7 @@ Base URL: `http://<host>:7842` (default). Responses are JSON unless noted.
 
 1. **Non-breaking:** add optional keys, new enum values (with code support), new endpoints.
 2. **Breaking:** remove/rename required keys, change `action` strings FORGE parses, or change SQLite columns — bump **`schemas/manifest.json`** `version` and update this doc.
-3. **Tests:** `make test-contracts` (AURUM→BRIDGE→FORGE Python validators); `pytest tests/api/test_json_schemas.py` validates bundled examples against JSON Schema when `jsonschema` is installed; `pytest tests/api/test_swagger_ui.py` checks `/api/openapi.yaml` and `/api/docs/`; `pytest tests/api/test_scribe_query_examples.py` runs every SQL in `schemas/scribe_query_examples.json` on an empty SCRIBE DB and checks `query_limited`; `pytest tests/api/test_athena_scribe_query_limits.py` covers `/api/scribe/query` auth and payload shape; **`pytest tests/api/test_bridge_aurum_cmd.py`** asserts BRIDGE **deletes** `aurum_cmd.json` after handling `MODE_CHANGE` (and documents duplicate-timestamp early return); `pytest tests/services/test_resolve_signal_python.py` checks service Python resolution; OpenAPI scribe sync idempotency is in `test_schema_bundle_integrity.py`.
+3. **Tests:** `make test-contracts` (AURUM→BRIDGE→FORGE Python validators); `pytest tests/api/test_json_schemas.py` validates bundled examples against JSON Schema when `jsonschema` is installed; `pytest tests/api/test_swagger_ui.py` checks `/api/openapi.yaml` and `/api/docs/`; `pytest tests/api/test_scribe_query_examples.py` runs every SQL in `schemas/scribe_query_examples.json` on an empty SCRIBE DB and checks `query_limited`; `pytest tests/api/test_athena_scribe_query_limits.py` covers `/api/scribe/query` auth and payload shape; `pytest tests/api/test_aeb_executor.py` validates secure SCRIBE_QUERY + SHELL_EXEC guardrails; `pytest tests/api/test_athena_aurum_exec_api.py` covers `/api/aurum/exec` happy/error/auth paths; **`pytest tests/api/test_bridge_aurum_cmd.py`** asserts BRIDGE **deletes** `aurum_cmd.json` after handling commands (including AEB actions) and documents duplicate-timestamp early return; `pytest tests/services/test_resolve_signal_python.py` checks service Python resolution; OpenAPI scribe sync idempotency is in `test_schema_bundle_integrity.py`.
 
 ---
 

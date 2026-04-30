@@ -135,16 +135,88 @@ class Herald:
             log.error(f"HERALD send error: {e}")
             return False
 
-    async def _async_send(self, text: str, parse_mode: str) -> bool:
+    async def _async_send(self, text: str, parse_mode: str, chat_id: str | int | None = None) -> bool:
         bot = self._get_bot()
         if not bot:
             return False
         await bot.send_message(
-            chat_id=self.chat_id,
+            chat_id=chat_id if chat_id not in (None, "") else self.chat_id,
             text=text,
             parse_mode=parse_mode,
         )
         return True
+
+    # ── Reusable post helpers (Deferred Analysis Run subsystem) ───
+    def post_text(self, text: str, *, chat_id: str | int | None = None,
+                  parse_mode: str = "HTML") -> bool:
+        """Reusable thin wrapper over send/_async_send with optional chat_id
+        override. Default chat target is ``self.chat_id`` (existing channel).
+        Never hard-codes a chat id.
+        """
+        if not self.token:
+            log.warning(f"HERALD (no token): {text[:60]}")
+            return False
+        target_chat = chat_id if chat_id not in (None, "") else self.chat_id
+        if not target_chat:
+            log.warning("HERALD post_text: no chat_id available")
+            return False
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                result = asyncio.run(self._async_send(text, parse_mode, target_chat))
+                self._bot = None
+                return result
+            loop.create_task(self._async_send(text, parse_mode, target_chat))
+            return True
+        except Exception as e:
+            self._bot = None
+            log.error(f"HERALD post_text error: {e}")
+            return False
+
+    def post_analysis_from_log(self, query_id: str, *, header: str | None = None,
+                               footer: str | None = None,
+                               chat_id: str | int | None = None,
+                               max_chars: int = 3500) -> bool:
+        """Read ``logs/analysis/<query_id>.md`` and post it to the existing
+        Telegram channel (Herald singleton, BOT_TOKEN/CHAT_ID). Reusable by
+        any module that wants to surface an analysis result by query id.
+        """
+        log_dir_raw = (os.environ.get("ANALYSIS_LOG_DIR") or "").strip()
+        if log_dir_raw:
+            log_dir = log_dir_raw
+        else:
+            here = os.path.dirname(os.path.abspath(__file__))
+            log_dir = os.path.normpath(os.path.join(here, "..", "logs", "analysis"))
+        body_path = os.path.join(log_dir, f"{query_id}.md")
+        if not os.path.exists(body_path):
+            log.warning("HERALD post_analysis_from_log: missing %s", body_path)
+            return False
+        try:
+            with open(body_path, "r", encoding="utf-8") as f:
+                body = f.read()
+        except Exception as e:
+            log.warning("HERALD post_analysis_from_log: read failed for %s: %s", body_path, e)
+            return False
+
+        body = body.strip()
+        truncated = False
+        if len(body) > max_chars:
+            body = body[: max_chars - 64].rstrip()
+            truncated = True
+            body += f"\n…(truncated, see logs/analysis/{query_id}.md)"
+
+        parts = []
+        if header:
+            parts.append(str(header))
+        parts.append(f"<b>Analysis</b> <code>{html.escape(str(query_id))}</code>")
+        parts.append("<pre>" + html.escape(body) + "</pre>")
+        if footer:
+            parts.append(str(footer))
+        if truncated:
+            parts.append(f"<i>truncated · full file: logs/analysis/{html.escape(str(query_id))}.md</i>")
+        message = "\n".join(parts)
+        return self.post_text(message, chat_id=chat_id, parse_mode="HTML")
 
     async def download_inbound_media(self, message, prefix: str = "herald_img_") -> str | None:
         """Download Telegram photo/document to a temp file and return the local path."""
@@ -319,6 +391,29 @@ def get_herald() -> Herald:
     if _instance is None:
         _instance = Herald()
     return _instance
+
+
+# ── Module-level reusable shims (use the singleton) ───────────────
+def post_text(text: str, *, chat_id: str | int | None = None,
+              parse_mode: str = "HTML") -> bool:
+    """Module-level shim — reuses the existing Herald singleton."""
+    return get_herald().post_text(text, chat_id=chat_id, parse_mode=parse_mode)
+
+
+def post_analysis_from_log(query_id: str, *, header: str | None = None,
+                           footer: str | None = None,
+                           chat_id: str | int | None = None,
+                           max_chars: int = 3500) -> bool:
+    """Module-level shim — reuses the existing Herald singleton.
+    Default chat target is the singleton's ``chat_id`` (existing channel).
+    """
+    return get_herald().post_analysis_from_log(
+        query_id,
+        header=header,
+        footer=footer,
+        chat_id=chat_id,
+        max_chars=max_chars,
+    )
 
 
 if __name__ == "__main__":

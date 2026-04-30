@@ -1,4 +1,31 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.4.4] — 2026-04-14
+
+### AURUM Execution Bridge (AEB) end-to-end
+- Added shared executor module `python/aeb_executor.py` for:
+  - `SCRIBE_QUERY` (read-only SQLite URI mode + authorizer + single-statement guard + timeout/progress + row truncation)
+  - `SHELL_EXEC` (allowlisted program/path validation, legacy `cmd` parsing via `shlex`, `subprocess.run(..., shell=False, timeout=...)`, output caps)
+  - common result formatting for Telegram + structured result payloads
+- Extended BRIDGE `aurum_cmd.json` router to handle `SCRIBE_QUERY`, `SHELL_EXEC`, and `AURUM_EXEC` while preserving existing command behavior and file-consume semantics.
+- Added BRIDGE `AURUM_EXEC` HTTP dispatch path to ATHENA (`AURUM_EXEC_BASE_URL`, timeout, optional shared secret header).
+- Added ATHENA `POST /api/aurum/exec` endpoint with optional token auth (`ATHENA_AURUM_EXEC_SECRET`) and shared executor dispatch.
+- Hardened ATHENA `POST /api/scribe/query` internals to use the secure read-only executor path (with compatibility fallback for isolated test stubs).
+- Extended AURUM JSON extraction allowlist and system prompt examples for `SCRIBE_QUERY`, `SHELL_EXEC`, and `AURUM_EXEC`.
+
+### Contracts, schemas, docs, and tests
+- Updated runtime validator `python/contracts/aurum_forge.py` for new AEB actions.
+- Updated file-bus schema `schemas/files/aurum_cmd.schema.json` with new `oneOf` branches.
+- Updated OpenAPI `schemas/openapi.yaml` with `/api/aurum/exec` and AEB request/result components.
+- Updated `.env.example`, `docs/DATA_CONTRACT.md`, and `docs/SCRIBE_QUERY_EXAMPLES.md` for AEB config and usage.
+- Added/extended tests:
+  - new: `tests/api/test_aeb_executor.py`
+  - new: `tests/api/test_athena_aurum_exec_api.py`
+  - updated: `tests/api/test_bridge_aurum_cmd.py`
+  - updated: `tests/api/test_aurum_forge_contract.py`
+  - updated: `tests/api/test_json_schemas.py`
+  - updated: `tests/api/test_swagger_ui.py`
+
+---
 ## [1.4.3] — 2026-04-14
 
 ### Regime engine rollout surfaced end-to-end
@@ -17,6 +44,10 @@
   - resolved `magic` from `group_id` => scoped apply.
 - BRIDGE now syncs modified group targets into SCRIBE group + open-position rows (`update_group_sl_tp`) so ATHENA reflects live SL/TP edits immediately.
 - FORGE exports `recent_closed_deals[]` in `market_data.json`; BRIDGE tracker now uses broker close metadata first (price, PnL, reason, close time) with inference fallback only when broker hints are missing.
+- BRIDGE MT5 stale-data protection now tolerates transient `market_data.json` read/parse races by reusing the last known-good snapshot for a short, parameterized grace window before tripping circuit breaker:
+  - `BRIDGE_MT5_STALE` (primary stale threshold),
+  - `BRIDGE_MT5_STALE_RELAXED` (read-error fallback threshold),
+  - `BRIDGE_MT5_READ_FAIL_STREAK` (consecutive read failures required before fallback can hard-fail).
 - Added regression coverage:
   - `tests/api/test_mgmt_channel_scoping.py`
   - `tests/api/test_bridge_manual_position_tracking.py`
@@ -26,6 +57,8 @@
 - Updated `docs/ARCHITECTURE.md` with regime engine flow and `market_regimes` table coverage.
 - Updated `docs/FORGE_TRADING_RULES.md` with regime rollout, scoped modify semantics, and broker-first closure attribution.
 - Updated `docs/CLI_API_CHEATSHEET.md` and `docs/SCRIBE_QUERY_EXAMPLES.md` for TP-stage close reason examples and regime diagnostics queries.
+- Updated `docs/SIGNAL_REPLAY_RUNBOOK.md` with direct SQLite quick diagnostics (Ben's VIP pickup checks, ENTRY-only checks, real Telegram ID filtering, and recent action snapshots using `datetime(timestamp)`).
+- Updated `SOUL.md` and `SKILL.md` to reflect merged room allowlist aliases (`SIGNAL_TRADE_ROOMS` + `ACTIVE_SIGNAL_TRADE_ROOMS`), configurable SIGNAL orientation gate (`AEGIS_SIGNAL_LIMIT_ORIENTATION`), and replay-first troubleshooting (`scripts/replay_signal_pickup.py`).
 
 ---
 ## [1.4.2] — 2026-04-13

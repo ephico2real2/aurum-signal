@@ -11,7 +11,7 @@ info:
     **SCRIBE ad-hoc SQL:** see `docs/SCRIBE_QUERY_EXAMPLES.md` and the **Examples** on `POST /api/scribe/query`.
 
     Bundle version aligns with `schemas/manifest.json` (HTTP portion only).
-  version: 1.4.0
+  version: 1.4.4
   license:
     name: Proprietary
 
@@ -159,7 +159,7 @@ paths:
           schema: { type: number, default: 90.0 }
           description: Percentile threshold for considering M15 price near upper Bollinger band.
       responses:
-        \"200\":
+        "200":
           content:
             application/json:
               schema:
@@ -168,7 +168,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: \"#/components/schemas/ErrorBody\"
+                $ref: "#/components/schemas/ErrorBody"
 
   /api/components:
     get:
@@ -379,6 +379,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
+
+  /api/aurum/exec:
+    post:
+      tags: [aurum]
+      summary: Execute AEB action payload through ATHENA (SCRIBE_QUERY or SHELL_EXEC)
+      operationId: postAurumExec
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AurumExecRequest"
+            examples:
+              direct_scribe:
+                value:
+                  action: SCRIBE_QUERY
+                  sql: "SELECT id,status FROM trade_groups ORDER BY id DESC LIMIT 5"
+              wrapped_shell:
+                value:
+                  payload:
+                    action: SHELL_EXEC
+                    program: python3
+                    args: ["scripts/analyse_performance.py", "--days", "7"]
+                    timeout_sec: 30
+      responses:
+        "200":
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AebResult"
+        "400":
+          description: Security-blocked or invalid payload
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AebResult"
+                  - $ref: "#/components/schemas/ErrorBody"
+        "401":
+          description: Set when ATHENA_AURUM_EXEC_SECRET is configured and request is not authorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AebResult"
 
   /api/sessions:
     get:
@@ -821,6 +871,11 @@ components:
             max_rows: { type: integer }
             busy_timeout_ms: { type: integer }
             auth_required: { type: boolean }
+        aurum_exec:
+          type: object
+          description: Authentication state for POST /api/aurum/exec
+          properties:
+            auth_required: { type: boolean }
 
     ExecutionQuote:
       type: object
@@ -1049,3 +1104,43 @@ components:
           type: string
           description: Must start with SELECT (case-insensitive after trim)
           example: "SELECT 1 AS ok"
+
+    AurumExecRequest:
+      type: object
+      description: Direct AEB action object, or wrapper object with `payload`.
+      oneOf:
+        - $ref: "#/components/schemas/AebPayload"
+        - type: object
+          required: [payload]
+          properties:
+            payload:
+              $ref: "#/components/schemas/AebPayload"
+
+    AebPayload:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [SCRIBE_QUERY, SHELL_EXEC, AURUM_EXEC, HEALTH_CHECK]
+      additionalProperties: true
+
+    AebResult:
+      type: object
+      required: [ok, action, summary]
+      properties:
+        ok: { type: boolean }
+        action: { type: string }
+        summary: { type: string }
+        error: { type: string, nullable: true }
+        security_blocked: { type: boolean }
+        rows:
+          type: array
+          items: { type: object, additionalProperties: true }
+        count: { type: integer }
+        truncated: { type: boolean }
+        stdout: { type: string }
+        stderr: { type: string }
+        exit_code: { type: integer, nullable: true }
+        duration_ms: { type: integer }
+      additionalProperties: true

@@ -143,6 +143,30 @@ class TestAurumMcpNormalization:
         assert "stale" in joined
         assert "CVD: available=False" in joined
 
+    def test_mcp_context_stale_cache_adds_note_when_lens_is_fresh(self, monkeypatch):
+        a = Aurum.__new__(Aurum)
+        a._mcp_last_results = [
+            {
+                "tool": "quote_get",
+                "timestamp_unix": time.time() - (MCP_RESULT_STALE_SEC + 50),
+                "summary": "ok",
+            }
+        ]
+        monkeypatch.setattr(aurum_mod, "_read_json", lambda _path: {"age_seconds": 3})
+        lines = a._build_mcp_context_lines()
+        joined = "\n".join(lines)
+        assert "stale" in joined
+        assert "live LENS TradingView snapshot is currently fresh" in joined
+
+    def test_mcp_context_without_cache_reports_lens_freshness(self, monkeypatch):
+        a = Aurum.__new__(Aurum)
+        a._mcp_last_results = []
+        monkeypatch.setattr(aurum_mod, "_read_json", lambda _path: {"age_seconds": 4})
+        lines = a._build_mcp_context_lines()
+        joined = "\n".join(lines)
+        assert "No recent chart_command MCP results captured in this runtime" in joined
+        assert "LENS TradingView snapshot is fresh" in joined
+
     def test_mcp_cache_persists_and_loads(self, tmp_path):
         a = Aurum.__new__(Aurum)
         a._mcp_results_file = str(tmp_path / "aurum_mcp_results.json")
@@ -233,3 +257,67 @@ class TestAurumFinalResponseLogging:
         assert "📊 Chart result:" in out
         assert appended and appended[-1] == out
         assert scribe.logged and scribe.logged[-1]["response"] == out
+
+
+@pytest.mark.unit
+class TestAurumTelegramNaturalLanguageMapping:
+    def test_nl_health_request_queues_aurum_exec_health_check(self):
+        a = Aurum.__new__(Aurum)
+        written = []
+        a.write_command = lambda cmd: written.append(cmd)
+
+        reply = a._handle_telegram_natural_language_command(
+            "Run system health check now and post the report.",
+            source="TELEGRAM",
+        )
+
+        assert reply and "health check" in reply.lower()
+        assert written
+        cmd = written[0]
+        assert cmd["action"] == "AURUM_EXEC"
+        assert cmd["payload"]["action"] == "HEALTH_CHECK"
+        assert cmd["reply_to"] == "TELEGRAM"
+        assert cmd["origin_source"] == "TELEGRAM"
+    def test_health_status_short_phrase_queues_health_check(self):
+        a = Aurum.__new__(Aurum)
+        written = []
+        a.write_command = lambda cmd: written.append(cmd)
+
+        reply = a._handle_telegram_natural_language_command(
+            "health status",
+            source="TELEGRAM",
+        )
+
+        assert reply and "health check" in reply.lower()
+        assert written
+        cmd = written[0]
+        assert cmd["action"] == "AURUM_EXEC"
+        assert cmd["payload"]["action"] == "HEALTH_CHECK"
+        assert cmd["reply_to"] == "TELEGRAM"
+        assert cmd["origin_source"] == "TELEGRAM"
+
+    def test_non_health_text_does_not_queue_command(self):
+        a = Aurum.__new__(Aurum)
+        written = []
+        a.write_command = lambda cmd: written.append(cmd)
+
+        reply = a._handle_telegram_natural_language_command(
+            "What do you think about XAUUSD trend right now?",
+            source="TELEGRAM",
+        )
+
+        assert reply is None
+        assert written == []
+
+    def test_raw_json_text_is_not_treated_as_nl_health_intent(self):
+        a = Aurum.__new__(Aurum)
+        written = []
+        a.write_command = lambda cmd: written.append(cmd)
+
+        reply = a._handle_telegram_natural_language_command(
+            "{\"action\":\"AURUM_EXEC\",\"payload\":{\"action\":\"HEALTH_CHECK\"}}",
+            source="TELEGRAM",
+        )
+
+        assert reply is None
+        assert written == []

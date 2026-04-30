@@ -18,9 +18,16 @@ from pathlib import Path
 from typing import Any
 
 from anthropic import Anthropic
-from PIL import Image
+try:
+    from PIL import Image
+    _PIL_IMPORT_ERROR: Exception | None = None
+except Exception as e:
+    Image = None  # type: ignore[assignment]
+    _PIL_IMPORT_ERROR = e
 
 log = logging.getLogger("vision")
+if _PIL_IMPORT_ERROR is not None:
+    log.warning("VISION: Pillow import failed; image extraction will be disabled (%s)", _PIL_IMPORT_ERROR)
 
 VISION_ENABLED = os.environ.get("VISION_ENABLED", "true").lower() in ("1", "true", "yes")
 VISION_MAX_IMAGE_MB = float(os.environ.get("VISION_MAX_IMAGE_MB", "8"))
@@ -184,6 +191,8 @@ class Vision:
             return "image/jpeg"
         if mt in ALLOWED_MIME:
             return mt
+        if Image is None:
+            return mt or "application/octet-stream"
         # Fallback: inspect actual image content when temp files have no extension (e.g. *.img)
         try:
             with Image.open(path) as im:
@@ -202,6 +211,9 @@ class Vision:
 
     @staticmethod
     def _validate_image(path: Path) -> tuple[int, str]:
+        if Image is None:
+            detail = str(_PIL_IMPORT_ERROR) if _PIL_IMPORT_ERROR else "Pillow is not installed"
+            raise RuntimeError(f"Pillow unavailable: {detail}")
         size_bytes = path.stat().st_size
         if size_bytes > int(VISION_MAX_IMAGE_MB * 1024 * 1024):
             raise ValueError(f"image too large: {size_bytes} bytes")

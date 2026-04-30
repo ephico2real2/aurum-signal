@@ -113,6 +113,40 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
     if action == "CLOSE_ALL":
         return errs
 
+    if action == "SCRIBE_QUERY":
+        sql = cmd.get("sql")
+        if not isinstance(sql, str) or not sql.strip():
+            errs.append("SCRIBE_QUERY.sql must be a non-empty string")
+        return errs
+
+    if action == "SHELL_EXEC":
+        program = cmd.get("program")
+        args = cmd.get("args")
+        legacy_cmd = cmd.get("cmd")
+        if program is None and legacy_cmd is None:
+            errs.append("SHELL_EXEC requires either program+args or cmd")
+            return errs
+        if program is not None and not isinstance(program, str):
+            errs.append("SHELL_EXEC.program must be a string")
+        if args is not None and not isinstance(args, list):
+            errs.append("SHELL_EXEC.args must be a list")
+        if legacy_cmd is not None and not isinstance(legacy_cmd, str):
+            errs.append("SHELL_EXEC.cmd must be a string")
+        return errs
+
+    if action == "AURUM_EXEC":
+        payload = cmd.get("payload")
+        endpoint = cmd.get("endpoint")
+        if not isinstance(payload, dict):
+            errs.append("AURUM_EXEC.payload must be an object")
+            return errs
+        nested_action = (payload.get("action") or "").upper()
+        if nested_action not in {"SCRIBE_QUERY", "SHELL_EXEC", "HEALTH_CHECK"}:
+            errs.append("AURUM_EXEC.payload.action must be SCRIBE_QUERY, SHELL_EXEC, or HEALTH_CHECK")
+        if endpoint is not None and not isinstance(endpoint, str):
+            errs.append("AURUM_EXEC.endpoint must be a string when provided")
+        return errs
+
     if action in ("OPEN_GROUP", "OPEN_TRADE"):
         d = (cmd.get("direction") or "").upper()
         if d not in ("BUY", "SELL"):
@@ -140,7 +174,10 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
                     errs.append("entry_high must be >= entry_low")
         return errs
 
-    errs.append(f"unknown action {action!r} (expected MODE_CHANGE, CLOSE_ALL, OPEN_GROUP, OPEN_TRADE)")
+    errs.append(
+        f"unknown action {action!r} (expected MODE_CHANGE, CLOSE_ALL, OPEN_GROUP, OPEN_TRADE, "
+        "SCRIBE_QUERY, SHELL_EXEC, AURUM_EXEC)"
+    )
     return errs
 
 

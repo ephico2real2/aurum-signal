@@ -133,13 +133,26 @@ BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supp
 - **MODE_CHANGE** → operating mode (also triggered by exact phrases like *Switching to SCALPER mode.*)
 - **SENTINEL_OVERRIDE** → bypass news guard for N seconds: `{"action":"SENTINEL_OVERRIDE","duration":300}`
 
+**Deferred analysis (async, results posted to Telegram):**
+- **ANALYSIS_RUN** → queue an async analysis; BRIDGE returns a `query_id` immediately and the result body is posted to the existing Telegram channel via HERALD (no new bot or chat). Also surfaced in my next CURRENT SYSTEM STATE under **DEFERRED ANALYSIS RUNS**.
+  ```json
+  {"action":"ANALYSIS_RUN","kind":"trade_group_review","params":{"group_id":56},"notify":{"telegram":true},"reason":"review G56"}
+  ```
+  - `kind` is a registered handler name. Built-in: `trade_group_review` (params `{group_id:int}`).
+  - Optional `query_id` for idempotency; while a run is PENDING, re-submitting the same id is rejected with `ANALYSIS_RUN duplicate query_id`.
+  - Optional `notify.chat_id` overrides the default channel (default = Herald `CHAT_ID`).
+  - Result files persist at `logs/analysis/<query_id>.{json,md}` and audit events `ANALYSIS_QUEUED|DONE|FAILED` go to `logs/audit/system_events.jsonl`.
+  - I do NOT poll for results — I reference the run by its `query_id` on subsequent turns.
+
 **Multiple commands in one reply:** Put each as a SEPARATE \`\`\`json block. BRIDGE processes them sequentially (6s delay between each).
 
 #### SIGNAL mode — Telegram channel signals
 In **SIGNAL** or **HYBRID** mode, LISTENER monitors configured Telegram channels and applies room-priority dispatch policy.
 Execution routing:
-- `SIGNAL_TRADE_ROOMS` empty/unset: all monitored rooms can dispatch.
-- `SIGNAL_TRADE_ROOMS` set: only listed room titles/chat IDs dispatch; all others are logged as `WATCH_ONLY` with `ROOM_NOT_PRIORITY:*`.
+- `SIGNAL_TRADE_ROOMS` and `ACTIVE_SIGNAL_TRADE_ROOMS` both empty/unset: all monitored rooms can dispatch.
+- If either/both allowlist vars are set, LISTENER merges them and only listed room titles/chat IDs dispatch.
+- Non-allowlisted rooms are logged as `WATCH_ONLY` with `WATCH_ONLY_ROOM_FILTER`.
+- `GET /api/channels` exposes allowlist source metadata (`signal_trade_rooms_source`) and per-room `match_reason` (`ALLOWED_ID_MATCH`, `ALLOWED_TITLE_MATCH`, `WATCH_ONLY_ROOM_FILTER`, etc.).
 
 Available API endpoints for channels and signals:
 - `GET /api/channels` — configured channels with names and signal stats
@@ -173,6 +186,17 @@ LISTENER dispatches:
 - **ENTRY** signals → parsed by Claude Haiku → BRIDGE with fixed `SIGNAL_LOT_SIZE` (default 0.01) and `SIGNAL_NUM_TRADES` (default 4) → AEGIS validates → FORGE executes at the channel's entry range
 - **MANAGEMENT** messages → "close all", "move to BE", "close 70%", "move SL to 4660", "new TP 4680" → BRIDGE scopes channel-origin commands to that channel's open SIGNAL groups only (ATHENA remains global by intent)
 
+#### Signal replay + pickup verification
+- Use `scripts/replay_signal_pickup.py` to replay a raw text signal or a historical `signals_received.id` through LISTENER `_handle_message`.
+- Start with `--mode WATCH` + `--expect-action LOGGED_ONLY` for safe ingestion proof without trade dispatch.
+- Use `--from-signal-id <id>` + `--mode SIGNAL|HYBRID` + `--wait-bridge-sec` to verify full gating/dispatch outcomes.
+- Canonical operator runbook: `docs/SIGNAL_REPLAY_RUNBOOK.md`.
+
+#### SQLite diagnostics for "ignored signals" investigations
+- Use `DB_PATH="${SCRIBE_DB:-python/data/aurum_intelligence.db}"` then query `signals_received` by `channel_name`, `signal_type='ENTRY'`, and `message_id < 1000000` to separate real Telegram rows from replay-generated IDs.
+- Use `datetime(timestamp)` in time-window filters to avoid ISO text comparison pitfalls.
+- Check `skip_reason` buckets (`WATCH_ONLY_ROOM_FILTER`, `AEGIS_REJECTED:*`, `EXPIRED`, etc.) before concluding ingestion is broken.
+
 Channel signals use **fixed lot sizing** by default (`AEGIS_LOT_MODE=fixed`). Set `AEGIS_LOT_MODE=risk_based` in `.env` to let AEGIS compute lots dynamically from balance, risk %, and SL distance instead. All AEGIS guards (H1 trend, R:R, drawdown) apply regardless of lot mode.
 
 #### SL / TP — always required for `OPEN_GROUP`
@@ -196,7 +220,12 @@ This is a **scalping** system. TP targets must be **realistic for the timeframe*
 - R:R must be ≥ 1.2 (AEGIS enforces this). If ATR-based SL is $4, TP1 should be ≥$4.80.
 - **Trend filter is source-aware (cascade):**
   - **SIGNAL** (channel scalps): M5 → M15 → H1. If M5 agrees with direction, trade passes even if H1 disagrees. Only rejects if BOTH M5 and M15 conflict.
-  - **SIGNAL limit-orientation guard:** BUY entries must be below current market (buy-limit orientation), SELL entries must be above current market (sell-limit orientation). Wrong-side entries are rejected with `SIGNAL_BUY_LIMIT_REQUIRED` / `SIGNAL_SELL_LIMIT_REQUIRED`.
+  - **SIGNAL limit-orientation guard (`AEGIS_SIGNAL_LIMIT_ORIENTATION`)**:
+    - `both` (default): enforce BUY-below-market and SELL-above-market
+    - `buy`: enforce BUY orientation only
+    - `sell`: enforce SELL orientation only
+    - `off`: disable orientation guard (all other AEGIS guards still apply)
+    - Wrong-side rejects remain `SIGNAL_BUY_LIMIT_REQUIRED` / `SIGNAL_SELL_LIMIT_REQUIRED`.
   - **AURUM/AUTO_SCALPER**: H1 → M15. Conservative — needs H1 or M15 agreement.
   - **SCALPER** (BRIDGE): H1 only (strictest).
   - FLAT counts as agreement (allows entry in either direction).

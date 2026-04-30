@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 import inspect
 
@@ -77,6 +78,240 @@ def test_aurum_cmd_missing_file_no_crash(monkeypatch, tmp_path):
     bm.Bridge._check_aurum_command(stub, {})
 
     stub._change_mode.assert_not_called()
+
+@pytest.mark.unit
+def test_aurum_cmd_scribe_query_routes_to_local_aeb_and_consumes_file(monkeypatch, tmp_path):
+    import bridge as bm
+
+    cmd_path = tmp_path / "aurum_cmd.json"
+    cmd_path.write_text(
+        json.dumps(
+            {
+                "action": "SCRIBE_QUERY",
+                "sql": "SELECT 1 AS ok",
+                "timestamp": "2099-06-15T12:00:02+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bm, "AURUM_CMD_FILE", str(cmd_path))
+    monkeypatch.setattr(
+        bm,
+        "execute_action",
+        lambda payload, db_path, project_root: {
+            "ok": True,
+            "action": "SCRIBE_QUERY",
+            "summary": "Scribe query returned 1 row(s)",
+            "rows": [{"ok": 1}],
+            "count": 1,
+            "truncated": False,
+            "duration_ms": 5,
+        },
+    )
+
+    stub = MagicMock()
+    stub._last_aurum_ts = None
+    stub.scribe = SimpleNamespace(db_path=str(tmp_path / "test.db"))
+    stub._report_aeb_result = MagicMock()
+
+    bm.Bridge._check_aurum_command(stub, {})
+
+    assert not cmd_path.exists(), "AEB commands should consume aurum_cmd.json after handling"
+    stub._report_aeb_result.assert_called_once()
+
+
+@pytest.mark.unit
+def test_aurum_cmd_shell_exec_blocked_still_reports_and_consumes(monkeypatch, tmp_path):
+    import bridge as bm
+
+    cmd_path = tmp_path / "aurum_cmd.json"
+    cmd_path.write_text(
+        json.dumps(
+            {
+                "action": "SHELL_EXEC",
+                "program": "bash",
+                "args": ["-lc", "echo nope"],
+                "timestamp": "2099-06-15T12:00:03+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bm, "AURUM_CMD_FILE", str(cmd_path))
+    monkeypatch.setattr(
+        bm,
+        "execute_action",
+        lambda payload, db_path, project_root: {
+            "ok": False,
+            "action": "SHELL_EXEC",
+            "summary": "SHELL_EXEC blocked",
+            "error": "program not allowlisted",
+            "security_blocked": True,
+            "duration_ms": 2,
+        },
+    )
+
+    stub = MagicMock()
+    stub._last_aurum_ts = None
+    stub.scribe = SimpleNamespace(db_path=str(tmp_path / "test.db"))
+    stub._report_aeb_result = MagicMock()
+
+    bm.Bridge._check_aurum_command(stub, {})
+
+    assert not cmd_path.exists()
+    stub._report_aeb_result.assert_called_once()
+    reported = stub._report_aeb_result.call_args[0][0]
+    assert reported["security_blocked"] is True
+
+@pytest.mark.unit
+def test_aurum_cmd_shell_exec_from_telegram_origin_is_blocked_before_execution(monkeypatch, tmp_path):
+    import bridge as bm
+
+    cmd_path = tmp_path / "aurum_cmd.json"
+    cmd_path.write_text(
+        json.dumps(
+            {
+                "action": "SHELL_EXEC",
+                "program": "python3",
+                "args": ["scripts/logs.py", "bridge", "--lines", "1"],
+                "origin_source": "TELEGRAM",
+                "timestamp": "2099-06-15T12:00:03+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bm, "AURUM_CMD_FILE", str(cmd_path))
+    monkeypatch.setattr(bm, "AEB_SHELL_EXEC_BLOCKED_SOURCES", {"TELEGRAM"})
+
+    execute_called = {"value": False}
+
+    def _fake_execute_action(*_args, **_kwargs):
+        execute_called["value"] = True
+        return {"ok": True, "action": "SHELL_EXEC", "summary": "unexpected"}
+
+    monkeypatch.setattr(bm, "execute_action", _fake_execute_action)
+
+    stub = MagicMock()
+    stub._last_aurum_ts = None
+    stub.scribe = SimpleNamespace(db_path=str(tmp_path / "test.db"))
+    stub._report_aeb_result = MagicMock()
+
+    bm.Bridge._check_aurum_command(stub, {})
+
+    assert not cmd_path.exists()
+    assert execute_called["value"] is False
+    stub._report_aeb_result.assert_called_once()
+    reported = stub._report_aeb_result.call_args[0][0]
+    assert reported["security_blocked"] is True
+    assert "not permitted from source: TELEGRAM" in (reported.get("error") or "")
+    assert stub._report_aeb_result.call_args.kwargs["via"] == "BRIDGE_LOCAL"
+
+
+@pytest.mark.unit
+def test_aurum_cmd_aurum_exec_routes_through_http_dispatch(monkeypatch, tmp_path):
+    import bridge as bm
+
+    cmd_path = tmp_path / "aurum_cmd.json"
+    cmd_path.write_text(
+        json.dumps(
+            {
+                "action": "AURUM_EXEC",
+                "payload": {"action": "SCRIBE_QUERY", "sql": "SELECT 1"},
+                "timestamp": "2099-06-15T12:00:04+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bm, "AURUM_CMD_FILE", str(cmd_path))
+
+    stub = MagicMock()
+    stub._last_aurum_ts = None
+    stub._dispatch_aurum_exec = MagicMock(
+        return_value={"ok": True, "action": "SCRIBE_QUERY", "summary": "ok", "duration_ms": 6}
+    )
+    stub._report_aeb_result = MagicMock()
+
+    bm.Bridge._check_aurum_command(stub, {})
+
+    assert not cmd_path.exists()
+    stub._dispatch_aurum_exec.assert_called_once()
+    stub._report_aeb_result.assert_called_once()
+
+
+@pytest.mark.unit
+def test_aurum_cmd_aurum_exec_legacy_health_check_normalized_and_dispatched(monkeypatch, tmp_path):
+    import bridge as bm
+
+    cmd_path = tmp_path / "aurum_cmd.json"
+    cmd_path.write_text(
+        json.dumps(
+            {
+                "action": "AURUM_EXEC",
+                "payload": {"script": "health_check", "args": {}},
+                "origin_source": "TELEGRAM",
+                "timestamp": "2099-06-15T12:00:04+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bm, "AURUM_CMD_FILE", str(cmd_path))
+    monkeypatch.setattr(bm, "AEB_SHELL_EXEC_BLOCKED_SOURCES", {"TELEGRAM"})
+
+    stub = MagicMock()
+    stub._last_aurum_ts = None
+    stub._dispatch_aurum_exec = MagicMock(
+        return_value={"ok": True, "action": "HEALTH_CHECK", "summary": "Health check overall=OK", "duration_ms": 9}
+    )
+    stub._report_aeb_result = MagicMock()
+
+    bm.Bridge._check_aurum_command(stub, {})
+
+    assert not cmd_path.exists()
+    stub._dispatch_aurum_exec.assert_called_once()
+    dispatched_cmd = stub._dispatch_aurum_exec.call_args[0][0]
+    assert dispatched_cmd["payload"]["action"] == "HEALTH_CHECK"
+    assert dispatched_cmd["payload"]["script"] == "health_check"
+    stub._report_aeb_result.assert_called_once()
+    assert stub._report_aeb_result.call_args.kwargs["via"] == "ATHENA_HTTP"
+
+@pytest.mark.unit
+def test_aurum_cmd_aurum_exec_nested_shell_exec_from_telegram_origin_blocked_locally(monkeypatch, tmp_path):
+    import bridge as bm
+
+    cmd_path = tmp_path / "aurum_cmd.json"
+    cmd_path.write_text(
+        json.dumps(
+            {
+                "action": "AURUM_EXEC",
+                "payload": {
+                    "action": "SHELL_EXEC",
+                    "program": "python3",
+                    "args": ["scripts/logs.py", "bridge", "--lines", "1"],
+                },
+                "origin_source": "TELEGRAM",
+                "timestamp": "2099-06-15T12:00:04+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bm, "AURUM_CMD_FILE", str(cmd_path))
+    monkeypatch.setattr(bm, "AEB_SHELL_EXEC_BLOCKED_SOURCES", {"TELEGRAM"})
+
+    stub = MagicMock()
+    stub._last_aurum_ts = None
+    stub._dispatch_aurum_exec = MagicMock(
+        return_value={"ok": True, "action": "SHELL_EXEC", "summary": "unexpected"}
+    )
+    stub._report_aeb_result = MagicMock()
+
+    bm.Bridge._check_aurum_command(stub, {})
+
+    assert not cmd_path.exists()
+    stub._dispatch_aurum_exec.assert_not_called()
+    stub._report_aeb_result.assert_called_once()
+    reported = stub._report_aeb_result.call_args[0][0]
+    assert reported["security_blocked"] is True
+    assert "not permitted from source: TELEGRAM" in (reported.get("error") or "")
+    assert stub._report_aeb_result.call_args.kwargs["via"] == "BRIDGE_LOCAL"
 
 
 @pytest.mark.unit

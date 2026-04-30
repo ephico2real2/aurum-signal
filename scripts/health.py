@@ -12,6 +12,7 @@ Exit code: 0 = all healthy, 1 = warnings, 2 = errors
 
 import sys, os, json, time, argparse
 from pathlib import Path
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "python"))
@@ -26,6 +27,35 @@ EXPECTED_TABLES = [
     "signals_received","trade_groups","trade_positions",
     "news_events","aurum_conversations","component_heartbeats"
 ]
+
+def _to_float(v):
+    try:
+        if v is None or v == "":
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _age_from_iso(ts_raw):
+    if not ts_raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+    except Exception:
+        return None
+
+
+def _resolve_age_seconds(block):
+    if not isinstance(block, dict):
+        return None
+    age = _to_float(block.get("age_seconds"))
+    if age is not None:
+        return max(0.0, age)
+    return _age_from_iso(block.get("timestamp"))
 
 
 def check_api():
@@ -69,11 +99,37 @@ def check_live():
             "circuit_br":   d.get("circuit_breaker"),
             "components":   len(d.get("components", {})),
         }
+        tv = d.get("tradingview") if isinstance(d.get("tradingview"), dict) else {}
+        lens = d.get("lens") if isinstance(d.get("lens"), dict) else {}
+        tv_age = _resolve_age_seconds(tv)
+        lens_age = _resolve_age_seconds(lens)
+        tv_brief_age = _age_from_iso(tv.get("tv_brief_timestamp") or lens.get("tv_brief_timestamp"))
+        if tv_age is not None:
+            detail["tradingview_age_sec"] = round(tv_age, 1)
+        if lens_age is not None:
+            detail["lens_age_sec"] = round(lens_age, 1)
+        if tv_brief_age is not None:
+            detail["tv_brief_age_sec"] = round(tv_brief_age, 1)
+        if (
+            tv_brief_age is not None
+            and tv_brief_age > 1800
+            and ((tv_age is not None and tv_age <= 120) or (lens_age is not None and lens_age <= 120))
+        ):
+            detail["tv_brief_note"] = "TV brief stale but live indicators are fresh (non-fatal)"
         aegis = d.get("aegis") or {}
         if isinstance(aegis, dict) and "pnl_day_reset_hour_utc" in aegis:
             detail["pnl_roll_utc_h"] = aegis.get("pnl_day_reset_hour_utc")
+        warnings = []
         if mismatch:
-            return "WARN", f"session {sess_br!r} vs session_utc {sess_clk!r} (BRIDGE tick may not have run yet) | {detail}"
+            detail["session_note"] = (
+                f"session {sess_br!r} vs session_utc {sess_clk!r} "
+                "(BRIDGE tick may not have run yet)"
+            )
+        live_age = tv_age if tv_age is not None else lens_age
+        if live_age is not None and live_age > 300:
+            warnings.append(f"TradingView/LENS snapshot stale ({int(live_age)}s old)")
+        if warnings:
+            return "WARN", f"{' ; '.join(warnings)} | {detail}"
         return "OK", detail
     except Exception as e:
         return "ERROR", str(e)

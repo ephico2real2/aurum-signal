@@ -470,3 +470,40 @@ Performance tab metric contract:
 - `effective_mode`: runtime mode after sentinel/circuit-breaker overrides
 - `requested_mode`: last queued dashboard mode request (if any)
 - `mode_pin`: configured `BRIDGE_PIN_MODE` (if set)
+
+---
+
+## Deferred Analysis Runs
+Reusable async analysis subsystem (`python/analysis_runner.py`). AURUM (or any module) emits an AEB `ANALYSIS_RUN` action; the run executes in a worker thread, persists results to `logs/analysis/<query_id>.{json,md}`, and posts the body back to the **existing Telegram channel** through `python/herald.py` (Herald singleton — no new bot, no new token, no new chat ID).
+
+Data flow:
+```
+AURUM → aurum_cmd.json → BRIDGE → aeb_executor.execute_action(ANALYSIS_RUN)
+        → analysis_runner.submit()             # immediate {ok, query_id, status:PENDING}
+        → worker thread (ThreadPoolExecutor)
+              → logs/analysis/<query_id>.json   # status: PENDING → DONE / FAILED
+              → logs/analysis/<query_id>.md    # title + body_md
+              → logs/audit/system_events.jsonl # ANALYSIS_QUEUED / DONE / FAILED
+              → herald.post_analysis_from_log() → Telegram channel (BOT_TOKEN/CHAT_ID)
+        → aurum._build_context() (next tick) lists pending + recent runs by query_id
+```
+
+Envelope (validated by `aeb_executor.validate_aeb_payload`):
+```json
+{
+  "action": "ANALYSIS_RUN",
+  "kind": "trade_group_review",
+  "query_id": "AR-... (optional; auto-generated if absent)",
+  "params": { "group_id": 56 },
+  "notify": { "telegram": true, "chat_id": null, "header": null, "footer": null },
+  "reason": "operator-requested review"
+}
+```
+
+Reusability:
+- Register a new kind anywhere in `python/`: `@register_analysis("my_kind")` on a `handler(params) -> {title, body_md, summary, metadata}`.
+- Reuse the Telegram poster from any module: `from herald import post_analysis_from_log` (uses the same singleton/channel as HERALD; never instantiates a second bot).
+
+Env:
+- `ANALYSIS_LOG_DIR` — override result/status directory (default `logs/analysis/`).
+- `ANALYSIS_MAX_CONCURRENCY` — worker thread cap (default 4).

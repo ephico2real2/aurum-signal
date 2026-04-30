@@ -16,6 +16,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, Response
 from flask_cors import CORS
 from flask_swagger_ui import get_swaggerui_blueprint
+from aeb_executor import execute_action, execute_scribe_query
 
 from scribe import get_scribe
 from status_report import KNOWN_COMPONENTS
@@ -59,6 +60,7 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
 SCRIBE_QUERY_SECRET = (os.environ.get("ATHENA_SCRIBE_QUERY_SECRET") or "").strip()
 SCRIBE_QUERY_MAX_ROWS = _env_int("SCRIBE_QUERY_MAX_ROWS", 500, 1, 50_000)
 SCRIBE_QUERY_BUSY_MS = _env_int("SCRIBE_QUERY_BUSY_MS", 5000, 0, 120_000)
+AURUM_EXEC_SECRET = (os.environ.get("ATHENA_AURUM_EXEC_SECRET") or "").strip()
 # MT5 files live at project root (root-level symlink)
 MARKET_FILE    = _root_path(os.environ.get("MT5_MARKET_FILE",  "MT5/market_data.json"))
 MODE_FILE      = _root_path(os.environ.get("MT5_MODE_FILE",    "MT5/mode_status.json"))
@@ -1165,25 +1167,66 @@ def api_scribe_query():
             return jsonify({"error": "unauthorized"}), 401
 
     data = request.json or {}
-    sql  = data.get("sql", "")
-    # Only allow SELECT
-    if not sql.strip().upper().startswith("SELECT"):
-        return jsonify({"error": "only SELECT allowed"}), 400
+    sql = data.get("sql", "")
+    if not isinstance(sql, str) or not sql.strip():
+        return jsonify({"error": "sql is required"}), 400
     try:
         scribe = get_scribe()
-        rows, truncated = scribe.query_limited(
-            sql,
-            max_rows=SCRIBE_QUERY_MAX_ROWS,
-            busy_timeout_ms=SCRIBE_QUERY_BUSY_MS,
+        db_path = getattr(scribe, "db_path", "")
+        if db_path:
+            result = execute_scribe_query(
+                {
+                    "action": "SCRIBE_QUERY",
+                    "sql": sql,
+                    "max_rows": SCRIBE_QUERY_MAX_ROWS,
+                    "busy_timeout_ms": SCRIBE_QUERY_BUSY_MS,
+                },
+                db_path=db_path,
+            )
+            if not result.get("ok"):
+                status = 400 if result.get("security_blocked") else 500
+                return jsonify({"error": result.get("error") or result.get("summary")}), status
+            rows = result.get("rows") or []
+            truncated = bool(result.get("truncated"))
+        else:
+            # Compatibility fallback for tests that stub get_scribe() without db_path.
+            rows, truncated = scribe.query_limited(
+                sql,
+                max_rows=SCRIBE_QUERY_MAX_ROWS,
+                busy_timeout_ms=SCRIBE_QUERY_BUSY_MS,
+            )
+        return jsonify(
+            {
+                "rows": rows,
+                "count": len(rows),
+                "truncated": truncated,
+                "max_rows": SCRIBE_QUERY_MAX_ROWS,
+            }
         )
-        return jsonify({
-            "rows": rows,
-            "count": len(rows),
-            "truncated": truncated,
-            "max_rows": SCRIBE_QUERY_MAX_ROWS,
-        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# ── AURUM execution bridge endpoint ─────────────────────────────────
+@app.route("/api/aurum/exec", methods=["POST"])
+def api_aurum_exec():
+    if AURUM_EXEC_SECRET:
+        auth = (request.headers.get("Authorization") or "").strip()
+        hdr = (request.headers.get("X-ATHENA-AURUM-EXEC-TOKEN") or "").strip()
+        token_ok = hdr == AURUM_EXEC_SECRET
+        bearer_ok = auth.startswith("Bearer ") and auth[7:].strip() == AURUM_EXEC_SECRET
+        if not (token_ok or bearer_ok):
+            return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else body
+    if not isinstance(payload, dict):
+        return jsonify({"error": "payload must be a JSON object"}), 400
+
+    scribe = get_scribe()
+    db_path = getattr(scribe, "db_path", "")
+    result = execute_action(payload, db_path=db_path, project_root=_ROOT)
+    status = 200 if result.get("ok") else (400 if result.get("security_blocked") else 500)
+    return jsonify(result), status
 
 
 # ── System events log ──────────────────────────────────────────────
@@ -1265,6 +1308,9 @@ def api_health():
             "max_rows": SCRIBE_QUERY_MAX_ROWS,
             "busy_timeout_ms": SCRIBE_QUERY_BUSY_MS,
             "auth_required": bool(SCRIBE_QUERY_SECRET),
+        },
+        "aurum_exec": {
+            "auth_required": bool(AURUM_EXEC_SECRET),
         },
     })
 

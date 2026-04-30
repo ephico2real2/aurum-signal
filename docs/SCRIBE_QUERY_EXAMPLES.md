@@ -12,8 +12,9 @@ It also includes newer telemetry paths such as unmanaged/manual MT5 position tra
 
 ## API contract and guardrails
 - Endpoint accepts **read-only SQL** in request body: `{"sql":"SELECT ..."}`.
-- Any statement that does not begin with `SELECT` (after trimming) is rejected.
+- Statement must begin with `SELECT` or `WITH` (after trimming), must be single-statement, and runs through read-only SQLite mode + authorizer guardrails.
 - Response shape: `{"rows":[...], "count":N, "truncated":bool, "max_rows":int}`.
+- Same secure query executor is also used by AEB actions (`aurum_cmd.json` `SCRIBE_QUERY`, and `POST /api/aurum/exec`).
 
 Server controls:
 - `SCRIBE_QUERY_MAX_ROWS` (default `500`, max `50000`)
@@ -30,6 +31,15 @@ Source-of-truth references:
 curl -sS -X POST "http://localhost:7842/api/scribe/query" \
   -H "Content-Type: application/json" \
   -d '{"sql":"SELECT 1 AS ok"}' | python3 -m json.tool
+```
+
+## AEB HTTP execution path (`/api/aurum/exec`)
+Use when BRIDGE/AURUM dispatches via HTTP envelope (same result shape semantics as AEB executor):
+```bash
+curl -sS -X POST "http://localhost:7842/api/aurum/exec" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"SCRIBE_QUERY","sql":"SELECT id, event_type, timestamp FROM system_events ORDER BY id DESC LIMIT 5"}' \
+  | python3 -m json.tool
 ```
 
 ## Schema snapshot (operator view)
