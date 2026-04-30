@@ -410,6 +410,19 @@ class Scribe:
         if "regime_fallback_reason" not in tg_cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN regime_fallback_reason TEXT")
             log.info("SCRIBE migration: added regime_fallback_reason to trade_groups")
+        # ── Entry-zone / fill-rate columns ─────────────────────────
+        if "entry_zone_pips" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN entry_zone_pips REAL")
+            log.info("SCRIBE migration: added entry_zone_pips to trade_groups")
+        if "trades_filled" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN trades_filled INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added trades_filled to trade_groups")
+        if "entry_type" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN entry_type TEXT")
+            log.info("SCRIBE migration: added entry_type to trade_groups")
+        if "entry_cluster" not in tg_cols:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN entry_cluster INTEGER")
+            log.info("SCRIBE migration: added entry_cluster to trade_groups")
 
     @staticmethod
     def _now() -> str:
@@ -657,6 +670,41 @@ class Scribe:
         with self._conn() as c:
             c.execute("UPDATE trade_groups SET magic_number=? WHERE id=?",
                       (magic_number, group_id))
+
+    def update_group_open_meta(self, group_id: int, *,
+                                entry_zone_pips: float | None = None,
+                                entry_type: str | None = None,
+                                entry_cluster: int | None = None):
+        """Populate entry-zone / placement metadata captured at OPEN time.
+        Each arg is optional; only non-None fields are written.
+        Tolerates missing columns on legacy DBs (OperationalError swallowed)."""
+        sets, params = [], []
+        if entry_zone_pips is not None:
+            sets.append("entry_zone_pips=?"); params.append(float(entry_zone_pips))
+        if entry_type is not None:
+            sets.append("entry_type=?"); params.append(str(entry_type))
+        if entry_cluster is not None:
+            sets.append("entry_cluster=?"); params.append(int(bool(entry_cluster)))
+        if not sets:
+            return
+        params.append(int(group_id))
+        sql = f"UPDATE trade_groups SET {', '.join(sets)} WHERE id=?"
+        try:
+            with self._conn() as c:
+                c.execute(sql, tuple(params))
+        except sqlite3.OperationalError as e:
+            log.debug("SCRIBE update_group_open_meta tolerated: %s", e)
+
+    def increment_group_fills(self, group_id: int, delta: int = 1):
+        """Increment trades_filled counter for a group; tolerated on legacy DBs."""
+        try:
+            with self._conn() as c:
+                c.execute(
+                    "UPDATE trade_groups SET trades_filled = COALESCE(trades_filled, 0) + ? WHERE id=?",
+                    (int(delta), int(group_id)),
+                )
+        except sqlite3.OperationalError as e:
+            log.debug("SCRIBE increment_group_fills tolerated: %s", e)
 
     def get_in_use_magics(self) -> set[int]:
         """Return magic numbers of all OPEN/PARTIAL groups."""

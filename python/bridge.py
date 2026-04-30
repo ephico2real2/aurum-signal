@@ -130,6 +130,20 @@ DD_EQUITY_CLOSE_ALL_PCT  = float(os.environ.get("DD_EQUITY_CLOSE_ALL_PCT",  "3.0
 DD_FLOATING_BLOCK_PCT    = float(os.environ.get("DD_FLOATING_BLOCK_PCT",    "2.0"))   # block new groups if floating loss exceeds this % of balance
 DD_LOSS_COOLDOWN_SEC     = int(os.environ.get("DD_LOSS_COOLDOWN_SEC",       "300"))   # seconds to wait after a group closes at loss before AUTO_SCALPER resumes
 
+# Entry-zone / fill-rate controls (see docs/AEGIS.md § Entry Zone Width Guard)
+SIGNAL_ENTRY_TYPE          = os.environ.get("SIGNAL_ENTRY_TYPE", "limit").strip().lower()
+if SIGNAL_ENTRY_TYPE not in ("limit", "market"):
+    SIGNAL_ENTRY_TYPE = "limit"
+SIGNAL_ENTRY_ZONE_CLUSTER  = os.environ.get("SIGNAL_ENTRY_ZONE_CLUSTER", "false").strip().lower() in ("1", "true", "yes", "on")
+SIGNAL_ENTRY_CLUSTER_PIPS  = float(os.environ.get("SIGNAL_ENTRY_CLUSTER_PIPS", "2.0"))
+PENDING_CANCEL_ON_GROUP_CLOSE = os.environ.get("PENDING_CANCEL_ON_GROUP_CLOSE", "true").strip().lower() in ("1", "true", "yes", "on")
+# Optional SIGNAL-source override of TP1_CLOSE_PCT (mirrors AEGIS_SIGNAL_MIN_RR pattern)
+_SIG_TP1_RAW = os.environ.get("SIGNAL_TP1_CLOSE_PCT", "").strip()
+try:
+    SIGNAL_TP1_CLOSE_PCT = float(_SIG_TP1_RAW) if _SIG_TP1_RAW else None
+except (TypeError, ValueError):
+    SIGNAL_TP1_CLOSE_PCT = None
+
 for d in ("config", "data", "logs"):
     Path(_PY, d).mkdir(parents=True, exist_ok=True)
 Path(_ROOT, "MT5").mkdir(parents=True, exist_ok=True)
@@ -460,6 +474,51 @@ def _entry_legs_from_ladder(entry_ladder: list[float]) -> list[dict]:
         for px in (entry_ladder or [])
         if px is not None
     ]
+
+
+def _apply_signal_placement(direction: str, entry_low: float, entry_high: float,
+                             ladder: list[float], num_trades: int,
+                             current_price: float | None = None) -> tuple[list[float], str, bool]:
+    """Apply SIGNAL_ENTRY_TYPE / SIGNAL_ENTRY_ZONE_CLUSTER overrides to the
+    AEGIS-built ladder. Returns (new_ladder, entry_type_label, cluster_flag).
+
+    - SIGNAL_ENTRY_TYPE=market: collapse all legs to current_price (or zone
+      midpoint as fallback) so FORGE places market orders.
+    - SIGNAL_ENTRY_ZONE_CLUSTER=true: spread legs evenly within the cluster
+      band [edge, edge ± SIGNAL_ENTRY_CLUSTER_PIPS] at the directional zone
+      edge (entry_low for SELL, entry_high for BUY) instead of across the
+      full zone.
+    - default (limit, no cluster): leave the AEGIS ladder unchanged.
+    """
+    n = max(1, int(num_trades or 1))
+    d = (direction or "").upper()
+    lo = float(entry_low)
+    hi = float(entry_high)
+
+    if SIGNAL_ENTRY_TYPE == "market":
+        anchor = current_price if (current_price and current_price > 0) else (lo + hi) / 2.0
+        try:
+            anchor = float(anchor)
+        except (TypeError, ValueError):
+            anchor = (lo + hi) / 2.0
+        return [round(anchor, 2)] * n, "market", False
+
+    if SIGNAL_ENTRY_ZONE_CLUSTER:
+        edge = lo if d == "BUY" else hi
+        band = max(0.0, float(SIGNAL_ENTRY_CLUSTER_PIPS))
+        if d == "BUY":
+            lo_b = edge
+            hi_b = min(hi, edge + band)
+        else:
+            hi_b = edge
+            lo_b = max(lo, edge - band)
+        if n == 1 or hi_b <= lo_b:
+            return [round((lo_b + hi_b) / 2.0, 2)] * n, "limit", True
+        step = (hi_b - lo_b) / (n - 1)
+        return [round(lo_b + i * step, 2) for i in range(n)], "limit", True
+
+    # default: keep AEGIS ladder as-is
+    return list(ladder or []), "limit", False
 
 
 def _normalize_forge_entry_legs(raw_legs) -> list[dict]:
@@ -816,6 +875,11 @@ class Bridge:
                 "sl":          p.get("sl"),
                 "tp":          p.get("tp"),
             }, mode)
+            # Increment fill counter for this group (for fill-rate analytics)
+            try:
+                self.scribe.increment_group_fills(int(gid), 1)
+            except Exception as _e:
+                log.debug("TRACKER: increment_group_fills tolerated: %s", _e)
             self._known_positions[ticket] = {
                 "group_id": gid, "magic": magic, "direction": direction,
                 "open_price": p.get("open_price"), "last_profit": p.get("profit", 0),
@@ -1298,6 +1362,24 @@ class Bridge:
             still_has_pendings = any(
                 s["magic"] == group_magic for s in self._known_pendings.values()
             )
+            # Defensive: when positions drained but pendings linger (TP1_HIT
+            # while ladder legs upstream never filled), proactively cancel them
+            # so they don't sit idle until PENDING_ORDER_TIMEOUT_SEC. Reuses the
+            # FORGE CANCEL_GROUP_PENDING action.
+            if PENDING_CANCEL_ON_GROUP_CLOSE and not still_has_positions and still_has_pendings:
+                try:
+                    _write_forge_command({
+                        "action": "CANCEL_GROUP_PENDING",
+                        "magic":  int(group_magic),
+                        "timestamp": _now(),
+                    })
+                    log.info(
+                        "BRIDGE: pending cancelled G%s reason=GROUP_CLOSED magic=%s",
+                        gid, group_magic,
+                    )
+                except Exception as _e:
+                    log.debug("BRIDGE: cancel-on-close write failed: %s", _e)
+
             if not still_has_positions and not still_has_pendings:
                 # All exposure gone — close the group with totals
                 all_pos = self.scribe.query(
@@ -1951,27 +2033,50 @@ class Bridge:
         magic = FORGE_MAGIC_BASE + group_id
         # Store the magic FORGE will compute (MagicNumber + group_id)
         self.scribe.update_trade_group_magic(group_id, magic)
+        # Apply placement overrides AFTER AEGIS approval
+        ladder, entry_type_label, cluster_flag = _apply_signal_placement(
+            signal["direction"], signal["entry_low"], signal["entry_high"],
+            approval.entry_ladder, approval.num_trades,
+            current_price=current_price,
+        )
+        # Persist entry-zone / placement metadata to SCRIBE for analytics.
+        self.scribe.update_group_open_meta(
+            group_id,
+            entry_zone_pips=approval.entry_zone_pips or abs(signal["entry_high"] - signal["entry_low"]),
+            entry_type=entry_type_label,
+            entry_cluster=int(bool(cluster_flag)),
+        )
         self._open_groups[group_id] = {**group_data, "magic_number": magic}
         self.scribe.update_signal_action(
             signal.get("signal_id"), "EXECUTED", group_id=group_id)
+
+        # SIGNAL-source TP1 close-pct override (default 100% via existing contract)
+        sig_tp1_pct = SIGNAL_TP1_CLOSE_PCT if SIGNAL_TP1_CLOSE_PCT is not None else 100.0
 
         # Write command for FORGE
         cmd = {
             "action":        "OPEN_GROUP",
             "group_id":      group_id,
             "direction":     signal["direction"],
-            "entry_ladder":  approval.entry_ladder,
-            "entry_legs":    _entry_legs_from_ladder(approval.entry_ladder),
+            "entry_ladder":  ladder,
+            "entry_legs":    _entry_legs_from_ladder(ladder),
             "lot_per_trade": approval.lot_per_trade,
             "sl":            signal["sl"],
             "tp1":           signal["tp1"],
             "tp2":           None,
             "tp3":           None,
-            "tp1_close_pct": 100.0,
+            "tp1_close_pct": sig_tp1_pct,
             "tp2_close_pct": TP2_CLOSE_PCT,
             "move_be_on_tp1":MOVE_BE_ON_TP1,
+            "entry_type":    entry_type_label,
             "timestamp":     _now(),
         }
+        if entry_type_label == "market":
+            log.info("BRIDGE: SIGNAL entry_type=market — placed %d market lots (zone collapsed)",
+                     approval.num_trades)
+        elif cluster_flag:
+            log.info("BRIDGE: SIGNAL entry_zone_cluster=true — %d legs within %.1fpips of zone edge",
+                     approval.num_trades, SIGNAL_ENTRY_CLUSTER_PIPS)
         cmd_paths = _write_forge_command(cmd)
         log.info("BRIDGE: wrote OPEN_GROUP command.json → %s", cmd_paths[0])
         if len(cmd_paths) > 1:
@@ -3128,17 +3233,32 @@ class Bridge:
         gid = self.scribe.log_trade_group(group_data, eff)
         magic = FORGE_MAGIC_BASE + gid
         self.scribe.update_trade_group_magic(gid, magic)
+
+        # Apply placement overrides (same as SIGNAL path).
+        # When AURUM provides explicit entry_legs, honour them as-is.
+        if explicit_entry_legs:
+            ladder = [float(leg["entry_price"]) for leg in explicit_entry_legs]
+            entry_type_label = "limit"
+            cluster_flag = False
+        else:
+            ladder, entry_type_label, cluster_flag = _apply_signal_placement(
+                direction, el, eh, approval.entry_ladder, approval.num_trades,
+                current_price=cur,
+            )
+        self.scribe.update_group_open_meta(
+            gid,
+            entry_zone_pips=approval.entry_zone_pips or abs(eh - el),
+            entry_type=entry_type_label,
+            entry_cluster=int(bool(cluster_flag)),
+        )
         self._open_groups[gid] = {**group_data, "magic_number": magic}
 
         forge_cmd = {
             "action": "OPEN_GROUP",
             "group_id": gid,
             "direction": direction,
-            "entry_ladder": (
-                [float(leg["entry_price"]) for leg in explicit_entry_legs]
-                if explicit_entry_legs else approval.entry_ladder
-            ),
-            "entry_legs": explicit_entry_legs or _entry_legs_from_ladder(approval.entry_ladder),
+            "entry_ladder": ladder,
+            "entry_legs": explicit_entry_legs or _entry_legs_from_ladder(ladder),
             "lot_per_trade": lot_pt,
             "sl": sl,
             "tp1": tp1,
@@ -3146,8 +3266,15 @@ class Bridge:
             "tp3": cmd.get("tp3"),
             "tp1_close_pct": TP1_CLOSE_PCT,
             "move_be_on_tp1": MOVE_BE_ON_TP1,
+            "entry_type":    entry_type_label,
             "timestamp": _now(),
         }
+        if entry_type_label == "market":
+            log.info("BRIDGE: AURUM entry_type=market — placed %d market lots (zone collapsed)",
+                     approval.num_trades)
+        elif cluster_flag:
+            log.info("BRIDGE: AURUM entry_zone_cluster=true — %d legs within %.1fpips of zone edge",
+                     approval.num_trades, SIGNAL_ENTRY_CLUSTER_PIPS)
         cmd_paths = _write_forge_command(forge_cmd)
         log.info("BRIDGE: wrote OPEN_GROUP command.json → %s", cmd_paths[0])
         if len(cmd_paths) > 1:

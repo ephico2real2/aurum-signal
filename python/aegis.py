@@ -43,6 +43,11 @@ AEGIS_SIGNAL_MIN_SL_PIPS = float(os.environ.get("AEGIS_SIGNAL_MIN_SL_PIPS", str(
 AEGIS_SIGNAL_LIMIT_ORIENTATION = os.environ.get(
     "AEGIS_SIGNAL_LIMIT_ORIENTATION", "both"
 ).strip().lower()
+# Entry zone width guard (advisory by default; reject only when explicitly set).
+MAX_ENTRY_ZONE_PIPS = float(os.environ.get("AEGIS_MAX_ENTRY_ZONE_PIPS", "8"))
+ZONE_WIDTH_ACTION = os.environ.get("AEGIS_ZONE_WIDTH_ACTION", "warn").strip().lower()
+if ZONE_WIDTH_ACTION not in ("warn", "reject"):
+    ZONE_WIDTH_ACTION = "warn"
 H1_TREND_FILTER   = os.environ.get("AEGIS_H1_TREND_FILTER", "true").lower() == "true"
 H1_FLAT_THRESHOLD = float(os.environ.get("AEGIS_H1_FLAT_THRESHOLD", "1.0"))  # $ diff for FLAT
 # Lot sizing mode: "fixed" = use source lot_per_trade as-is, "risk_based" = compute from balance/risk%
@@ -71,6 +76,9 @@ class TradeApproval:
     scale_factor:   float = 1.0   # current lot scaling multiplier
     scale_reason:   str   = ""
     regime_metadata: dict = field(default_factory=dict)
+    warnings:       list  = field(default_factory=list)   # advisory flags (e.g. WIDE_ZONE)
+    entry_zone_pips: float = 0.0
+    scale_zone_risk: bool  = False  # True when scale>1.0 AND entry_zone_pips>5
 
 
 class Aegis:
@@ -375,13 +383,31 @@ class Aegis:
         if sl_pips < min_sl_req:
             return TradeApproval(False, f"SL_TOO_TIGHT:{sl_pips:.1f}<{min_sl_req}pips")
 
-        # ── Guard 6: R:R ───────────────────────────────────────────
+        # ── Guard 6: R:R ─────────────────────────────────────────────
         tp_pips = (tp1 - mid_entry if direction == "BUY" else mid_entry - tp1)
         if tp_pips <= 0:
             return TradeApproval(False, "INVALID_TP1:TP_BEYOND_ENTRY")
         rr = tp_pips / sl_pips
         if rr < min_rr_req:
             return TradeApproval(False, f"LOW_RR:{rr:.2f}<{min_rr_req}")
+
+        # ── Guard 7: Entry zone width (SIGNAL/AURUM only) ────────────
+        # Wide zones carry inherent fill-rate risk for layered limit ladders.
+        # Default action is `warn` (advisory). Set AEGIS_ZONE_WIDTH_ACTION=reject
+        # to hard-block wide-zone entries.
+        warnings: list[str] = []
+        entry_zone_pips = abs(entry_high - entry_low)
+        if source_u in ("SIGNAL", "AURUM", "AUTO_SCALPER") and entry_zone_pips > MAX_ENTRY_ZONE_PIPS:
+            if ZONE_WIDTH_ACTION == "reject":
+                return TradeApproval(
+                    False,
+                    f"WIDE_ZONE:{entry_zone_pips:.1f}>={MAX_ENTRY_ZONE_PIPS:.1f}",
+                )
+            log.warning(
+                "AEGIS: WIDE_ZONE entry_zone_pips=%.1f threshold=%.1f source=%s",
+                entry_zone_pips, MAX_ENTRY_ZONE_PIPS, source_u,
+            )
+            warnings.append("WIDE_ZONE")
 
         # ── Per-signal num_trades override ───────────────────────
         num_trades = NUM_TRADES
@@ -434,12 +460,19 @@ class Aegis:
         )
 
         total_risk = lot_per_trade * num_trades * sl_pips * PIP_VALUE_PER_LOT
+        scale_zone_risk = bool(scale_factor > 1.0 and entry_zone_pips > 5.0)
 
-        log.info(
+        approved_line = (
             f"AEGIS APPROVED: {direction} {num_trades}×{lot_per_trade}lot "
             f"SL={sl_pips:.1f}p R:R={rr:.2f} risk=${total_risk:.2f} "
-            f"scale={scale_factor:.0%} ({scale_reason})"
+            f"scale={scale_factor:.0%} ({scale_reason}) "
+            f"entry_zone_pips={entry_zone_pips:.1f}"
         )
+        if scale_zone_risk:
+            approved_line += " scale_zone_risk=true"
+        if warnings:
+            approved_line += f" warnings={','.join(warnings)}"
+        log.info(approved_line)
 
         try:
             report_component_status(
@@ -462,6 +495,9 @@ class Aegis:
             scale_factor=scale_factor,
             scale_reason=scale_reason,
             regime_metadata=ladder_meta,
+            warnings=warnings,
+            entry_zone_pips=round(entry_zone_pips, 2),
+            scale_zone_risk=scale_zone_risk,
         )
 
     # ── Multi-TF trend cascade ───────────────────────────────

@@ -572,6 +572,21 @@ def _handler_trade_group_review(params: dict) -> dict:
                 continue
             parts.append(f"- **{key}**: {v}")
 
+        # Configuration section — entry-zone / placement metadata captured at OPEN.
+        cfg_lines: list[str] = []
+        for key in ("entry_zone_pips", "trades_filled", "entry_type", "entry_cluster"):
+            try:
+                v = group_row[key]
+            except (IndexError, KeyError):
+                continue
+            if v is None:
+                continue
+            cfg_lines.append(f"- **{key}**: {v}")
+        if cfg_lines:
+            parts.append("")
+            parts.append("## Configuration")
+            parts.extend(cfg_lines)
+
     if signal_meta:
         parts.append("")
         parts.append("## Signal meta")
@@ -666,11 +681,17 @@ def _handler_trade_group_review(params: dict) -> dict:
     closed = 0
     total = 0
     intended_n = None
+    canonical_filled = None  # from trades_filled column when present
     if group_row is not None:
         try:
             intended_n = int(group_row["num_trades"]) if group_row["num_trades"] is not None else None
         except Exception:
             intended_n = None
+        try:
+            tf = group_row["trades_filled"]
+            canonical_filled = int(tf) if tf is not None else None
+        except (IndexError, KeyError):
+            canonical_filled = None
     if fills:
         for r in fills:
             total += 1
@@ -705,18 +726,31 @@ def _handler_trade_group_review(params: dict) -> dict:
                     except ValueError:
                         pass
 
+    # Prefer trades_filled column when populated; fall back to legacy counts.
+    effective_filled = canonical_filled if canonical_filled is not None else filled
     denom = intended_n if intended_n else total
-    fill_ratio = (filled / denom) if denom else 0.0
+    fill_ratio = (effective_filled / denom) if denom else 0.0
     parts.append("")
     parts.append("## Summary")
-    if intended_n is not None and intended_n != total:
+    if intended_n is not None and intended_n != effective_filled:
         parts.append(
-            f"- Filled: {filled}/{intended_n} intended  (positions row count {total}, ratio {fill_ratio:.0%})"
+            f"- Filled: {effective_filled}/{intended_n} intended  (positions row count {total}, ratio {fill_ratio:.0%})"
         )
     else:
-        parts.append(f"- Filled: {filled}/{denom}  (ratio {fill_ratio:.0%})")
+        parts.append(f"- Filled: {effective_filled}/{denom}  (ratio {fill_ratio:.0%})")
     parts.append(f"- Closed: {closed}")
     parts.append(f"- Realised PnL: ${realised_pnl:+.2f}")
+
+    # "Why partial fill" advisory line for closed groups with unfilled legs.
+    try:
+        group_status = group_row["status"] if group_row is not None else None
+    except (IndexError, KeyError):
+        group_status = None
+    if (intended_n is not None and effective_filled < intended_n
+            and (group_status or "").upper() in ("CLOSED", "CLOSED_ALL")):
+        parts.append(
+            "\n_Layered limit ladder: only the leading leg(s) filled; price did not retrace into upper ladder slots before the group closed (CHANNEL_CLOSE/TP1_HIT). This is normal limit-order behaviour on directional moves._"
+        )
 
     if schema_misses:
         parts.append("")

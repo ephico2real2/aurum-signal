@@ -206,6 +206,25 @@ LISTENER dispatches:
 
 Channel signals use **fixed lot sizing** by default (`AEGIS_LOT_MODE=fixed`). Set `AEGIS_LOT_MODE=risk_based` in `.env` to let AEGIS compute lots dynamically from balance, risk %, and SL distance instead. All AEGIS guards (H1 trend, R:R, drawdown) apply regardless of lot mode.
 
+#### Signal entry zone behaviour
+BRIDGE places `num_trades` pending Sell/Buy Limit orders across `[entry_low, entry_high]`. Fill rate depends entirely on how much of the zone price trades through:
+
+| Mode | Fill Rate | Avg Entry Quality | Best for |
+|---|---|---|---|
+| Limit spread across zone (default) | Low–Med | Best | Range / fakeout signals |
+| Limit clustered at zone edge       | Medium  | Good | Directional signals |
+| Market on signal arrival           | High    | Worst | Strong momentum |
+
+Config (`.env`):
+- `SIGNAL_ENTRY_TYPE=limit` (default) — layered pending limits across the zone.
+- `SIGNAL_ENTRY_TYPE=market` — collapse to MT5 mid on signal arrival; ignores zone width.
+- `SIGNAL_ENTRY_ZONE_CLUSTER=true` — cluster all legs within `SIGNAL_ENTRY_CLUSTER_PIPS` (default 2.0) of the directional zone edge (`entry_low` for SELL, `entry_high` for BUY).
+- `SIGNAL_ENTRY_CLUSTER_PIPS=2.0` — cluster band width.
+- `AEGIS_MAX_ENTRY_ZONE_PIPS=8` — advisory threshold; AEGIS logs `WIDE_ZONE` and appends to `warnings` when exceeded (see `docs/AEGIS.md` §10).
+- `AEGIS_ZONE_WIDTH_ACTION=warn|reject` — default `warn`; set to `reject` to hard-block wide zones with skip reason `AEGIS_REJECTED:WIDE_ZONE:<actual>>=<threshold>`.
+- `PENDING_CANCEL_ON_GROUP_CLOSE=true` (default) — BRIDGE writes FORGE `CANCEL_GROUP_PENDING` when group positions drain instead of letting unfilled limits idle until `PENDING_ORDER_TIMEOUT_SEC`.
+- `SIGNAL_TP1_CLOSE_PCT=` (optional override) — SIGNAL-source TP1 close-pct; falls back to base `TP1_CLOSE_PCT` (default 100) when unset. Same pattern as `AEGIS_SIGNAL_MIN_RR` / `AEGIS_SIGNAL_MIN_SL_PIPS`.
+
 #### SL / TP — always required for `OPEN_GROUP`
 
 Never queue an **OPEN_GROUP** without explicit risk and profit targets derived from **MT5 bid/ask/mid** and structure (not guesses):

@@ -276,7 +276,40 @@ Teach the model to pre-check the formulas in **§2 Guard 5–6** (see **SKILL.md
 
 ---
 
-## 10. Related docs
+## 10. Entry Zone Width Guard
+
+### `entry_zone_pips`
+`entry_zone_pips = abs(entry_high - entry_low)`. For a layered limit ladder, this is the spread that price must traverse for *all* legs to fill. Wide zones create fill-rate risk on directional moves — price hits the leading edge, runs to TP, and the upstream legs never fill.
+
+### Threshold + action
+| Env var                    | Default | Meaning |
+|----------------------------|---------|---------|
+| `AEGIS_MAX_ENTRY_ZONE_PIPS`| `8`     | Width above which the guard triggers (XAUUSD pips). |
+| `AEGIS_ZONE_WIDTH_ACTION`  | `warn`  | `warn` (advisory — logs WARNING + appends `WIDE_ZONE` to approval `warnings`); `reject` (hard block). |
+
+When `AEGIS_ZONE_WIDTH_ACTION=reject`, the skip reason takes the standard format:
+
+```
+AEGIS_REJECTED:WIDE_ZONE:<actual_pips>>=<threshold_pips>
+```
+
+(Same pattern as `AEGIS_REJECTED:LOW_RR:` / `AEGIS_REJECTED:SL_TOO_TIGHT:`.)
+
+### Scale × zone risk marker
+When AEGIS approves a signal where `scale_factor > 1.0` AND `entry_zone_pips > 5`, the approval log line appends `scale_zone_risk=true`:
+
+```
+AEGIS APPROVED: SELL 4×0.01lot SL=9.0p R:R=1.00 risk=$36.00 scale=150% (INCREASED (3 consecutive wins)) entry_zone_pips=10.0 scale_zone_risk=true warnings=WIDE_ZONE
+```
+
+This surfaces the risk that consecutive-win lot scaling deploys more capital across legs that may never fill, while the leg that *does* fill carries elevated size.
+
+### Pending cancel on group close (`PENDING_CANCEL_ON_GROUP_CLOSE`)
+Default `true`. When all of a group's positions drain (TP1_HIT, channel CLOSE, manual close) BRIDGE proactively writes `CANCEL_GROUP_PENDING` (existing FORGE action) for the group's magic, cancelling any unfilled limit orders instead of letting them sit until `PENDING_ORDER_TIMEOUT_SEC`. Set to `false` to preserve the legacy timeout-based cancel.
+
+---
+
+## 11. Related docs
 
 - [OPERATIONS.md](OPERATIONS.md) — restart services after `.env` changes  
 - [SETUP.md](SETUP.md) — first-time env and services  
