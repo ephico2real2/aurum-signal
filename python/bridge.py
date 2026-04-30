@@ -876,17 +876,30 @@ class Bridge:
                     _tlog("TRACKER", "SL_TP_MODIFIED", ", ".join(changes), group_id=self._known_positions[ticket].get("group_id"), ticket=ticket)
                     self._known_positions[ticket]["sl"] = live_sl
                     self._known_positions[ticket]["tp"] = live_tp
-                    # Update SCRIBE so dashboard/AURUM show correct levels
+                    # Update SCRIBE so dashboard/AURUM show correct levels.
+                    # Only the drifted ticket is updated — fanning out via
+                    # _sync_group_targets would collapse stage-scoped writes
+                    # (e.g. a TP2-only MODIFY) onto every leg. The optional
+                    # group SL mirror still moves group-wide because operator
+                    # intent for SL is conventionally protective for the whole
+                    # group, but tp1/tp2/tp3 columns are left untouched here.
                     try:
                         self.scribe.update_position_sl_tp(ticket, sl=live_sl, tp=live_tp)
                     except Exception as e:
                         log.debug("TRACKER: SCRIBE SL/TP update failed: %s", e)
                     gid = self._known_positions[ticket].get("group_id")
-                    self._sync_group_targets(
-                        gid,
-                        sl=live_sl if sl_changed else None,
-                        tp=live_tp if tp_changed else None,
-                    )
+                    if sl_changed and gid is not None:
+                        try:
+                            with self.scribe._conn() as _c:
+                                _c.execute(
+                                    "UPDATE trade_groups SET sl=? WHERE id=?",
+                                    (live_sl, int(gid)),
+                                )
+                        except Exception as _e:
+                            log.debug("TRACKER: group SL mirror tolerated: %s", _e)
+                        g = self._open_groups.get(int(gid))
+                        if isinstance(g, dict):
+                            g["sl"] = live_sl
                     # Log as system event for audit
                     self._bridge_activity(
                         "POSITION_MODIFIED",

@@ -492,3 +492,95 @@ def test_validate_forge_modify_rejects_bad_stage():
     }
     errs = validate_forge_command(cmd)
     assert any("tp_stage" in e for e in errs)
+
+
+# ── BRIDGE: TRACKER drift detector must NOT fan single-ticket TP
+#           drift across the whole group (would collapse stage-scoped
+#           MODIFYs the AURUM/MGMT path just wrote).
+
+
+@pytest.mark.unit
+def test_tracker_tp_drift_only_updates_drifted_ticket(tmp_path, monkeypatch):
+    import bridge as bm
+
+    s = _fresh_scribe(tmp_path)
+    gid = s.log_trade_group(
+        {"direction": "BUY", "entry_low": 100, "entry_high": 100, "sl": 99,
+         "tp1": 101, "tp2": 105, "tp3": None, "num_trades": 2,
+         "lot_per_trade": 0.01, "source": "SIGNAL"},
+        "SIGNAL",
+    )
+    s.update_trade_group_magic(gid, 202416)
+    s.log_trade_position(
+        gid,
+        {"ticket": 1001, "magic": 202416, "direction": "BUY", "lot_size": 0.01,
+         "entry_price": 100, "sl": 99, "tp": 101, "tp_stage": 1},
+        "SIGNAL",
+    )
+    s.log_trade_position(
+        gid,
+        {"ticket": 1002, "magic": 202416, "direction": "BUY", "lot_size": 0.01,
+         "entry_price": 100, "sl": 99, "tp": 105, "tp_stage": 2},
+        "SIGNAL",
+    )
+
+    # Build a BRIDGE-like stub that uses the real _sync_positions code path.
+    stub = MagicMock()
+    stub.scribe = s
+    stub._open_groups = {gid: {"id": gid, "magic_number": 202416,
+                                 "sl": 99.0, "tp1": 101.0, "tp2": 105.0}}
+    stub._tracker_seeded = True
+    stub._effective_mode = lambda: "SIGNAL"
+    stub._resolve_group_for_magic = lambda m: gid if m == 202416 else None
+    stub._bridge_activity = MagicMock()
+    stub._sync_group_targets = MagicMock()  # must NOT be called
+    stub._sync_all_open_group_targets = MagicMock()
+    stub.herald = MagicMock()
+    stub._known_positions = {
+        1001: {"group_id": gid, "magic": 202416, "direction": "BUY",
+               "open_price": 100.0, "last_profit": 0.0,
+               "current_price": 100.0, "lot_size": 0.01,
+               "sl": 99.0, "tp": 101.0, "symbol": "XAUUSD"},
+        1002: {"group_id": gid, "magic": 202416, "direction": "BUY",
+               "open_price": 100.0, "last_profit": 0.0,
+               "current_price": 100.0, "lot_size": 0.01,
+               "sl": 99.0, "tp": 105.0, "symbol": "XAUUSD"},
+    }
+    stub._known_unmanaged_positions = {}
+    stub._known_pendings = {}
+
+    # Live MT5 view: only the TP2 leg (#1002) drifted from 105 -> 110.
+    mt5 = {
+        "open_positions": [
+            {"ticket": 1001, "symbol": "XAUUSD", "type": "BUY", "lots": 0.01,
+             "open_price": 100.0, "current_price": 100.0,
+             "sl": 99.0, "tp": 101.0, "profit": 0.0, "magic": 202416,
+             "forge_managed": True, "comment": "FORGE|G1|0|TP1"},
+            {"ticket": 1002, "symbol": "XAUUSD", "type": "BUY", "lots": 0.01,
+             "open_price": 100.0, "current_price": 100.0,
+             "sl": 99.0, "tp": 110.0, "profit": 0.0, "magic": 202416,
+             "forge_managed": True, "comment": "FORGE|G1|1|TP2"},
+        ],
+        "pending_orders": [],
+    }
+
+    bm.Bridge._sync_positions(stub, mt5)
+
+    # The drifted leg's row reflects the new TP. The other stage row is untouched.
+    rows = {r["ticket"]: r for r in s.query(
+        "SELECT ticket, sl, tp, tp_stage FROM trade_positions WHERE trade_group_id=? AND status='OPEN'",
+        (gid,),
+    )}
+    assert rows[1001]["tp"] == pytest.approx(101.0)  # TP1 leg untouched
+    assert rows[1001]["tp_stage"] == 1
+    assert rows[1002]["tp"] == pytest.approx(110.0)  # drifted leg updated
+    assert rows[1002]["tp_stage"] == 2
+
+    # trade_groups.tp1/tp2/tp3 must NOT collapse onto the drifted ticket's TP.
+    grp = s.query("SELECT sl, tp1, tp2 FROM trade_groups WHERE id=?", (gid,))[0]
+    assert grp["tp1"] == pytest.approx(101.0)
+    assert grp["tp2"] == pytest.approx(105.0)
+
+    # Whole-group fan-out helper must NOT have been invoked for TP drift alone.
+    stub._sync_group_targets.assert_not_called()
+    stub._sync_all_open_group_targets.assert_not_called()
