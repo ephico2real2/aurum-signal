@@ -726,8 +726,10 @@ def _handler_trade_group_review(params: dict) -> dict:
                     except ValueError:
                         pass
 
-    # Prefer trades_filled column when populated; fall back to legacy counts.
-    effective_filled = canonical_filled if canonical_filled is not None else filled
+    # Prefer the larger of trades_filled (canonical, populated forward) and the
+    # legacy positions-derived count, so historical groups (pre-migration where
+    # trades_filled defaults to 0) still report accurately.
+    effective_filled = max(int(canonical_filled or 0), int(filled or 0))
     denom = intended_n if intended_n else total
     fill_ratio = (effective_filled / denom) if denom else 0.0
     parts.append("")
