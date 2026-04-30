@@ -1248,6 +1248,7 @@ class Aurum:
             "MODIFY_TP", "MODIFY_SL", "CLOSE_GROUP", "CLOSE_GROUP_PCT",
             "MOVE_BE", "CLOSE_PROFITABLE", "CLOSE_LOSING",
             "SENTINEL_OVERRIDE", "SCRIBE_QUERY", "SHELL_EXEC", "AURUM_EXEC",
+            "ANALYSIS_RUN",
         )
         commands_found: list[dict] = []
         for i in range(1, len(chunks), 2):
