@@ -137,6 +137,21 @@ if SIGNAL_ENTRY_TYPE not in ("limit", "market"):
 SIGNAL_ENTRY_ZONE_CLUSTER  = os.environ.get("SIGNAL_ENTRY_ZONE_CLUSTER", "false").strip().lower() in ("1", "true", "yes", "on")
 SIGNAL_ENTRY_CLUSTER_PIPS  = float(os.environ.get("SIGNAL_ENTRY_CLUSTER_PIPS", "2.0"))
 PENDING_CANCEL_ON_GROUP_CLOSE = os.environ.get("PENDING_CANCEL_ON_GROUP_CLOSE", "true").strip().lower() in ("1", "true", "yes", "on")
+# Profit-ratchet: lock SL to entry+lock_pips once a leg is in profit by trigger_pips.
+# Opt-in (default false) so existing groups behave exactly as before unless the
+# operator explicitly enables it. See docs/CLI_API_CHEATSHEET.md § "Profit ratchet".
+PROFIT_RATCHET_ENABLED = os.environ.get("PROFIT_RATCHET_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+try:
+    PROFIT_RATCHET_TRIGGER_PIPS = float(os.environ.get("PROFIT_RATCHET_TRIGGER_PIPS", "3"))
+except (TypeError, ValueError):
+    PROFIT_RATCHET_TRIGGER_PIPS = 3.0
+try:
+    PROFIT_RATCHET_LOCK_PIPS = float(os.environ.get("PROFIT_RATCHET_LOCK_PIPS", "1"))
+except (TypeError, ValueError):
+    PROFIT_RATCHET_LOCK_PIPS = 1.0
+if PROFIT_RATCHET_TRIGGER_PIPS <= PROFIT_RATCHET_LOCK_PIPS:
+    # The trigger must exceed the lock or the move is meaningless.
+    PROFIT_RATCHET_LOCK_PIPS = max(0.0, PROFIT_RATCHET_TRIGGER_PIPS - 1.0)
 # Optional SIGNAL-source override of TP1_CLOSE_PCT (mirrors AEGIS_SIGNAL_MIN_RR pattern)
 _SIG_TP1_RAW = os.environ.get("SIGNAL_TP1_CLOSE_PCT", "").strip()
 try:
@@ -626,6 +641,9 @@ class Bridge:
         self._known_unmanaged_positions: dict[int, dict] = {}   # ticket → snapshot (manual/non-FORGE)
         self._known_pendings:  dict[int, dict] = {}   # ticket → snapshot
         self._tracker_seeded = False
+        # Profit-ratchet bookkeeping: tickets we've already nudged so we don't
+        # spam FORGE with the same MODIFY_SL every tick.
+        self._profit_ratcheted: set[int] = set()
         # Session tracking
         self._current_session    = "OFF_HOURS"
         self._current_session_id = None    # SCRIBE trading_sessions row id
@@ -1181,6 +1199,10 @@ class Bridge:
         groups_touched: dict[int, list] = {}  # gid → [pnl, ...]
         for ticket in closed_tickets:
             snap = self._known_positions.pop(ticket)
+            try:
+                self._profit_ratcheted.discard(int(ticket))
+            except AttributeError:
+                pass  # tolerated for stubs without the bookkeeping set
             gid = snap["group_id"]
             pnl = snap.get("last_profit", 0)
             close_price = snap.get("current_price") or 0
@@ -1486,6 +1508,101 @@ class Bridge:
                         round(total_pnl, 2), round(total_pips, 1), "ALL_CLOSED")
                 except Exception as _he:
                     log.debug("TRACKER herald error: %s", _he)
+
+        # ── Profit ratchet: lock SL once a leg is N pips green ──
+        # Runs after fills/closes are reconciled so we only ratchet on legs
+        # that are still live this tick. Opt-in via PROFIT_RATCHET_ENABLED.
+        if PROFIT_RATCHET_ENABLED:
+            self._apply_profit_ratchet(live_positions)
+
+    def _apply_profit_ratchet(self, live_positions: dict[int, dict]) -> None:
+        """For every FORGE-managed live position whose unrealised pip gain is
+        ≥ PROFIT_RATCHET_TRIGGER_PIPS and whose current SL is still worse than
+        ``entry ± PROFIT_RATCHET_LOCK_PIPS``, emit a per-ticket MODIFY_SL to
+        FORGE so any retracement closes at a small profit instead of giving
+        the move back. Idempotent via ``_profit_ratcheted`` set.
+        """
+        trigger = float(PROFIT_RATCHET_TRIGGER_PIPS)
+        lock = float(PROFIT_RATCHET_LOCK_PIPS)
+        if trigger <= 0:
+            return
+        for ticket, p in live_positions.items():
+            if ticket in self._profit_ratcheted:
+                continue
+            direction = (p.get("type") or "").upper()
+            if direction not in ("BUY", "SELL"):
+                continue
+            try:
+                open_price = float(p.get("open_price") or 0)
+                cur_price = float(p.get("current_price") or 0)
+                live_sl = float(p.get("sl") or 0)
+            except (TypeError, ValueError):
+                continue
+            if open_price <= 0 or cur_price <= 0:
+                continue
+            symbol = p.get("symbol")
+            pip_size = _pip_size_for_symbol(symbol, open_price, cur_price)
+            if pip_size <= 0:
+                continue
+            pips = _calc_pips(symbol, direction, open_price, cur_price)
+            if pips < trigger:
+                continue
+            if direction == "BUY":
+                target_sl = round(open_price + lock * pip_size, 5)
+                already_locked = live_sl > 0 and live_sl >= target_sl - 1e-6
+            else:
+                target_sl = round(open_price - lock * pip_size, 5)
+                already_locked = live_sl > 0 and live_sl <= target_sl + 1e-6
+            if already_locked:
+                # Stop already past the lock target (e.g. FORGE moved BE on TP1)
+                # — nothing to do; mark to avoid re-checking each tick.
+                self._profit_ratcheted.add(int(ticket))
+                continue
+            magic = int(p.get("magic") or 0)
+            gid = self._known_positions.get(int(ticket), {}).get("group_id")
+            forge_cmd = {
+                "action": "MODIFY_SL",
+                "sl": target_sl,
+                "ticket": int(ticket),
+                "timestamp": _now(),
+            }
+            if magic > 0:
+                forge_cmd["magic"] = magic
+            try:
+                _write_forge_command(forge_cmd)
+            except Exception as e:
+                log.debug("BRIDGE: profit-ratchet write failed for #%s: %s", ticket, e)
+                continue
+            try:
+                self._sync_modify_targets(
+                    gid, sl=target_sl, tp=None, ticket=int(ticket), tp_stage=None,
+                )
+            except Exception as e:
+                log.debug("BRIDGE: profit-ratchet SCRIBE sync tolerated: %s", e)
+            self._profit_ratcheted.add(int(ticket))
+            self._known_positions.setdefault(int(ticket), {})["sl"] = target_sl
+            _tlog(
+                "TRACKER", "PROFIT_RATCHET",
+                f"{direction} {pips:+.1f}pips → SL locked at {target_sl} (entry {open_price})",
+                group_id=gid, ticket=ticket,
+            )
+            self._bridge_activity(
+                "PROFIT_RATCHET",
+                reason=f"{pips:+.1f}p ≥ {trigger:.1f}p trigger",
+                notes=json.dumps({
+                    "ticket": int(ticket), "group_id": gid,
+                    "open_price": open_price, "new_sl": target_sl,
+                    "trigger_pips": trigger, "lock_pips": lock,
+                }, default=str),
+            )
+            try:
+                self.herald.send(
+                    f"🛡️ <b>PROFIT LOCKED</b> — G{gid} #{ticket}\n"
+                    f"{direction} +{pips:.1f}p → SL moved to <code>{target_sl}</code> "
+                    f"({lock:+.1f}p from entry)"
+                )
+            except Exception as _he:
+                log.debug("TRACKER profit-ratchet herald error: %s", _he)
 
     def _sync_open_groups_from_scribe(self):
         """Reload BRIDGE's open-group map from SCRIBE so ATHENA/reconciler stay aligned."""

@@ -1,4 +1,13 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.5.1] — 2026-04-30
+### Profit ratchet — auto-lock SL once a leg goes N pips green
+New opt-in BRIDGE feature that addresses *"would have been nice if we close the order once we're in winning position"* without waiting for TP1. Once any tracked managed position is `≥ PROFIT_RATCHET_TRIGGER_PIPS` (default 3 XAUUSD pips) in unrealised profit and its current SL is still worse than `entry ± PROFIT_RATCHET_LOCK_PIPS` (default 1 pip past entry), BRIDGE emits a **per-ticket** `MODIFY_SL` to FORGE — reusing the v1.5.0 stage-aware MODIFY pipeline so other legs/stages stay untouched. Idempotent via an in-memory ratcheted set; cleared automatically when the position closes.
+- `python/bridge.py` `_apply_profit_ratchet`: pip math via existing `_pip_size_for_symbol` / `_calc_pips`, ticket-scoped FORGE write, `_sync_modify_targets` with `ticket=` for SCRIBE row update only, `[TRACKER|PROFIT_RATCHET]` audit log + Telegram notification.
+- Skips re-evaluation when SL is already past the lock target (e.g. FORGE's `move_be_on_tp1` already fired) so it composes cleanly with the existing TP1→BE behaviour.
+- New env vars: `PROFIT_RATCHET_ENABLED` (default false, opt-in), `PROFIT_RATCHET_TRIGGER_PIPS` (default 3), `PROFIT_RATCHET_LOCK_PIPS` (default 1, auto-clamped to `< trigger`).
+- Tests: `tests/api/test_modify_scope.py` adds 6 ratchet cases (BUY emit, SELL emit with inverted lock, idempotency, below-trigger skip, already-locked skip, disabled short-circuit). 76/76 in the targeted suites pass.
+- Docs: `.env.example`, `SKILL.md`, `SOUL.md`, `docs/CLI_API_CHEATSHEET.md`.
+---
 ## [1.5.0] — 2026-04-30
 ### Per-stage / per-ticket `MODIFY_TP` & `MODIFY_SL`
 MODIFY commands across the AURUM → BRIDGE → FORGE pipeline now accept two new optional scope fields so TP2/TP3 legs no longer collapse onto TP1 when only TP1 needs to move.

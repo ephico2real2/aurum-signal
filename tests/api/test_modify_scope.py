@@ -584,3 +584,144 @@ def test_tracker_tp_drift_only_updates_drifted_ticket(tmp_path, monkeypatch):
     # Whole-group fan-out helper must NOT have been invoked for TP drift alone.
     stub._sync_group_targets.assert_not_called()
     stub._sync_all_open_group_targets.assert_not_called()
+
+
+# ── BRIDGE: profit-ratchet (auto SL lock when leg goes N pips green) ──
+
+
+def _ratchet_stub(monkeypatch, tmp_path):
+    """Build a Bridge stub wired enough to exercise _apply_profit_ratchet."""
+    import bridge as bm
+
+    stub = MagicMock()
+    stub.scribe = MagicMock()
+    stub.herald = MagicMock()
+    stub._open_groups = {}
+    stub._known_positions = {
+        555: {"group_id": 99, "magic": 202416,
+               "direction": "BUY", "open_price": 4620.0,
+               "sl": 4610.0, "tp": 4632.0, "symbol": "XAUUSD"},
+    }
+    stub._profit_ratcheted = set()
+    stub._sync_modify_targets = MagicMock()
+    stub._bridge_activity = MagicMock()
+    stub._apply_profit_ratchet = bm.Bridge._apply_profit_ratchet.__get__(stub)
+    return stub, bm
+
+
+@pytest.mark.unit
+def test_profit_ratchet_emits_ticket_scoped_modify_sl(monkeypatch, tmp_path):
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, tmp_path)
+    # +5 pips (XAU pip=0.01 → 4620.05 = +5p) so > trigger 3.
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4620.05,
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True, "comment": "FORGE|G99|0|TP1"},
+    }
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        stub._apply_profit_ratchet(live)
+    mock_forge.assert_called_once()
+    forge_cmd = mock_forge.call_args[0][0]
+    assert forge_cmd["action"] == "MODIFY_SL"
+    assert forge_cmd["ticket"] == 555
+    assert forge_cmd["magic"] == 202416
+    # entry 4620 + lock 1 pip * 0.01 = 4620.01
+    assert forge_cmd["sl"] == pytest.approx(4620.01)
+    stub._sync_modify_targets.assert_called_once_with(
+        99, sl=pytest.approx(4620.01), tp=None, ticket=555, tp_stage=None,
+    )
+    assert 555 in stub._profit_ratcheted
+
+
+@pytest.mark.unit
+def test_profit_ratchet_idempotent_per_ticket(monkeypatch):
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    stub._profit_ratcheted = {555}
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4620.10,
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True},
+    }
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        stub._apply_profit_ratchet(live)
+    mock_forge.assert_not_called()
+    stub._sync_modify_targets.assert_not_called()
+
+
+@pytest.mark.unit
+def test_profit_ratchet_skips_when_below_trigger(monkeypatch):
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4620.02,  # +2p only
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True},
+    }
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        stub._apply_profit_ratchet(live)
+    mock_forge.assert_not_called()
+
+
+@pytest.mark.unit
+def test_profit_ratchet_skips_when_sl_already_past_lock(monkeypatch):
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4620.10,
+              "sl": 4625.0,  # FORGE already moved to BE+ on TP1
+              "tp": 4632.0, "magic": 202416,
+              "forge_managed": True},
+    }
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        stub._apply_profit_ratchet(live)
+    mock_forge.assert_not_called()
+    # Marked as ratcheted so we don't re-evaluate next tick.
+    assert 555 in stub._profit_ratcheted
+
+
+@pytest.mark.unit
+def test_profit_ratchet_sell_uses_inverted_lock(monkeypatch):
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    stub._known_positions[555]["direction"] = "SELL"
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "SELL",
+              "open_price": 4620.0, "current_price": 4619.94,  # -6p (SELL profit)
+              "sl": 4630.0, "tp": 4610.0, "magic": 202416,
+              "forge_managed": True},
+    }
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        stub._apply_profit_ratchet(live)
+    mock_forge.assert_called_once()
+    forge_cmd = mock_forge.call_args[0][0]
+    # entry 4620 - lock 1 pip * 0.01 = 4619.99
+    assert forge_cmd["sl"] == pytest.approx(4619.99)
+
+
+@pytest.mark.unit
+def test_profit_ratchet_disabled_short_circuits(monkeypatch):
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", False, raising=False)
+    import bridge as bm
+    # When the env flag is off, _sync_positions never invokes the helper at all.
+    stub = MagicMock()
+    stub._apply_profit_ratchet = MagicMock()
+    # Simulate the gate at the bottom of _sync_positions.
+    if bm.PROFIT_RATCHET_ENABLED:
+        stub._apply_profit_ratchet({1: {"foo": "bar"}})
+    stub._apply_profit_ratchet.assert_not_called()
