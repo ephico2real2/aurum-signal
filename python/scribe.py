@@ -5,7 +5,7 @@ Build order: #1 — no dependencies, pure Python stdlib.
 Every component imports and calls Scribe.  All records carry mode + timestamp.
 """
 
-import sqlite3, os, json, logging
+import sqlite3, os, json, logging, re
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import contextmanager
@@ -727,16 +727,137 @@ class Scribe:
                  group_id))
 
     def log_trade_position(self, group_id: int, data: dict, mode: str) -> int:
+        """Insert a new trade_positions row.
+
+        Optional ``data['tp_stage']`` (1/2/3) records which take-profit stage
+        the leg targets at OPEN time so AURUM can introspect multi-leg groups
+        before issuing scoped MODIFY commands. Tolerated on legacy rows that
+        do not yet know their stage (column already defaults to NULL).
+        """
+        stage_val = data.get("tp_stage")
+        try:
+            stage_int = int(stage_val) if stage_val is not None else None
+        except (TypeError, ValueError):
+            stage_int = None
+        if stage_int is not None and stage_int not in (1, 2, 3):
+            stage_int = None
         with self._conn() as c:
             cur = c.execute("""INSERT INTO trade_positions
                 (trade_group_id,timestamp,mode,ticket,magic_number,
-                 direction,lot_size,entry_price,sl,tp)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 direction,lot_size,entry_price,sl,tp,tp_stage)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (group_id, self._now(), mode,
                  data.get("ticket"), data.get("magic"),
                  data.get("direction"), data.get("lot_size"),
-                 data.get("entry_price"), data.get("sl"), data.get("tp")))
+                 data.get("entry_price"), data.get("sl"), data.get("tp"),
+                 stage_int))
             return cur.lastrowid
+
+    def backfill_tp_stage_from_comment(self, ticket: int, comment: str) -> int | None:
+        """Parse ``|TP<n>`` out of a FORGE position/order comment and persist
+        it on the matching trade_positions row only when the column is NULL.
+
+        Returns the stage written (1/2/3) or None when nothing was changed.
+        Comment grammar: ``FORGE|G<group_id>|<leg_index>|TP<stage>``.
+        """
+        if not ticket or not comment:
+            return None
+        m = re.search(r"\|TP(\d+)", str(comment))
+        if not m:
+            return None
+        try:
+            stage = int(m.group(1))
+        except (TypeError, ValueError):
+            return None
+        if stage not in (1, 2, 3):
+            return None
+        try:
+            with self._conn() as c:
+                cur = c.execute(
+                    """UPDATE trade_positions
+                       SET tp_stage=?
+                       WHERE ticket=? AND tp_stage IS NULL""",
+                    (stage, int(ticket)),
+                )
+                if cur.rowcount > 0:
+                    return stage
+        except sqlite3.OperationalError as e:
+            log.debug("SCRIBE backfill_tp_stage_from_comment tolerated: %s", e)
+        return None
+
+    def update_positions_sl_tp_by_stage(self, group_id: int, tp_stage: int,
+                                         sl: float | None = None,
+                                         tp: float | None = None) -> int:
+        """Update SL/TP only on OPEN positions of ``group_id`` whose tp_stage
+        matches. Also nudges the corresponding ``trade_groups.tp<n>`` column
+        when ``tp`` is provided (so dashboards reflect the per-stage change).
+
+        Returns the number of trade_positions rows updated. Tolerates legacy
+        DBs missing optional columns.
+        """
+        if tp_stage not in (1, 2, 3):
+            return 0
+        if sl is None and tp is None:
+            return 0
+        affected = 0
+        try:
+            with self._conn() as c:
+                if sl is not None and tp is not None:
+                    cur = c.execute(
+                        "UPDATE trade_positions SET sl=?, tp=? "
+                        "WHERE trade_group_id=? AND tp_stage=? AND status='OPEN'",
+                        (sl, tp, group_id, tp_stage),
+                    )
+                elif sl is not None:
+                    cur = c.execute(
+                        "UPDATE trade_positions SET sl=? "
+                        "WHERE trade_group_id=? AND tp_stage=? AND status='OPEN'",
+                        (sl, group_id, tp_stage),
+                    )
+                else:
+                    cur = c.execute(
+                        "UPDATE trade_positions SET tp=? "
+                        "WHERE trade_group_id=? AND tp_stage=? AND status='OPEN'",
+                        (tp, group_id, tp_stage),
+                    )
+                affected = cur.rowcount or 0
+                # Stage-aware group-level mirror:
+                #   * trade_positions SL/TP are both bounded by tp_stage above
+                #     (mirrors FORGE which only modifies positions whose comment
+                #     matches |TP<stage>).
+                #   * trade_groups.tp<n> only moves for the targeted stage so
+                #     the dashboard does not collapse other stages onto it.
+                #   * trade_groups.sl moves group-wide because the operator's
+                #     intent is "protect every leg with this SL" — same as a
+                #     standard MOVE_BE.
+                if tp is not None:
+                    col = f"tp{int(tp_stage)}"
+                    c.execute(
+                        f"UPDATE trade_groups SET {col}=? WHERE id=?",
+                        (tp, group_id),
+                    )
+                if sl is not None:
+                    c.execute(
+                        "UPDATE trade_groups SET sl=? WHERE id=?",
+                        (sl, group_id),
+                    )
+        except sqlite3.OperationalError as e:
+            log.debug("SCRIBE update_positions_sl_tp_by_stage tolerated: %s", e)
+        return affected
+
+    def get_open_positions_with_stage(self, group_id: int) -> list[dict]:
+        """Return OPEN positions for a group with stage info — the canonical
+        AURUM helper for picking the right MODIFY scope."""
+        with self._conn() as c:
+            rows = c.execute(
+                """SELECT id, ticket, direction, entry_price, sl, tp, tp_stage,
+                          lot_size, status
+                   FROM trade_positions
+                   WHERE trade_group_id=? AND status='OPEN'
+                   ORDER BY id ASC""",
+                (int(group_id),),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def update_position_sl_tp(self, ticket: int, sl: float = None, tp: float = None):
         """Update SL/TP on an open position (manual MT5 modification detected by tracker)."""

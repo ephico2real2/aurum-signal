@@ -130,6 +130,9 @@ BRIDGE can block `SHELL_EXEC` by command origin via `AEB_SHELL_EXEC_BLOCKED_SOUR
 `MT5/command.json` modify semantics (runtime behavior):
 - `{"action":"MODIFY_SL","sl":...}` or `{"action":"MODIFY_TP","tp":...}` without `magic` applies globally to EA-managed exposure.
 - When BRIDGE resolves a `group_id`, it writes `magic` into modify commands; FORGE applies the change only to that group's positions/pending orders.
+- Optional `ticket` (positive integer) scopes the modification to **one** position or pending. FORGE validates by ticket equality and ignores `magic` mismatches.
+- Optional `tp_stage` (`1`, `2`, or `3`) restricts the modification to legs whose FORGE comment matches `|TP<stage>` (the per-leg metadata FORGE writes in `PlaceOpenGroupLeg`). When set together with `magic`, both filters apply (logical AND). Use `tp_stage` to move TP1 without collapsing TP2/TP3 onto it.
+- `MT5/market_data.json` `open_positions[]` now includes a `comment` string (FORGE v1.5.0+) with the same grammar (`FORGE|G<id>|<leg_index>|TP<stage>`); BRIDGE parses it to backfill `trade_positions.tp_stage` at fill time so AURUM can introspect leg stages before issuing a scoped MODIFY.
 
 **Copy-paste shapes (minimal valid examples):**
 

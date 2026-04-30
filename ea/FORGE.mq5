@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor v1.4.1            |
+//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor v1.5.0            |
 //|  Signal System  — XAUUSD Scalper + Native Price Action          |
 //|  Build order: #2 — independent of Python, compiled in MT5       |
 //+------------------------------------------------------------------+
@@ -26,8 +26,12 @@
 //    CLOSE_PROFITABLE— close only positions in profit
 //    CLOSE_LOSING    — close only positions in loss
 //    MOVE_BE_ALL     — move all SL to breakeven
-//    MODIFY_SL       — change SL on all positions + pendings to price
-//    MODIFY_TP       — change TP on all positions + pendings to price
+//    MODIFY_SL       — change SL; optional fields:
+//                       magic     → scope to a single group (existing)
+//                       ticket    → scope to ONE position/pending ticket
+//                       tp_stage  → scope to legs whose comment matches |TP<n> (1/2/3)
+//    MODIFY_TP       — change TP; same optional scope fields as MODIFY_SL
+//                      (omit ticket+tp_stage for legacy whole-magic behaviour)
 //
 //  MARKET DATA OUTPUT (every 3s via OnTimer):
 //    - price: bid/ask/spread
@@ -847,24 +851,40 @@ void ExecuteCloseLosing() {
 }
 
 //+------------------------------------------------------------------+
-//| Modify SL on all EA positions to a specific price                  |
+//| Stage-comment matcher: returns true if comment contains "|TP<n>"   |
+//+------------------------------------------------------------------+
+bool CommentMatchesStage(const string comment, const int stage) {
+   if(stage <= 0) return true;  // stage filter disabled
+   string needle = "|TP" + IntegerToString(stage);
+   return (StringFind(comment, needle) >= 0);
+}
+
+//+------------------------------------------------------------------+
+//| Modify SL — optional ticket / tp_stage scope (see header docs)     |
 //+------------------------------------------------------------------+
 void ExecuteModifySL(const string &json) {
    double new_sl = JsonGetDouble(json, "sl");
    if(new_sl <= 0) { Print("FORGE: MODIFY_SL aborted — invalid sl"); return; }
-   int target_magic = (int)JsonGetDouble(json, "magic");
-   bool scoped = (target_magic > 0);
+   int target_magic   = (int)JsonGetDouble(json, "magic");
+   ulong target_ticket = (ulong)JsonGetDouble(json, "ticket");
+   int target_stage   = (int)JsonGetDouble(json, "tp_stage");
+   bool scoped_magic  = (target_magic > 0);
+   bool scoped_ticket = (target_ticket > 0);
+   bool scoped_stage  = (target_stage >= 1 && target_stage <= 3);
    int modified = 0;
    int pending_modified = 0;
    for(int i = 0; i < PositionsTotal(); i++) {
-      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
-         int pm = (int)g_pos.Magic();
-         bool in_scope = scoped ? (pm == target_magic) : (pm >= MagicNumber && pm < MagicNumber + 10000);
-         if(in_scope) {
-            if(g_trade.PositionModify(g_pos.Ticket(), NormalizeDouble(new_sl, _Digits), g_pos.TakeProfit()))
-               modified++;
-         }
-      }
+      if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol) continue;
+      ulong tk = g_pos.Ticket();
+      int pm = (int)g_pos.Magic();
+      bool in_scope = scoped_magic
+                       ? (pm == target_magic)
+                       : (pm >= MagicNumber && pm < MagicNumber + 10000);
+      if(scoped_ticket && tk != target_ticket) in_scope = false;
+      if(scoped_stage && !CommentMatchesStage(g_pos.Comment(), target_stage)) in_scope = false;
+      if(!in_scope) continue;
+      if(g_trade.PositionModify(tk, NormalizeDouble(new_sl, _Digits), g_pos.TakeProfit()))
+         modified++;
    }
    // Also modify pending orders
    for(int i = OrdersTotal()-1; i >= 0; i--) {
@@ -872,43 +892,52 @@ void ExecuteModifySL(const string &json) {
       if(ot == 0 || !OrderSelect(ot)) continue;
       if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
       long om = OrderGetInteger(ORDER_MAGIC);
-      bool in_scope = scoped ? ((int)om == target_magic) : (om >= MagicNumber && om < MagicNumber + 10000);
-      if(in_scope) {
-         if(g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
-            NormalizeDouble(new_sl, _Digits), OrderGetDouble(ORDER_TP),
-            ORDER_TIME_GTC, 0)) {
-            pending_modified++;
-         }
+      bool in_scope = scoped_magic
+                       ? ((int)om == target_magic)
+                       : (om >= MagicNumber && om < MagicNumber + 10000);
+      if(scoped_ticket && ot != target_ticket) in_scope = false;
+      if(scoped_stage && !CommentMatchesStage(OrderGetString(ORDER_COMMENT), target_stage)) in_scope = false;
+      if(!in_scope) continue;
+      if(g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
+         NormalizeDouble(new_sl, _Digits), OrderGetDouble(ORDER_TP),
+         ORDER_TIME_GTC, 0)) {
+         pending_modified++;
       }
    }
-   if(scoped) {
-      Print("FORGE: MODIFY_SL magic=", target_magic, " to ", DoubleToString(new_sl, _Digits),
-            " — ", modified, " positions, ", pending_modified, " pending modified");
-   } else {
-      Print("FORGE: MODIFY_SL to ", DoubleToString(new_sl, _Digits),
-            " — ", modified, " positions, ", pending_modified, " pending modified");
-   }
+   string scope_tag = "";
+   if(scoped_ticket) scope_tag += " ticket=" + IntegerToString((long)target_ticket);
+   if(scoped_stage)  scope_tag += " stage=TP" + IntegerToString(target_stage);
+   if(scoped_magic)  scope_tag += " magic=" + IntegerToString(target_magic);
+   Print("FORGE: MODIFY_SL", scope_tag, " to ", DoubleToString(new_sl, _Digits),
+         " — ", modified, " positions, ", pending_modified, " pending modified");
 }
 
 //+------------------------------------------------------------------+
-//| Modify TP on all EA positions to a specific price                  |
+//| Modify TP — optional ticket / tp_stage scope (see header docs)     |
 //+------------------------------------------------------------------+
 void ExecuteModifyTP(const string &json) {
    double new_tp = JsonGetDouble(json, "tp");
    if(new_tp <= 0) { Print("FORGE: MODIFY_TP aborted — invalid tp"); return; }
-   int target_magic = (int)JsonGetDouble(json, "magic");
-   bool scoped = (target_magic > 0);
+   int target_magic   = (int)JsonGetDouble(json, "magic");
+   ulong target_ticket = (ulong)JsonGetDouble(json, "ticket");
+   int target_stage   = (int)JsonGetDouble(json, "tp_stage");
+   bool scoped_magic  = (target_magic > 0);
+   bool scoped_ticket = (target_ticket > 0);
+   bool scoped_stage  = (target_stage >= 1 && target_stage <= 3);
    int modified = 0;
    int pending_modified = 0;
    for(int i = 0; i < PositionsTotal(); i++) {
-      if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
-         int pm = (int)g_pos.Magic();
-         bool in_scope = scoped ? (pm == target_magic) : (pm >= MagicNumber && pm < MagicNumber + 10000);
-         if(in_scope) {
-            if(g_trade.PositionModify(g_pos.Ticket(), g_pos.StopLoss(), NormalizeDouble(new_tp, _Digits)))
-               modified++;
-         }
-      }
+      if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol) continue;
+      ulong tk = g_pos.Ticket();
+      int pm = (int)g_pos.Magic();
+      bool in_scope = scoped_magic
+                       ? (pm == target_magic)
+                       : (pm >= MagicNumber && pm < MagicNumber + 10000);
+      if(scoped_ticket && tk != target_ticket) in_scope = false;
+      if(scoped_stage && !CommentMatchesStage(g_pos.Comment(), target_stage)) in_scope = false;
+      if(!in_scope) continue;
+      if(g_trade.PositionModify(tk, g_pos.StopLoss(), NormalizeDouble(new_tp, _Digits)))
+         modified++;
    }
    // Also modify pending orders
    for(int i = OrdersTotal()-1; i >= 0; i--) {
@@ -916,22 +945,24 @@ void ExecuteModifyTP(const string &json) {
       if(ot == 0 || !OrderSelect(ot)) continue;
       if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
       long om = OrderGetInteger(ORDER_MAGIC);
-      bool in_scope = scoped ? ((int)om == target_magic) : (om >= MagicNumber && om < MagicNumber + 10000);
-      if(in_scope) {
-         if(g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
-            OrderGetDouble(ORDER_SL), NormalizeDouble(new_tp, _Digits),
-            ORDER_TIME_GTC, 0)) {
-            pending_modified++;
-         }
+      bool in_scope = scoped_magic
+                       ? ((int)om == target_magic)
+                       : (om >= MagicNumber && om < MagicNumber + 10000);
+      if(scoped_ticket && ot != target_ticket) in_scope = false;
+      if(scoped_stage && !CommentMatchesStage(OrderGetString(ORDER_COMMENT), target_stage)) in_scope = false;
+      if(!in_scope) continue;
+      if(g_trade.OrderModify(ot, OrderGetDouble(ORDER_PRICE_OPEN),
+         OrderGetDouble(ORDER_SL), NormalizeDouble(new_tp, _Digits),
+         ORDER_TIME_GTC, 0)) {
+         pending_modified++;
       }
    }
-   if(scoped) {
-      Print("FORGE: MODIFY_TP magic=", target_magic, " to ", DoubleToString(new_tp, _Digits),
-            " — ", modified, " positions, ", pending_modified, " pending modified");
-   } else {
-      Print("FORGE: MODIFY_TP to ", DoubleToString(new_tp, _Digits),
-            " — ", modified, " positions, ", pending_modified, " pending modified");
-   }
+   string scope_tag = "";
+   if(scoped_ticket) scope_tag += " ticket=" + IntegerToString((long)target_ticket);
+   if(scoped_stage)  scope_tag += " stage=TP" + IntegerToString(target_stage);
+   if(scoped_magic)  scope_tag += " magic=" + IntegerToString(target_magic);
+   Print("FORGE: MODIFY_TP", scope_tag, " to ", DoubleToString(new_tp, _Digits),
+         " — ", modified, " positions, ", pending_modified, " pending modified");
 }
 
 string DealCloseReasonHint(const long reason_code) {
@@ -992,7 +1023,7 @@ void WriteMarketData() {
    string j = "{";
    j += "\"symbol\":\"" + JsonEscape(_Symbol) + "\",";
    j += "\"hermes_version\":\"FORGE_1.2\",";
-   j += "\"forge_version\":\"1.4.1\",";
+   j += "\"forge_version\":\"1.5.0\",";
    j += "\"timestamp_utc\":\"" + JsonEscape(TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS)) + "Z\",";
    j += "\"timestamp_unix\":" + IntegerToString((long)TimeGMT()) + ",";
    j += "\"server_time_unix\":" + IntegerToString((long)TimeCurrent()) + ",";
@@ -1079,6 +1110,10 @@ void WriteMarketData() {
       j += "\"magic\":"        + IntegerToString(pm) + ",";
       j += "\"forge_managed\":";
       j += forgeManaged ? "true" : "false";
+      j += ",";
+      // comment carries FORGE leg metadata: "FORGE|G<id>|<leg_index>|TP<stage>".
+      // BRIDGE parses |TP<n> to backfill trade_positions.tp_stage at FILL.
+      j += "\"comment\":\"" + JsonEscape(g_pos.Comment()) + "\"";
       j += "}";
    }
    j += "],\"open_positions_forge_count\":" + IntegerToString(posForge) + ",";

@@ -1,4 +1,16 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.5.0] — 2026-04-30
+### Per-stage / per-ticket `MODIFY_TP` & `MODIFY_SL`
+MODIFY commands across the AURUM → BRIDGE → FORGE pipeline now accept two new optional scope fields so TP2/TP3 legs no longer collapse onto TP1 when only TP1 needs to move.
+- **FORGE** (`ea/FORGE.mq5` v1.5.0): `ExecuteModifySL` / `ExecuteModifyTP` read optional `ticket` (single position or pending) and `tp_stage` (1/2/3, filtered against `Comment()` matching `|TP<n>`); legacy whole-magic behaviour preserved when both are absent. `WriteMarketData` adds `comment` to each `open_positions[]` row so BRIDGE can recover the leg-stage metadata `FORGE|G<id>|<leg_index>|TP<stage>`.
+- **BRIDGE** (`python/bridge.py`): `_check_aurum_command` and `_process_mgmt_command` MODIFY branches forward `ticket` / `tp_stage` to FORGE after light validation. New `_sync_modify_targets` helper routes SCRIBE persistence: ticket scope updates one row, stage scope only nudges `trade_groups.tp<n>` for the matching stage, and the unscoped path keeps the existing group-wide / all-open fan-out. `_TP_STAGE_RE`/`_parse_tp_stage_from_comment` helpers parse the FORGE comment grammar; TRACKER FILL records `tp_stage` on insert and the seed pass calls `backfill_tp_stage_from_comment` for legacy rows.
+- **SCRIBE** (`python/scribe.py`): `log_trade_position` now persists `data['tp_stage']`. New helpers `update_positions_sl_tp_by_stage(group_id, tp_stage, sl, tp)`, `backfill_tp_stage_from_comment(ticket, comment)`, and `get_open_positions_with_stage(group_id)` expose the stage-aware surface. The schema is unchanged — `trade_positions.tp_stage` already existed.
+- **AURUM prompt** (`python/aurum.py`): new `PER-STAGE / PER-TICKET MODIFY` section documents the new fields and **requires** a `SCRIBE_QUERY` on `trade_positions` before any multi-leg MODIFY. Two-block example shows independent TP1 vs TP2 moves.
+- **Contracts** (`python/contracts/aurum_forge.py`): `validate_aurum_cmd` and `validate_forge_command` accept optional `ticket` (positive int) and `tp_stage` (1/2/3) on `MODIFY_TP` / `MODIFY_SL`; unknown-action error message updated.
+- **Tests**: `tests/api/test_modify_scope.py` covers SCRIBE backfill / stage updates, BRIDGE `_coerce_modify_scope` + `_sync_modify_targets` routing, BRIDGE AURUM-cmd MODIFY pass-through, and AURUM-side contract validation. `tests/api/test_aurum_forge_contract.py` extended with stage/ticket validation.
+- **Docs**: `docs/DATA_CONTRACT.md`, `docs/CLI_API_CHEATSHEET.md`, `schemas/files/market_data.schema.json`, `SKILL.md`, `SOUL.md` updated with the new shapes, the comment-grammar contract, and the SCRIBE_QUERY-first workflow.
+- **Migration / rollout**: SCRIBE migration is purely additive (column already present). FORGE EA must be recompiled / reattached to MT5 for `comment` in `open_positions[]` and the new MODIFY filters; BRIDGE/AURUM/SCRIBE hot-reload via `make restart`.
+---
 ## [1.4.5] — 2026-04-30
 
 ### Deferred Analysis Runs (`ANALYSIS_RUN`)

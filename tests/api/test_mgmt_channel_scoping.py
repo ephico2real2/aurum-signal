@@ -203,6 +203,7 @@ def test_channel_modify_tp_with_group_id_scopes_to_group_magic(monkeypatch, tmp_
         11: {"source": "AURUM", "direction": "SELL"},
     }
     stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, groups)
+    stub._sync_modify_targets = MagicMock()
     _write_mgmt(mgmt_path, "MODIFY_TP", source="LISTENER", group_id=10, tp=4755.3)
 
     with patch.object(bm, "_write_forge_command") as mock_forge:
@@ -213,6 +214,40 @@ def test_channel_modify_tp_with_group_id_scopes_to_group_magic(monkeypatch, tmp_
     assert cmd["action"] == "MODIFY_TP"
     assert cmd["tp"] == 4755.3
     assert cmd["magic"] == 202411
+    # Legacy unscoped path: no per-leg keys leak into the FORGE command.
+    assert "ticket" not in cmd
+    assert "tp_stage" not in cmd
+
+
+@pytest.mark.unit
+def test_channel_modify_tp_forwards_stage_and_ticket(monkeypatch, tmp_path):
+    """LISTENER MODIFY_TP with ticket+tp_stage scope is preserved end-to-end."""
+    groups = {10: {"source": "SIGNAL", "direction": "BUY"}}
+    stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, groups)
+    stub._sync_modify_targets = MagicMock()
+    _write_mgmt(
+        mgmt_path,
+        "MODIFY_TP",
+        source="LISTENER",
+        group_id=10,
+        tp=4648.0,
+        ticket=1122706681,
+        tp_stage=1,
+    )
+
+    with patch.object(bm, "_write_forge_command") as mock_forge:
+        bm.Bridge._process_mgmt_command(stub, {})
+
+    mock_forge.assert_called_once()
+    cmd = mock_forge.call_args[0][0]
+    assert cmd["action"] == "MODIFY_TP"
+    assert cmd["tp"] == 4648.0
+    assert cmd["magic"] == 202411
+    assert cmd["ticket"] == 1122706681
+    assert cmd["tp_stage"] == 1
+    stub._sync_modify_targets.assert_called_once_with(
+        10, sl=None, tp=4648.0, ticket=1122706681, tp_stage=1,
+    )
 
 
 # ── _resolve_channel_group finds the right group ─────────────────

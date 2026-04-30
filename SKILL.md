@@ -119,15 +119,15 @@ BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supp
 - **CLOSE_LOSING** → close only positions in loss
 
 **Modify commands:**
-- **MODIFY_SL** → change SL globally or per-group:
+- **MODIFY_SL** → change SL with optional scope:
   - Global: `{\"action\":\"MODIFY_SL\",\"sl\":4660.00}`
   - Per-group: `{\"action\":\"MODIFY_SL\",\"sl\":4660.00,\"group_id\":15}`
-- **MODIFY_TP** → change TP globally or per-group:
-  - Global: `{\"action\":\"MODIFY_TP\",\"tp\":4648.50}`
-  - Per-group: `{\"action\":\"MODIFY_TP\",\"tp\":4648.50,\"group_id\":15}`
+  - Per-stage (FORGE v1.5.0+): `{\"action\":\"MODIFY_SL\",\"sl\":4660.00,\"group_id\":15,\"tp_stage\":1}` — only legs whose FORGE comment ends with `|TP<n>`
+  - Per-ticket: `{\"action\":\"MODIFY_SL\",\"sl\":4660.00,\"ticket\":1122706681}` — wins over `tp_stage` when both are set
+- **MODIFY_TP** → change TP with the same optional scope fields as `MODIFY_SL` (`group_id` / `tp_stage` / `ticket`).
 - **MOVE_BE** → move all SL to breakeven (entry price): `{"action":"MOVE_BE"}`
 
-**Note on MODIFY_SL/TP scope:** When `group_id` is present, BRIDGE resolves the group's magic and FORGE applies MODIFY_SL/MODIFY_TP only to that group. If `group_id` is omitted, the modify action remains global by design.
+**Note on MODIFY_SL/TP scope:** When `group_id` is present, BRIDGE resolves the group's magic and FORGE applies the modify only to that group. Adding `tp_stage` (1/2/3) further restricts FORGE to legs whose comment ends with `|TP<n>`; `ticket` restricts it to one position. Omit all three for legacy global behaviour. **Critical:** for any multi-leg group with mixed TP stages, run a `SCRIBE_QUERY` on `trade_positions WHERE trade_group_id=<id> AND status='OPEN'` first, then emit one `MODIFY_TP`/`MODIFY_SL` block per stage so TP2/TP3 don't collapse onto TP1.
 
 **Mode control:**
 - **MODE_CHANGE** → operating mode (also triggered by exact phrases like *Switching to SCALPER mode.*)

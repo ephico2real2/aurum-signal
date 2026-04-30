@@ -6,7 +6,7 @@ Central nervous system. Mode state machine. Coordinates everything.
 Entry point: python bridge.py
 """
 
-import os, json, logging, time, sys, urllib.error, urllib.request
+import os, json, logging, re, time, sys, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from aeb_executor import execute_action, format_result_for_telegram
@@ -468,6 +468,54 @@ def _close_reason_from_broker_hint(
     return None
 
 
+_TP_STAGE_RE = re.compile(r"\|TP(\d+)")
+
+
+def _parse_tp_stage_from_comment(comment) -> int | None:
+    """Extract the FORGE leg stage encoded in a position/order comment.
+
+    Comment grammar emitted by FORGE: ``FORGE|G<group>|<leg_index>|TP<stage>``.
+    Returns 1/2/3 when present, otherwise None.
+    """
+    if not comment:
+        return None
+    m = _TP_STAGE_RE.search(str(comment))
+    if not m:
+        return None
+    try:
+        stage = int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+    return stage if stage in (1, 2, 3) else None
+
+
+def _coerce_modify_scope(cmd: dict) -> tuple[int | None, int | None]:
+    """Extract the optional MODIFY scope fields from an AURUM/MGMT cmd.
+
+    Returns ``(ticket, tp_stage)`` with each field validated independently.
+    A ticket of <= 0 or a stage outside 1..3 is treated as unset.
+    """
+    ticket_raw = cmd.get("ticket") if isinstance(cmd, dict) else None
+    stage_raw = cmd.get("tp_stage") if isinstance(cmd, dict) else None
+    ticket = None
+    if ticket_raw not in (None, ""):
+        try:
+            t = int(ticket_raw)
+            if t > 0:
+                ticket = t
+        except (TypeError, ValueError):
+            ticket = None
+    stage = None
+    if stage_raw not in (None, ""):
+        try:
+            s = int(stage_raw)
+            if s in (1, 2, 3):
+                stage = s
+        except (TypeError, ValueError):
+            stage = None
+    return ticket, stage
+
+
 def _entry_legs_from_ladder(entry_ladder: list[float]) -> list[dict]:
     return [
         {"order_type": "AUTO", "entry_price": float(px)}
@@ -645,6 +693,11 @@ class Bridge:
                 )
             if forge_managed:
                 t = int(p["ticket"])
+                # Backfill tp_stage from FORGE comment whenever SCRIBE missed it.
+                try:
+                    self.scribe.backfill_tp_stage_from_comment(t, p.get("comment"))
+                except Exception as _e:
+                    log.debug("TRACKER: tp_stage seed backfill tolerated: %s", _e)
                 if t not in self._known_positions:
                     self._known_positions[t] = {
                         "group_id": self._resolve_group_for_magic(magic),
@@ -866,6 +919,7 @@ class Bridge:
                 }
                 continue
             direction = p.get("type", "SELL")  # FORGE writes "BUY"/"SELL"
+            stage_from_comment = _parse_tp_stage_from_comment(p.get("comment"))
             self.scribe.log_trade_position(gid, {
                 "ticket":      ticket,
                 "magic":       magic,
@@ -874,6 +928,7 @@ class Bridge:
                 "entry_price": p.get("open_price"),
                 "sl":          p.get("sl"),
                 "tp":          p.get("tp"),
+                "tp_stage":    stage_from_comment,
             }, mode)
             # Increment fill counter for this group (for fill-rate analytics)
             try:
@@ -2282,27 +2337,37 @@ class Bridge:
             sl = mgmt.get("sl")
             if sl:
                 slv = float(sl)
+                ticket, stage = _coerce_modify_scope(mgmt)
                 cmd = {"action": "MODIFY_SL", "sl": slv, "timestamp": _now()}
                 if mgmt_gid:
                     magic = self._lookup_group_magic(int(mgmt_gid))
                     if magic:
                         cmd["magic"] = magic
-                    self._sync_group_targets(int(mgmt_gid), sl=slv)
-                else:
-                    self._sync_all_open_group_targets(sl=slv)
+                if ticket is not None:
+                    cmd["ticket"] = ticket
+                if stage is not None:
+                    cmd["tp_stage"] = stage
+                self._sync_modify_targets(
+                    mgmt_gid, sl=slv, tp=None, ticket=ticket, tp_stage=stage,
+                )
 
         elif intent == "MODIFY_TP":
             tp = mgmt.get("tp")
             if tp:
                 tpv = float(tp)
+                ticket, stage = _coerce_modify_scope(mgmt)
                 cmd = {"action": "MODIFY_TP", "tp": tpv, "timestamp": _now()}
                 if mgmt_gid:
                     magic = self._lookup_group_magic(int(mgmt_gid))
                     if magic:
                         cmd["magic"] = magic
-                    self._sync_group_targets(int(mgmt_gid), tp=tpv)
-                else:
-                    self._sync_all_open_group_targets(tp=tpv)
+                if ticket is not None:
+                    cmd["ticket"] = ticket
+                if stage is not None:
+                    cmd["tp_stage"] = stage
+                self._sync_modify_targets(
+                    mgmt_gid, sl=None, tp=tpv, ticket=ticket, tp_stage=stage,
+                )
 
         elif intent == "CLOSE_GROUP":
             gid = mgmt.get("group_id")
@@ -2521,6 +2586,48 @@ class Bridge:
         for gid in sorted(gids):
             self._sync_group_targets(gid, sl=sl, tp=tp)
 
+    def _sync_modify_targets(self, group_id, *,
+                              sl: float | None = None,
+                              tp: float | None = None,
+                              ticket: int | None = None,
+                              tp_stage: int | None = None):
+        """Persist a MODIFY scope to SCRIBE.
+
+        Routing rules (in order):
+          1. ``ticket`` set → update only that one position row (no group fan-out).
+          2. ``tp_stage`` set + ``group_id`` set → stage-scoped update; only the
+             matching ``trade_groups.tp<n>`` column moves so other stages keep
+             their original target.
+          3. otherwise → today's behaviour: group-wide or all-open fan-out.
+        """
+        if sl is None and tp is None:
+            return
+        if ticket is not None:
+            try:
+                self.scribe.update_position_sl_tp(int(ticket), sl=sl, tp=tp)
+            except Exception as e:
+                log.debug("BRIDGE: ticket-scoped SCRIBE update failed: %s", e)
+            return
+        if tp_stage is not None and group_id is not None:
+            try:
+                self.scribe.update_positions_sl_tp_by_stage(
+                    int(group_id), int(tp_stage), sl=sl, tp=tp,
+                )
+            except Exception as e:
+                log.debug("BRIDGE: stage-scoped SCRIBE update failed: %s", e)
+            # Refresh in-memory cache for the affected stage column only.
+            g = self._open_groups.get(int(group_id))
+            if isinstance(g, dict):
+                if sl is not None:
+                    g["sl"] = sl
+                if tp is not None:
+                    g[f"tp{int(tp_stage)}"] = tp
+            return
+        if group_id is None:
+            self._sync_all_open_group_targets(sl=sl, tp=tp)
+        else:
+            self._sync_group_targets(int(group_id), sl=sl, tp=tp)
+
     # ── AUTO_SCALPER: AURUM-driven autonomous scalping ──────────
     def _auto_scalper_tick(self, mt5: dict) -> None:
         """Called every AUTO_SCALPER_POLL_INTERVAL. Pre-filters, then asks AURUM."""
@@ -2687,40 +2794,60 @@ class Bridge:
             gid = cmd.get("group_id")
             if tp:
                 tpv = float(tp)
+                ticket, stage = _coerce_modify_scope(cmd)
                 forge_cmd = {"action": "MODIFY_TP", "tp": tpv, "timestamp": _now()}
                 if gid:
                     magic = self._lookup_group_magic(int(gid))
                     if magic:
                         forge_cmd["magic"] = magic
+                if ticket is not None:
+                    forge_cmd["ticket"] = ticket
+                if stage is not None:
+                    forge_cmd["tp_stage"] = stage
                 _write_forge_command(forge_cmd)
-                if gid:
-                    self._sync_group_targets(int(gid), tp=tpv)
-                else:
-                    self._sync_all_open_group_targets(tp=tpv)
+                self._sync_modify_targets(
+                    gid, sl=None, tp=tpv, ticket=ticket, tp_stage=stage,
+                )
                 self._bridge_activity(
                     "MGMT_COMMAND", reason="MODIFY_TP",
-                    notes=json.dumps({"tp": tp, "group_id": gid, "via": "AURUM"}, default=str))
-                log.info("BRIDGE: AURUM MODIFY_TP tp=%s group=%s", tp, gid)
+                    notes=json.dumps({
+                        "tp": tp, "group_id": gid, "ticket": ticket,
+                        "tp_stage": stage, "via": "AURUM",
+                    }, default=str))
+                log.info(
+                    "BRIDGE: AURUM MODIFY_TP tp=%s group=%s ticket=%s stage=%s",
+                    tp, gid, ticket, stage,
+                )
 
         elif action == "MODIFY_SL":
             sl = cmd.get("sl")
             gid = cmd.get("group_id")
             if sl:
                 slv = float(sl)
+                ticket, stage = _coerce_modify_scope(cmd)
                 forge_cmd = {"action": "MODIFY_SL", "sl": slv, "timestamp": _now()}
                 if gid:
                     magic = self._lookup_group_magic(int(gid))
                     if magic:
                         forge_cmd["magic"] = magic
+                if ticket is not None:
+                    forge_cmd["ticket"] = ticket
+                if stage is not None:
+                    forge_cmd["tp_stage"] = stage
                 _write_forge_command(forge_cmd)
-                if gid:
-                    self._sync_group_targets(int(gid), sl=slv)
-                else:
-                    self._sync_all_open_group_targets(sl=slv)
+                self._sync_modify_targets(
+                    gid, sl=slv, tp=None, ticket=ticket, tp_stage=stage,
+                )
                 self._bridge_activity(
                     "MGMT_COMMAND", reason="MODIFY_SL",
-                    notes=json.dumps({"sl": sl, "group_id": gid, "via": "AURUM"}, default=str))
-                log.info("BRIDGE: AURUM MODIFY_SL sl=%s group=%s", sl, gid)
+                    notes=json.dumps({
+                        "sl": sl, "group_id": gid, "ticket": ticket,
+                        "tp_stage": stage, "via": "AURUM",
+                    }, default=str))
+                log.info(
+                    "BRIDGE: AURUM MODIFY_SL sl=%s group=%s ticket=%s stage=%s",
+                    sl, gid, ticket, stage,
+                )
 
         elif action == "CLOSE_GROUP":
             gid = cmd.get("group_id")

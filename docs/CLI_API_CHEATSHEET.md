@@ -205,7 +205,7 @@ In SCRIBE `signals_received.skip_reason` and bridge.log, AEGIS rejections are pr
 - `AEGIS_REJECTED:SLIPPAGE:<value>><max>`
   - Re-issue with a closer/current entry zone; avoid stale entries.
 
-Simulate a MODIFY_TP management command (global by default; add `group_id` to scope to one group):
+Simulate a MODIFY_TP management command (global by default; add `group_id` to scope to one group, `tp_stage` to move only one TP bucket, or `ticket` to target a single leg):
 ```bash
 python3 -c "
 import json
@@ -219,12 +219,27 @@ cmd = {
     'group_id': 9,             # optional: scope to one group; omit for global modify
     'sl': None,                # new SL price (for MODIFY_SL)
     'pct': None,               # percentage (for CLOSE_PCT)
-    'tp_stage': None,
+    'tp_stage': 1,             # optional: 1/2/3 — only legs whose FORGE comment matches |TP<stage>
+    'ticket': None,            # optional: positive int — single position/pending; wins over tp_stage
     'signal_id': 9999,
     'timestamp': datetime.now(timezone.utc).isoformat(),
 }
 Path('python/config/management_cmd.json').write_text(json.dumps(cmd, indent=2))
 print('Management command written — BRIDGE → FORGE on next tick')
+"
+```
+
+Move only TP1 legs without touching TP2/TP3 (typical AURUM precondition: first run a SCRIBE_QUERY on `trade_positions WHERE trade_group_id=<id> AND status='OPEN'` to inspect each leg's `tp_stage`):
+```bash
+python3 -c "
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+Path('python/config/aurum_cmd.json').write_text(json.dumps({
+    'action':'MODIFY_TP','tp':4648.0,'group_id':15,'tp_stage':1,
+    'reason':'tighten TP1 only','timestamp':datetime.now(timezone.utc).isoformat(),
+}, indent=2))
+print('Stage-scoped MODIFY_TP queued for AURUM → BRIDGE → FORGE')
 "
 ```
 
@@ -333,7 +348,7 @@ for k,l in [('indicators_h1','H1'),('indicators_m15','M15'),('indicators_m5','M5
 - FLAT (EMA20 ≈ EMA50 within $1) counts as agreement — allows either direction
 - Lot sizing uses `SIGNAL_LOT_SIZE` (default 0.01) when `AEGIS_LOT_MODE=fixed`
 - Num trades uses `SIGNAL_NUM_TRADES` (default 4)
-- MODIFY_SL/MODIFY_TP execution requires FORGE v1.3.0+; per-group scoping via `group_id` requires FORGE v1.4.1+ (reattach/reload EA after compile)
+- MODIFY_SL/MODIFY_TP execution requires FORGE v1.3.0+; per-group scoping via `group_id` requires FORGE v1.4.1+; per-stage (`tp_stage`) and per-ticket (`ticket`) scoping requires **FORGE v1.5.0+** (reattach/reload EA after compile)
 - TP split: 75% of positions get TP1, 25% get TP2 (controlled by `TP1_CLOSE_PCT`)
 - Test parser via API: `POST /api/signals/parse {"text": "SELL Gold @4691..."}`
 - Swagger UI: `http://localhost:7842/api/docs/`

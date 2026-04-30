@@ -162,6 +162,9 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
             errs.append("ANALYSIS_RUN.query_id must be a string when provided")
         return errs
 
+    if action in ("MODIFY_TP", "MODIFY_SL"):
+        return _validate_aurum_modify(cmd, action)
+
     if action in ("OPEN_GROUP", "OPEN_TRADE"):
         d = (cmd.get("direction") or "").upper()
         if d not in ("BUY", "SELL"):
@@ -191,8 +194,39 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
 
     errs.append(
         f"unknown action {action!r} (expected MODE_CHANGE, CLOSE_ALL, OPEN_GROUP, OPEN_TRADE, "
-        "SCRIBE_QUERY, SHELL_EXEC, AURUM_EXEC, ANALYSIS_RUN)"
+        "SCRIBE_QUERY, SHELL_EXEC, AURUM_EXEC, ANALYSIS_RUN, MODIFY_TP, MODIFY_SL)"
     )
+    return errs
+
+
+def _validate_aurum_modify(cmd: dict, action: str) -> list[str]:
+    """Shared validator for MODIFY_TP and MODIFY_SL on the AURUM contract.
+
+    Required: numeric ``tp`` (MODIFY_TP) or ``sl`` (MODIFY_SL).
+    Optional scope: ``group_id`` (int>=1), ``ticket`` (int>=1),
+    ``tp_stage`` (1/2/3). When ``ticket`` is set the ``tp_stage`` filter is
+    redundant but tolerated — the executor prefers ticket scope.
+    """
+    errs: list[str] = []
+    target_key = "tp" if action == "MODIFY_TP" else "sl"
+    target = _num(cmd.get(target_key))
+    if target is None or target <= 0:
+        errs.append(f"{action} requires positive numeric {target_key}")
+    gid_raw = cmd.get("group_id")
+    if gid_raw not in (None, ""):
+        gid = _num(gid_raw)
+        if gid is None or int(gid) < 1:
+            errs.append(f"{action}.group_id must be a positive integer when provided")
+    ticket_raw = cmd.get("ticket")
+    if ticket_raw not in (None, ""):
+        tk = _num(ticket_raw)
+        if tk is None or int(tk) < 1:
+            errs.append(f"{action}.ticket must be a positive integer when provided")
+    stage_raw = cmd.get("tp_stage")
+    if stage_raw not in (None, ""):
+        st = _num(stage_raw)
+        if st is None or int(st) not in (1, 2, 3):
+            errs.append(f"{action}.tp_stage must be 1, 2, or 3 when provided")
     return errs
 
 
@@ -219,6 +253,27 @@ def validate_forge_command(cmd: dict) -> list[str]:
             errs.append("CANCEL_GROUP_PENDING.magic must be a positive integer")
         if not (cmd.get("timestamp") or "").strip():
             errs.append("CANCEL_GROUP_PENDING should include timestamp string")
+        return errs
+
+    if action in ("MODIFY_TP", "MODIFY_SL"):
+        target_key = "tp" if action == "MODIFY_TP" else "sl"
+        target = _num(cmd.get(target_key))
+        if target is None or target <= 0:
+            errs.append(f"{action} requires positive numeric {target_key}")
+        # Optional: magic, ticket, tp_stage. Each independently validated.
+        for fld, label in (("magic", "magic"), ("ticket", "ticket")):
+            raw = cmd.get(fld)
+            if raw not in (None, ""):
+                v = _num(raw)
+                if v is None or int(v) < 1:
+                    errs.append(f"{action}.{label} must be a positive integer when provided")
+        stage_raw = cmd.get("tp_stage")
+        if stage_raw not in (None, ""):
+            st = _num(stage_raw)
+            if st is None or int(st) not in (1, 2, 3):
+                errs.append(f"{action}.tp_stage must be 1, 2, or 3 when provided")
+        if not (cmd.get("timestamp") or "").strip():
+            errs.append(f"{action} should include timestamp string")
         return errs
 
     if action == "OPEN_GROUP":

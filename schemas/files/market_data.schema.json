@@ -29,7 +29,30 @@
       },
       "additionalProperties": true
     },
-    "open_positions": { "type": "array" },
+    "open_positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ticket": { "type": "integer" },
+          "symbol": { "type": "string" },
+          "type": { "type": "string" },
+          "lots": { "type": "number" },
+          "open_price": { "type": "number" },
+          "current_price": { "type": "number" },
+          "sl": { "type": "number" },
+          "tp": { "type": "number" },
+          "profit": { "type": "number" },
+          "magic": { "type": "integer" },
+          "forge_managed": { "type": "boolean" },
+          "comment": {
+            "type": "string",
+            "description": "FORGE per-leg metadata grammar: 'FORGE|G<id>|<leg_index>|TP<stage>'. BRIDGE parses |TP<n> to backfill trade_positions.tp_stage on fill."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
     "indicators_h1": { "type": "object" }
   },
   "additionalProperties": true
