@@ -1,4 +1,34 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.4.5] — 2026-04-30
+
+### Deferred Analysis Runs (`ANALYSIS_RUN`)
+Reusable async-analysis subsystem layered on top of the AEB. AURUM (or any caller) emits a fire-and-forget AEB action and gets an immediate `query_id`; the result is persisted under `logs/analysis/<query_id>.{json,md}` and posted back to the existing Telegram channel via the existing Herald singleton (no new bot, token, or chat_id).
+- New module `python/analysis_runner.py`:
+  - `register_analysis(kind)` decorator + `_HANDLERS` registry.
+  - `submit(payload)` returns immediately with `{ok, query_id, status:"PENDING", log_path}`.
+  - `list_pending()` / `list_recent(limit=20)` / `get_status(query_id)` introspection.
+  - Daemon `ThreadPoolExecutor` worker (cap `ANALYSIS_MAX_CONCURRENCY`, default 4) writes `.json` (status) + `.md` (body) and audits `ANALYSIS_QUEUED|DONE|FAILED` to `logs/audit/system_events.jsonl`.
+  - Idempotency on client-supplied `query_id` (duplicate while PENDING returns `ANALYSIS_RUN duplicate query_id`); soft queue cap returns `ANALYSIS_RUN queue full`.
+  - Built-in handler `trade_group_review` (params `{group_id:int}`) reads SCRIBE read-only + scrapes `logs/bridge.log` and renders a markdown review (signal text, AEGIS decision, fills, fill ratio, realised PnL); tolerates SCRIBE schema drift via `schema_missing:` notes.
+- AEB / Bridge wiring:
+  - `python/aeb_executor.py`: `ANALYSIS_RUN` added to `_AEB_ACTIONS`, validator branch, dispatcher branch (lazy import), Telegram ACK formatter renders `query_id`, `status`, `log_path`.
+  - `python/bridge.py`: routes `ANALYSIS_RUN` through the existing local AEB dispatch alongside `SCRIBE_QUERY` / `SHELL_EXEC`.
+- AURUM wiring:
+  - `python/aurum.py`: `ANALYSIS_RUN` added to supported-actions list, new `DEFERRED ANALYSIS RUNS` section in `_build_system_prompt`, and a pending/recent block appended to `_build_context` (capped at 20 lines).
+- Telegram (Herald) reuse — no new bot:
+  - `python/herald.py`: new `Herald.post_text()` and `Herald.post_analysis_from_log()` methods plus module-level shims; `_async_send` accepts an optional `chat_id` override; default chat target remains `Herald.chat_id`.
+- Schemas + contracts:
+  - `schemas/files/aurum_cmd.schema.json`: new `ANALYSIS_RUN` `oneOf` branch.
+  - `python/contracts/aurum_forge.py`: `validate_aurum_cmd` accepts `ANALYSIS_RUN` (kind required; params/notify/query_id types validated).
+- Docs:
+  - `docs/ARCHITECTURE.md`: “Deferred Analysis Runs” section + envelope + data-flow diagram.
+  - `docs/DATA_CONTRACT.md`: `ANALYSIS_RUN` listed alongside other AEB actions.
+  - `docs/CLI_API_CHEATSHEET.md`: copy-paste examples for queueing a run and tailing the log file.
+  - `SKILL.md` §5 + `SOUL.md`: capability + context-awareness bullets.
+  - `.env.example`: `ANALYSIS_LOG_DIR` + `ANALYSIS_MAX_CONCURRENCY`.
+- Verification: `make test-contracts` 93 passed; `tests/api/test_aeb_executor.py` 9 passed; end-to-end smoke (G56 review) `fills=1/1 pnl=$+4.02` matched bridge.log.
+
+---
 ## [1.4.4] — 2026-04-14
 
 ### AURUM Execution Bridge (AEB) end-to-end

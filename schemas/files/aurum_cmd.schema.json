@@ -64,6 +64,30 @@
     },
     {
       "type": "object",
+      "required": ["action", "kind", "timestamp"],
+      "properties": {
+        "action": { "const": "ANALYSIS_RUN" },
+        "kind": { "type": "string", "minLength": 1 },
+        "query_id": { "type": "string", "minLength": 1 },
+        "params": { "type": "object" },
+        "notify": {
+          "type": "object",
+          "properties": {
+            "telegram": { "type": "boolean" },
+            "chat_id": { "type": ["string", "integer", "null"] },
+            "header": { "type": ["string", "null"] },
+            "footer": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "reason": { "type": "string" },
+        "reply_to": { "type": "string" },
+        "timestamp": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
       "required": ["action", "payload", "timestamp"],
       "properties": {
         "action": { "const": "AURUM_EXEC" },

@@ -203,6 +203,27 @@ Groups in ATHENA without broker orders almost always means **`command.json` path
 
 ---
 
+## Deferred analysis runs
+
+AURUM (or any caller) can queue async analyses via the AEB action `ANALYSIS_RUN`. Each run is identified by a `query_id`; the body is persisted to `logs/analysis/<query_id>.md`, the status to `logs/analysis/<query_id>.json`, and the result is posted to the existing Telegram channel through HERALD.
+
+Monitoring:
+```bash
+# Newest runs
+ls -lt logs/analysis/ | head -10
+
+# Lifecycle audit
+grep -E 'ANALYSIS_(QUEUED|DONE|FAILED)' logs/audit/system_events.jsonl | tail -20
+```
+
+Configuration (in `.env`):
+- `ANALYSIS_LOG_DIR` — override result/status directory (default `logs/analysis/`).
+- `ANALYSIS_MAX_CONCURRENCY` — worker thread cap (default 4, clamped 1–32).
+
+Full spec: `docs/ARCHITECTURE.md` § *Deferred Analysis Runs*. CLI examples: `docs/CLI_API_CHEATSHEET.md` § *Deferred Analysis Runs*.
+
+---
+
 ## Related docs
 
 - [SETUP.md](SETUP.md) — first-time install, env, Telegram, MT5  

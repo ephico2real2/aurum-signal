@@ -4,6 +4,56 @@ Base URL: `http://localhost:7842`
 Swagger UI: `http://localhost:7842/api/docs/`
 Replay workflow: `docs/VISION_CLI_RUNBOOK.md#cli-signal-replay-runbook-execute-a-historical-signal-now`
 Signal-room media replay: `python3 scripts/replay_signal_uploads.py --limit 5`
+Deferred analysis runs: `docs/ARCHITECTURE.md#deferred-analysis-runs`
+
+---
+
+## Deferred Analysis Runs (`ANALYSIS_RUN`)
+
+Queue an async analysis. BRIDGE returns a `query_id` immediately; the result is written to `logs/analysis/<query_id>.{json,md}` and posted to the existing Telegram channel via HERALD.
+
+Queue a `trade_group_review` for G56 (fire-and-forget):
+```bash
+python3 -c "
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+cmd = {
+    'action': 'ANALYSIS_RUN',
+    'kind': 'trade_group_review',
+    'params': {'group_id': 56},
+    'notify': {'telegram': True},
+    'reason': 'operator review',
+    'timestamp': datetime.now(timezone.utc).isoformat(),
+}
+Path('python/config/aurum_cmd.json').write_text(json.dumps(cmd, indent=2))
+print('Queued ANALYSIS_RUN — BRIDGE consumes on next tick')
+"
+```
+
+Follow result + status:
+```bash
+# Newest analysis files
+ls -lt logs/analysis/ | head -10
+
+# Tail the latest body
+latest=$(ls -t logs/analysis/*.md | head -1) && less "$latest"
+
+# Audit trail
+grep -E 'ANALYSIS_(QUEUED|DONE|FAILED)' logs/audit/system_events.jsonl | tail -10
+
+# Bridge log ACK
+grep ANALYSIS_RUN logs/bridge.log | tail -10
+```
+
+Ask AURUM to queue a run for you (it will emit the JSON itself):
+```bash
+curl -sS -X POST http://localhost:7842/api/aurum/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Queue an ANALYSIS_RUN to review group 56 and post the result to Telegram."}'
+```
+
+Duplicate-id semantics: passing the same `query_id` while a run is `PENDING` returns `{ok:false, summary:"ANALYSIS_RUN duplicate query_id"}` — the run is **not** re-enqueued.
 
 ---
 

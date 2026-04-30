@@ -147,6 +147,21 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
             errs.append("AURUM_EXEC.endpoint must be a string when provided")
         return errs
 
+    if action == "ANALYSIS_RUN":
+        kind = cmd.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            errs.append("ANALYSIS_RUN.kind must be a non-empty string")
+        params = cmd.get("params")
+        if params is not None and not isinstance(params, dict):
+            errs.append("ANALYSIS_RUN.params must be an object when provided")
+        notify = cmd.get("notify")
+        if notify is not None and not isinstance(notify, dict):
+            errs.append("ANALYSIS_RUN.notify must be an object when provided")
+        qid = cmd.get("query_id")
+        if qid is not None and not isinstance(qid, str):
+            errs.append("ANALYSIS_RUN.query_id must be a string when provided")
+        return errs
+
     if action in ("OPEN_GROUP", "OPEN_TRADE"):
         d = (cmd.get("direction") or "").upper()
         if d not in ("BUY", "SELL"):
@@ -176,7 +191,7 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
 
     errs.append(
         f"unknown action {action!r} (expected MODE_CHANGE, CLOSE_ALL, OPEN_GROUP, OPEN_TRADE, "
-        "SCRIBE_QUERY, SHELL_EXEC, AURUM_EXEC)"
+        "SCRIBE_QUERY, SHELL_EXEC, AURUM_EXEC, ANALYSIS_RUN)"
     )
     return errs
 

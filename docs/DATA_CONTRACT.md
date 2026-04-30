@@ -120,7 +120,8 @@ BRIDGE tracker semantics:
 In addition to trading/mode actions, `aurum_cmd.json` now supports AEB execution actions:
 - `SCRIBE_QUERY` (read-only SQL against SCRIBE; guarded in executor),
 - `SHELL_EXEC` (allowlisted host command execution),
-- `AURUM_EXEC` (HTTP bridge to `POST /api/aurum/exec`).
+- `AURUM_EXEC` (HTTP bridge to `POST /api/aurum/exec`),
+- `ANALYSIS_RUN` (deferred async analysis; immediate `query_id` ack, results written to `logs/analysis/<query_id>.{json,md}`, audit `ANALYSIS_QUEUED|DONE|FAILED` in `logs/audit/system_events.jsonl`, and posted to the existing Telegram channel via Herald — see `python/analysis_runner.py` and `docs/ARCHITECTURE.md` § *Deferred Analysis Runs*).
 When AURUM emits JSON commands, it stamps `origin_source` (for example `TELEGRAM`, `ATHENA`, `AUTO_SCALPER`).
 BRIDGE can block `SHELL_EXEC` by command origin via `AEB_SHELL_EXEC_BLOCKED_SOURCES` (default: `TELEGRAM`), including nested `AURUM_EXEC` payloads that request `SHELL_EXEC`.
 
@@ -151,6 +152,19 @@ BRIDGE can block `SHELL_EXEC` by command origin via `AEB_SHELL_EXEC_BLOCKED_SOUR
   "sql": "SELECT id, status, timestamp FROM trade_groups ORDER BY id DESC LIMIT 5",
   "reply_to": "TELEGRAM",
   "timestamp": "2026-04-14T19:30:00+00:00"
+}
+```
+
+`python/config/aurum_cmd.json` — deferred analysis run (returns `query_id` immediately, posts result to Telegram on completion):
+
+```json
+{
+  "action": "ANALYSIS_RUN",
+  "kind": "trade_group_review",
+  "params": { "group_id": 56 },
+  "notify": { "telegram": true },
+  "reason": "operator-requested review",
+  "timestamp": "2026-04-30T17:11:00+00:00"
 }
 ```
 
