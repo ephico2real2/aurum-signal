@@ -141,19 +141,22 @@ PENDING_CANCEL_ON_GROUP_CLOSE = os.environ.get("PENDING_CANCEL_ON_GROUP_CLOSE", 
 # Opt-in (default false) so existing groups behave exactly as before unless the
 # operator explicitly enables it. See docs/CLI_API_CHEATSHEET.md § "Profit ratchet".
 PROFIT_RATCHET_ENABLED = os.environ.get("PROFIT_RATCHET_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-# IMPORTANT: pip math here uses _pip_size_for_symbol which returns 0.01 for
-# XAUUSD (broker-point convention). So PROFIT_RATCHET_TRIGGER_PIPS=30 means
-# trigger at $0.30 of unrealised profit, and LOCK_PIPS=5 means SL lands $0.05
-# past entry. Those are the realistic XAU scalping defaults; tweak per
-# instrument volatility.
+# Pip convention used by the ratchet (trader-style, matches the SCRIBE pips
+# column and AURUM/Athena reports):
+#   XAU/XAG  : 1 pip = $0.10  -> LOCK_PIPS=10 means SL pinned $1.00 past entry
+#   JPY pairs: 1 pip = 0.01
+#   majors   : 1 pip = 0.0001
+# This deliberately diverges from _pip_size_for_symbol (which uses broker
+# points = $0.01 for XAU) so the env-var value matches what the operator
+# sees in trade_closures.pips and Telegram alerts.
 try:
-    PROFIT_RATCHET_TRIGGER_PIPS = float(os.environ.get("PROFIT_RATCHET_TRIGGER_PIPS", "30"))
+    PROFIT_RATCHET_TRIGGER_PIPS = float(os.environ.get("PROFIT_RATCHET_TRIGGER_PIPS", "15"))
 except (TypeError, ValueError):
-    PROFIT_RATCHET_TRIGGER_PIPS = 30.0
+    PROFIT_RATCHET_TRIGGER_PIPS = 15.0
 try:
-    PROFIT_RATCHET_LOCK_PIPS = float(os.environ.get("PROFIT_RATCHET_LOCK_PIPS", "5"))
+    PROFIT_RATCHET_LOCK_PIPS = float(os.environ.get("PROFIT_RATCHET_LOCK_PIPS", "10"))
 except (TypeError, ValueError):
-    PROFIT_RATCHET_LOCK_PIPS = 5.0
+    PROFIT_RATCHET_LOCK_PIPS = 10.0
 if PROFIT_RATCHET_TRIGGER_PIPS <= PROFIT_RATCHET_LOCK_PIPS:
     # The trigger must exceed the lock or the move is meaningless.
     PROFIT_RATCHET_LOCK_PIPS = max(0.0, PROFIT_RATCHET_TRIGGER_PIPS - 1.0)
@@ -507,6 +510,24 @@ def _parse_tp_stage_from_comment(comment) -> int | None:
     except (TypeError, ValueError):
         return None
     return stage if stage in (1, 2, 3) else None
+
+
+def _ratchet_pip_size(symbol: str | None) -> float:
+    """Trader-style pip size for the profit ratchet.
+
+    XAU / XAG : 0.10  (1 pip = $0.10)  — matches SCRIBE trade_closures.pips
+    JPY pairs : 0.01
+    majors    : 0.0001
+    fallback  : 0.10  (assume metals when symbol is unknown)
+    """
+    sym = (symbol or "").upper()
+    if sym.startswith(("XAU", "XAG")):
+        return 0.10
+    if len(sym) >= 6 and sym[3:6] == "JPY":
+        return 0.01
+    if len(sym) >= 6 and sym[:6].isalpha():
+        return 0.0001
+    return 0.10
 
 
 def _coerce_modify_scope(cmd: dict) -> tuple[int | None, int | None]:
@@ -1546,10 +1567,13 @@ class Bridge:
             if open_price <= 0 or cur_price <= 0:
                 continue
             symbol = p.get("symbol")
-            pip_size = _pip_size_for_symbol(symbol, open_price, cur_price)
+            pip_size = _ratchet_pip_size(symbol)
             if pip_size <= 0:
                 continue
-            pips = _calc_pips(symbol, direction, open_price, cur_price)
+            raw = cur_price - open_price
+            if direction == "SELL":
+                raw = -raw
+            pips = round(raw / pip_size, 1)
             if pips < trigger:
                 continue
             if direction == "BUY":

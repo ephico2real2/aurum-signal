@@ -611,14 +611,15 @@ def _ratchet_stub(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_profit_ratchet_emits_ticket_scoped_modify_sl(monkeypatch, tmp_path):
+    # Trader-style pip on XAU: 1 pip = $0.10. Trigger 15 = $1.50, lock 10 = $1.00.
     monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
     stub, bm = _ratchet_stub(monkeypatch, tmp_path)
-    # +5 pips (XAU pip=0.01 → 4620.05 = +5p) so > trigger 3.
+    # +20 pips on XAU = $2.00 above entry; well over the 15-pip trigger.
     live = {
         555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
-              "open_price": 4620.0, "current_price": 4620.05,
+              "open_price": 4620.0, "current_price": 4622.0,
               "sl": 4610.0, "tp": 4632.0, "magic": 202416,
               "forge_managed": True, "comment": "FORGE|G99|0|TP1"},
     }
@@ -629,10 +630,10 @@ def test_profit_ratchet_emits_ticket_scoped_modify_sl(monkeypatch, tmp_path):
     assert forge_cmd["action"] == "MODIFY_SL"
     assert forge_cmd["ticket"] == 555
     assert forge_cmd["magic"] == 202416
-    # entry 4620 + lock 1 pip * 0.01 = 4620.01
-    assert forge_cmd["sl"] == pytest.approx(4620.01)
+    # entry 4620 + lock 10 pips * 0.10 = 4621.00
+    assert forge_cmd["sl"] == pytest.approx(4621.0)
     stub._sync_modify_targets.assert_called_once_with(
-        99, sl=pytest.approx(4620.01), tp=None, ticket=555, tp_stage=None,
+        99, sl=pytest.approx(4621.0), tp=None, ticket=555, tp_stage=None,
     )
     assert 555 in stub._profit_ratcheted
 
@@ -640,13 +641,13 @@ def test_profit_ratchet_emits_ticket_scoped_modify_sl(monkeypatch, tmp_path):
 @pytest.mark.unit
 def test_profit_ratchet_idempotent_per_ticket(monkeypatch):
     monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
     stub, bm = _ratchet_stub(monkeypatch, None)
     stub._profit_ratcheted = {555}
     live = {
         555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
-              "open_price": 4620.0, "current_price": 4620.10,
+              "open_price": 4620.0, "current_price": 4622.0,
               "sl": 4610.0, "tp": 4632.0, "magic": 202416,
               "forge_managed": True},
     }
@@ -659,12 +660,12 @@ def test_profit_ratchet_idempotent_per_ticket(monkeypatch):
 @pytest.mark.unit
 def test_profit_ratchet_skips_when_below_trigger(monkeypatch):
     monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
     stub, bm = _ratchet_stub(monkeypatch, None)
     live = {
         555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
-              "open_price": 4620.0, "current_price": 4620.02,  # +2p only
+              "open_price": 4620.0, "current_price": 4620.50,  # +5 trader-pips
               "sl": 4610.0, "tp": 4632.0, "magic": 202416,
               "forge_managed": True},
     }
@@ -676,12 +677,12 @@ def test_profit_ratchet_skips_when_below_trigger(monkeypatch):
 @pytest.mark.unit
 def test_profit_ratchet_skips_when_sl_already_past_lock(monkeypatch):
     monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
     stub, bm = _ratchet_stub(monkeypatch, None)
     live = {
         555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
-              "open_price": 4620.0, "current_price": 4620.10,
+              "open_price": 4620.0, "current_price": 4622.0,
               "sl": 4625.0,  # FORGE already moved to BE+ on TP1
               "tp": 4632.0, "magic": 202416,
               "forge_managed": True},
@@ -696,13 +697,13 @@ def test_profit_ratchet_skips_when_sl_already_past_lock(monkeypatch):
 @pytest.mark.unit
 def test_profit_ratchet_sell_uses_inverted_lock(monkeypatch):
     monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 3.0, raising=False)
-    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 1.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
     stub, bm = _ratchet_stub(monkeypatch, None)
     stub._known_positions[555]["direction"] = "SELL"
     live = {
         555: {"ticket": 555, "symbol": "XAUUSD", "type": "SELL",
-              "open_price": 4620.0, "current_price": 4619.94,  # -6p (SELL profit)
+              "open_price": 4620.0, "current_price": 4618.0,  # -20 trader-pips (SELL profit)
               "sl": 4630.0, "tp": 4610.0, "magic": 202416,
               "forge_managed": True},
     }
@@ -710,8 +711,8 @@ def test_profit_ratchet_sell_uses_inverted_lock(monkeypatch):
         stub._apply_profit_ratchet(live)
     mock_forge.assert_called_once()
     forge_cmd = mock_forge.call_args[0][0]
-    # entry 4620 - lock 1 pip * 0.01 = 4619.99
-    assert forge_cmd["sl"] == pytest.approx(4619.99)
+    # entry 4620 - lock 10 pips * 0.10 = 4619.00
+    assert forge_cmd["sl"] == pytest.approx(4619.0)
 
 
 @pytest.mark.unit
