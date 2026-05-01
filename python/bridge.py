@@ -7,8 +7,11 @@ Entry point: python bridge.py
 """
 
 import os, json, logging, re, time, sys, urllib.error, urllib.request
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable, Optional
 from aeb_executor import execute_action, format_result_for_telegram
 
 from scribe      import get_scribe
@@ -252,6 +255,198 @@ def _write_forge_command(cmd: dict) -> list[str]:
         _write_json(pth, cmd)
         written.append(os.path.abspath(pth))
     return written
+
+
+# ── FORGE command queue ──────────────────────────────────────────
+# FORGE polls MT5/command.json on its OnTimer and dedups by `timestamp`. A
+# single shared file means rapid-fire BRIDGE writes race: each write
+# overwrites the previous payload before FORGE has a chance to consume it,
+# so all but the latest command are silently lost. This bit the live
+# profit-ratchet test on G64 — leg 0 never moved its SL because the next 3
+# ratchet writes clobbered it, then BRIDGE's drift detector "learned" the
+# stale live SL back into its in-memory cache and never retried.
+#
+# The queue serialises FORGE writes: at most one command is in-flight at any
+# time. Each BRIDGE tick the queue pumps once — verifying the in-flight
+# command via a caller-supplied `verifier(mt5)` (or auto-acking after a
+# timeout for fire-and-forget shapes), then popping the next pending entry.
+# Lost commands are retried automatically; chronically un-ackable commands
+# fire `on_drop` so callers (e.g. ratchet) can release their dedup tokens
+# and try again on the next eligibility window.
+_FORGE_QUEUE_ACK_TIMEOUT_SEC = float(os.environ.get("FORGE_QUEUE_ACK_TIMEOUT_SEC", "8.0"))
+_FORGE_QUEUE_MAX_RETRIES = max(0, int(os.environ.get("FORGE_QUEUE_MAX_RETRIES", "2")))
+
+
+@dataclass
+class _ForgeQueueItem:
+    cmd: dict
+    description: str = ""
+    verifier: Optional[Callable[[dict], bool]] = None
+    on_drop: Optional[Callable[[], None]] = None
+    dedup_key: Optional[str] = None
+    enqueued_at: float = field(default_factory=time.time)
+    written_at: Optional[float] = None
+    retries: int = 0
+
+
+class _ForgeCommandQueue:
+    """In-memory FIFO that serialises FORGE command.json writes.
+
+    Behaviour:
+      • At most one command is in-flight (written but not yet ack'd).
+      • `pump(mt5)` is called once per BRIDGE tick. It checks the in-flight
+        verifier and either:
+          - clears it (acked) and pops the next pending command, or
+          - re-writes it on timeout (up to MAX_RETRIES), or
+          - drops it after retries are exhausted, calling `on_drop`.
+      • If `verifier is None`, the command is treated as fire-and-forget and
+        is acked on the very next pump (so subsequent commands still see a
+        ≥1-tick spacing, which is plenty for FORGE's OnTimer to consume).
+      • `dedup_key` lets callers suppress duplicate enqueues (e.g. don't
+        re-enqueue the same MODIFY_SL while one is already pending/in-flight).
+    """
+
+    ACK_TIMEOUT_SEC = _FORGE_QUEUE_ACK_TIMEOUT_SEC
+    MAX_RETRIES = _FORGE_QUEUE_MAX_RETRIES
+
+    def __init__(self, writer: Callable[[dict], list]):
+        self._writer = writer
+        self._pending: "deque[_ForgeQueueItem]" = deque()
+        self._inflight: Optional[_ForgeQueueItem] = None
+
+    # ── Inspection helpers ──
+    def __len__(self) -> int:
+        return len(self._pending) + (1 if self._inflight else 0)
+
+    def has_inflight(self) -> bool:
+        return self._inflight is not None
+
+    def has_pending_or_inflight(self, predicate: Callable[[dict], bool]) -> bool:
+        """Return True if any item (in-flight or pending) matches predicate(cmd)."""
+        try:
+            if self._inflight is not None and predicate(self._inflight.cmd):
+                return True
+            return any(predicate(it.cmd) for it in self._pending)
+        except Exception:
+            return False
+
+    def has_inflight_modify_for_ticket(self, ticket: int) -> bool:
+        """True if a MODIFY_SL/MODIFY_TP for this ticket is queued or in-flight.
+
+        Used by the drift detector to skip the "learn-back" branch while a
+        scoped modify is still propagating to MT5 — otherwise BRIDGE would
+        cache the pre-modify live value and never retry on timeout.
+        """
+        try:
+            t = int(ticket)
+        except (TypeError, ValueError):
+            return False
+
+        def _match(cmd: dict) -> bool:
+            action = str(cmd.get("action") or "").upper()
+            if action not in ("MODIFY_SL", "MODIFY_TP"):
+                return False
+            try:
+                return int(cmd.get("ticket", 0) or 0) == t
+            except (TypeError, ValueError):
+                return False
+
+        return self.has_pending_or_inflight(_match)
+
+    # ── Enqueue / pump ──
+    def enqueue(
+        self,
+        cmd: dict,
+        *,
+        verifier: Optional[Callable[[dict], bool]] = None,
+        description: str = "",
+        on_drop: Optional[Callable[[], None]] = None,
+        dedup_key: Optional[str] = None,
+    ) -> Optional[_ForgeQueueItem]:
+        if dedup_key is not None and self._has_dedup_key(dedup_key):
+            log.debug("BRIDGE queue: deduped enqueue %s (key=%s)", description, dedup_key)
+            return None
+        item = _ForgeQueueItem(
+            cmd=dict(cmd),
+            description=description,
+            verifier=verifier,
+            on_drop=on_drop,
+            dedup_key=dedup_key,
+        )
+        self._pending.append(item)
+        return item
+
+    def _has_dedup_key(self, key: str) -> bool:
+        if self._inflight is not None and self._inflight.dedup_key == key:
+            return True
+        return any(it.dedup_key == key for it in self._pending)
+
+    def pump(self, mt5: dict) -> None:
+        # 1. Reconcile the in-flight command.
+        if self._inflight is not None:
+            verifier = self._inflight.verifier
+            acked = False
+            if verifier is None:
+                # Fire-and-forget: ack on the first pump after the write so
+                # we still introduce one-tick spacing between writes.
+                if self._inflight.written_at is not None:
+                    acked = True
+            else:
+                try:
+                    acked = bool(verifier(mt5 or {}))
+                except Exception as e:
+                    log.debug("BRIDGE queue: verifier raised for %s: %s",
+                              self._inflight.description, e)
+                    acked = False
+            if acked:
+                log.debug("BRIDGE queue: ACK %s", self._inflight.description)
+                self._inflight = None
+            else:
+                age = time.time() - (self._inflight.written_at or time.time())
+                if age >= self.ACK_TIMEOUT_SEC:
+                    if self._inflight.retries >= self.MAX_RETRIES:
+                        log.warning(
+                            "BRIDGE queue: dropping unacked '%s' after %d retries",
+                            self._inflight.description, self._inflight.retries,
+                        )
+                        cb = self._inflight.on_drop
+                        self._inflight = None
+                        if cb is not None:
+                            try:
+                                cb()
+                            except Exception as e:
+                                log.debug("BRIDGE queue: on_drop callback raised: %s", e)
+                    else:
+                        self._inflight.retries += 1
+                        log.warning(
+                            "BRIDGE queue: retry %d/%d for '%s'",
+                            self._inflight.retries, self.MAX_RETRIES,
+                            self._inflight.description,
+                        )
+                        self._write_inflight()
+                        return  # one write per pump
+                else:
+                    return  # still waiting for ack
+
+        # 2. Pop the next pending command (if any).
+        if self._inflight is None and self._pending:
+            self._inflight = self._pending.popleft()
+            self._write_inflight()
+
+    def _write_inflight(self) -> None:
+        if self._inflight is None:
+            return
+        cmd = dict(self._inflight.cmd)
+        # Stamp a fresh timestamp on every write so FORGE's timestamp-dedup
+        # picks up retries as new commands.
+        cmd["timestamp"] = _now()
+        try:
+            self._writer(cmd)
+            self._inflight.written_at = time.time()
+            log.debug("BRIDGE queue: wrote %s", self._inflight.description)
+        except Exception as e:
+            log.warning("BRIDGE queue: write failed for '%s': %s",
+                        self._inflight.description, e)
 
 
 def _forge_config_targets() -> list[str]:
@@ -668,8 +863,15 @@ class Bridge:
         self._known_pendings:  dict[int, dict] = {}   # ticket → snapshot
         self._tracker_seeded = False
         # Profit-ratchet bookkeeping: tickets we've already nudged so we don't
-        # spam FORGE with the same MODIFY_SL every tick.
+        # spam FORGE with the same MODIFY_SL every tick. Cleared on close, on
+        # ratchet drop (so the next eligibility window can retry), and on
+        # SIGNAL group close (to wipe stale entries pointing at recycled tickets).
         self._profit_ratcheted: set[int] = set()
+        # FORGE command queue: serialises command.json writes so rapid-fire
+        # MODIFY_SL/MODIFY_TP sequences (per-ticket profit-ratchet, multi-stage
+        # MGMT modifies) don't race against each other on the shared file. See
+        # _ForgeCommandQueue near _write_forge_command for the protocol.
+        self._forge_queue = _ForgeCommandQueue(_write_forge_command)
         # Session tracking
         self._current_session    = "OFF_HOURS"
         self._current_session_id = None    # SCRIBE trading_sessions row id
@@ -912,6 +1114,16 @@ class Bridge:
                 tp_changed = (live_tp is not None and known_tp is not None
                               and abs(float(live_tp) - float(known_tp)) > 0.005)
                 if sl_changed or tp_changed:
+                    # Suppress "learn-back" while a queued MODIFY for this ticket
+                    # is still propagating to MT5 — otherwise the drift detector
+                    # would cache the pre-modify live values and the queue's
+                    # subsequent verifier would never see the post-modify state
+                    # (the in-flight ratchet/MGMT modify would silently revert).
+                    if self._forge_queue.has_inflight_modify_for_ticket(ticket):
+                        log.debug(
+                            "TRACKER: drift for #%s ignored (modify in-flight)", ticket,
+                        )
+                        continue
                     changes = []
                     if sl_changed:
                         changes.append(f"SL {known_sl}→{live_sl}")
@@ -1541,12 +1753,103 @@ class Bridge:
         if PROFIT_RATCHET_ENABLED:
             self._apply_profit_ratchet(live_positions)
 
+    def _enqueue_forge_command(
+        self,
+        cmd: dict,
+        *,
+        verifier: Optional[Callable[[dict], bool]] = None,
+        description: str = "",
+        on_drop: Optional[Callable[[], None]] = None,
+        dedup_key: Optional[str] = None,
+    ) -> Optional[_ForgeQueueItem]:
+        """Submit a FORGE command through the serialised queue.
+
+        Use this for any MODIFY_SL/MODIFY_TP/CLOSE_* path that may emit
+        multiple commands in rapid succession — the queue ensures FORGE sees
+        every one. For one-shot commands (OPEN_GROUP) `_write_forge_command`
+        directly is still fine.
+        """
+        return self._forge_queue.enqueue(
+            cmd,
+            verifier=verifier,
+            description=description,
+            on_drop=on_drop,
+            dedup_key=dedup_key,
+        )
+
+    @staticmethod
+    def _build_ticket_sl_verifier(
+        ticket: int, target_sl: float, direction: str
+    ) -> Callable[[dict], bool]:
+        """Verifier used for ticket-scoped MODIFY_SL emissions.
+
+        Returns True once the next MT5 snapshot shows the live SL has moved
+        past the target (BUY: ≥, SELL: ≤). If the position no longer appears
+        in `open_positions`, the command is considered settled (the position
+        already closed, e.g. SL/TP hit between writes).
+        """
+        t = int(ticket)
+        d = (direction or "").upper()
+
+        def _verify(mt5: dict) -> bool:
+            for p in (mt5 or {}).get("open_positions") or []:
+                try:
+                    pt = int(p.get("ticket", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if pt != t:
+                    continue
+                try:
+                    live_sl = float(p.get("sl") or 0)
+                except (TypeError, ValueError):
+                    return False
+                if live_sl <= 0:
+                    return False
+                if d == "BUY":
+                    return live_sl >= target_sl - 1e-6
+                return live_sl <= target_sl + 1e-6
+            # ticket no longer present in MT5 → consider acked (closed)
+            return True
+
+        return _verify
+
+    @staticmethod
+    def _build_ticket_tp_verifier(
+        ticket: int, target_tp: float
+    ) -> Callable[[dict], bool]:
+        """Verifier used for ticket-scoped MODIFY_TP emissions."""
+        t = int(ticket)
+
+        def _verify(mt5: dict) -> bool:
+            for p in (mt5 or {}).get("open_positions") or []:
+                try:
+                    pt = int(p.get("ticket", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if pt != t:
+                    continue
+                try:
+                    live_tp = float(p.get("tp") or 0)
+                except (TypeError, ValueError):
+                    return False
+                return abs(live_tp - target_tp) <= 1e-6
+            return True
+
+        return _verify
+
     def _apply_profit_ratchet(self, live_positions: dict[int, dict]) -> None:
         """For every FORGE-managed live position whose unrealised pip gain is
         ≥ PROFIT_RATCHET_TRIGGER_PIPS and whose current SL is still worse than
-        ``entry ± PROFIT_RATCHET_LOCK_PIPS``, emit a per-ticket MODIFY_SL to
-        FORGE so any retracement closes at a small profit instead of giving
-        the move back. Idempotent via ``_profit_ratcheted`` set.
+        ``entry ± PROFIT_RATCHET_LOCK_PIPS``, enqueue a per-ticket MODIFY_SL
+        for FORGE so any retracement closes at a small profit instead of
+        giving the move back.
+
+        Idempotency:
+          • ``_profit_ratcheted`` holds tickets we've already enqueued so we
+            don't duplicate while a write is in-flight.
+          • If the queue ultimately drops the command (FORGE never confirmed
+            the move within retry budget), the on_drop callback removes the
+            ticket from the set so a future eligible tick can re-attempt.
         """
         trigger = float(PROFIT_RATCHET_TRIGGER_PIPS)
         lock = float(PROFIT_RATCHET_LOCK_PIPS)
@@ -1593,23 +1896,42 @@ class Bridge:
                 "action": "MODIFY_SL",
                 "sl": target_sl,
                 "ticket": int(ticket),
-                "timestamp": _now(),
             }
             if magic > 0:
                 forge_cmd["magic"] = magic
-            try:
-                _write_forge_command(forge_cmd)
-            except Exception as e:
-                log.debug("BRIDGE: profit-ratchet write failed for #%s: %s", ticket, e)
+            ticket_int = int(ticket)
+
+            def _on_drop(t=ticket_int) -> None:
+                # Release the dedup token so the next eligible tick can
+                # retry the ratchet — better than silently giving up.
+                self._profit_ratcheted.discard(t)
+                log.warning(
+                    "BRIDGE: profit-ratchet command for #%s dropped after retries; "
+                    "will re-attempt next eligibility window", t,
+                )
+
+            verifier = self._build_ticket_sl_verifier(ticket_int, target_sl, direction)
+            enqueued = self._enqueue_forge_command(
+                forge_cmd,
+                verifier=verifier,
+                description=f"PROFIT_RATCHET ticket={ticket_int} sl={target_sl}",
+                on_drop=_on_drop,
+                dedup_key=f"ratchet:{ticket_int}",
+            )
+            if enqueued is None:
+                # Already pending/in-flight from a prior tick — nothing to do.
                 continue
             try:
                 self._sync_modify_targets(
-                    gid, sl=target_sl, tp=None, ticket=int(ticket), tp_stage=None,
+                    gid, sl=target_sl, tp=None, ticket=ticket_int, tp_stage=None,
                 )
             except Exception as e:
                 log.debug("BRIDGE: profit-ratchet SCRIBE sync tolerated: %s", e)
-            self._profit_ratcheted.add(int(ticket))
-            self._known_positions.setdefault(int(ticket), {})["sl"] = target_sl
+            self._profit_ratcheted.add(ticket_int)
+            # NOTE: we deliberately do NOT pre-update self._known_positions[t]['sl']
+            # to target_sl — the drift detector will pick up the actual live SL
+            # once FORGE applies the modify, and will skip its "learn-back" branch
+            # while the queue still has this MODIFY in flight (see _sync_positions).
             _tlog(
                 "TRACKER", "PROFIT_RATCHET",
                 f"{direction} {pips:+.1f}pips → SL locked at {target_sl} (entry {open_price})",
@@ -1619,7 +1941,7 @@ class Bridge:
                 "PROFIT_RATCHET",
                 reason=f"{pips:+.1f}p ≥ {trigger:.1f}p trigger",
                 notes=json.dumps({
-                    "ticket": int(ticket), "group_id": gid,
+                    "ticket": ticket_int, "group_id": gid,
                     "open_price": open_price, "new_sl": target_sl,
                     "trigger_pips": trigger, "lock_pips": lock,
                 }, default=str),
@@ -1925,7 +2247,17 @@ class Bridge:
             except Exception as e:
                 log.error("BRIDGE: position tracker error: %s", e, exc_info=True)
 
-        # ── 1. SENTINEL check ─────────────────────────────────────
+        # ── 0b. FORGE command queue ────────────────────────────
+        # Drain at most one queued FORGE write per tick. Pumping AFTER
+        # _sync_positions ensures we have the freshest mt5 snapshot for the
+        # in-flight verifier (e.g. ratchet checks live SL has moved). It
+        # runs even when mt5 is stale so the ack timeout path still ticks.
+        try:
+            self._forge_queue.pump(mt5 if mt5_fresh else {})
+        except Exception as e:
+            log.error("BRIDGE: forge queue pump error: %s", e, exc_info=True)
+
+        # ── 1. SENTINEL check ───────────────────────────────────
         # Auto-revert sentinel user override after timeout
         if self._sentinel_user_override and now > self._sentinel_override_until:
             log.info("BRIDGE: Sentinel user override EXPIRED — reverting to normal")
@@ -2497,36 +2829,79 @@ class Bridge:
             if sl:
                 slv = float(sl)
                 ticket, stage = _coerce_modify_scope(mgmt)
-                cmd = {"action": "MODIFY_SL", "sl": slv, "timestamp": _now()}
+                forge_cmd = {"action": "MODIFY_SL", "sl": slv}
                 if mgmt_gid:
                     magic = self._lookup_group_magic(int(mgmt_gid))
                     if magic:
-                        cmd["magic"] = magic
+                        forge_cmd["magic"] = magic
                 if ticket is not None:
-                    cmd["ticket"] = ticket
+                    forge_cmd["ticket"] = ticket
                 if stage is not None:
-                    cmd["tp_stage"] = stage
+                    forge_cmd["tp_stage"] = stage
+                if ticket is not None:
+                    direction_hint = (
+                        self._known_positions.get(int(ticket), {}).get("direction")
+                        or "BUY"
+                    )
+                    verifier = self._build_ticket_sl_verifier(
+                        int(ticket), slv, direction_hint,
+                    )
+                else:
+                    verifier = None
+                # Use the queue, not the legacy `cmd` fall-through, so we get
+                # serialised writes + retries.
+                self._enqueue_forge_command(
+                    forge_cmd,
+                    verifier=verifier,
+                    description=(
+                        f"MGMT MODIFY_SL sl={slv} group={mgmt_gid} "
+                        f"ticket={ticket} stage={stage}"
+                    ),
+                )
                 self._sync_modify_targets(
                     mgmt_gid, sl=slv, tp=None, ticket=ticket, tp_stage=stage,
                 )
+                self._bridge_activity(
+                    "MGMT_COMMAND", reason="MODIFY_SL",
+                    notes=json.dumps({"forge_action": "MODIFY_SL"}, default=str),
+                )
+                cmd = None
 
         elif intent == "MODIFY_TP":
             tp = mgmt.get("tp")
             if tp:
                 tpv = float(tp)
                 ticket, stage = _coerce_modify_scope(mgmt)
-                cmd = {"action": "MODIFY_TP", "tp": tpv, "timestamp": _now()}
+                forge_cmd = {"action": "MODIFY_TP", "tp": tpv}
                 if mgmt_gid:
                     magic = self._lookup_group_magic(int(mgmt_gid))
                     if magic:
-                        cmd["magic"] = magic
+                        forge_cmd["magic"] = magic
                 if ticket is not None:
-                    cmd["ticket"] = ticket
+                    forge_cmd["ticket"] = ticket
                 if stage is not None:
-                    cmd["tp_stage"] = stage
+                    forge_cmd["tp_stage"] = stage
+                verifier = (
+                    self._build_ticket_tp_verifier(int(ticket), tpv)
+                    if ticket is not None
+                    else None
+                )
+                self._enqueue_forge_command(
+                    forge_cmd,
+                    verifier=verifier,
+                    description=(
+                        f"MGMT MODIFY_TP tp={tpv} group={mgmt_gid} "
+                        f"ticket={ticket} stage={stage}"
+                    ),
+                )
                 self._sync_modify_targets(
                     mgmt_gid, sl=None, tp=tpv, ticket=ticket, tp_stage=stage,
                 )
+                self._bridge_activity(
+                    "MGMT_COMMAND", reason="MODIFY_TP",
+                    notes=json.dumps({"forge_action": "MODIFY_TP"}, default=str),
+                )
+                cmd = None
 
         elif intent == "CLOSE_GROUP":
             gid = mgmt.get("group_id")
@@ -2954,7 +3329,7 @@ class Bridge:
             if tp:
                 tpv = float(tp)
                 ticket, stage = _coerce_modify_scope(cmd)
-                forge_cmd = {"action": "MODIFY_TP", "tp": tpv, "timestamp": _now()}
+                forge_cmd = {"action": "MODIFY_TP", "tp": tpv}
                 if gid:
                     magic = self._lookup_group_magic(int(gid))
                     if magic:
@@ -2963,7 +3338,21 @@ class Bridge:
                     forge_cmd["ticket"] = ticket
                 if stage is not None:
                     forge_cmd["tp_stage"] = stage
-                _write_forge_command(forge_cmd)
+                # Ticket-scoped modifies get a strict verifier; broader scopes
+                # (stage / group / global) fall back to one-tick spacing.
+                verifier = (
+                    self._build_ticket_tp_verifier(int(ticket), tpv)
+                    if ticket is not None
+                    else None
+                )
+                self._enqueue_forge_command(
+                    forge_cmd,
+                    verifier=verifier,
+                    description=(
+                        f"AURUM MODIFY_TP tp={tpv} group={gid} "
+                        f"ticket={ticket} stage={stage}"
+                    ),
+                )
                 self._sync_modify_targets(
                     gid, sl=None, tp=tpv, ticket=ticket, tp_stage=stage,
                 )
@@ -2984,7 +3373,7 @@ class Bridge:
             if sl:
                 slv = float(sl)
                 ticket, stage = _coerce_modify_scope(cmd)
-                forge_cmd = {"action": "MODIFY_SL", "sl": slv, "timestamp": _now()}
+                forge_cmd = {"action": "MODIFY_SL", "sl": slv}
                 if gid:
                     magic = self._lookup_group_magic(int(gid))
                     if magic:
@@ -2993,7 +3382,28 @@ class Bridge:
                     forge_cmd["ticket"] = ticket
                 if stage is not None:
                     forge_cmd["tp_stage"] = stage
-                _write_forge_command(forge_cmd)
+                # Ticket-scoped MODIFY_SL benefits from a strict verifier
+                # (matches the profit-ratchet path). For broader scopes the
+                # queue uses the fire-and-forget ack so successive commands
+                # still get ≥1-tick spacing.
+                if ticket is not None:
+                    direction_hint = (
+                        self._known_positions.get(int(ticket), {}).get("direction")
+                        or "BUY"
+                    )
+                    verifier = self._build_ticket_sl_verifier(
+                        int(ticket), slv, direction_hint,
+                    )
+                else:
+                    verifier = None
+                self._enqueue_forge_command(
+                    forge_cmd,
+                    verifier=verifier,
+                    description=(
+                        f"AURUM MODIFY_SL sl={slv} group={gid} "
+                        f"ticket={ticket} stage={stage}"
+                    ),
+                )
                 self._sync_modify_targets(
                     gid, sl=slv, tp=None, ticket=ticket, tp_stage=stage,
                 )

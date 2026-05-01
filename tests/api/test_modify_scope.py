@@ -347,16 +347,20 @@ def test_aurum_modify_tp_forwards_stage_and_ticket(monkeypatch, tmp_path):
     }
     stub, bm = _stub_bridge_for_aurum(monkeypatch, cmd, tmp_path)
 
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        bm.Bridge._check_aurum_command(stub, {})
+    # Bind the verifier builders so the queue path can construct them.
+    stub._build_ticket_tp_verifier = bm.Bridge._build_ticket_tp_verifier
+    bm.Bridge._check_aurum_command(stub, {})
 
-    mock_forge.assert_called_once()
-    forge_cmd = mock_forge.call_args[0][0]
+    stub._enqueue_forge_command.assert_called_once()
+    forge_cmd = stub._enqueue_forge_command.call_args[0][0]
     assert forge_cmd["action"] == "MODIFY_TP"
     assert forge_cmd["tp"] == 4648.0
     assert forge_cmd["magic"] == 202416
     assert forge_cmd["ticket"] == 1122706681
     assert forge_cmd["tp_stage"] == 1
+    # Ticket-scoped MODIFY_TP must come with a verifier so the queue waits
+    # for FORGE to apply it before advancing.
+    assert stub._enqueue_forge_command.call_args.kwargs.get("verifier") is not None
     stub._sync_modify_targets.assert_called_once_with(
         15, sl=None, tp=4648.0, ticket=1122706681, tp_stage=1,
     )
@@ -372,15 +376,19 @@ def test_aurum_modify_sl_stage_only(monkeypatch, tmp_path):
         "timestamp": "2026-04-30T19:00:00+00:00",
     }
     stub, bm = _stub_bridge_for_aurum(monkeypatch, cmd, tmp_path)
+    stub._build_ticket_sl_verifier = bm.Bridge._build_ticket_sl_verifier
+    stub._known_positions = {}
 
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        bm.Bridge._check_aurum_command(stub, {})
+    bm.Bridge._check_aurum_command(stub, {})
 
-    forge_cmd = mock_forge.call_args[0][0]
+    forge_cmd = stub._enqueue_forge_command.call_args[0][0]
     assert forge_cmd["action"] == "MODIFY_SL"
     assert forge_cmd["sl"] == 4660.0
     assert "ticket" not in forge_cmd
     assert forge_cmd["tp_stage"] == 2
+    # Stage-scoped (no ticket) modifies use the queue's fire-and-forget ack
+    # — verifier should be None.
+    assert stub._enqueue_forge_command.call_args.kwargs.get("verifier") is None
     stub._sync_modify_targets.assert_called_once_with(
         15, sl=4660.0, tp=None, ticket=None, tp_stage=2,
     )
@@ -395,13 +403,15 @@ def test_aurum_modify_legacy_unscoped_still_works(monkeypatch, tmp_path):
         "timestamp": "2026-04-30T19:01:00+00:00",
     }
     stub, bm = _stub_bridge_for_aurum(monkeypatch, cmd, tmp_path)
+    stub._build_ticket_tp_verifier = bm.Bridge._build_ticket_tp_verifier
 
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        bm.Bridge._check_aurum_command(stub, {})
+    bm.Bridge._check_aurum_command(stub, {})
 
-    forge_cmd = mock_forge.call_args[0][0]
+    forge_cmd = stub._enqueue_forge_command.call_args[0][0]
     assert "ticket" not in forge_cmd
     assert "tp_stage" not in forge_cmd
+    # Group-wide modify (no ticket): no verifier; queue uses 1-tick spacing.
+    assert stub._enqueue_forge_command.call_args.kwargs.get("verifier") is None
     stub._sync_modify_targets.assert_called_once_with(
         7, sl=None, tp=4700.0, ticket=None, tp_stage=None,
     )
@@ -548,6 +558,10 @@ def test_tracker_tp_drift_only_updates_drifted_ticket(tmp_path, monkeypatch):
     }
     stub._known_unmanaged_positions = {}
     stub._known_pendings = {}
+    # No queued modifies in flight — the drift detector must process the
+    # divergence (this test predates the queue).
+    stub._forge_queue = MagicMock()
+    stub._forge_queue.has_inflight_modify_for_ticket = MagicMock(return_value=False)
 
     # Live MT5 view: only the TP2 leg (#1002) drifted from 105 -> 110.
     mt5 = {
@@ -605,6 +619,7 @@ def _ratchet_stub(monkeypatch, tmp_path):
     stub._profit_ratcheted = set()
     stub._sync_modify_targets = MagicMock()
     stub._bridge_activity = MagicMock()
+    stub._build_ticket_sl_verifier = bm.Bridge._build_ticket_sl_verifier
     stub._apply_profit_ratchet = bm.Bridge._apply_profit_ratchet.__get__(stub)
     return stub, bm
 
@@ -623,15 +638,23 @@ def test_profit_ratchet_emits_ticket_scoped_modify_sl(monkeypatch, tmp_path):
               "sl": 4610.0, "tp": 4632.0, "magic": 202416,
               "forge_managed": True, "comment": "FORGE|G99|0|TP1"},
     }
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        stub._apply_profit_ratchet(live)
-    mock_forge.assert_called_once()
-    forge_cmd = mock_forge.call_args[0][0]
+    stub._apply_profit_ratchet(live)
+    # The ratchet must enqueue — not write directly — so the queue serialises
+    # subsequent emissions and protects against the command.json overwrite race.
+    stub._enqueue_forge_command.assert_called_once()
+    forge_cmd = stub._enqueue_forge_command.call_args[0][0]
     assert forge_cmd["action"] == "MODIFY_SL"
     assert forge_cmd["ticket"] == 555
     assert forge_cmd["magic"] == 202416
     # entry 4620 + lock 10 pips * 0.10 = 4621.00
     assert forge_cmd["sl"] == pytest.approx(4621.0)
+    # Verifier + on_drop + dedup_key must all be supplied so the queue can
+    # confirm the move, retry on loss, and release the dedup token if the
+    # command is ultimately dropped.
+    kwargs = stub._enqueue_forge_command.call_args.kwargs
+    assert callable(kwargs.get("verifier"))
+    assert callable(kwargs.get("on_drop"))
+    assert kwargs.get("dedup_key") == "ratchet:555"
     stub._sync_modify_targets.assert_called_once_with(
         99, sl=pytest.approx(4621.0), tp=None, ticket=555, tp_stage=None,
     )
@@ -651,9 +674,8 @@ def test_profit_ratchet_idempotent_per_ticket(monkeypatch):
               "sl": 4610.0, "tp": 4632.0, "magic": 202416,
               "forge_managed": True},
     }
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        stub._apply_profit_ratchet(live)
-    mock_forge.assert_not_called()
+    stub._apply_profit_ratchet(live)
+    stub._enqueue_forge_command.assert_not_called()
     stub._sync_modify_targets.assert_not_called()
 
 
@@ -669,9 +691,8 @@ def test_profit_ratchet_skips_when_below_trigger(monkeypatch):
               "sl": 4610.0, "tp": 4632.0, "magic": 202416,
               "forge_managed": True},
     }
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        stub._apply_profit_ratchet(live)
-    mock_forge.assert_not_called()
+    stub._apply_profit_ratchet(live)
+    stub._enqueue_forge_command.assert_not_called()
 
 
 @pytest.mark.unit
@@ -687,9 +708,8 @@ def test_profit_ratchet_skips_when_sl_already_past_lock(monkeypatch):
               "tp": 4632.0, "magic": 202416,
               "forge_managed": True},
     }
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        stub._apply_profit_ratchet(live)
-    mock_forge.assert_not_called()
+    stub._apply_profit_ratchet(live)
+    stub._enqueue_forge_command.assert_not_called()
     # Marked as ratcheted so we don't re-evaluate next tick.
     assert 555 in stub._profit_ratcheted
 
@@ -707,10 +727,9 @@ def test_profit_ratchet_sell_uses_inverted_lock(monkeypatch):
               "sl": 4630.0, "tp": 4610.0, "magic": 202416,
               "forge_managed": True},
     }
-    with patch.object(bm, "_write_forge_command") as mock_forge:
-        stub._apply_profit_ratchet(live)
-    mock_forge.assert_called_once()
-    forge_cmd = mock_forge.call_args[0][0]
+    stub._apply_profit_ratchet(live)
+    stub._enqueue_forge_command.assert_called_once()
+    forge_cmd = stub._enqueue_forge_command.call_args[0][0]
     # entry 4620 - lock 10 pips * 0.10 = 4619.00
     assert forge_cmd["sl"] == pytest.approx(4619.0)
 
@@ -726,3 +745,247 @@ def test_profit_ratchet_disabled_short_circuits(monkeypatch):
     if bm.PROFIT_RATCHET_ENABLED:
         stub._apply_profit_ratchet({1: {"foo": "bar"}})
     stub._apply_profit_ratchet.assert_not_called()
+
+
+# ── BRIDGE: FORGE command queue ───────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_forge_queue_writes_at_most_one_command_per_pump(monkeypatch):
+    """The whole point: rapid-fire enqueues must not race on command.json."""
+    import bridge as bm
+
+    writes: list[dict] = []
+    queue = bm._ForgeCommandQueue(lambda c: writes.append(dict(c)))
+    # Enqueue 4 ticket-scoped MODIFY_SL commands as the live ratchet did.
+    for i, ticket in enumerate((10, 20, 30, 40)):
+        queue.enqueue(
+            {"action": "MODIFY_SL", "sl": 4621.0 + i, "ticket": ticket},
+            description=f"test-{ticket}",
+        )
+    # First pump: only the first command is written.
+    queue.pump({})
+    assert len(writes) == 1
+    assert writes[0]["ticket"] == 10
+    # Second pump: fire-and-forget verifier auto-acks → second command flushes.
+    queue.pump({})
+    assert len(writes) == 2
+    assert writes[1]["ticket"] == 20
+    # Drain the rest.
+    queue.pump({})
+    queue.pump({})
+    assert [w["ticket"] for w in writes] == [10, 20, 30, 40]
+
+
+@pytest.mark.unit
+def test_forge_queue_holds_inflight_until_verifier_passes():
+    import bridge as bm
+
+    writes: list[dict] = []
+    queue = bm._ForgeCommandQueue(lambda c: writes.append(dict(c)))
+    state = {"applied": False}
+
+    def verifier(_mt5: dict) -> bool:
+        return state["applied"]
+
+    queue.enqueue({"action": "MODIFY_SL", "sl": 4621.0, "ticket": 10},
+                   verifier=verifier, description="strict")
+    queue.enqueue({"action": "MODIFY_SL", "sl": 4622.0, "ticket": 20},
+                   description="after-strict")
+    queue.pump({})
+    assert len(writes) == 1
+    # Verifier still false → next command stays queued.
+    queue.pump({})
+    assert len(writes) == 1
+    # FORGE applied the change → verifier passes → next pump advances.
+    state["applied"] = True
+    queue.pump({})
+    assert len(writes) == 2
+    assert writes[1]["ticket"] == 20
+
+
+@pytest.mark.unit
+def test_forge_queue_retries_on_timeout_and_drops_after_budget(monkeypatch):
+    import bridge as bm
+
+    writes: list[dict] = []
+    queue = bm._ForgeCommandQueue(lambda c: writes.append(dict(c)))
+    queue.ACK_TIMEOUT_SEC = 0.0  # every pump is past the timeout
+    queue.MAX_RETRIES = 2
+    drop_called: list[bool] = []
+    queue.enqueue(
+        {"action": "MODIFY_SL", "sl": 1.0, "ticket": 99},
+        verifier=lambda _m: False,  # never ack
+        description="never-ack",
+        on_drop=lambda: drop_called.append(True),
+    )
+    queue.pump({})           # initial write
+    assert len(writes) == 1
+    queue.pump({})           # retry 1
+    queue.pump({})           # retry 2
+    assert len(writes) == 3
+    # Next pump times out after MAX_RETRIES → drop + on_drop fires.
+    queue.pump({})
+    assert drop_called == [True]
+    assert not queue.has_inflight()
+
+
+@pytest.mark.unit
+def test_forge_queue_dedup_key_suppresses_duplicate_enqueue():
+    import bridge as bm
+
+    writes: list[dict] = []
+    queue = bm._ForgeCommandQueue(lambda c: writes.append(dict(c)))
+    first = queue.enqueue(
+        {"action": "MODIFY_SL", "sl": 1.0, "ticket": 7},
+        description="first", dedup_key="ratchet:7",
+    )
+    dup = queue.enqueue(
+        {"action": "MODIFY_SL", "sl": 2.0, "ticket": 7},
+        description="dup", dedup_key="ratchet:7",
+    )
+    assert first is not None
+    assert dup is None
+    queue.pump({})
+    assert len(writes) == 1
+    assert writes[0]["sl"] == 1.0
+
+
+@pytest.mark.unit
+def test_forge_queue_has_inflight_modify_for_ticket():
+    import bridge as bm
+
+    queue = bm._ForgeCommandQueue(lambda c: None)
+    queue.enqueue(
+        {"action": "MODIFY_SL", "sl": 1.0, "ticket": 42},
+        description="pending-only",
+    )
+    # Pending counts.
+    assert queue.has_inflight_modify_for_ticket(42)
+    assert not queue.has_inflight_modify_for_ticket(7)
+    # Pump → still tracked while in-flight.
+    queue.pump({})
+    assert queue.has_inflight_modify_for_ticket(42)
+    # CLOSE_GROUP for the same ticket must not match (only MODIFY_*).
+    queue.enqueue(
+        {"action": "CLOSE_GROUP", "ticket": 7},
+        description="close",
+    )
+    assert not queue.has_inflight_modify_for_ticket(7)
+
+
+@pytest.mark.unit
+def test_drift_detector_skips_learn_back_when_modify_inflight(monkeypatch, tmp_path):
+    """The drift detector must not cache the pre-modify live SL while a queued
+    MODIFY for the same ticket is still propagating to MT5 — otherwise the
+    queue's verifier would never see the post-modify state.
+    """
+    import bridge as bm
+
+    s = _fresh_scribe(tmp_path)
+    gid = s.log_trade_group(
+        {"direction": "BUY", "entry_low": 100, "entry_high": 100, "sl": 99,
+         "tp1": 101, "tp2": None, "tp3": None, "num_trades": 1,
+         "lot_per_trade": 0.01, "source": "SIGNAL"},
+        "SIGNAL",
+    )
+    s.log_trade_position(
+        gid,
+        {"ticket": 1234, "magic": 202416, "direction": "BUY", "lot_size": 0.01,
+         "entry_price": 100, "sl": 99, "tp": 101, "tp_stage": 1},
+        "SIGNAL",
+    )
+
+    stub = MagicMock()
+    stub.scribe = s
+    stub._tracker_seeded = True
+    stub._known_positions = {
+        1234: {"group_id": gid, "magic": 202416, "direction": "BUY",
+                "open_price": 100.0, "sl": 105.0,  # cached "target" from queued ratchet
+                "tp": 101.0, "current_price": 100.5},
+    }
+    stub._known_unmanaged_positions = {}
+    stub._known_pendings = {}
+    stub._open_groups = {gid: {"id": gid, "sl": 99.0}}
+    stub._effective_mode = MagicMock(return_value="SIGNAL")
+    stub._resolve_group_for_magic = MagicMock(return_value=gid)
+    stub._sync_group_targets = MagicMock()
+    stub._sync_all_open_group_targets = MagicMock()
+    stub._bridge_activity = MagicMock()
+    stub.herald = MagicMock()
+    # Real queue with one MODIFY_SL for ticket 1234 already in-flight
+    # (mirrors the ratchet's enqueue from a prior tick).
+    stub._forge_queue = bm._ForgeCommandQueue(lambda c: None)
+    stub._forge_queue.enqueue(
+        {"action": "MODIFY_SL", "sl": 105.0, "ticket": 1234},
+        description="pre-existing-ratchet",
+    )
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", False, raising=False)
+
+    # Live MT5 still shows the OLD SL (FORGE hasn't applied the modify yet).
+    mt5 = {
+        "open_positions": [
+            {"ticket": 1234, "symbol": "XAUUSD", "type": "BUY",
+             "open_price": 100.0, "current_price": 100.5,
+             "sl": 99.0,  # pre-modify — drift detector would normally cache this
+             "tp": 101.0, "profit": 0.0, "magic": 202416,
+             "forge_managed": True, "comment": "FORGE|G1|0|TP1"},
+        ],
+        "pending_orders": [],
+    }
+
+    bm.Bridge._sync_positions(stub, mt5)
+
+    # Drift detector must NOT have learned the live SL back into the cache.
+    assert stub._known_positions[1234]["sl"] == 105.0
+    # SCRIBE must remain at the queued target (or untouched) — here we just
+    # assert the helper that would mirror live→SCRIBE was not invoked for SL.
+    rows = s.query(
+        "SELECT sl FROM trade_positions WHERE ticket=?", (1234,))
+    # log_trade_position wrote 99.0 — the drift skip means it stays at 99.0
+    # rather than getting overwritten with another 99.0; the key invariant is
+    # the cache stays at 105.0 so the queue's verifier can detect ack later.
+    assert rows[0]["sl"] == pytest.approx(99.0)
+
+
+@pytest.mark.unit
+def test_profit_ratchet_on_drop_clears_dedup_token(monkeypatch, tmp_path):
+    """If the queue ultimately drops a ratchet command, the on_drop callback
+    must release the dedup token so the next eligible tick can re-enqueue.
+    """
+    import bridge as bm
+
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
+
+    real_queue = bm._ForgeCommandQueue(lambda c: None)
+    real_queue.ACK_TIMEOUT_SEC = 0.0
+    real_queue.MAX_RETRIES = 0
+
+    stub, _ = _ratchet_stub(monkeypatch, tmp_path)
+    stub._forge_queue = real_queue
+    stub._enqueue_forge_command = bm.Bridge._enqueue_forge_command.__get__(stub)
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4622.0,
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True},
+    }
+    stub._apply_profit_ratchet(live)
+    assert 555 in stub._profit_ratcheted
+    # The verifier inspects mt5["open_positions"]; passing the pre-modify
+    # snapshot keeps it returning False so the queue actually drops.
+    pre_modify = {
+        "open_positions": [
+            {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+             "open_price": 4620.0, "current_price": 4622.0,
+             "sl": 4610.0, "tp": 4632.0, "profit": 0.0,
+             "magic": 202416, "forge_managed": True,
+             "comment": "FORGE|G99|0|TP1"},
+        ],
+    }
+    # Pump once — writes the command. Next pump times out (MAX_RETRIES=0) → drop.
+    real_queue.pump(pre_modify)
+    real_queue.pump(pre_modify)  # timeout → drop + on_drop fires
+    assert 555 not in stub._profit_ratcheted
