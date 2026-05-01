@@ -163,6 +163,19 @@ except (TypeError, ValueError):
 if PROFIT_RATCHET_TRIGGER_PIPS <= PROFIT_RATCHET_LOCK_PIPS:
     # The trigger must exceed the lock or the move is meaningless.
     PROFIT_RATCHET_LOCK_PIPS = max(0.0, PROFIT_RATCHET_TRIGGER_PIPS - 1.0)
+# Hybrid TP tightening alongside the SL pin: when a leg crosses the trigger,
+# also pull its TP down (BUY) / up (SELL) to current_price ± buffer * pip_size
+# so further forward movement closes the leg with a TP_HIT (positive close)
+# instead of letting the SL ratchet catch it on a retrace. Per-ticket scope:
+# the leg that crossed the trigger is the only one tightened — sibling legs
+# in the same group keep their original TP1/TP2/TP3 targets and continue
+# running. Set to 0 to disable TP tightening (pure SL ratchet behaviour).
+try:
+    PROFIT_RATCHET_TP_BUFFER_PIPS = float(os.environ.get("PROFIT_RATCHET_TP_BUFFER_PIPS", "5"))
+except (TypeError, ValueError):
+    PROFIT_RATCHET_TP_BUFFER_PIPS = 5.0
+if PROFIT_RATCHET_TP_BUFFER_PIPS < 0:
+    PROFIT_RATCHET_TP_BUFFER_PIPS = 0.0
 # Optional SIGNAL-source override of TP1_CLOSE_PCT (mirrors AEGIS_SIGNAL_MIN_RR pattern)
 _SIG_TP1_RAW = os.environ.get("SIGNAL_TP1_CLOSE_PCT", "").strip()
 try:
@@ -1932,9 +1945,47 @@ class Bridge:
             # to target_sl — the drift detector will pick up the actual live SL
             # once FORGE applies the modify, and will skip its "learn-back" branch
             # while the queue still has this MODIFY in flight (see _sync_positions).
+
+            # Hybrid TP tightening: enqueue a per-ticket MODIFY_TP that pulls
+            # this leg's TP toward current_price + buffer. Per-ticket scope
+            # means only the triggered leg is tightened — sibling legs keep
+            # their original TP1/TP2/TP3 targets and continue running. If the
+            # tightened TP would not actually tighten (i.e. it's already past
+            # current price + buffer), we skip the TP enqueue.
+            target_tp = self._compute_ratchet_tp(direction, cur_price, pip_size, p)
+            if target_tp is not None:
+                tp_cmd = {
+                    "action": "MODIFY_TP",
+                    "tp": target_tp,
+                    "ticket": ticket_int,
+                }
+                if magic > 0:
+                    tp_cmd["magic"] = magic
+                tp_verifier = self._build_ticket_tp_verifier(ticket_int, target_tp)
+                self._enqueue_forge_command(
+                    tp_cmd,
+                    verifier=tp_verifier,
+                    description=(
+                        f"PROFIT_RATCHET_TP ticket={ticket_int} tp={target_tp}"
+                    ),
+                    dedup_key=f"ratchet_tp:{ticket_int}",
+                )
+                try:
+                    self._sync_modify_targets(
+                        gid, sl=None, tp=target_tp,
+                        ticket=ticket_int, tp_stage=None,
+                    )
+                except Exception as e:
+                    log.debug("BRIDGE: profit-ratchet TP SCRIBE sync tolerated: %s", e)
+
+            tp_note = (
+                f" + TP tightened to {target_tp}"
+                if target_tp is not None else ""
+            )
             _tlog(
                 "TRACKER", "PROFIT_RATCHET",
-                f"{direction} {pips:+.1f}pips → SL locked at {target_sl} (entry {open_price})",
+                f"{direction} {pips:+.1f}pips → SL locked at {target_sl}"
+                f"{tp_note} (entry {open_price})",
                 group_id=gid, ticket=ticket,
             )
             self._bridge_activity(
@@ -1943,17 +1994,62 @@ class Bridge:
                 notes=json.dumps({
                     "ticket": ticket_int, "group_id": gid,
                     "open_price": open_price, "new_sl": target_sl,
+                    "new_tp": target_tp,
                     "trigger_pips": trigger, "lock_pips": lock,
+                    "tp_buffer_pips": float(PROFIT_RATCHET_TP_BUFFER_PIPS),
                 }, default=str),
             )
             try:
+                tp_msg = (
+                    f"\nTP tightened to <code>{target_tp}</code>"
+                    if target_tp is not None else ""
+                )
                 self.herald.send(
                     f"🛡️ <b>PROFIT LOCKED</b> — G{gid} #{ticket}\n"
                     f"{direction} +{pips:.1f}p → SL moved to <code>{target_sl}</code> "
                     f"({lock:+.1f}p from entry)"
+                    f"{tp_msg}"
                 )
             except Exception as _he:
                 log.debug("TRACKER profit-ratchet herald error: %s", _he)
+
+    @staticmethod
+    def _compute_ratchet_tp(
+        direction: str,
+        cur_price: float,
+        pip_size: float,
+        position_view: dict,
+    ) -> Optional[float]:
+        """Compute the tightened TP for the hybrid ratchet, or None to skip.
+
+        Skips the tighten when:
+          • ``PROFIT_RATCHET_TP_BUFFER_PIPS`` is 0 (feature disabled);
+          • The position has no resting TP today (target would be a regression);
+          • The proposed TP would NOT actually tighten the existing TP
+            (BUY: target_tp ≥ live_tp; SELL: target_tp ≤ live_tp).
+        """
+        buffer_pips = float(PROFIT_RATCHET_TP_BUFFER_PIPS)
+        if buffer_pips <= 0 or pip_size <= 0:
+            return None
+        try:
+            live_tp = float(position_view.get("tp") or 0)
+        except (TypeError, ValueError):
+            live_tp = 0.0
+        if live_tp <= 0:
+            # Position has no resting TP — don't introduce one here; the SL
+            # ratchet is already protecting the downside.
+            return None
+        offset = buffer_pips * pip_size
+        if direction == "BUY":
+            target_tp = round(cur_price + offset, 5)
+            # Tighten only if it pulls the TP CLOSER (lower for BUY).
+            if target_tp >= live_tp - 1e-6:
+                return None
+        else:
+            target_tp = round(cur_price - offset, 5)
+            if target_tp <= live_tp + 1e-6:
+                return None
+        return target_tp
 
     def _sync_open_groups_from_scribe(self):
         """Reload BRIDGE's open-group map from SCRIBE so ATHENA/reconciler stay aligned."""

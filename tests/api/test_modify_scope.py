@@ -620,6 +620,8 @@ def _ratchet_stub(monkeypatch, tmp_path):
     stub._sync_modify_targets = MagicMock()
     stub._bridge_activity = MagicMock()
     stub._build_ticket_sl_verifier = bm.Bridge._build_ticket_sl_verifier
+    stub._build_ticket_tp_verifier = bm.Bridge._build_ticket_tp_verifier
+    stub._compute_ratchet_tp = bm.Bridge._compute_ratchet_tp
     stub._apply_profit_ratchet = bm.Bridge._apply_profit_ratchet.__get__(stub)
     return stub, bm
 
@@ -630,6 +632,7 @@ def test_profit_ratchet_emits_ticket_scoped_modify_sl(monkeypatch, tmp_path):
     monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
     monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
     monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TP_BUFFER_PIPS", 5.0, raising=False)
     stub, bm = _ratchet_stub(monkeypatch, tmp_path)
     # +20 pips on XAU = $2.00 above entry; well over the 15-pip trigger.
     live = {
@@ -639,24 +642,40 @@ def test_profit_ratchet_emits_ticket_scoped_modify_sl(monkeypatch, tmp_path):
               "forge_managed": True, "comment": "FORGE|G99|0|TP1"},
     }
     stub._apply_profit_ratchet(live)
-    # The ratchet must enqueue — not write directly — so the queue serialises
-    # subsequent emissions and protects against the command.json overwrite race.
-    stub._enqueue_forge_command.assert_called_once()
-    forge_cmd = stub._enqueue_forge_command.call_args[0][0]
-    assert forge_cmd["action"] == "MODIFY_SL"
-    assert forge_cmd["ticket"] == 555
-    assert forge_cmd["magic"] == 202416
+    # Hybrid ratchet enqueues TWO commands: SL pin + tightened TP. Both must
+    # go through the queue so the command.json overwrite race can't drop
+    # either of them silently.
+    assert stub._enqueue_forge_command.call_count == 2
+    sl_call, tp_call = stub._enqueue_forge_command.call_args_list
+
+    sl_cmd = sl_call.args[0]
+    assert sl_cmd["action"] == "MODIFY_SL"
+    assert sl_cmd["ticket"] == 555
+    assert sl_cmd["magic"] == 202416
     # entry 4620 + lock 10 pips * 0.10 = 4621.00
-    assert forge_cmd["sl"] == pytest.approx(4621.0)
-    # Verifier + on_drop + dedup_key must all be supplied so the queue can
-    # confirm the move, retry on loss, and release the dedup token if the
-    # command is ultimately dropped.
-    kwargs = stub._enqueue_forge_command.call_args.kwargs
-    assert callable(kwargs.get("verifier"))
-    assert callable(kwargs.get("on_drop"))
-    assert kwargs.get("dedup_key") == "ratchet:555"
-    stub._sync_modify_targets.assert_called_once_with(
+    assert sl_cmd["sl"] == pytest.approx(4621.0)
+    sl_kwargs = sl_call.kwargs
+    assert callable(sl_kwargs.get("verifier"))
+    assert callable(sl_kwargs.get("on_drop"))
+    assert sl_kwargs.get("dedup_key") == "ratchet:555"
+
+    tp_cmd = tp_call.args[0]
+    assert tp_cmd["action"] == "MODIFY_TP"
+    assert tp_cmd["ticket"] == 555
+    assert tp_cmd["magic"] == 202416
+    # current 4622 + buffer 5p * 0.10 = 4622.50, well below original TP 4632.
+    assert tp_cmd["tp"] == pytest.approx(4622.5)
+    tp_kwargs = tp_call.kwargs
+    assert callable(tp_kwargs.get("verifier"))
+    assert tp_kwargs.get("dedup_key") == "ratchet_tp:555"
+
+    # SCRIBE persistence: SL row + TP row, ticket-scoped on both calls.
+    assert stub._sync_modify_targets.call_count == 2
+    stub._sync_modify_targets.assert_any_call(
         99, sl=pytest.approx(4621.0), tp=None, ticket=555, tp_stage=None,
+    )
+    stub._sync_modify_targets.assert_any_call(
+        99, sl=None, tp=pytest.approx(4622.5), ticket=555, tp_stage=None,
     )
     assert 555 in stub._profit_ratcheted
 
@@ -719,6 +738,7 @@ def test_profit_ratchet_sell_uses_inverted_lock(monkeypatch):
     monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
     monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
     monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TP_BUFFER_PIPS", 5.0, raising=False)
     stub, bm = _ratchet_stub(monkeypatch, None)
     stub._known_positions[555]["direction"] = "SELL"
     live = {
@@ -728,10 +748,132 @@ def test_profit_ratchet_sell_uses_inverted_lock(monkeypatch):
               "forge_managed": True},
     }
     stub._apply_profit_ratchet(live)
-    stub._enqueue_forge_command.assert_called_once()
-    forge_cmd = stub._enqueue_forge_command.call_args[0][0]
+    # SELL: SL pin + TP tighten, both inverted relative to BUY.
+    assert stub._enqueue_forge_command.call_count == 2
+    sl_call, tp_call = stub._enqueue_forge_command.call_args_list
     # entry 4620 - lock 10 pips * 0.10 = 4619.00
-    assert forge_cmd["sl"] == pytest.approx(4619.0)
+    assert sl_call.args[0]["sl"] == pytest.approx(4619.0)
+    # SELL TP tightens UP toward current price + buffer:
+    # current 4618 - buffer 5p * 0.10 = 4617.50 (above original TP 4610)
+    assert tp_call.args[0]["tp"] == pytest.approx(4617.5)
+
+
+@pytest.mark.unit
+def test_profit_ratchet_tp_tighten_skipped_when_target_not_closer(monkeypatch):
+    """If the proposed TP is not actually tighter than the existing TP, skip it.
+
+    For a BUY at +30p green with a tiny buffer, the proposed target sits well
+    inside the original TP — fine. But if the position has no TP, or the
+    existing TP is already past current_price + buffer, we must not enqueue.
+    """
+    import bridge as bm
+
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TP_BUFFER_PIPS", 5.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    # BUY position has no resting TP (tp=0) — ratchet must NOT introduce one.
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4622.0,
+              "sl": 4610.0, "tp": 0.0, "magic": 202416,
+              "forge_managed": True},
+    }
+    stub._apply_profit_ratchet(live)
+    # Only the SL pin should fire; no TP enqueue when there's no TP to tighten.
+    assert stub._enqueue_forge_command.call_count == 1
+    assert stub._enqueue_forge_command.call_args.args[0]["action"] == "MODIFY_SL"
+
+
+@pytest.mark.unit
+def test_profit_ratchet_tp_tighten_skipped_when_buffer_would_widen(monkeypatch):
+    """BUY with existing TP already very close to current_price + buffer
+    — the proposed target wouldn't actually tighten, so skip it.
+    """
+    import bridge as bm
+
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TP_BUFFER_PIPS", 5.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    # current 4622, buffer 0.50, proposed TP=4622.50; existing TP=4622.00
+    # already CLOSER than the proposed target → don't widen back to 4622.50.
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4622.0,
+              "sl": 4610.0, "tp": 4622.00, "magic": 202416,
+              "forge_managed": True},
+    }
+    stub._apply_profit_ratchet(live)
+    # Only SL pin fires; TP would not actually tighten.
+    assert stub._enqueue_forge_command.call_count == 1
+    assert stub._enqueue_forge_command.call_args.args[0]["action"] == "MODIFY_SL"
+
+
+@pytest.mark.unit
+def test_profit_ratchet_tp_tighten_disabled_when_buffer_zero(monkeypatch):
+    """PROFIT_RATCHET_TP_BUFFER_PIPS=0 disables the hybrid TP path entirely."""
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TP_BUFFER_PIPS", 0.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    live = {
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4622.0,
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True},
+    }
+    stub._apply_profit_ratchet(live)
+    assert stub._enqueue_forge_command.call_count == 1
+    assert stub._enqueue_forge_command.call_args.args[0]["action"] == "MODIFY_SL"
+
+
+@pytest.mark.unit
+def test_profit_ratchet_other_legs_untouched_when_one_triggers(monkeypatch):
+    """With several live legs in the same group, only the leg that crosses
+    the trigger gets MODIFY_SL+MODIFY_TP. Sibling legs keep their original
+    TP1/TP2/TP3 targets and continue running.
+    """
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_ENABLED", True, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TRIGGER_PIPS", 15.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_LOCK_PIPS", 10.0, raising=False)
+    monkeypatch.setattr("bridge.PROFIT_RATCHET_TP_BUFFER_PIPS", 5.0, raising=False)
+    stub, bm = _ratchet_stub(monkeypatch, None)
+    stub._known_positions[700] = {"group_id": 99, "magic": 202416,
+                                    "direction": "BUY",
+                                    "open_price": 4620.0, "sl": 4610.0,
+                                    "tp": 4632.0, "symbol": "XAUUSD"}
+    stub._known_positions[800] = {"group_id": 99, "magic": 202416,
+                                    "direction": "BUY",
+                                    "open_price": 4620.0, "sl": 4610.0,
+                                    "tp": 4632.0, "symbol": "XAUUSD"}
+    live = {
+        # Triggered leg: +20 pips green.
+        555: {"ticket": 555, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4622.0,
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True, "comment": "FORGE|G99|0|TP1"},
+        # Sibling leg: only +5 pips green — below trigger.
+        700: {"ticket": 700, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4620.50,
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True, "comment": "FORGE|G99|1|TP2"},
+        # Sibling leg: still red — way below trigger.
+        800: {"ticket": 800, "symbol": "XAUUSD", "type": "BUY",
+              "open_price": 4620.0, "current_price": 4619.0,
+              "sl": 4610.0, "tp": 4632.0, "magic": 202416,
+              "forge_managed": True, "comment": "FORGE|G99|2|TP3"},
+    }
+    stub._apply_profit_ratchet(live)
+    # Exactly 2 enqueues (SL + TP) for ticket 555. Nothing for 700 / 800.
+    assert stub._enqueue_forge_command.call_count == 2
+    for call in stub._enqueue_forge_command.call_args_list:
+        assert call.args[0]["ticket"] == 555
+    # Dedup tokens reflect only the triggered leg.
+    assert stub._profit_ratcheted == {555}
 
 
 @pytest.mark.unit

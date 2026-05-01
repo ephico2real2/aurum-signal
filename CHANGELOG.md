@@ -1,4 +1,14 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.5.3] — 2026-05-01
+### Hybrid profit ratchet — SL pin + tightened TP per-ticket
+When a leg crosses `PROFIT_RATCHET_TRIGGER_PIPS`, BRIDGE now also pulls that **leg's** TP toward `current_price ± PROFIT_RATCHET_TP_BUFFER_PIPS` so any further forward movement closes the leg with a `TP_HIT` (positive close) rather than letting the SL ratchet catch the retrace. The original SL pin is preserved as the floor on retracements — every closure on the triggered leg now lands positive, regardless of which side fires.
+- **Per-ticket scope is preserved**: only the leg that crossed the trigger is tightened. Sibling legs in the same group keep their original TP1/TP2/TP3 targets and continue running. This is the explicit operator preference — lock the runner, let the rest reach the staged targets.
+- New env: `PROFIT_RATCHET_TP_BUFFER_PIPS` (default 5; trader-style pips). Set to 0 to disable the TP-tightening side and revert to pure SL ratchet behaviour.
+- TP tightening is skipped when (a) the buffer is 0, (b) the position has no resting TP (no regression introduced), or (c) the proposed target would not actually tighten (BUY: `target_tp ≥ live_tp`; SELL: `target_tp ≤ live_tp`).
+- Both the SL pin and the TP tighten go through the new FORGE command queue with separate dedup keys (`ratchet:<ticket>` and `ratchet_tp:<ticket>`) and per-ticket verifiers (`_build_ticket_sl_verifier`, `_build_ticket_tp_verifier`), so the two writes serialise correctly across the BRIDGE → FORGE file bus.
+- Tests: `tests/api/test_modify_scope.py` adds 4 new cases (skip when no resting TP, skip when buffer would widen, disabled when buffer=0, per-leg isolation across BUY+SELL). Existing BUY/SELL ratchet tests now assert the SL+TP enqueue pair. **331/331 in `tests/api/` pass**.
+- Migration / rollout: pure BRIDGE refactor; no FORGE EA / SCRIBE / contract changes. Defaults to enabled with a 5-pip buffer; set `PROFIT_RATCHET_TP_BUFFER_PIPS=0` to opt out.
+---
 ## [1.5.2] — 2026-05-01
 ### FORGE command queue — fixes per-ticket MODIFY_SL race
 Live G64 profit-ratchet test exposed a real overwrite race: BRIDGE wrote 4 ticket-scoped `MODIFY_SL` commands to the shared `MT5/command.json` within ~1.8 s; FORGE polls that file on its `OnTimer` and dedups by `timestamp`, so the first write got clobbered before FORGE could consume it. Leg 0 (#1247680712) never moved its SL, took the original SL hit for **−$4.39**, and turned what should have been a clean +$3.00 set of ratchet locks into a **net −$1.39**. The next BRIDGE tick then "learned" the stale live SL back into its in-memory cache via the drift detector, so the ratchet never retried.
