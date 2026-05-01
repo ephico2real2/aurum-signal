@@ -1,0 +1,164 @@
+{
+  "source": "TV_CLI",
+  "timestamp": "2026-04-30T21:13:27.021439+00:00",
+  "raw": {
+    "success": true,
+    "generated_at": "2026-04-30T21:13:27.013Z",
+    "rules_loaded_from": "/Users/olasumbo/tradingview-mcp-jackson/rules.json",
+    "rules": {
+      "bias_criteria": {
+        "bullish": [
+          "EMA20 is above EMA50",
+          "RSI is between 50 and 70",
+          "MACD histogram is positive",
+          "DI+ is above DI-"
+        ],
+        "bearish": [
+          "EMA20 is below EMA50",
+          "RSI is between 30 and 50",
+          "MACD histogram is negative",
+          "DI- is above DI+"
+        ],
+        "neutral": [
+          "ADX is below 15 (weak trend / chop)",
+          "EMA20 and EMA50 are flat or crossing repeatedly",
+          "RSI is in extreme zones above 72 or below 28"
+        ]
+      },
+      "risk_rules": [
+        "Risk 0.25% to 1.00% equity per trade based on mode",
+        "Avoid entries during high-impact news windows",
+        "Do not open new positions when ADX is weak and structure is unclear",
+        "Limit concurrent Gold positions by session risk cap",
+        "Require defined invalidation level before entry"
+      ],
+      "notes": "Gold-focused intraday rules for XAUUSD. Use 5m execution with 1h context, prioritize trend alignment (EMA/MACD/DMI), and avoid low-quality chop or high-impact event risk."
+    },
+    "symbols_scanned": [
+      {
+        "symbol": "XAUUSD",
+        "timeframe": "5",
+        "state": {
+          "success": true,
+          "symbol": "OANDA:XAUUSD",
+          "resolution": "5",
+          "chartType": 1,
+          "studies": [
+            {
+              "id": "Tyb3NL",
+              "name": "Volume Footprint"
+            },
+            {
+              "id": "x8bfsQ",
+              "name": "Order Block Detector [LuxAlgo]"
+            },
+            {
+              "id": "2DDVPg",
+              "name": "Moving Average Exponential"
+            },
+            {
+              "id": "5LI3rU",
+              "name": "Moving Average Exponential"
+            },
+            {
+              "id": "52hZif",
+              "name": "Bollinger Bands"
+            },
+            {
+              "id": "wpALQF",
+              "name": "Session Volume Profile HD"
+            },
+            {
+              "id": "S8T9uc",
+              "name": "Relative Strength Index"
+            },
+            {
+              "id": "CZsNeY",
+              "name": "Moving Average Convergence Divergence"
+            },
+            {
+              "id": "oYl0dz",
+              "name": "Directional Movement Index"
+            },
+            {
+              "id": "g6qNJY",
+              "name": "ADX and DI for v4"
+            }
+          ]
+        },
+        "indicators": {
+          "success": true,
+          "study_count": 7,
+          "studies": [
+            {
+              "name": "Bollinger Bands",
+              "values": {
+                "Basis": "4,618.698",
+                "Upper": "4,622.506",
+                "Lower": "4,614.890"
+              }
+            },
+            {
+              "name": "Moving Average Exponential",
+              "values": {
+                "EMA": "4,619.165"
+              }
+            },
+            {
+              "name": "Moving Average Exponential",
+              "values": {
+                "EMA": "4,619.285"
+              }
+            },
+            {
+              "name": "Relative Strength Index",
+              "values": {
+                "RSI": "58.00",
+                "RSI-based MA": "47.01"
+              }
+            },
+            {
+              "name": "Moving Average Convergence Divergence",
+              "values": {
+                "Histogram": "0.370",
+                "MACD": "\u22120.032",
+                "Signal line": "\u22120.402"
+              }
+            },
+            {
+              "name": "Directional Movement Index",
+              "values": {
+                "ADX": "11.1782",
+                "+DI": "26.0090",
+                "-DI": "15.8926"
+              }
+            },
+            {
+              "name": "ADX and DI for v4",
+              "values": {
+                "DI+": "26.009",
+                "DI-": "15.893",
+                "ADX": "9.259"
+              }
+            }
+          ]
+        },
+        "quote": {
+          "success": true,
+          "symbol": "OANDA:XAUUSD",
+          "time": 1777582500,
+          "open": 4621.145,
+          "high": 4622.07,
+          "low": 4620.49,
+          "close": 4622.065,
+          "last": 4622.065,
+          "volume": 822,
+          "description": "Gold",
+          "exchange": "OANDA",
+          "type": "commodity"
+        }
+      }
+    ],
+    "instruction": "For each symbol in symbols_scanned, apply the bias_criteria from rules to the indicator readings. Output one line per symbol: SYMBOL | BIAS: [bullish/bearish/neutral] | KEY LEVEL: [price] | WATCH: [what to monitor] End with a one-sentence overall market read. Be direct. No preamble."
+  }
+}
