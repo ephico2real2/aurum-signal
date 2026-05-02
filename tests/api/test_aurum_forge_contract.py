@@ -99,6 +99,107 @@ class TestAurumCmdContract:
         }
         assert validate_aurum_cmd(cmd) == []
 
+    def test_open_group_valid_buy_cross_fields(self):
+        cmd = {
+            "action": "OPEN_GROUP",
+            "direction": "BUY",
+            "entry_low": 4620,
+            "entry_high": 4625,
+            "sl": 4615,
+            "tp1": 4630,
+            "tp2": 4635,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert validate_aurum_cmd(cmd) == []
+
+    def test_open_group_buy_tp1_must_be_above_entry_high(self):
+        cmd = {
+            "action": "OPEN_GROUP",
+            "direction": "BUY",
+            "entry_low": 4620,
+            "entry_high": 4625,
+            "sl": 4615,
+            "tp1": 4620,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        errs = validate_aurum_cmd(cmd)
+        assert "OPEN_GROUP BUY: tp1 (4620) must be above entry_high (4625)" in errs
+
+    def test_open_group_buy_sl_must_be_below_entry_low(self):
+        cmd = {
+            "action": "OPEN_GROUP",
+            "direction": "BUY",
+            "entry_low": 4620,
+            "entry_high": 4625,
+            "sl": 4622,
+            "tp1": 4630,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert any("sl (4622) must be below entry_low (4620)" in e for e in validate_aurum_cmd(cmd))
+
+    def test_open_group_sell_cross_fields_pass_and_fail(self):
+        valid = {
+            "action": "OPEN_GROUP",
+            "direction": "SELL",
+            "entry_low": 4620,
+            "entry_high": 4625,
+            "sl": 4630,
+            "tp1": 4610,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert validate_aurum_cmd(valid) == []
+
+        bad_tp = {**valid, "tp1": 4622}
+        assert any("SELL: tp1 (4622) must be below entry_low (4620)" in e for e in validate_aurum_cmd(bad_tp))
+
+        bad_sl = {**valid, "sl": 4621}
+        assert any("SELL: sl (4621) must be above entry_high (4625)" in e for e in validate_aurum_cmd(bad_sl))
+
+    def test_open_group_tp2_ordering_enforced_by_direction(self):
+        buy_bad = {
+            "action": "OPEN_GROUP",
+            "direction": "BUY",
+            "entry_low": 4620,
+            "entry_high": 4625,
+            "sl": 4615,
+            "tp1": 4630,
+            "tp2": 4629,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert any("BUY: tp2 (4629) must be above tp1 (4630)" in e for e in validate_aurum_cmd(buy_bad))
+
+        sell_bad = {**buy_bad, "direction": "SELL", "sl": 4630, "tp1": 4610, "tp2": 4611}
+        assert any("SELL: tp2 (4611) must be below tp1 (4610)" in e for e in validate_aurum_cmd(sell_bad))
+
+    def test_open_group_tp3_ordering_enforced_by_direction(self):
+        buy_bad = {
+            "action": "OPEN_GROUP",
+            "direction": "BUY",
+            "entry_low": 4620,
+            "entry_high": 4625,
+            "sl": 4615,
+            "tp1": 4630,
+            "tp2": 4635,
+            "tp3": 4634,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert any("BUY: tp3 (4634) must be above tp2 (4635)" in e for e in validate_aurum_cmd(buy_bad))
+
+        sell_bad = {**buy_bad, "direction": "SELL", "sl": 4630, "tp1": 4610, "tp2": 4605, "tp3": 4606}
+        assert any("SELL: tp3 (4606) must be below tp2 (4605)" in e for e in validate_aurum_cmd(sell_bad))
+
+    def test_open_group_missing_tp2_is_not_an_error(self):
+        cmd = {
+            "action": "OPEN_GROUP",
+            "direction": "BUY",
+            "entry_low": 4620,
+            "entry_high": 4625,
+            "sl": 4615,
+            "tp1": 4630,
+            "timestamp": "2026-04-06T12:00:00+00:00",
+        }
+        assert validate_aurum_cmd(cmd) == []
+
     def test_open_group_bad_direction(self):
         cmd = {
             "action": "OPEN_GROUP",

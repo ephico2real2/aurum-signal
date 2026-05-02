@@ -29,6 +29,14 @@ SENTINEL_CALENDAR_CURRENCIES=USD,EUR,GBP,JPY,CNY
 
 If the ForexFactory HTTP request fails (connection error, timeout, non-200 response), SENTINEL retries up to 2 times with a 3-second pause between attempts. If all attempts fail, SENTINEL returns a synthetic high-impact event that activates the guard — trading is blocked until the next successful fetch. This is intentional fail-safe behaviour. Do not treat a SENTINEL fetch error as clear-to-trade.
 
+### Parse-zero alert behaviour
+
+If ForexFactory fetches successfully but the parser returns **0 events** during weekday trading hours (Monday-Friday, 06:00-20:00 UTC), SENTINEL logs a WARNING and sends this Herald/Telegram alert:
+
+`⚠️ SENTINEL: ForexFactory returned 0 events during trading hours — possible markup change or parse failure`
+
+This does not fire on weekends or outside 06:00-20:00 UTC. It is an observability alert for possible markup drift; fetch failures still use the fail-closed synthetic guard event above.
+
 Other env vars:
 
 | Variable | Default | Role |
@@ -53,6 +61,10 @@ When an extended event is detected:
 - Log and Telegram notifications include an `[EXTENDED]` tag
 
 For instant events (everything else): guard lifts after `SENTINEL_POST_GUARD_MIN` (default **5min**).
+
+### Eastern time and DST
+
+ForexFactory calendar times are treated as `America/New_York` local times and converted to UTC with DST-aware timezone rules (`pytz` when installed). This means `8:30am` in July maps to `12:30 UTC` (EDT, UTC-4), while `8:30am` in January maps to `13:30 UTC` (EST, UTC-5). Do not replace this with a fixed offset.
 
 After edits, **`make restart`** (or restart **bridge**).
 

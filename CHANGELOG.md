@@ -1,4 +1,12 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.5.6] — 2026-05-02
+### Phase 3 cleanup sprint
+- **M1** (`python/listener.py`): added post-parse `ENTRY` range validation after text/vision merge and before dispatch. LISTENER now drops malformed signals with a WARNING when entry bounds are missing/non-positive, `entry_low > entry_high`, `sl <= 0`, `tp1 <= 0` when present, or XAU/GOLD `entry_low` falls outside `1000..99999`. Tests: `tests/services/test_signal_range_validation.py`.
+- **M2** (`python/reconciler.py`, `python/bridge.py`, `.env.example`): centralised FORGE magic range configuration with `FORGE_MAGIC_NUMBER` + `FORGE_MAGIC_MAX`, added reconciler startup assertion, and replaced the hardcoded reconciler range check with the shared env-driven bounds. Tests: `tests/services/test_reconciler_magic_range.py`.
+- **M4** (`python/sentinel.py`): added ForexFactory parse-zero fail-safe alerting. During weekday 06:00–20:00 UTC, a zero-event parse now logs WARNING and sends the Herald/Telegram alert `⚠️ SENTINEL: ForexFactory returned 0 events during trading hours — possible markup change or parse failure`; weekends and off-hours stay quiet. Tests: `tests/services/test_sentinel_parse_zero.py`.
+- **M5** (`python/sentinel.py`, `requirements.txt`): replaced fixed Eastern→UTC offset arithmetic with DST-aware `America/New_York` conversion using `pytz` when installed, with a standard-library fallback for pre-upgrade environments. July `8:30am` maps to `12:30 UTC`; January `8:30am` maps to `13:30 UTC`. Tests: `tests/services/test_sentinel_parse_zero.py`.
+- **M6** (`python/contracts/aurum_forge.py`): added OPEN_GROUP cross-field contract checks for BUY/SELL TP/SL geometry and TP2/TP3 ordering. Tests: `tests/api/test_aurum_forge_contract.py`.
+---
 ## [1.5.5] — 2026-05-02
 ### L1–L6 low-severity cleanup sprint
 - **L1** (`regime.py`): detects HMM feature vector shape changes between calls, logs a WARNING with the old→new shape, and sets `feature_shape_mismatch=True` in the regime snapshot so BRIDGE can surface it. Test: `test_regime_engine_flags_hmm_feature_shape_mismatch`.

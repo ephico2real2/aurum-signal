@@ -23,6 +23,47 @@ from config_io import atomic_write_json
 
 log = logging.getLogger("listener")
 
+
+def _positive_number(value) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if out <= 0:
+        return None
+    return out
+
+
+def _validate_signal_ranges(parsed: dict) -> list[str]:
+    """Validate post-parse signal geometry before LISTENER dispatches it."""
+    if not isinstance(parsed, dict) or parsed.get("type") != "ENTRY":
+        return []
+
+    errors: list[str] = []
+    entry_low = _positive_number(parsed.get("entry_low"))
+    entry_high = _positive_number(parsed.get("entry_high"))
+    sl = _positive_number(parsed.get("sl"))
+    tp1_raw = parsed.get("tp1")
+    tp1 = _positive_number(tp1_raw) if tp1_raw not in (None, "") else None
+
+    if entry_low is None:
+        errors.append("entry_low must be present, numeric, and > 0")
+    if entry_high is None:
+        errors.append("entry_high must be present, numeric, and > 0")
+    if entry_low is not None and entry_high is not None and entry_low > entry_high:
+        errors.append(f"entry_low ({entry_low:g}) must be <= entry_high ({entry_high:g})")
+    if sl is None:
+        errors.append("sl must be present, numeric, and > 0")
+    if tp1_raw not in (None, "") and tp1 is None:
+        errors.append("tp1 must be numeric and > 0 when present")
+
+    symbol = str(parsed.get("symbol") or parsed.get("instrument") or "").upper()
+    if entry_low is not None and ("XAU" in symbol or "GOLD" in symbol):
+        if not (1000 < entry_low < 99999):
+            errors.append(f"XAU/GOLD entry_low ({entry_low:g}) must be between 1000 and 99999")
+
+    return errors
+
 # ── Config ─────────────────────────────────────────────────────────
 API_ID       = int(os.environ.get("TELEGRAM_API_ID", "0"))
 API_HASH     = os.environ.get("TELEGRAM_API_HASH", "")
@@ -682,6 +723,19 @@ class Listener:
                     pass
             if vision_id:
                 self.scribe.update_vision_extraction_result(vision_id, "IGNORED")
+            return
+
+        range_errors = _validate_signal_ranges(parsed)
+        if range_errors:
+            log.warning(
+                "LISTENER: signal range validation rejected channel=%s chat_id=%s msg_id=%s errors=%s",
+                channel,
+                msg.chat_id,
+                msg.id,
+                "; ".join(range_errors),
+            )
+            if vision_id:
+                self.scribe.update_vision_extraction_result(vision_id, "REJECTED_RANGE")
             return
 
         # Log to SCRIBE regardless of mode

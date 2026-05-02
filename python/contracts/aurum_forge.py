@@ -62,6 +62,58 @@ def _normalize_order_type(v: Any) -> str:
     return s
 
 
+def _validate_open_group_cross_fields(cmd: dict) -> list[str]:
+    errs: list[str] = []
+    direction = (cmd.get("direction") or "").upper()
+    if direction not in ("BUY", "SELL"):
+        return errs
+
+    el = _num(cmd.get("entry_low"))
+    eh = _num(cmd.get("entry_high"))
+    if el is None or eh is None:
+        prices: list[float] = []
+        ladder = cmd.get("entry_ladder")
+        if isinstance(ladder, list):
+            prices.extend(v for v in (_num(x) for x in ladder) if v is not None and v > 0)
+        legs = normalize_entry_legs(cmd.get("entry_legs"))
+        prices.extend(float(leg["entry_price"]) for leg in legs)
+        if prices:
+            el = min(prices) if el is None else el
+            eh = max(prices) if eh is None else eh
+
+    sl = _num(cmd.get("sl"))
+    tp1 = _num(cmd.get("tp1"))
+    if any(v is None or v <= 0 for v in (el, eh, sl, tp1)):
+        return errs
+
+    if direction == "BUY":
+        if tp1 <= eh:
+            errs.append(f"OPEN_GROUP BUY: tp1 ({tp1:g}) must be above entry_high ({eh:g})")
+        if sl >= el:
+            errs.append(f"OPEN_GROUP BUY: sl ({sl:g}) must be below entry_low ({el:g})")
+    else:
+        if tp1 >= el:
+            errs.append(f"OPEN_GROUP SELL: tp1 ({tp1:g}) must be below entry_low ({el:g})")
+        if sl <= eh:
+            errs.append(f"OPEN_GROUP SELL: sl ({sl:g}) must be above entry_high ({eh:g})")
+
+    tp2 = _num(cmd.get("tp2"))
+    if tp2 is not None and tp2 > 0:
+        if direction == "BUY" and tp2 <= tp1:
+            errs.append(f"OPEN_GROUP BUY: tp2 ({tp2:g}) must be above tp1 ({tp1:g})")
+        if direction == "SELL" and tp2 >= tp1:
+            errs.append(f"OPEN_GROUP SELL: tp2 ({tp2:g}) must be below tp1 ({tp1:g})")
+
+    tp3 = _num(cmd.get("tp3"))
+    if tp3 is not None and tp3 > 0 and tp2 is not None and tp2 > 0:
+        if direction == "BUY" and tp3 <= tp2:
+            errs.append(f"OPEN_GROUP BUY: tp3 ({tp3:g}) must be above tp2 ({tp2:g})")
+        if direction == "SELL" and tp3 >= tp2:
+            errs.append(f"OPEN_GROUP SELL: tp3 ({tp3:g}) must be below tp2 ({tp2:g})")
+
+    return errs
+
+
 def normalize_entry_legs(raw_legs: Any) -> list[dict]:
     """
     Canonicalize entry_legs items and drop invalid legs.
@@ -190,6 +242,7 @@ def validate_aurum_cmd(cmd: dict) -> list[str]:
                     errs.append("OPEN_GROUP requires positive numeric entry_low (or valid entry_legs)")
                 if el is not None and eh is not None and eh < el:
                     errs.append("entry_high must be >= entry_low")
+            errs.extend(_validate_open_group_cross_fields(cmd))
         return errs
 
     errs.append(
@@ -334,6 +387,7 @@ def validate_forge_command(cmd: dict) -> list[str]:
         if mbe is not None and not isinstance(mbe, (bool, str, int, float)):
             errs.append("move_be_on_tp1 must be bool or string/number FORGE accepts")
 
+        errs.extend(_validate_open_group_cross_fields(cmd))
         return errs
 
     errs.append(f"unknown FORGE action {action!r}")

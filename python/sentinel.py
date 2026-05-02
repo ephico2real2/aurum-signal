@@ -10,9 +10,14 @@ Human doc: docs/SENTINEL.md
 """
 
 import os, json, logging, requests, time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from bs4 import BeautifulSoup
+try:
+    import pytz
+except ImportError:  # pragma: no cover - dependency fallback for pre-upgrade test envs
+    pytz = None
+    from zoneinfo import ZoneInfo
 
 from scribe import get_scribe
 from sentinel_feeds import gather_news_feeds
@@ -20,6 +25,17 @@ from status_report import report_component_status
 from freshness import DATA_FRESHNESS_WINDOWS
 
 log = logging.getLogger("sentinel")
+
+if pytz is not None:
+    _EASTERN = pytz.timezone("America/New_York")
+    _UTC = pytz.utc
+else:
+    _EASTERN = ZoneInfo("America/New_York")
+    _UTC = timezone.utc
+_PARSE_ZERO_ALERT = (
+    "⚠️ SENTINEL: ForexFactory returned 0 events during trading hours — "
+    "possible markup change or parse failure"
+)
 
 STATUS_FILE   = os.environ.get(
     "SENTINEL_STATUS_FILE",
@@ -56,6 +72,21 @@ def _is_extended_event(event_name: str) -> bool:
     """Return True if the event is a long-running speech/presser type."""
     name_lower = event_name.lower()
     return any(kw in name_lower for kw in _EXTENDED_EVENT_KEYWORDS)
+
+
+def _is_weekday_trading_hours_utc(now_utc: datetime | None = None) -> bool:
+    now = now_utc or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    return now.weekday() < 5 and 6 <= now.hour < 20
+
+
+def _forexfactory_eastern_to_utc(date_str: str, time_str: str) -> datetime:
+    naive_dt = datetime.strptime(date_str + " " + time_str, "%b %d %Y %I:%M%p")
+    if pytz is not None:
+        return _EASTERN.localize(naive_dt).astimezone(_UTC)
+    return naive_dt.replace(tzinfo=_EASTERN).astimezone(_UTC)
 
 
 class Sentinel:
@@ -323,16 +354,25 @@ class Sentinel:
                 "event_dt":     event_dt.isoformat(),
             })
 
+        self._alert_parse_zero_if_needed(events, now)
         return events
+
+    def _alert_parse_zero_if_needed(self, events: list, now_utc: datetime | None = None) -> bool:
+        if events or not _is_weekday_trading_hours_utc(now_utc):
+            return False
+        log.warning(_PARSE_ZERO_ALERT)
+        try:
+            from herald import get_herald
+            get_herald().send(_PARSE_ZERO_ALERT)
+        except Exception as e:
+            log.debug("SENTINEL parse-zero alert send failed: %s", e)
+        return True
 
     def _parse_time(self, time_str: str, base: datetime) -> datetime:
         """Parse ForexFactory time string like '8:30am' to UTC datetime."""
         try:
-            t = datetime.strptime(time_str.lower().strip(), "%I:%M%p")
-            # FF shows Eastern time — convert to UTC (+5 for EST)
-            eastern_offset = timedelta(hours=5)
-            return base.replace(hour=t.hour, minute=t.minute,
-                               second=0, microsecond=0) + eastern_offset
+            date_str = base.strftime("%b %d %Y")
+            return _forexfactory_eastern_to_utc(date_str, time_str.lower().strip())
         except (TypeError, ValueError) as e:
             log.debug("SENTINEL time parse fallback for %r: %s", time_str, e)
             return base

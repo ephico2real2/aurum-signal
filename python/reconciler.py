@@ -39,6 +39,8 @@ RECON_INTERVAL  = int(os.environ.get("RECON_INTERVAL_SEC", "3600"))   # 1 hour
 PNL_TOLERANCE   = float(os.environ.get("RECON_PNL_TOLERANCE", "1.0"))
 # Fallback for legacy rows missing magic_number column
 FORGE_MAGIC_BASE = int(os.environ.get("FORGE_MAGIC_NUMBER", "202401"))
+FORGE_MAGIC_MAX = int(os.environ.get("FORGE_MAGIC_MAX", "9999"))
+assert FORGE_MAGIC_MAX > 0 and FORGE_MAGIC_BASE > 0, "Invalid FORGE magic config"
 # Close SCRIBE trade_groups OPEN/PARTIAL when no MT5 position or pending shares that magic
 RECON_CLOSE_STALE_GROUPS = os.environ.get("RECON_CLOSE_STALE_GROUPS", "true").lower() == "true"
 # Minimum FORGE version that exports pending_orders (skip stale-group check if older)
@@ -55,6 +57,10 @@ def _read_json(path: str) -> dict:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_forge_magic(magic: int) -> bool:
+    return FORGE_MAGIC_BASE <= magic < FORGE_MAGIC_BASE + FORGE_MAGIC_MAX + 1
 
 
 class Reconciler:
@@ -155,7 +161,7 @@ class Reconciler:
             p = mt5_positions[ticket]
             # Only flag if it looks like one of our magic numbers
             magic = p.get("magic", 0)
-            if 202400 <= magic < 213000:   # our magic number range
+            if _is_forge_magic(magic):   # our magic number range
                 issues.append({
                     "type":    "UNTRACKED_POSITION",
                     "ticket":  ticket,

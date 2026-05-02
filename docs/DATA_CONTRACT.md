@@ -127,6 +127,13 @@ BRIDGE can block `SHELL_EXEC` by command origin via `AEB_SHELL_EXEC_BLOCKED_SOUR
 
 **Python validators:** `python/contracts/aurum_forge.py` implements **`validate_aurum_cmd`** and **`validate_forge_command`** aligned with `schemas/files/*.schema.json`. Keep them in sync when the JSON Schema changes.
 
+`OPEN_GROUP` cross-field validation:
+- Base fields must already be numeric and positive (`entry_low`, `entry_high`, `sl`, `tp1`) before these directional checks apply.
+- BUY: `tp1 > entry_high` and `sl < entry_low`.
+- SELL: `tp1 < entry_low` and `sl > entry_high`.
+- Optional targets must remain directional: BUY requires `tp2 > tp1` and `tp3 > tp2`; SELL requires `tp2 < tp1` and `tp3 < tp2`.
+- Missing `tp2` / `tp3` is not an error.
+
 `MT5/command.json` modify semantics (runtime behavior):
 - `{"action":"MODIFY_SL","sl":...}` or `{"action":"MODIFY_TP","tp":...}` without `magic` applies globally to EA-managed exposure.
 - When BRIDGE resolves a `group_id`, it writes `magic` into modify commands; FORGE applies the change only to that group's positions/pending orders.

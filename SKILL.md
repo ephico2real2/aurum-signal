@@ -109,7 +109,7 @@ AURUM’s reply is scanned for (a) a **magic phrase** or (b) **one** markdown `j
 BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supported:
 
 **Trade execution:**
-- **OPEN_GROUP** (or **OPEN_TRADE**, normalized) → AEGIS validates → SCRIBE group → FORGE places N trades across entry ladder. For `source=SIGNAL`, BRIDGE currently routes all legs to TP1 by default (`tp1_close_pct=100`, `tp2/tp3=null`). Full gate order, R:R formulas, rejection codes: [docs/AEGIS.md](docs/AEGIS.md).
+- **OPEN_GROUP** (or **OPEN_TRADE**, normalized) → AEGIS validates → SCRIBE group → FORGE places N trades across entry ladder. For `source=SIGNAL`, BRIDGE currently routes all legs to TP1 by default (`tp1_close_pct=100`, `tp2/tp3=null`). Contract geometry is enforced before execution: BUY requires `tp1 > entry_high` and `sl < entry_low`; SELL requires `tp1 < entry_low` and `sl > entry_high`; optional BUY targets must increase (`tp2 > tp1`, `tp3 > tp2`) and optional SELL targets must decrease (`tp2 < tp1`, `tp3 < tp2`). Full gate order, R:R formulas, rejection codes: [docs/AEGIS.md](docs/AEGIS.md).
 
 **Close commands:**
 - **CLOSE_ALL** → close all EA positions + cancel all pending orders
@@ -197,6 +197,8 @@ Tracker logs P&L → Telegram "✅ GROUP CLOSED"
 LISTENER dispatches:
 - **ENTRY** signals → parsed by Claude Haiku → BRIDGE with fixed `SIGNAL_LOT_SIZE` (default 0.01) and `SIGNAL_NUM_TRADES` (default 4) → AEGIS validates → FORGE executes at the channel's entry range
 - **MANAGEMENT** messages → "close all", "move to BE", "close 70%", "move SL to 4660", "new TP 4680" → BRIDGE scopes channel-origin commands to that channel's open SIGNAL groups only (ATHENA remains global by intent)
+
+LISTENER rejects bad signal geometry before dispatch: `entry_low` / `entry_high` / `sl` must be present, numeric, and positive; `entry_low <= entry_high`; `tp1` must be positive when present; and XAU/GOLD signals must have `entry_low` between `1000` and `99999`. Non-XAU symbols only get positivity/range-order checks.
 
 #### Signal replay + pickup verification
 - Use `scripts/replay_signal_pickup.py` to replay a raw text signal or a historical `signals_received.id` through LISTENER `_handle_message`.

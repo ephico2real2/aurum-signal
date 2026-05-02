@@ -94,7 +94,7 @@ MOVE_BE_ON_TP1  = os.environ.get("MOVE_BE_ON_TP1", "true").lower() == "true"
 
 # Must match ea/FORGE.mq5 input MagicNumber — group magic = base + offset
 FORGE_MAGIC_BASE = int(os.environ.get("FORGE_MAGIC_NUMBER", "202401"))
-FORGE_MAGIC_MAX  = 9999  # FORGE range: [base+1, base+9999]
+FORGE_MAGIC_MAX  = int(os.environ.get("FORGE_MAGIC_MAX", "9999"))  # FORGE range: [base+1, base+max]
 
 BROKER_INFO_FILE = _under_root(os.environ.get("MT5_BROKER_FILE",    "MT5/broker_info.json"))
 
