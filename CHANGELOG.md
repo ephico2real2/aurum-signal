@@ -1,4 +1,9 @@
 # SIGNAL SYSTEM — CHANGELOG
+## [1.5.5] — 2026-05-02
+### Security fixes — local MT5 link and scoped channel MODIFY commands
+- **P2 Security**: untracked the machine-specific `MT5` symlink and added `make setup-mt5-link`. The committed symlink embedded an absolute path to one developer's MT5 Common Files directory, breaking other checkouts. `MT5_PATH` in `.env` now drives local symlink creation, with `.env.example` documenting the setup flow and `.gitignore` covering the bare symlink name.
+- **C2 Security**: channel-origin `MODIFY_SL` and `MODIFY_TP` commands now require a resolved scope (`group_id`/magic or `ticket`) before BRIDGE writes a FORGE modify command. Previously, a channel message without a resolved `group_id` or `ticket` could write an unscoped `MODIFY_*` command that FORGE applied to every managed position. Unresolved channel MODIFY commands are now dropped with a warning log instead of falling through to global scope.
+---
 ## [1.5.4] — 2026-05-02
 ### ATHENA `/api/management` schema validation (backward-compatible)
 Closed the gap where `api_management()` wrote raw user-supplied JSON straight to `python/config/management_cmd.json` without any schema check. BRIDGE reads that file every tick; a malformed payload would land in the type-coercion branch (`int(group_id)`, `float(sl)`, `float(tp)`), bubble up through `_tick`'s exception handler, and spam Telegram alerts on every loop until somebody manually deleted the file.
