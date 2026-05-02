@@ -86,6 +86,7 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 | `python/config/channel_names.json` | LISTENER (on connect) | ATHENA | `{ "<chat_id>": "<title>", … }` |
 | `python/config/channel_messages.json` | LISTENER (every 5min) | ATHENA | `{ "<chat_id>": [ {date,text,id}, … ], … }` |
 `MT5/market_data.json` semantics (current runtime):
+- **`strategy_tester`** (FORGE **v1.6.5+**, Strategy Tester only): when **`true`**, BRIDGE/ATHENA treat feed freshness using **file mtime** (FORGE’s **`timestamp_unix`** is simulated bar time in the Tester, not wall clock).
 - `account.open_positions_count` is account-wide.
 - `open_positions[]` exports all account positions and includes `forge_managed` (`true` for FORGE magic-range positions, `false` for manual/non-FORGE).
 - `pending_orders[]` exports symbol-scope pending orders and includes `forge_managed`.
@@ -95,6 +96,7 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
   - `trend_strength_atr_threshold`
   - `breakout_buffer_points`
 - `indicators_h4` (FORGE **v1.6.0+**): `ema_20`, `ema_50`, `atr_14` on **H4** for structure context (native scalper alignment).
+- `indicators_m1` (FORGE **v1.6.1+**): `ema_20`, `ema_50`, `atr_14` on **M1** (optional scalper confirmation context).
 
 `MT5/config.json` — BRIDGE writes on every status tick (same atomic write as other file-bus JSON). Core mode/scalper fields unchanged; **Phase C** adds optional regime mirror for the FORGE native scalper gate:
 - `regime_label` — string (e.g. `TREND_BULL`, `TREND_BEAR`, `RANGE`)
@@ -105,7 +107,7 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 `MT5/scalper_entry.json` semantics (native FORGE scalper):
 - emitted by FORGE on native setup trigger (`FORGE_NATIVE_SCALP`)
 - consumed by BRIDGE and persisted into SCRIBE `trade_groups`
-- includes threshold-hardening fields above plus derived decision metrics (`h1_trend_strength`, `h4_trend_strength` when FORGE **v1.6.0+**, `prev_close`, `m5_bb_upper`, `m5_bb_lower`)
+- includes threshold-hardening fields above plus derived decision metrics (`h1_trend_strength`, `h4_trend_strength` when FORGE **v1.6.0+**, `native_scalper_m1_mode` / `m1_trend_strength` / `m1_prior_close` / `m1_prior_open` when **v1.6.1+**, `prev_close`, `m5_bb_upper`, `m5_bb_lower`)
 
 `python/config/listener_meta.json` semantics (written by LISTENER):
 - `status` — `"OK"` | `"WARN"` (WARN = no message received for > `LISTENER_STALE_THRESHOLD_SEC`, default 600s)

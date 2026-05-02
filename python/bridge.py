@@ -27,6 +27,7 @@ from status_report import report_component_status
 from trading_session import get_trading_session_utc, sydney_open_alert_info
 from freshness import DATA_FRESHNESS_WINDOWS
 from config_io import atomic_write_json
+from market_data import enrich_mt5_for_stale_check
 
 log = logging.getLogger("bridge")
 
@@ -98,7 +99,7 @@ FORGE_MAGIC_MAX  = int(os.environ.get("FORGE_MAGIC_MAX", "9999"))  # FORGE range
 
 BROKER_INFO_FILE = _under_root(os.environ.get("MT5_BROKER_FILE",    "MT5/broker_info.json"))
 
-VERSION     = "1.6.0"
+VERSION     = "1.6.1"
 VALID_MODES = ("OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID", "AUTO_SCALPER")
 BRIDGE_PIN_MODE = os.environ.get("BRIDGE_PIN_MODE", "").upper().strip()
 
@@ -2251,16 +2252,25 @@ class Bridge:
 
         if mt5:
             mt5.update(_extract_forge_thresholds(mt5))
-            ts_unix = _coerce_unix_ts(mt5.get("timestamp_unix"))
-            if ts_unix is None:
-                mt5_read_error = "invalid_timestamp_unix"
-                self._mt5_read_fail_streak += 1
-            else:
-                mt5_age = max(0.0, now - ts_unix)
+            mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+            if mt5.get("strategy_tester") and mt5.get("_age_from_mtime") is not None:
+                mt5_age = float(mt5["_age_from_mtime"])
                 mt5_fresh = mt5_age < MT5_STALE_SEC
-                self._last_mt5_good_unix = ts_unix
+                self._last_mt5_good_unix = now
                 self._last_mt5_snapshot = dict(mt5)
                 self._mt5_read_fail_streak = 0
+                mt5_read_error = None
+            else:
+                ts_unix = _coerce_unix_ts(mt5.get("timestamp_unix"))
+                if ts_unix is None:
+                    mt5_read_error = "invalid_timestamp_unix"
+                    self._mt5_read_fail_streak += 1
+                else:
+                    mt5_age = max(0.0, now - ts_unix)
+                    mt5_fresh = mt5_age < MT5_STALE_SEC
+                    self._last_mt5_good_unix = ts_unix
+                    self._last_mt5_snapshot = dict(mt5)
+                    self._mt5_read_fail_streak = 0
         else:
             self._mt5_read_fail_streak += 1
 

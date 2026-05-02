@@ -2,8 +2,30 @@
 
 ## [Unreleased]
 
+---
+
+## [1.6.5] — 2026-05-02
 ### Fixed
-- Version strings aligned with release **1.6.0**: **`python/bridge.py`** `VERSION`, **`README.md`**, **`.env.example`**, **`python/athena_api.py`** default, and **`python/config/status.json`** sample (BRIDGE overwrites `status.json` each run).
+- **Strategy Tester vs BRIDGE staleness:** In the Tester, FORGE wrote **`timestamp_unix`** from **simulated** **`TimeGMT()`**, so Python treated **`market_data.json`** as years stale → **circuit breaker** + ATHENA **“MT5 data stale”** while you backtested. **FORGE v1.6.5** adds **`"strategy_tester":true`** to **`market_data.json`** when **`MQL_TESTER`** is active. **`python/market_data.py`** **`enrich_mt5_for_stale_check()`** uses **file mtime** for age when that flag is set; **`bridge.py`** and **`athena_api.py`** apply it before staleness / **`/api/live`**. Tests: **`tests/services/test_market_data_strategy_tester.py`**.
+
+---
+
+## [1.6.4] — 2026-05-02
+### Fixed
+- **FORGE** (`ea/FORGE.mq5` **v1.6.4**): In **Strategy Tester** (`MQL_TESTER`), **`ReadConfig()`** no longer applies **`effective_mode`**, **`scalper_mode`**, or **`regime_*`** from **`config.json`**. Stale live **`config.json`** (e.g. **`effective_mode`** **`WATCH`** when BRIDGE circuit breaker / sentinel, **`scalper_mode`** **`NONE`**) was overriding EA **Inputs** every tick and blocking native scalper backtests. Threshold fields (**`pending_entry_threshold_points`**, etc.) still load from **`config.json`** when present. **`forge_version`** **1.6.4**.
+
+---
+
+## [1.6.2] — 2026-05-02
+### Fixed
+- **FORGE** (`ea/FORGE.mq5` **v1.6.2**): **`ReadAndExecuteCommand`** — parse and trim **`action`** before timestamp dedup; **do not advance `g_last_cmd_ts`** when **`action`** is empty (avoids torn reads during atomic **`command.json`** writes skipping the real command). **`MODE_CHANGE`**, **`HEALTH_CHECK`**, **`SHELL_EXEC`**, **`AEB`**, **`AURUM_EXEC`**, **`OPEN_TRADE`** are **ignored** (they belong in **`aurum_cmd.json`**, not FORGE) instead of **`Unknown action`**. Actions matched case-insensitively after **`StringToUpper`**.
+
+---
+
+## [1.6.1] — 2026-05-02
+### Changed
+- **FORGE** (`ea/FORGE.mq5` **v1.6.1**): optional **M1** gate for native scalper — input **`NativeScalperM1Mode`**: **`NONE`** (default), **`CONFIRM`** (M1 EMA/ATR alignment vs **`trend_strength_atr_threshold`**), **`TRIGGER`** (**CONFIRM** plus direction of **prior closed M1 bar**). H1/H4/regime remain **bias-only**; **M5** remains the setup timeframe. **`market_data.json`**: **`indicators_m1`**; **`scalper_entry.json`**: **`native_scalper_m1_mode`**, **`m1_trend_strength`**, **`m1_prior_close`**, **`m1_prior_open`**. Operator: **`make forge-compile`**; **`forge_version`** **1.6.1**.
+- Repo **release label** **1.6.1**: **`python/bridge.py`** `VERSION`, **`README.md`**, **`.env.example`**, **`python/athena_api.py`** default.
 
 ---
 

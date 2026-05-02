@@ -1,4 +1,4 @@
-# ⚒ SIGNAL SYSTEM v1.6.0
+# ⚒ SIGNAL SYSTEM v1.6.1
 > XAUUSD signal-following scalper with AI intelligence layer.
 > macOS + MetaTrader 5 native. 12 components. 6 operating modes.
 

@@ -82,14 +82,18 @@ Result:
 - fewer false manual-close classifications,
 - closer alignment between MT5 and SCRIBE closure records.
 
-## 4) Native scalper (FORGE) — H4 + regime (v1.6.0+)
-When **`ScalperMode`** is not **`NONE`** and mode allows scalping, FORGE evaluates BB bounce/breakout on **M5** with **H1** trend filter (ATR-normalized EMA20−EMA50 vs **`trend_strength_atr_threshold`** from `config.json` / `scalper_config.json`).
+## 4) Native scalper (FORGE) — M1 / H4 / regime (v1.6.0+)
+When **`ScalperMode`** is not **`NONE`** and mode allows scalping, FORGE evaluates BB bounce/breakout on **M5** (entry logic) with **H1** trend filter (ATR-normalized EMA20−EMA50 vs **`trend_strength_atr_threshold`** from `config.json` / `scalper_config.json`). **M15** participates in breakout confirmation via `scalper_config.json` (`breakout_require_m15`).
 
-**Phase C** adds:
-- **H4** structure filter (same formula as H1): inputs **`NativeScalperH4Align`** (default **true**) requires buys only when H4 is not structurally bearish (bull or flat), and sells when H4 is not structurally bullish. Set **false** to restore H1-only alignment.
-- **Regime gate:** inputs **`NativeScalperRegimeGate`** (default **true**) read **`regime_*`** from **`MT5/config.json`** (written by BRIDGE). When **`regime_apply_entry_policy`** is **1**, **`regime_confidence`** ≥ **`regime_countertrend_min_confidence`**, and label is **`TREND_BULL`** / **`TREND_BEAR`**, FORGE blocks **SELL** / **BUY** respectively (aligned with **`AEGIS_REGIME_COUNTERTREND_*`** on the Python side).
+**Higher timeframes (bias / structure, not the primary trigger):**
+- **H4** structure filter (same formula as H1): inputs **`NativeScalperH4Align`** (default **true**) — buys only when H4 is not structurally bearish (bull or flat); sells when H4 is not structurally bullish. Set **false** for H1-only alignment.
+- **Regime gate:** **`NativeScalperRegimeGate`** (default **true**) reads **`regime_*`** from **`MT5/config.json`**. When policy applies and label is **`TREND_BULL`** / **`TREND_BEAR`**, FORGE blocks fading that regime (aligned with **`AEGIS_REGIME_COUNTERTREND_*`**).
 
-**`market_data.json`** includes **`indicators_h4`** (`ema_20`, `ema_50`, `atr_14`). **`scalper_entry.json`** includes **`h4_trend_strength`**.
+**Lower TF execution (optional, v1.6.1+):** input **`NativeScalperM1Mode`** (`NONE` | `CONFIRM` | `TRIGGER`, default **`NONE`**):
+- **`CONFIRM`:** after an M5 setup, require **M1** EMA/ATR structure to agree (same threshold as H1/H4: bull/flat for BUY, bear/flat for SELL).
+- **`TRIGGER`:** same as **CONFIRM**, plus the **last completed M1 bar** must agree with direction (bullish close for BUY, bearish close for SELL).
+
+**`market_data.json`** includes **`indicators_h4`**, **`indicators_m1`**. **`scalper_entry.json`** includes **`h4_trend_strength`**, **`native_scalper_m1_mode`**, **`m1_trend_strength`**, **`m1_prior_close`** / **`m1_prior_open`** (for TRIGGER diagnostics).
 
 ## 5) Active scalper profile and baseline
 Active FAST profile (`config/scalper_config.json`):
@@ -152,14 +156,15 @@ make restart
 
 ## 6) Verification checklist
 After changing rules or binaries:
-1. Confirm runtime version:
+1. **Strategy Tester (backtest):** In **Expert properties → Inputs**, set **`InputMode`** to **`SCALPER`** or **`HYBRID`** if you want **native scalper** entries. Default **`WATCH`** only writes **`tick_data.json`** / ticks — **`CheckNativeScalperSetups` does not run**. Set **`ScalperMode`** to **`DUAL`**, **`BB_BOUNCE`**, or **`BB_BREAKOUT`** (not **`NONE`**). **FORGE v1.6.4+:** **`config.json`** from a **live** BRIDGE run must **not** override **`InputMode`** in the Tester (stale **`effective_mode`** **`WATCH`** / circuit-breaker state used to clobber Inputs every tick). **`tick_data.json via local Files (common err=5004)`** is a normal fallback when Common Files is not used in the Tester sandbox (write still succeeds locally).
+2. Confirm runtime version:
    - `make forge-verify-live`
-2. Confirm management scope behavior:
+3. Confirm management scope behavior:
    - send scoped `MODIFY_*` with `group_id`,
    - verify BRIDGE wrote `magic` in `MT5/command.json`.
-3. Confirm closure feed:
+4. Confirm closure feed:
    - inspect `MT5/market_data.json` for `recent_closed_deals`.
-4. Confirm SCRIBE reflects live state:
+5. Confirm SCRIBE reflects live state:
    - `trade_groups` and `trade_positions` SL/TP fields updated after modify.
 
 Useful query:

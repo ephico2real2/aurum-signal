@@ -20,7 +20,7 @@ from aeb_executor import execute_action, execute_scribe_query
 
 from scribe import get_scribe
 from status_report import KNOWN_COMPONENTS
-from market_data import MT5_STALE_SEC, build_execution_quote, safe_float
+from market_data import MT5_STALE_SEC, build_execution_quote, enrich_mt5_for_stale_check, safe_float
 from autoscalper_condition_service import build_autoscalper_condition_report
 from trading_session import get_trading_session_utc, trading_day_reset_hour_utc
 from config_io import atomic_write_json
@@ -380,7 +380,9 @@ def _build_regime_block(scribe, status: dict | None = None) -> dict:
 # ── Live data endpoint ─────────────────────────────────────────────
 @app.route("/api/live")
 def api_live():
-    mt5       = _read_json(MARKET_FILE)
+    mt5 = _read_json(MARKET_FILE)
+    if isinstance(mt5, dict):
+        mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
     status    = _read_json(STATUS_FILE)
     lens_raw  = _read_json(LENS_FILE)
     execution = build_execution_quote(mt5)
@@ -465,7 +467,7 @@ def api_live():
         "session_utc":     get_trading_session_utc(),
         "session_id":      status.get("session_id"),
         "cycle":           status.get("cycle", 0),
-        "version":         status.get("version", "1.6.0"),
+        "version":         status.get("version", "1.6.1"),
 
         # Safety state
         "sentinel_active":   status.get("sentinel_active", False),
