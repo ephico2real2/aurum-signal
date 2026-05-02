@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from scribe import get_scribe
 from sentinel_feeds import gather_news_feeds
 from status_report import report_component_status
+from freshness import DATA_FRESHNESS_WINDOWS
 
 log = logging.getLogger("sentinel")
 
@@ -25,7 +26,7 @@ STATUS_FILE   = os.environ.get(
     os.environ.get("SENTINEL_STATUS", "config/sentinel_status.json"),
 )
 GUARD_MINUTES = int(os.environ.get("SENTINEL_GUARD_MIN", "30"))
-POLL_SECONDS  = int(os.environ.get("SENTINEL_POLL_SEC", "60"))
+POLL_SECONDS  = int(os.environ.get("SENTINEL_POLL_SEC", str(DATA_FRESHNESS_WINDOWS["SENTINEL"])))
 # Post-event guard: instant data releases (NFP, CPI) settle fast; extended
 # events (speeches, press conferences, FOMC) keep moving markets for the
 # entire duration.  SENTINEL_POST_GUARD_MIN applies to instant events;

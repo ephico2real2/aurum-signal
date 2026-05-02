@@ -13,6 +13,7 @@ from pathlib import Path
 from scribe import get_scribe
 from status_report import report_component_status
 from mcp_client import MCPSession
+from freshness import DATA_FRESHNESS_WINDOWS
 
 log = logging.getLogger("lens")
 
@@ -21,7 +22,7 @@ SNAPSHOT_FILE  = os.environ.get(
     os.environ.get("LENS_SNAPSHOT", "config/lens_snapshot.json"),
 )
 BRIEF_FILE     = os.environ.get("LENS_BRIEF_FILE", "config/lens_brief.json")
-CACHE_SECONDS  = int(os.environ.get("LENS_CACHE_SEC", "60"))
+CACHE_SECONDS  = int(os.environ.get("LENS_CACHE_SEC", str(DATA_FRESHNESS_WINDOWS["LENS"])))
 MCP_SERVER_CMD = os.environ.get(
     "LENS_MCP_CMD",
     "npx tradingview-mcp-jackson"

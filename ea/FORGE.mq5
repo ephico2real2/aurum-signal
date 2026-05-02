@@ -545,7 +545,8 @@ void ExecuteOpenGroup(const string &json) {
    g_trade.SetExpertMagicNumber(group_magic);
 
    // Split TP targets: first tp1_close_pct% get TP1, remainder get TP2 (or TP1 if no TP2)
-   int tp1_count = (int)MathCeil(n * tp1_close_pct / 100.0);  // e.g. 3 of 4 at 70%
+   // explicit int cast — fractional pct values are truncated by design.
+   int tp1_count = (int)MathCeil(n * (int)tp1_close_pct / 100.0);  // e.g. 3 of 4 at 70%
    double tp2_price = (tp2 > 0) ? tp2 : tp1;  // fallback to TP1 if no TP2
 
    for(int i = 0; i < n; i++) {

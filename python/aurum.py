@@ -8,7 +8,7 @@ SOUL.md + SKILL.md define identity and capabilities.
 Writes aurum_cmd.json for BRIDGE to execute commands.
 """
 
-import os, json, logging, asyncio, time, tempfile, re
+import os, json, logging, asyncio, time, tempfile, re, signal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,6 +79,25 @@ def _read_file(path: str) -> str:
     except:
         return ""
 
+
+_SOUL_CACHE = ""
+_SKILL_CACHE = ""
+
+
+def _reload_prompt_cache(signum=None, frame=None) -> None:
+    global _SOUL_CACHE, _SKILL_CACHE
+    _SOUL_CACHE = _read_file(SOUL_FILE)
+    _SKILL_CACHE = _read_file(SKILL_FILE)
+    if signum is not None:
+        log.info("AURUM: reloaded SOUL/SKILL prompt cache via SIGHUP")
+
+
+_reload_prompt_cache()
+try:
+    signal.signal(signal.SIGHUP, _reload_prompt_cache)
+except (AttributeError, ValueError):
+    log.debug("AURUM: SIGHUP prompt reload unavailable in this runtime")
+
 def _read_json(path: str) -> dict:
     try:
         with open(path) as f:
@@ -98,8 +117,8 @@ class Aurum:
         self.herald  = get_herald()
         self.claude  = Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
         self.vision  = Vision(self.claude)
-        self._soul   = _read_file(SOUL_FILE)
-        self._skill  = _read_file(SKILL_FILE)
+        self._soul   = _SOUL_CACHE
+        self._skill  = _SKILL_CACHE
         self._mode   = "SIGNAL"
         # Per-source conversation buffers: {source: [{role, content}, ...]}
         self._conversations: dict[str, list[dict]] = {}
@@ -203,9 +222,8 @@ class Aurum:
             return f"AURUM: Error — {str(e)[:100]}"
 
     def _build_system_prompt(self, context: str, memory: str = "") -> str:
-        # Re-read SOUL + SKILL from disk so edits take effect without restart
-        soul  = _read_file(SOUL_FILE)  or self._soul
-        skill = _read_file(SKILL_FILE) or self._skill
+        soul  = _SOUL_CACHE or self._soul
+        skill = _SKILL_CACHE or self._skill
         parts = [soul, skill, "---", "## CURRENT SYSTEM STATE (live data)", context]
         if memory:
             parts += ["---", "## RECENT CONVERSATION HISTORY (from SCRIBE)", memory]

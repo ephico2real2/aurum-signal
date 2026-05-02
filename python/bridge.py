@@ -25,6 +25,7 @@ from aurum       import get_aurum
 from reconciler  import get_reconciler
 from status_report import report_component_status
 from trading_session import get_trading_session_utc, sydney_open_alert_info
+from freshness import DATA_FRESHNESS_WINDOWS
 
 log = logging.getLogger("bridge")
 
@@ -48,11 +49,11 @@ def _under_root(rel: str) -> str:
 # ── Config ──────────────────────────────────────────────────────────
 LOOP_INTERVAL   = int(os.environ.get("BRIDGE_LOOP_SEC",     "5"))
 # TradingView MCP is slow (~3s+); default 60s balances freshness vs load (was 300s).
-LENS_INTERVAL   = int(os.environ.get("BRIDGE_LENS_SEC",     "60"))
+LENS_INTERVAL   = int(os.environ.get("BRIDGE_LENS_SEC",     str(DATA_FRESHNESS_WINDOWS["LENS"])))
 # Refresh TradingView MCP while in WATCH (launchd has no login PATH without install_services fix)
-LENS_WATCH_REFRESH_SEC = int(os.environ.get("LENS_WATCH_REFRESH_SEC", "60"))
+LENS_WATCH_REFRESH_SEC = int(os.environ.get("LENS_WATCH_REFRESH_SEC", str(DATA_FRESHNESS_WINDOWS["LENS"])))
 SENTINEL_INTERVAL = int(os.environ.get("BRIDGE_SENTINEL_SEC","60"))
-MT5_STALE_SEC   = int(os.environ.get("BRIDGE_MT5_STALE",    "120"))
+MT5_STALE_SEC   = int(os.environ.get("BRIDGE_MT5_STALE",    str(DATA_FRESHNESS_WINDOWS["MT5"])))
 MT5_STALE_RELAXED_SEC = int(os.environ.get("BRIDGE_MT5_STALE_RELAXED", str(MT5_STALE_SEC)))
 if MT5_STALE_RELAXED_SEC < MT5_STALE_SEC:
     MT5_STALE_RELAXED_SEC = MT5_STALE_SEC

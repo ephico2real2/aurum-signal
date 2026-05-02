@@ -9,10 +9,12 @@ from __future__ import annotations
 import os
 import time
 
+from freshness import DATA_FRESHNESS_WINDOWS
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.normpath(os.path.join(_HERE, ".."))
 
-MT5_STALE_SEC = int(os.environ.get("BRIDGE_MT5_STALE", "120"))
+MT5_STALE_SEC = int(os.environ.get("BRIDGE_MT5_STALE", str(DATA_FRESHNESS_WINDOWS["MT5"])))
 
 
 def safe_float(x):

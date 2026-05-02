@@ -60,6 +60,8 @@ services/macos/rendered/
 
 # ── Agent / AI context (local-only) ────────────────────────────────
 Agent.md
+.claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # ── IDE ────────────────────────────────────────────────────────────
 .cursor/

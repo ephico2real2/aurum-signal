@@ -19,6 +19,8 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from freshness import DATA_FRESHNESS_WINDOWS
+
 log = logging.getLogger("regime")
 
 try:
@@ -60,6 +62,15 @@ def _norm_mode(raw: str) -> str:
     return v if v in ("off", "shadow", "active") else "off"
 
 
+def _hmm_components_from_env() -> int:
+    n_components = int(os.environ.get("REGIME_HMM_COMPONENTS", 3))
+    if not 2 <= n_components <= 10:
+        raise ValueError(
+            f"REGIME_HMM_COMPONENTS must be between 2 and 10; got {n_components}"
+        )
+    return n_components
+
+
 @dataclass
 class RegimeSnapshot:
     timestamp: str
@@ -82,6 +93,7 @@ class RegimeSnapshot:
     emit_snapshot: bool
     train_samples: int
     hmm_ready: bool
+    feature_shape_mismatch: bool
 
     def to_dict(self) -> dict:
         return {
@@ -105,6 +117,7 @@ class RegimeSnapshot:
             "emit_snapshot": bool(self.emit_snapshot),
             "train_samples": int(self.train_samples),
             "hmm_ready": bool(self.hmm_ready),
+            "feature_shape_mismatch": bool(self.feature_shape_mismatch),
         }
 
 
@@ -122,7 +135,8 @@ class RegimeEngine:
         self.enabled = _env_bool("REGIME_ENGINE_ENABLED", True)
         self.entry_mode = _norm_mode(os.environ.get("REGIME_ENTRY_MODE", "off"))
         self.min_confidence = max(0.0, min(1.0, _safe_float(os.environ.get("REGIME_MIN_CONFIDENCE"), 0.60)))
-        self.stale_sec = max(5, int(_safe_float(os.environ.get("REGIME_STALE_SEC"), 180)))
+        self.stale_sec = max(5, int(_safe_float(os.environ.get("REGIME_STALE_SEC"), DATA_FRESHNESS_WINDOWS["REGIME"])))
+        self.hmm_components = _hmm_components_from_env()
         self.retrain_interval_sec = max(30, int(_safe_float(os.environ.get("REGIME_RETRAIN_INTERVAL_SEC"), 3600)))
         self.min_train_samples = max(10, int(_safe_float(os.environ.get("REGIME_MIN_TRAIN_SAMPLES"), 120)))
         self.log_interval_sec = max(5, int(_safe_float(os.environ.get("REGIME_LOG_INTERVAL_SEC"), 30)))
@@ -132,6 +146,7 @@ class RegimeEngine:
         self._prev_mid: float | None = None
         self._hmm_model = None
         self._hmm_state_labels: dict[int, str] = {}
+        self._hmm_feature_shape: tuple[int, ...] | None = None
         self._hmm_last_trained = 0.0
         self._model_version = "regime-v1"
         self._last_snapshot: dict = {}
@@ -247,6 +262,7 @@ class RegimeEngine:
                 self._feature_history.clear()
                 self._hmm_model = None
                 self._hmm_state_labels = {}
+                self._hmm_feature_shape = None
                 log.info(
                     "REGIME feature vector shape changed %s→%s — reset HMM history",
                     old_len,
@@ -319,7 +335,8 @@ class RegimeEngine:
         try:
             arr = np.array(list(self._feature_history), dtype=float)
             arr = np.nan_to_num(arr)
-            n_components = 3
+            n_components = _hmm_components_from_env()
+            self.hmm_components = n_components
             model = GaussianHMM(
                 n_components=n_components,
                 covariance_type="full",
@@ -331,6 +348,7 @@ class RegimeEngine:
             labels = self._build_hmm_state_labels(arr, states)
             self._hmm_model = model
             self._hmm_state_labels = labels
+            self._hmm_feature_shape = tuple(arr.shape[1:])
             self._hmm_last_trained = now
             log.info(
                 "REGIME HMM retrained — samples=%s states=%s labels=%s",
@@ -339,7 +357,21 @@ class RegimeEngine:
         except Exception as e:
             self._hmm_model = None
             self._hmm_state_labels = {}
+            self._hmm_feature_shape = None
             log.warning("REGIME HMM train failed: %s", e)
+
+    def _feature_shape_mismatch(self, vector: list[float]) -> bool:
+        if self._hmm_model is None or self._hmm_feature_shape is None:
+            return False
+        new_shape = (len(vector),)
+        if new_shape == self._hmm_feature_shape:
+            return False
+        log.warning(
+            "REGIME HMM feature shape mismatch — trained_shape=%s current_shape=%s",
+            self._hmm_feature_shape,
+            new_shape,
+        )
+        return True
 
     def _hmm_infer(self, vector: list[float]) -> tuple[str, float, dict, str | None]:
         if not HMM_AVAILABLE:
@@ -440,6 +472,7 @@ class RegimeEngine:
             stale = True
 
         self._maybe_train_hmm()
+        feature_shape_mismatch = self._feature_shape_mismatch(vector)
         label, conf, posterior, hmm_reason = self._hmm_infer(vector)
         model_name = "HMM_GAUSSIAN"
         fallback_reason = None
@@ -501,6 +534,7 @@ class RegimeEngine:
             emit_snapshot=emit_snapshot,
             train_samples=len(self._feature_history),
             hmm_ready=bool(self._hmm_model is not None),
+            feature_shape_mismatch=feature_shape_mismatch,
         ).to_dict()
         self._last_snapshot = snap
         return snap
@@ -517,4 +551,3 @@ def get_regime_engine() -> RegimeEngine:
     if _instance is None:
         _instance = RegimeEngine()
     return _instance
-
