@@ -196,6 +196,92 @@ def test_channel_close_all_with_group_id_scopes_to_group(monkeypatch, tmp_path):
     assert stub.scribe.update_trade_group.call_args[0][0] == 10
 
 @pytest.mark.unit
+def test_channel_modify_sl_without_scope_is_dropped(monkeypatch, tmp_path):
+    """LISTENER MODIFY_SL with no group/ticket/stage must not reach FORGE."""
+    stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, {})
+    stub._sync_modify_targets = MagicMock()
+    _write_mgmt(mgmt_path, "MODIFY_SL", source="LISTENER", sl=4660.0)
+
+    with (
+        patch.object(bm, "_write_forge_command") as mock_forge,
+        patch.object(bm, "_tlog") as mock_tlog,
+    ):
+        bm.Bridge._process_mgmt_command(stub, {})
+
+    stub._enqueue_forge_command.assert_not_called()
+    mock_forge.assert_not_called()
+    stub._sync_modify_targets.assert_not_called()
+    mock_tlog.assert_any_call(
+        "MGMT",
+        "MODIFY_SL_IGNORED",
+        "channel Ben's VIP Club — no resolved scope found",
+        level="warning",
+    )
+
+
+@pytest.mark.unit
+def test_channel_modify_sl_with_group_id_is_written(monkeypatch, tmp_path):
+    """LISTENER MODIFY_SL with resolved group_id should emit magic-scoped command."""
+    groups = {10: {"source": "SIGNAL", "direction": "BUY"}}
+    stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, groups)
+    stub._sync_modify_targets = MagicMock()
+    stub._build_ticket_sl_verifier = bm.Bridge._build_ticket_sl_verifier
+    _write_mgmt(mgmt_path, "MODIFY_SL", source="LISTENER", group_id=10, sl=4660.0)
+
+    bm.Bridge._process_mgmt_command(stub, {})
+
+    stub._enqueue_forge_command.assert_called_once()
+    cmd = stub._enqueue_forge_command.call_args[0][0]
+    assert cmd == {"action": "MODIFY_SL", "sl": 4660.0, "magic": 202411}
+    assert stub._enqueue_forge_command.call_args.kwargs.get("verifier") is None
+    stub._sync_modify_targets.assert_called_once_with(
+        10, sl=4660.0, tp=None, ticket=None, tp_stage=None,
+    )
+
+
+@pytest.mark.unit
+def test_channel_modify_tp_without_scope_is_dropped(monkeypatch, tmp_path):
+    """LISTENER MODIFY_TP with no group/ticket/stage must not reach FORGE."""
+    stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, {})
+    stub._sync_modify_targets = MagicMock()
+    _write_mgmt(mgmt_path, "MODIFY_TP", source="LISTENER", tp=4660.0)
+
+    with (
+        patch.object(bm, "_write_forge_command") as mock_forge,
+        patch.object(bm, "_tlog") as mock_tlog,
+    ):
+        bm.Bridge._process_mgmt_command(stub, {})
+
+    stub._enqueue_forge_command.assert_not_called()
+    mock_forge.assert_not_called()
+    stub._sync_modify_targets.assert_not_called()
+    mock_tlog.assert_any_call(
+        "MGMT",
+        "MODIFY_TP_IGNORED",
+        "channel Ben's VIP Club — no resolved scope found",
+        level="warning",
+    )
+
+
+@pytest.mark.unit
+def test_aurum_modify_sl_without_scope_is_not_dropped_by_channel_guard(monkeypatch, tmp_path):
+    """AURUM-origin MODIFY_SL is not a channel command, so this guard must not drop it."""
+    stub, mgmt_path, bm = _make_bridge_stub(monkeypatch, tmp_path, {})
+    stub._sync_modify_targets = MagicMock()
+    stub._build_ticket_sl_verifier = bm.Bridge._build_ticket_sl_verifier
+    _write_mgmt(mgmt_path, "MODIFY_SL", source="AURUM", channel="", sl=4660.0)
+
+    bm.Bridge._process_mgmt_command(stub, {})
+
+    stub._enqueue_forge_command.assert_called_once()
+    cmd = stub._enqueue_forge_command.call_args[0][0]
+    assert cmd == {"action": "MODIFY_SL", "sl": 4660.0}
+    stub._sync_modify_targets.assert_called_once_with(
+        None, sl=4660.0, tp=None, ticket=None, tp_stage=None,
+    )
+
+
+@pytest.mark.unit
 def test_channel_modify_tp_with_group_id_scopes_to_group_magic(monkeypatch, tmp_path):
     """LISTENER MODIFY_TP with group_id should emit magic-scoped FORGE command."""
     groups = {

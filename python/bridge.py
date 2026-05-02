@@ -2926,6 +2926,14 @@ class Bridge:
             if sl:
                 slv = float(sl)
                 ticket, stage = _coerce_modify_scope(mgmt)
+                if is_channel and not (mgmt_gid or ticket or stage):
+                    _tlog(
+                        "MGMT",
+                        "MODIFY_SL_IGNORED",
+                        f"channel {mgmt.get('channel','')} — no resolved scope found",
+                        level="warning",
+                    )
+                    return
                 forge_cmd = {"action": "MODIFY_SL", "sl": slv}
                 if mgmt_gid:
                     magic = self._lookup_group_magic(int(mgmt_gid))
@@ -2969,6 +2977,14 @@ class Bridge:
             if tp:
                 tpv = float(tp)
                 ticket, stage = _coerce_modify_scope(mgmt)
+                if is_channel and not (mgmt_gid or ticket or stage):
+                    _tlog(
+                        "MGMT",
+                        "MODIFY_TP_IGNORED",
+                        f"channel {mgmt.get('channel','')} — no resolved scope found",
+                        level="warning",
+                    )
+                    return
                 forge_cmd = {"action": "MODIFY_TP", "tp": tpv}
                 if mgmt_gid:
                     magic = self._lookup_group_magic(int(mgmt_gid))
