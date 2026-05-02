@@ -19,6 +19,7 @@ from scribe import get_scribe
 from herald import get_herald
 from status_report import report_component_status
 from vision import Vision
+from config_io import atomic_write_json
 
 log = logging.getLogger("listener")
 
@@ -194,10 +195,9 @@ class Listener:
                         {"date": str(m.date)[:19], "text": (m.message or "(media)")[:200], "id": m.id}
                         for m in msgs
                     ]
-                with open("config/channel_messages.json", "w") as f:
-                    json.dump(recent, f, indent=2)
-            except Exception:
-                pass
+                await asyncio.to_thread(atomic_write_json, "config/channel_messages.json", recent)
+            except (OSError, TypeError, ValueError) as e:
+                log.warning("LISTENER message cache refresh failed: %s", e)
 
     async def _idle_heartbeat_loop(self):
         interval = int(os.environ.get("LISTENER_HEARTBEAT_SEC", "120"))
@@ -243,8 +243,8 @@ class Listener:
             try:
                 with open(LISTENER_META_FILE) as f:
                     existing = json.load(f)
-            except Exception:
-                pass
+            except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+                log.warning("Failed to read %s: %s", LISTENER_META_FILE, e)
             meta = {
                 **existing,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -258,8 +258,7 @@ class Listener:
                 meta["last_ingest_at"] = last_ingest_at
             if resolved_rooms is not None:
                 meta["resolved_rooms"] = resolved_rooms
-            with open(LISTENER_META_FILE, "w") as f:
-                json.dump(meta, f, indent=2)
+            atomic_write_json(LISTENER_META_FILE, meta)
         except Exception as e:
             log.debug("LISTENER meta write failed: %s", e)
 
@@ -306,8 +305,7 @@ class Listener:
                     "LISTENER: channel %s = %r  trade_room=%s (%s)",
                     ch_id, name, allowed, match_reason,
                 )
-            with open("config/channel_names.json", "w") as f:
-                json.dump(names, f, indent=2)
+            await asyncio.to_thread(atomic_write_json, "config/channel_names.json", names)
         except Exception as e:
             log.warning(f"LISTENER: channel name resolution failed: {e}")
 
@@ -320,8 +318,7 @@ class Listener:
                     {"date": str(m.date)[:19], "text": (m.message or "(media)")[:200], "id": m.id}
                     for m in msgs
                 ]
-            with open("config/channel_messages.json", "w") as f:
-                json.dump(recent, f, indent=2)
+            await asyncio.to_thread(atomic_write_json, "config/channel_messages.json", recent)
             log.info("LISTENER: cached recent messages for %d channels", len(recent))
         except Exception as e:
             log.warning(f"LISTENER: message cache failed: {e}")
@@ -490,8 +487,7 @@ class Listener:
                 "file_path": dst_img,
                 "source": "LISTENER_SIGNAL_MEDIA",
             }
-            with open(dst_img + ".json", "w") as f:
-                json.dump(meta, f, indent=2)
+            atomic_write_json(dst_img + ".json", meta)
             try:
                 self.scribe.log_system_event(
                     event_type="SIGNAL_CHART_ARCHIVED",
@@ -594,7 +590,8 @@ class Listener:
                 except Exception:
                     pass
             if img_path:
-                archived_path = self._archive_signal_media(
+                archived_path = await asyncio.to_thread(
+                    self._archive_signal_media,
                     src_path=img_path,
                     channel=channel,
                     msg_id=msg.id,
@@ -603,7 +600,8 @@ class Listener:
                 if archived_path:
                     log.info("LISTENER: archived signal media -> %s", archived_path)
                 try:
-                    vision_result = self.vision.extract(
+                    vision_result = await asyncio.to_thread(
+                        self.vision.extract,
                         image_path=img_path,
                         caption=text,
                         context_hint="SIGNAL",
@@ -762,7 +760,7 @@ class Listener:
             parsed["channel"]    = channel
             parsed["timestamp"]  = datetime.now(timezone.utc).isoformat()
             parsed["edited"]     = edited
-            self._write_signal(parsed)
+            await asyncio.to_thread(self._write_signal, parsed)
             now_iso = datetime.now(timezone.utc).isoformat()
             self._last_ingest_at = datetime.now(timezone.utc)
             log.info(
@@ -818,7 +816,7 @@ class Listener:
             except Exception as e:
                 log.warning(f"LISTENER: channel group lookup failed: {e}")
 
-            self._write_mgmt(parsed)
+            await asyncio.to_thread(self._write_mgmt, parsed)
             log.info(f"LISTENER → management_cmd.json: {parsed.get('intent')} (group={parsed.get('group_id','ALL')})")
             if vision_id:
                 self.scribe.update_vision_extraction_result(vision_id, "DISPATCHED_MANAGEMENT", linked_signal_id=signal_id)
@@ -885,15 +883,13 @@ class Listener:
 
     def _write_signal(self, data: dict):
         try:
-            with open(SIGNAL_FILE, "w") as f:
-                json.dump(data, f, indent=2)
+            atomic_write_json(SIGNAL_FILE, data)
         except Exception as e:
             log.error(f"LISTENER write signal error: {e}")
 
     def _write_mgmt(self, data: dict):
         try:
-            with open(MGMT_FILE, "w") as f:
-                json.dump(data, f, indent=2)
+            atomic_write_json(MGMT_FILE, data)
         except Exception as e:
             log.error(f"LISTENER write mgmt error: {e}")
 

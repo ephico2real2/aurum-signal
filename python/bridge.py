@@ -26,6 +26,7 @@ from reconciler  import get_reconciler
 from status_report import report_component_status
 from trading_session import get_trading_session_utc, sydney_open_alert_info
 from freshness import DATA_FRESHNESS_WINDOWS
+from config_io import atomic_write_json
 
 log = logging.getLogger("bridge")
 
@@ -193,13 +194,13 @@ def _read_json(path: str) -> dict:
     try:
         with open(path) as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        log.warning("Failed to read %s: %s", path, e)
         return {}
 
 def _write_json(path: str, data: dict):
     try:
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+        atomic_write_json(path, data)
     except Exception as e:
         log.error(f"Write {path} error: {e}")
 
@@ -3632,7 +3633,8 @@ class Bridge:
         # Consume the file so we don't reprocess
         try:
             os.remove(AURUM_CMD_FILE)
-        except:
+        except OSError as e:
+            log.debug("BRIDGE: AURUM command consume skipped: %s", e)
             pass
 
     def _report_aeb_result(self, result: dict, *, via: str):

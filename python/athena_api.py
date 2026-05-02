@@ -23,6 +23,7 @@ from status_report import KNOWN_COMPONENTS
 from market_data import MT5_STALE_SEC, build_execution_quote, safe_float
 from autoscalper_condition_service import build_autoscalper_condition_report
 from trading_session import get_trading_session_utc, trading_day_reset_hour_utc
+from config_io import atomic_write_json
 
 log = logging.getLogger("athena_api")
 
@@ -154,7 +155,8 @@ def _read_json(path: str) -> dict:
     try:
         with open(path) as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        log.warning("Failed to read %s: %s", path, e)
         return {}
 
 def _normalize_allowlist_token(value: str) -> str:
@@ -826,8 +828,7 @@ def api_management():
             "details": schema_errors,
         }), 400
     try:
-        with open(MGMT_FILE, "w") as f:
-            json.dump(body, f, indent=2)
+        atomic_write_json(MGMT_FILE, body)
     except Exception as e:
         log.error("api_management write failed: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -875,17 +876,15 @@ def api_mode():
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        with open(AURUM_CMD_FILE, "w") as f:
-            json.dump(cmd, f, indent=2)
+        atomic_write_json(AURUM_CMD_FILE, cmd)
         # Do NOT force mode/effective_mode here — BRIDGE is source-of-truth.
         # Record requested_mode for operator visibility until BRIDGE applies/blocks it.
         try:
             status = _read_json(STATUS_FILE)
             status["requested_mode"] = new_mode
-            with open(STATUS_FILE, "w") as f:
-                json.dump(status, f, indent=2)
-        except Exception:
-            pass
+            atomic_write_json(STATUS_FILE, status)
+        except (OSError, TypeError, ValueError) as e:
+            log.warning("ATHENA mode requested status update failed: %s", e)
         pinned_mode = (os.environ.get("BRIDGE_PIN_MODE") or "").upper().strip() or None
         return jsonify({
             "ok": True,
@@ -938,8 +937,7 @@ def api_sentinel_override():
             os.path.dirname(os.path.abspath(__file__)),
             os.environ.get("AURUM_CMD_FILE", "config/aurum_cmd.json")
         )
-        with open(aurum_path, "w") as f:
-            json.dump(cmd, f, indent=2)
+        atomic_write_json(aurum_path, cmd)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({
@@ -959,8 +957,10 @@ def api_sentinel_digest():
     # Write to a file that BRIDGE/SENTINEL can pick up
     digest_file = os.path.join(_HERE, "config", "sentinel_digest_override.json")
     try:
-        with open(digest_file, "w") as f:
-            json.dump({"interval": interval, "timestamp": datetime.now(timezone.utc).isoformat()}, f)
+        atomic_write_json(
+            digest_file,
+            {"interval": interval, "timestamp": datetime.now(timezone.utc).isoformat()},
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"ok": True, "interval": interval,

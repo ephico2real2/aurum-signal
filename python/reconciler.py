@@ -19,6 +19,7 @@ from pathlib import Path
 from scribe import get_scribe
 from herald import get_herald
 from status_report import report_component_status
+from config_io import atomic_write_json
 
 log = logging.getLogger("reconciler")
 
@@ -48,7 +49,8 @@ def _read_json(path: str) -> dict:
     try:
         with open(path) as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        log.warning("Failed to read %s: %s", path, e)
         return {}
 
 def _now() -> str:
@@ -274,13 +276,11 @@ class Reconciler:
             log.debug(f"RECONCILER heartbeat error: {e}")
 
         try:
-            import json as _json
             result_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
                 "..", "config", "reconciler_last.json"
             )
-            with open(result_path, "w") as f:
-                _json.dump(result, f, indent=2)
+            atomic_write_json(result_path, result)
         except Exception as e:
             log.error(f"RECONCILER: failed to write result: {e}")
 

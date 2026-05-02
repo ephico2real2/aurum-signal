@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -12,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+
+log = logging.getLogger("aeb_executor")
 
 _AEB_ACTIONS = {"SCRIBE_QUERY", "SHELL_EXEC", "AURUM_EXEC", "HEALTH_CHECK", "ANALYSIS_RUN"}
 _SQL_READ_PREFIX_RE = re.compile(r"^\s*(SELECT|WITH)\b", re.IGNORECASE)
@@ -46,6 +49,12 @@ def _safe_subprocess_env() -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
     }
+
+
+def _warn_if_slow(started: float) -> None:
+    elapsed = time.monotonic() - started
+    if elapsed > 5:
+        log.warning("AEB exec slow: %.1fs", elapsed)
 
 
 def _normalize_legacy_aeb_payload(payload: dict) -> dict:
@@ -409,12 +418,12 @@ def execute_shell_exec(payload: dict, *, project_root: str) -> dict:
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    timeout_sec = payload.get("timeout_sec", _env_int("AEB_SHELL_EXEC_TIMEOUT_SEC", 30, 1, 300))
+    timeout_sec = payload.get("timeout_sec", _env_int("AEB_SHELL_EXEC_TIMEOUT_SEC", 10, 1, 300))
     max_output_chars = _env_int("AEB_SHELL_EXEC_MAX_OUTPUT_CHARS", 4000, 256, 50_000)
     try:
         timeout_i = max(1, min(int(timeout_sec), 300))
     except (TypeError, ValueError):
-        timeout_i = 30
+        timeout_i = 10
 
     try:
         proc = subprocess.run(
@@ -430,6 +439,7 @@ def execute_shell_exec(payload: dict, *, project_root: str) -> dict:
         out = _truncate_text(proc.stdout, max_output_chars)
         err_txt = _truncate_text(proc.stderr, max_output_chars)
         duration_ms = int((time.monotonic() - started) * 1000)
+        _warn_if_slow(started)
         ok_rc = proc.returncode == 0
         return _result(
             ok=ok_rc,
@@ -443,6 +453,7 @@ def execute_shell_exec(payload: dict, *, project_root: str) -> dict:
     except subprocess.TimeoutExpired as e:
         out = _truncate_text((e.stdout or ""), max_output_chars)
         err_txt = _truncate_text((e.stderr or ""), max_output_chars)
+        _warn_if_slow(started)
         return _result(
             ok=False,
             action=action,
@@ -477,12 +488,12 @@ def execute_health_check(payload: dict, *, project_root: str) -> dict:
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    timeout_sec = payload.get("timeout_sec", _env_int("AEB_HEALTH_CHECK_TIMEOUT_SEC", 30, 1, 300))
+    timeout_sec = payload.get("timeout_sec", _env_int("AEB_HEALTH_CHECK_TIMEOUT_SEC", 10, 1, 300))
     max_output_chars = _env_int("AEB_HEALTH_CHECK_MAX_OUTPUT_CHARS", 8000, 256, 50_000)
     try:
         timeout_i = max(1, min(int(timeout_sec), 300))
     except (TypeError, ValueError):
-        timeout_i = 30
+        timeout_i = 10
 
     root = Path(project_root).resolve()
     script_path = root / "scripts" / "health.py"
@@ -521,6 +532,7 @@ def execute_health_check(payload: dict, *, project_root: str) -> dict:
         if overall:
             summary = f"Health check overall={overall}"
         ok_rc = proc.returncode != 2
+        _warn_if_slow(started)
         return _result(
             ok=ok_rc,
             action=action,
@@ -533,6 +545,7 @@ def execute_health_check(payload: dict, *, project_root: str) -> dict:
     except subprocess.TimeoutExpired as e:
         out = _truncate_text((e.stdout or ""), max_output_chars)
         err_txt = _truncate_text((e.stderr or ""), max_output_chars)
+        _warn_if_slow(started)
         return _result(
             ok=False,
             action=action,

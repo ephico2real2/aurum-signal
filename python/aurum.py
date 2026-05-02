@@ -77,7 +77,8 @@ def _read_file(path: str) -> str:
     try:
         with open(path) as f:
             return f.read()
-    except:
+    except OSError as e:
+        log.warning("Failed to read %s: %s", path, e)
         return ""
 
 
@@ -103,7 +104,8 @@ def _read_json(path: str) -> dict:
     try:
         with open(path) as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        log.warning("Failed to read %s: %s", path, e)
         return {}
 
 
@@ -1330,8 +1332,7 @@ class Aurum:
         for idx, cmd in enumerate(commands_found):
             if idx > 0:
                 # Wait for BRIDGE to consume previous command (~6s > BRIDGE_LOOP_SEC)
-                import time as _time
-                _time.sleep(6)
+                time.sleep(6)
             self.write_command(cmd)
             log.info("AURUM: queued %s from response JSON (%d/%d)",
                      cmd.get("action"), idx + 1, len(commands_found))
@@ -1504,14 +1505,19 @@ class Aurum:
                 try:
                     query = text or "Analyze this image in context of the current trading session."
                     if text and not image_path:
-                        nl_reply = self._handle_telegram_natural_language_command(text, source="TELEGRAM")
+                        nl_reply = await asyncio.to_thread(
+                            self._handle_telegram_natural_language_command,
+                            text,
+                            source="TELEGRAM",
+                        )
                         if nl_reply:
                             await update.message.reply_text(nl_reply)
                             continue
                     log.info(f"AURUM query from Telegram (bot): {query[:60]}")
                     # Show typing indicator while thinking
                     await update.message.chat.send_action("typing")
-                    reply = self._reply_with_optional_image(
+                    reply = await asyncio.to_thread(
+                        self._reply_with_optional_image,
                         query=query,
                         caption=text,
                         image_path=image_path,
@@ -1535,7 +1541,7 @@ class Aurum:
                 finally:
                     if image_path:
                         try:
-                            os.remove(image_path)
+                            await asyncio.to_thread(os.remove, image_path)
                         except Exception:
                             pass
                     msg_queue.task_done()
@@ -1596,7 +1602,11 @@ class Aurum:
                     pass
             query = text or "Analyze this image in context of the current trading session."
             if text and not has_media:
-                nl_reply = self._handle_telegram_natural_language_command(text, source="TELEGRAM")
+                nl_reply = await asyncio.to_thread(
+                    self._handle_telegram_natural_language_command,
+                    text,
+                    source="TELEGRAM",
+                )
                 if nl_reply:
                     await event.respond(nl_reply)
                     return
@@ -1615,7 +1625,8 @@ class Aurum:
                             reason="TELETHON_DIRECT_MEDIA",
                             notes=f"chat={target_chat} msg={event.message.id}",
                         )
-                    vr = self.vision.extract(
+                    vr = await asyncio.to_thread(
+                        self.vision.extract,
                         image_path=image_path,
                         caption=text,
                         context_hint="GENERAL",
@@ -1634,7 +1645,8 @@ class Aurum:
                             "Please resend as a clearer file or include entry/SL/TP in text."
                         )
                     else:
-                        reply = self.ask(
+                        reply = await asyncio.to_thread(
+                            self.ask,
                             query,
                             source="TELEGRAM",
                             extra_context=self._vision_prompt_context(vr),
@@ -1653,11 +1665,11 @@ class Aurum:
                 finally:
                     if image_path:
                         try:
-                            os.remove(image_path)
+                            await asyncio.to_thread(os.remove, image_path)
                         except Exception:
                             pass
             if reply is None:
-                reply = self.ask(query, source="TELEGRAM")
+                reply = await asyncio.to_thread(self.ask, query, source="TELEGRAM")
             log.info(f"AURUM query from Telegram (telethon): {query[:60]}")
             await event.respond(reply)
 

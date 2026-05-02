@@ -289,8 +289,8 @@ class Sentinel:
                     current_date = datetime.strptime(
                         f"{txt} {now.year}", "%a%b %d %Y"
                     ).replace(tzinfo=timezone.utc)
-                except:
-                    pass
+                except (TypeError, ValueError) as e:
+                    log.debug("SENTINEL date parse skipped: %s", e)
 
             currency = row.select_one("td.calendar__currency")
             impact   = row.select_one("td.calendar__impact span")
@@ -333,7 +333,8 @@ class Sentinel:
             eastern_offset = timedelta(hours=5)
             return base.replace(hour=t.hour, minute=t.minute,
                                second=0, microsecond=0) + eastern_offset
-        except:
+        except (TypeError, ValueError) as e:
+            log.debug("SENTINEL time parse fallback for %r: %s", time_str, e)
             return base
 
     def _fallback_events(self) -> list:

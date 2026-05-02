@@ -181,6 +181,10 @@ class Lens:
             raw = self._call_mcp()
             if not raw:
                 return self._cache  # return stale if available
+            if raw.get("stale"):
+                if self._cache:
+                    self._cache.data["stale"] = True
+                return self._cache
             snap = LensSnapshot(raw)
             self._cache    = snap
             self._cache_ts = time.time()
@@ -224,6 +228,12 @@ class Lens:
             except Exception:
                 pass
             return self._cache
+
+    def _stale_lens_data(self) -> dict:
+        data = self._cache.to_dict() if self._cache else {}
+        data["stale"] = True
+        data["timestamp"] = datetime.now(timezone.utc).isoformat()
+        return data
 
     def _mcp_argv(self) -> list:
         """Resolve npx/node to absolute paths when possible (launchd-safe)."""
@@ -288,7 +298,7 @@ class Lens:
                 [tv, "brief", "--json"],
                 capture_output=True,
                 text=True,
-                timeout=40,
+                timeout=15,
                 env=os.environ.copy(),
             )
             if proc.returncode != 0:
@@ -301,7 +311,11 @@ class Lens:
             except Exception:
                 # Non-JSON CLI output fallback
                 return {"summary": payload[:1500]}
-        except Exception:
+        except subprocess.TimeoutExpired:
+            log.warning("LENS tv brief subprocess timed out; returning stale lens data")
+            return self._stale_lens_data()
+        except Exception as e:
+            log.warning("LENS tv brief subprocess failed: %s", e)
             return None
 
     def _extract_tv_brief(self, resp: dict | None, source: str) -> dict | None:
@@ -540,8 +554,8 @@ class Lens:
             return data
 
         except subprocess.TimeoutExpired:
-            log.error("LENS MCP timeout (>55s) — TradingView CDP may be slow")
-            return None
+            log.warning("LENS MCP timeout; returning stale lens data")
+            return self._stale_lens_data()
         except Exception as e:
             log.error(f"LENS MCP call error: {e}")
             return None

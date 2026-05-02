@@ -11,7 +11,7 @@ Used by:
   - lens.py (could migrate to this in future)
 """
 
-import os, json, logging, subprocess, shutil, time, shlex
+import os, json, logging, select, subprocess, shutil, time, shlex
 
 log = logging.getLogger("mcp_client")
 
@@ -22,6 +22,10 @@ MCP_SERVER_CMD = os.environ.get(
     "LENS_MCP_CMD",
     "npx tradingview-mcp-jackson"
 )
+
+
+class MCPTimeoutError(TimeoutError):
+    """Raised when the MCP server does not produce a response in time."""
 
 
 def _mcp_argv() -> list:
@@ -123,8 +127,16 @@ class MCPSession:
         self.proc.stdin.flush()
 
     def _read_response(self, timeout: int = None) -> dict | None:
-        deadline = time.time() + (timeout or self.timeout)
+        read_timeout = min(timeout or self.timeout or 15, 15)
+        deadline = time.time() + read_timeout
         while time.time() < deadline:
+            remaining = max(0.0, deadline - time.time())
+            ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
+            if not ready:
+                try:
+                    self.proc.kill()
+                finally:
+                    raise MCPTimeoutError(f"MCP response timed out after {read_timeout}s")
             line = self.proc.stdout.readline()
             if not line:
                 continue
@@ -134,7 +146,10 @@ class MCPSession:
                     return json.loads(line)
                 except json.JSONDecodeError:
                     continue
-        return None
+        try:
+            self.proc.kill()
+        finally:
+            raise MCPTimeoutError(f"MCP response timed out after {read_timeout}s")
 
 
 def quick_call(tool: str, arguments: dict = None, timeout: int = 20) -> dict:
