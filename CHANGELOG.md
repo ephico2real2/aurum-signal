@@ -1,5 +1,12 @@
 # SIGNAL SYSTEM — CHANGELOG
 ## [1.5.5] — 2026-05-02
+### L1–L6 low-severity cleanup sprint
+- **L1** (`regime.py`): detects HMM feature vector shape changes between calls, logs a WARNING with the old→new shape, and sets `feature_shape_mismatch=True` in the regime snapshot so BRIDGE can surface it. Test: `test_regime_engine_flags_hmm_feature_shape_mismatch`.
+- **L2** (`aurum.py`): `SOUL.md` and `SKILL.md` are now cached at module level instead of re-read on every `ask()` call. A `SIGHUP` handler reloads the cache in-place so a running process can refresh without restart. Tests: `test_ask_uses_cached_soul_skill_without_rereading`, `test_sighup_reloads_soul_skill_cache`.
+- **L3** (`regime.py`): HMM `n_components` is now read from `REGIME_HMM_COMPONENTS` (default 3, validated 2–10). `.env.example` documents the new knob. Test: `test_regime_hmm_components_env_validation`.
+- **L4** (`ea/FORGE.mq5:~550`): added an explicit `(int)` cast on `tp1_close_pct`, with a comment noting fractional values are truncated by design. No logic change.
+- **L5** (`.gitignore`): added `.claude/worktrees/` and `.claude/scheduled_tasks.lock` under the Agent / AI context section to prevent Claude Code runtime artifacts from being committed.
+- **L6** (`python/freshness.py`): created `DATA_FRESHNESS_WINDOWS` to centralise default staleness thresholds for MT5, SENTINEL, REGIME, and LENS. `bridge.py`, `sentinel.py`, `regime.py`, `lens.py`, and `market_data.py` now import it as the env-var fallback. Test: `test_data_freshness_windows_are_defined`.
 ### Security fixes — local MT5 link and scoped channel MODIFY commands
 - **P2 Security**: untracked the machine-specific `MT5` symlink and added `make setup-mt5-link`. The committed symlink embedded an absolute path to one developer's MT5 Common Files directory, breaking other checkouts. `MT5_PATH` in `.env` now drives local symlink creation, with `.env.example` documenting the setup flow and `.gitignore` covering the bare symlink name.
 - **C2 Security**: channel-origin `MODIFY_SL` and `MODIFY_TP` commands now require a resolved scope (`group_id`/magic or `ticket`) before BRIDGE writes a FORGE modify command. Previously, a channel message without a resolved `group_id` or `ticket` could write an unscoped `MODIFY_*` command that FORGE applied to every managed position. Unresolved channel MODIFY commands are now dropped with a warning log instead of falling through to global scope.
