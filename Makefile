@@ -309,7 +309,7 @@ reload-athena:
 LENS_MCP_DIR = $(HOME)/tradingview-mcp-jackson
 LENS_RULES_CANONICAL = $(ROOT_DIR)/config/tradingview_rules.json
 
-.PHONY: start-tradingview stop-tradingview mt5-start mt5-stop check-tradingview update-lens-mcp system-up system-down
+.PHONY: start-tradingview stop-tradingview mt5-start mt5-stop setup-mt5-link check-tradingview update-lens-mcp system-up system-down
 
 start-tradingview:
 	@chmod +x $(SCRIPTS)/start_tradingview_cdp.sh
@@ -327,6 +327,15 @@ mt5-start:
 mt5-stop:
 	@echo "Stopping MetaTrader 5..."
 	@pkill -f "terminal64.exe" 2>/dev/null && echo "✅ MetaTrader 5 stopped" || echo "  MetaTrader 5 was not running"
+
+setup-mt5-link:
+	@test -f "$(ROOT_DIR)/.env" || { echo "Missing .env — copy .env.example and set MT5_PATH"; exit 1; }
+	@MT5_PATH=$$(sed -n 's/^MT5_PATH=//p' "$(ROOT_DIR)/.env" | tail -1 | sed 's/^"//;s/"$$//'); \
+	if [ -z "$$MT5_PATH" ]; then echo "MT5_PATH is not set in .env"; exit 1; fi; \
+	if [ ! -d "$$MT5_PATH" ]; then echo "MT5_PATH directory does not exist: $$MT5_PATH"; exit 1; fi; \
+	if [ -e "$(ROOT_DIR)/MT5" ] && [ ! -L "$(ROOT_DIR)/MT5" ]; then echo "MT5 exists and is not a symlink — remove it manually first"; exit 1; fi; \
+	ln -sfn "$$MT5_PATH" "$(ROOT_DIR)/MT5"; \
+	echo "MT5 -> $$MT5_PATH"
 
 check-tradingview:
 	@if curl -s "http://localhost:9222/json/version" > /dev/null 2>&1; then \

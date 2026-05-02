@@ -16,6 +16,7 @@ config/broker_info.json
 config/tick_data.json
 
 # ── MT5 files (written by FORGE — not source code) ────────────────
+MT5
 MT5/
 python/MT5/
 
