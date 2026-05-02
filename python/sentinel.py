@@ -248,12 +248,30 @@ class Sentinel:
 
     # ── ForexFactory scraper ───────────────────────────────────────
     def _fetch_events(self, currencies: set) -> list:
-        try:
-            resp = requests.get(FF_URL, headers=HEADERS, timeout=10)
-            return self._parse_ff(resp.text, currencies)
-        except Exception as e:
-            log.error(f"SENTINEL fetch error: {e}")
-            return self._fallback_events()
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = requests.get(FF_URL, headers=HEADERS, timeout=10)
+                return self._parse_ff(resp.text, currencies)
+            except requests.RequestException as e:
+                log.warning(
+                    "SENTINEL ForexFactory fetch failed (attempt %s/%s): %s",
+                    attempt,
+                    attempts,
+                    e,
+                )
+                if attempt < attempts:
+                    time.sleep(3)
+        log.warning("SENTINEL ForexFactory fetch failed after retries; applying fail-closed news guard")
+        return [{
+            "name": "ForexFactory fetch failed",
+            "impact": "HIGH",
+            "currency": "UNKNOWN",
+            "minutes_away": 0,
+            "time_str": datetime.now(timezone.utc).strftime("%H:%M UTC"),
+            "event_dt": datetime.now(timezone.utc).isoformat(),
+            "fail_safe": True,
+        }]
 
     def _parse_ff(self, html: str, currencies: set) -> list:
         """Parse ForexFactory calendar HTML for configured currencies (see SENTINEL_CALENDAR_CURRENCIES)."""

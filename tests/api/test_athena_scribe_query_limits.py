@@ -87,3 +87,21 @@ def test_scribe_query_truncated_flag_in_payload(client, monkeypatch):
     d = r.get_json()
     assert d["truncated"] is True
     assert d["count"] == 2
+
+
+@pytest.mark.unit
+def test_scribe_query_rejects_unknown_table(tmp_path):
+    import scribe
+
+    s = scribe.Scribe(str(tmp_path / "scribe.db"))
+    with pytest.raises(ValueError, match="not in allowlist"):
+        s.export_csv("not_a_real_table", path=str(tmp_path / "out.csv"))
+
+
+@pytest.mark.unit
+def test_scribe_query_allows_known_tables(tmp_path):
+    import scribe
+
+    s = scribe.Scribe(str(tmp_path / "scribe.db"))
+    for table in scribe.ALLOWED_SCRIBE_TABLES:
+        s.export_csv(table, path=str(tmp_path / f"{table}.csv"))

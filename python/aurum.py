@@ -12,6 +12,7 @@ import os, json, logging, asyncio, time, tempfile, re, signal
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from anthropic import Anthropic
 from telethon import TelegramClient, events
 
@@ -175,6 +176,7 @@ class Aurum:
                 max_tokens=MAX_TOKENS,
                 system=system,
                 messages=messages,
+                timeout=httpx.Timeout(30.0),
             )
             answer = resp.content[0].text.strip()
             tokens = resp.usage.input_tokens + resp.usage.output_tokens
@@ -217,6 +219,9 @@ class Aurum:
 
             return answer
 
+        except httpx.TimeoutException as e:
+            log.warning("AURUM Claude API timeout: %s", e)
+            return "AURUM: Claude API timed out. Please retry."
         except Exception as e:
             log.error(f"AURUM query error: {e}")
             return f"AURUM: Error — {str(e)[:100]}"

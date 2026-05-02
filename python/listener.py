@@ -11,6 +11,7 @@ import os, json, logging, asyncio, tempfile, shutil, re, unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from anthropic import Anthropic
 from telethon import TelegramClient, events
 
@@ -826,13 +827,18 @@ class Listener:
         if not self.claude:
             return self._fallback_parse(text)
         try:
-            resp = self.claude.messages.create(
-                model="claude-haiku-4-5-20251001",   # fast + cheap for parsing
-                max_tokens=256,
-                messages=[
-                    {"role": "user",
-                     "content": f"{PARSE_PROMPT}\n\nMessage:\n{text}"}
-                ]
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.claude.messages.create,
+                    model="claude-haiku-4-5-20251001",   # fast + cheap for parsing
+                    max_tokens=256,
+                    messages=[
+                        {"role": "user",
+                         "content": f"{PARSE_PROMPT}\n\nMessage:\n{text}"}
+                    ],
+                    timeout=httpx.Timeout(30.0),
+                ),
+                timeout=30,
             )
             raw = resp.content[0].text.strip()
             raw = raw.replace("```json","").replace("```","").strip()
@@ -840,6 +846,9 @@ class Listener:
         except json.JSONDecodeError as e:
             log.warning(f"LISTENER parse JSON error: {e}")
             return {"type": "IGNORE"}
+        except (httpx.TimeoutException, asyncio.TimeoutError) as e:
+            log.warning("LISTENER Claude API timeout: %s", e)
+            return self._fallback_parse(text)
         except Exception as e:
             log.error(f"LISTENER Claude error: {e}")
             return self._fallback_parse(text)

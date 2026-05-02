@@ -43,3 +43,38 @@ def test_management_close_pct(tmp_path, monkeypatch):
     data = json.loads(path.read_text())
     assert data["intent"] == "CLOSE_PCT"
     assert data["pct"] == 70
+
+
+def test_state_mutating_routes_reject_wrong_token(monkeypatch):
+    import athena_api  # noqa: WPS433
+
+    monkeypatch.setenv("ATHENA_SECRET", "testsecret")
+    client = athena_api.app.test_client()
+    r = client.post("/api/mode", json={"mode": "WATCH"})
+    assert r.status_code == 403
+
+
+def test_state_mutating_routes_accept_correct_token(tmp_path, monkeypatch):
+    import athena_api  # noqa: WPS433
+
+    monkeypatch.setenv("ATHENA_SECRET", "testsecret")
+    monkeypatch.setattr(athena_api, "AURUM_CMD_FILE", str(tmp_path / "aurum_cmd.json"))
+    monkeypatch.setattr(athena_api, "STATUS_FILE", str(tmp_path / "status.json"))
+    client = athena_api.app.test_client()
+    r = client.post(
+        "/api/mode",
+        json={"mode": "WATCH"},
+        headers={"X-Athena-Token": "testsecret"},
+    )
+    assert r.status_code != 403
+
+
+def test_state_mutating_routes_open_when_secret_unset(tmp_path, monkeypatch):
+    import athena_api  # noqa: WPS433
+
+    monkeypatch.delenv("ATHENA_SECRET", raising=False)
+    monkeypatch.setattr(athena_api, "AURUM_CMD_FILE", str(tmp_path / "aurum_cmd.json"))
+    monkeypatch.setattr(athena_api, "STATUS_FILE", str(tmp_path / "status.json"))
+    client = athena_api.app.test_client()
+    r = client.post("/api/mode", json={"mode": "WATCH"})
+    assert r.status_code != 403

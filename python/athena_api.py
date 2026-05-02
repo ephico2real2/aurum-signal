@@ -122,6 +122,25 @@ OPENAPI_YAML   = os.path.join(_ROOT, "schemas", "openapi.yaml")
 app   = Flask(__name__, static_folder=DASHBOARD_DIR)
 CORS(app)
 
+if not (os.environ.get("ATHENA_SECRET") or "").strip():
+    log.warning(
+        "ATHENA_SECRET is unset; state-mutating API routes are open. "
+        "Set ATHENA_SECRET to require X-Athena-Token on POST/PUT/PATCH/DELETE."
+    )
+
+
+@app.before_request
+def _require_state_mutation_token():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    secret = (os.environ.get("ATHENA_SECRET") or "").strip()
+    if not secret:
+        return None
+    token = (request.headers.get("X-Athena-Token") or "").strip()
+    if token != secret:
+        return jsonify({"error": "forbidden"}), 403
+    return None
+
 # Swagger UI — interactive docs for OpenAPI (same-origin spec at /api/openapi.yaml)
 app.register_blueprint(
     get_swaggerui_blueprint(
@@ -1385,4 +1404,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     log.info(f"ATHENA API starting on port {PORT}")
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host=os.environ.get("ATHENA_HOST", "127.0.0.1"), port=PORT, debug=False)

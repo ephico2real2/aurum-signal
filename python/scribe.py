@@ -23,6 +23,21 @@ def _resolve_db_path() -> str:
     return str((_PY_DIR / p).resolve())
 DB_PATH = _resolve_db_path()
 
+ALLOWED_SCRIBE_TABLES = frozenset({
+    "aurum_conversations",
+    "component_heartbeats",
+    "market_regimes",
+    "market_snapshots",
+    "news_events",
+    "signals_received",
+    "system_events",
+    "trade_closures",
+    "trade_groups",
+    "trade_positions",
+    "trading_sessions",
+    "vision_extractions",
+})
+
 DDL = """
 CREATE TABLE IF NOT EXISTS system_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1362,10 +1377,13 @@ class Scribe:
 
     def export_csv(self, table: str, mode: str = None, path: str = None) -> str:
         import csv
-        where = f"WHERE mode='{mode}'" if mode else ""
+        if table not in ALLOWED_SCRIBE_TABLES:
+            raise ValueError(f"table {table!r} not in allowlist")
+        where = "WHERE mode=?" if mode else ""
+        params = (mode,) if mode else ()
         out = path or f"data/{table}_{mode or 'all'}.csv"
         with self._conn() as c:
-            rows = c.execute(f"SELECT * FROM {table} {where}").fetchall()
+            rows = c.execute(f"SELECT * FROM {table} {where}", params).fetchall()
         if not rows:
             return out
         with open(out, "w", newline="") as f:

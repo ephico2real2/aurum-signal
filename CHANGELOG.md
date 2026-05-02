@@ -10,6 +10,12 @@
 ### Security fixes — local MT5 link and scoped channel MODIFY commands
 - **P2 Security**: untracked the machine-specific `MT5` symlink and added `make setup-mt5-link`. The committed symlink embedded an absolute path to one developer's MT5 Common Files directory, breaking other checkouts. `MT5_PATH` in `.env` now drives local symlink creation, with `.env.example` documenting the setup flow and `.gitignore` covering the bare symlink name.
 - **C2 Security**: channel-origin `MODIFY_SL` and `MODIFY_TP` commands now require a resolved scope (`group_id`/magic or `ticket`) before BRIDGE writes a FORGE modify command. Previously, a channel message without a resolved `group_id` or `ticket` could write an unscoped `MODIFY_*` command that FORGE applied to every managed position. Unresolved channel MODIFY commands are now dropped with a warning log instead of falling through to global scope.
+### Security / reliability follow-up fixes
+- **C1 Security** (`python/athena_api.py`): ATHENA now binds to `ATHENA_HOST` with a localhost default (`127.0.0.1`) instead of `0.0.0.0`. When `ATHENA_SECRET` is set and non-empty, all state-mutating HTTP methods (`POST`/`PUT`/`PATCH`/`DELETE`) require `X-Athena-Token`; unset/empty keeps existing no-token local behavior and logs a startup warning. `.env.example` documents `ATHENA_SECRET`.
+- **C3 Security** (`python/scribe.py`): dynamic SCRIBE table export now rejects table names outside `ALLOWED_SCRIBE_TABLES` and parameterizes the optional `mode` filter instead of interpolating it into SQL.
+- **H2 Reliability** (`python/aurum.py`, `python/listener.py`): Claude `messages.create(...)` calls now pass `timeout=httpx.Timeout(30.0)`. LISTENER also wraps the blocking call in `asyncio.wait_for(..., timeout=30)` and timeout exceptions are logged as warnings before returning the existing fallback path.
+- **H5 Reliability** (`python/sentinel.py`): ForexFactory fetch failures now retry up to two times with 3-second pauses and then fail closed by returning a high-impact fail-safe event that activates the news guard, instead of silently treating fetch failure as no guard needed.
+- Tests: extended `tests/api/test_athena_management_api.py`, `tests/api/test_athena_scribe_query_limits.py`, `tests/api/test_athena_live_unit.py`, and added `tests/services/test_sentinel_failsafe.py`.
 ---
 ## [1.5.4] — 2026-05-02
 ### ATHENA `/api/management` schema validation (backward-compatible)
