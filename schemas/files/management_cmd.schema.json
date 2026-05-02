@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://signal-system.local/schemas/files/management_cmd.schema.json",
+  "title": "python/config/management_cmd.json",
+  "description": "ATHENA dashboard or LISTENER channel parser writes; BRIDGE consumes and dedupes on timestamp. Validation is intentionally lenient (additionalProperties: true) so future writers can add fields without breaking older consumers; backward-compat is the priority. Intent-conditional rules enforce only the per-intent invariants BRIDGE actually relies on.",
+  "type": "object",
+  "required": ["type", "intent", "timestamp"],
+  "properties": {
+    "type": { "const": "MANAGEMENT" },
+    "intent": {
+      "type": "string",
+      "enum": [
+        "CLOSE_ALL",
+        "MOVE_BE",
+        "CLOSE_PCT",
+        "MODIFY_SL",
+        "MODIFY_TP",
+        "CLOSE_GROUP",
+        "CLOSE_GROUP_PCT",
+        "CLOSE_PROFITABLE",
+        "CLOSE_LOSING"
+      ]
+    },
+    "source": { "type": ["string", "null"] },
+    "timestamp": { "type": "string", "minLength": 1 },
+    "pct": { "type": ["number", "null"] },
+    "group_id": { "type": ["integer", "null"] },
+    "sl": { "type": ["number", "null"] },
+    "tp": { "type": ["number", "null"] },
+    "ticket": { "type": ["integer", "null"] },
+    "tp_stage": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "integer", "enum": [1, 2, 3] }
+      ]
+    },
+    "channel": { "type": ["string", "null"] },
+    "signal_id": { "type": ["integer", "string", "null"] },
+    "reason": { "type": ["string", "null"] },
+    "edited": { "type": ["boolean", "null"] }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": { "intent": { "const": "CLOSE_PCT" } },
+        "required": ["intent"]
+      },
+      "then": {
+        "required": ["pct"],
+        "properties": {
+          "pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "intent": { "const": "CLOSE_GROUP_PCT" } },
+        "required": ["intent"]
+      },
+      "then": {
+        "required": ["pct", "group_id"],
+        "properties": {
+          "pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+          "group_id": { "type": "integer", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "intent": { "const": "CLOSE_GROUP" } },
+        "required": ["intent"]
+      },
+      "then": {
+        "required": ["group_id"],
+        "properties": {
+          "group_id": { "type": "integer", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "intent": { "const": "MODIFY_SL" } },
+        "required": ["intent"]
+      },
+      "then": {
+        "required": ["sl"],
+        "properties": {
+          "sl": { "type": "number", "exclusiveMinimum": 0 },
+          "ticket": {
+            "anyOf": [
+              { "type": "null" },
+              { "type": "integer", "exclusiveMinimum": 0 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "intent": { "const": "MODIFY_TP" } },
+        "required": ["intent"]
+      },
+      "then": {
+        "required": ["tp"],
+        "properties": {
+          "tp": { "type": "number", "exclusiveMinimum": 0 },
+          "ticket": {
+            "anyOf": [
+              { "type": "null" },
+              { "type": "integer", "exclusiveMinimum": 0 }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

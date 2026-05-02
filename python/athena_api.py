@@ -74,6 +74,48 @@ AURUM_CMD_FILE = _py_path(os.environ.get("AURUM_CMD_FILE",       "config/aurum_c
 MGMT_FILE      = _py_path(os.environ.get("LISTENER_MGMT_FILE",   "config/management_cmd.json"))
 # reconciler writes to signal_system/config/ using __file__-relative path
 RECON_FILE     = os.path.join(_ROOT, "config", "reconciler_last.json")
+
+# ── Management command schema (best-effort validation) ───────────────
+# /api/management writes user-supplied payloads to config/management_cmd.json
+# which BRIDGE reads each tick. We validate against the JSON schema BEFORE
+# writing so malformed payloads can never reach BRIDGE. Validation is
+# strictly best-effort: any failure to load the schema or run the validator
+# falls through to the original (unvalidated) write so this change can never
+# regress callers. LISTENER and BRIDGE are intentionally NOT changed — they
+# keep the existing tolerate-bad-payloads behaviour.
+MGMT_SCHEMA_FILE = os.path.join(_ROOT, "schemas", "files", "management_cmd.schema.json")
+_MGMT_VALIDATOR = None
+try:
+    import jsonschema as _jsonschema  # already a hard requirement
+    with open(MGMT_SCHEMA_FILE) as _sf:
+        _MGMT_SCHEMA = json.load(_sf)
+    _MGMT_VALIDATOR = _jsonschema.Draft7Validator(_MGMT_SCHEMA)
+    log.info("ATHENA: management_cmd schema loaded from %s", MGMT_SCHEMA_FILE)
+except Exception as _mgmt_schema_exc:  # missing file / bad schema / import error
+    log.warning(
+        "ATHENA: management_cmd schema unavailable (%s); validation disabled",
+        _mgmt_schema_exc,
+    )
+    _MGMT_VALIDATOR = None
+
+
+def _validate_mgmt_body(body: dict) -> list[str]:
+    """Return list of validation error messages.
+
+    Empty list = valid OR validator unavailable. Internal exceptions are
+    swallowed so a runtime hiccup in jsonschema never blocks a legitimate
+    write — the call site treats `[]` as "proceed".
+    """
+    if _MGMT_VALIDATOR is None:
+        return []
+    try:
+        return [e.message for e in _MGMT_VALIDATOR.iter_errors(body)]
+    except Exception as exc:
+        log.warning(
+            "ATHENA: management_cmd validator crashed (%s); tolerating write",
+            exc,
+        )
+        return []
 DASHBOARD_DIR  = os.environ.get("DASHBOARD_DIR", os.path.join(_ROOT, "dashboard"))
 OPENAPI_YAML   = os.path.join(_ROOT, "schemas", "openapi.yaml")
 
@@ -749,6 +791,21 @@ def api_management():
         "source":   "ATHENA",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    # Best-effort schema validation. Returns [] if the validator is
+    # unavailable for ANY reason (schema file missing, bad schema, runtime
+    # error) so a config issue can never block a write. Real validation
+    # failures — e.g. CLOSE_GROUP_PCT without group_id, MODIFY_SL with sl=null
+    # — are surfaced as 400 with a list of jsonschema messages.
+    schema_errors = _validate_mgmt_body(body)
+    if schema_errors:
+        log.warning(
+            "api_management rejected: intent=%s errors=%s", intent, schema_errors,
+        )
+        return jsonify({
+            "error": "validation_failed",
+            "intent": intent,
+            "details": schema_errors,
+        }), 400
     try:
         with open(MGMT_FILE, "w") as f:
             json.dump(body, f, indent=2)
