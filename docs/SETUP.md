@@ -300,7 +300,7 @@ pip3 install -r requirements.txt
 pip3 install -r requirements.txt --break-system-packages
 ```
 
-`requirements.txt` now pins upper bounds on `anthropic`, `telethon`, and `flask`, and explicitly lists `httpx`, `hmmlearn`, and `numpy`. Run `pip install -r requirements.txt` after pulling to pick up the new pins.
+`requirements.txt` now pins upper bounds on `anthropic`, `telethon`, and `flask`, and explicitly lists `httpx`, `hmmlearn`, `numpy`, and `pytz`. Run `pip install -r requirements.txt` after pulling to pick up the new pins. `pytz` is required by SENTINEL for DST-aware Eastern→UTC conversion of ForexFactory event times (EDT UTC-4 Apr–Nov, EST UTC-5 Nov–Mar).
 
 ### Optional: Install SCRIBE DB GUI (macOS)
 

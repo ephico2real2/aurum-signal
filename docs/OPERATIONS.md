@@ -52,6 +52,7 @@ This re-renders `services/macos/rendered/*.plist` from templates + `.env`, then 
 
 **News / calendar:** **SENTINEL** — ForexFactory multi-currency calendar + free RSS (FXStreet, Google News, Investing.com forex, optional DailyFX/extras). Extended events (speeches, FOMC) hold the guard for 60min. See [SENTINEL.md](SENTINEL.md).
 If the ForexFactory fetch fails (network error, timeout), SENTINEL now retries twice then activates the guard as a safe default. Treat SENTINEL fetch errors as guarded — do not assume clear-to-trade.
+ForexFactory event times are converted from US Eastern Time using DST-aware `pytz` rules (EDT UTC-4 Apr–Nov, EST UTC-5 Nov–Mar). Ensure `pip install -r requirements.txt` is current after pulling — `pytz` is required for correct block-window timing.
 
 ---
 

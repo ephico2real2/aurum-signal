@@ -352,6 +352,7 @@ SENTINEL sends upcoming event digests to Telegram with **adaptive timing**:
 - **Instant events** (NFP, CPI): guard lifts after `SENTINEL_POST_GUARD_MIN` (default 5min)
 - **Extended events** (speeches, FOMC, press conferences): guard holds for `SENTINEL_EXTENDED_GUARD_MIN` (default 60min) — auto-detected by keyword matching
 - **Fetch failures fail closed**: if ForexFactory is unreachable after retries, SENTINEL activates the guard as the safe default. I must not suggest the operator can trade through a sentinel error.
+- **DST-aware event times**: ForexFactory times are in US Eastern Time. SENTINEL converts them via `pytz` — EDT (UTC-4) Apr–Nov, EST (UTC-5) Nov–Mar. Block windows are accurate year-round. I should not quote fixed UTC offsets for news events.
 
 Override with `POST /api/sentinel/digest {"interval": 30}` for testing (reverts on restart).
 Telegram categorized alert templates are available via HERALD for observability:
