@@ -1,4 +1,4 @@
-# ⚒ SIGNAL SYSTEM v1.0
+# ⚒ SIGNAL SYSTEM v1.6.0
 > XAUUSD signal-following scalper with AI intelligence layer.
 > macOS + MetaTrader 5 native. 12 components. 6 operating modes.
 
@@ -19,6 +19,7 @@ For full installation and configuration flow, see [docs/SETUP.md](docs/SETUP.md)
 
 ## Architecture
 Core architecture and operations docs:
+- **Scalper + regime phased roadmap** (execution prompts, testing, MT5 Tester, doc checklist): [docs/SCALPER_REGIME_PHASED_PLAN.md](docs/SCALPER_REGIME_PHASED_PLAN.md)
 - **System architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **Mode architecture**: [docs/MODES_ARCHITECTURE.md](docs/MODES_ARCHITECTURE.md)
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
@@ -31,6 +32,7 @@ Core architecture and operations docs:
 - **Architecture diagram source (XML)**: [docs/assets/trading-system-architecture.xml](docs/assets/trading-system-architecture.xml)
 
 Recent behavior notes:
+- BRIDGE LENS scalper (`SCALPER` / `HYBRID`) routes candidates through **AEGIS** + regime metadata on `trade_groups` before `OPEN_GROUP` (see `CHANGELOG.md`, `docs/ARCHITECTURE.md`).
 - Signal-room media uploads are archived and replayable via `scripts/replay_signal_uploads.py`, with channel-aware summary notifications to Telegram.
 - FORGE market export includes all account positions using `forge_managed=true/false`.
 - BRIDGE logs unmanaged/manual MT5 positions into SCRIBE as `MANUAL_MT5` lifecycle records.

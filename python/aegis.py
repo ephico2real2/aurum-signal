@@ -50,6 +50,17 @@ if ZONE_WIDTH_ACTION not in ("warn", "reject"):
     ZONE_WIDTH_ACTION = "warn"
 H1_TREND_FILTER   = os.environ.get("AEGIS_H1_TREND_FILTER", "true").lower() == "true"
 H1_FLAT_THRESHOLD = float(os.environ.get("AEGIS_H1_FLAT_THRESHOLD", "1.0"))  # $ diff for FLAT
+
+# Phase B: block fading a strong TREND_* regime when regime engine applies entry policy
+# (`apply_entry_policy` true — requires REGIME_ENTRY_MODE=active + confidence/staleness gates).
+# Only sources listed in AEGIS_REGIME_COUNTERTREND_SOURCES (default: SCALPER_SUBPATH_DIRECT).
+def _env_bool(key: str, default: bool) -> bool:
+    v = os.environ.get(key)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
 # Lot sizing mode: "fixed" = use source lot_per_trade as-is, "risk_based" = compute from balance/risk%
 # Default "fixed" — set to "risk_based" to enable dynamic sizing
 AEGIS_LOT_MODE    = os.environ.get("AEGIS_LOT_MODE", "fixed").lower().strip()
@@ -345,6 +356,10 @@ class Aegis:
             if rejection:
                 return TradeApproval(False, rejection)
 
+        ctr = Aegis._regime_countertrend_reject(direction, regime_context, source)
+        if ctr:
+            return TradeApproval(False, ctr)
+
         # ── Guard 1c: Floating P&L check ─────────────────────────
         if mt5_data:
             floating = (mt5_data.get("account") or {}).get("total_floating_pnl", 0)
@@ -434,7 +449,8 @@ class Aegis:
         use_fixed = (
             AEGIS_LOT_MODE == "fixed"
             and sig_lot is not None
-            and signal.get("source") in ("AUTO_SCALPER", "AURUM", "SIGNAL", "SCALPER")
+            and signal.get("source")
+            in ("AUTO_SCALPER", "AURUM", "SIGNAL", "SCALPER", "SCALPER_SUBPATH_DIRECT")
         )
         if use_fixed:
             try:
@@ -529,7 +545,7 @@ class Aegis:
           - H1 conflicts → check M15 fallback
           - Both conflict → REJECT
 
-        SCALPER (BRIDGE internal): H1 only (strict)
+        SCALPER_SUBPATH_DIRECT / other BRIDGE sources: H1 only (strict)
         """
         h1  = self._tf_bias((mt5_data or {}).get("indicators_h1", {}), H1_FLAT_THRESHOLD)
         m15 = self._tf_bias((mt5_data or {}).get("indicators_m15", {}), H1_FLAT_THRESHOLD)
@@ -567,6 +583,51 @@ class Aegis:
             if not agrees(h1):
                 return f"H1_TREND_CONFLICT:H1={h1}_vs_{direction}"
             return None
+
+    @staticmethod
+    def _regime_countertrend_reject(
+        direction: str,
+        regime_context: dict | None,
+        source: str,
+    ) -> str | None:
+        """
+        When ``REGIME_ENTRY_MODE=active`` the regime snapshot sets ``apply_entry_policy``
+        after confidence/staleness gates. Optionally reject trades that fade a **strong**
+        ``TREND_BULL`` / ``TREND_BEAR`` label (SELL in bull, BUY in bear) for selected
+        sources — default **SCALPER_SUBPATH_DIRECT** only. ``shadow`` / ``off`` modes
+        keep ``apply_entry_policy`` false, so this guard stays inactive (logging-only path).
+        """
+        if not _env_bool("AEGIS_REGIME_COUNTERTREND_BLOCK", True):
+            return None
+        src_u = (source or "").strip().upper()
+        raw = os.environ.get("AEGIS_REGIME_COUNTERTREND_SOURCES", "SCALPER_SUBPATH_DIRECT")
+        allowed = frozenset(p.strip().upper() for p in raw.split(",") if p.strip())
+        if not allowed:
+            allowed = frozenset({"SCALPER_SUBPATH_DIRECT"})
+        if src_u not in allowed:
+            return None
+        ctx = dict(regime_context or {})
+        if not bool(ctx.get("apply_entry_policy")):
+            return None
+        try:
+            min_conf = float(os.environ.get("AEGIS_REGIME_COUNTERTREND_MIN_CONFIDENCE", "0.55"))
+        except (TypeError, ValueError):
+            min_conf = 0.55
+        label = (ctx.get("label") or "UNKNOWN").upper()
+        if label not in ("TREND_BULL", "TREND_BEAR"):
+            return None
+        try:
+            conf = float(ctx.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        if conf < min_conf:
+            return None
+        d = (direction or "").upper()
+        if label == "TREND_BULL" and d == "SELL":
+            return f"REGIME_COUNTERTREND:TREND_BULL_vs_SELL:conf={conf:.2f}>={min_conf:.2f}"
+        if label == "TREND_BEAR" and d == "BUY":
+            return f"REGIME_COUNTERTREND:TREND_BEAR_vs_BUY:conf={conf:.2f}>={min_conf:.2f}"
+        return None
 
     # ── Session-aligned daily P&L ──────────────────────────────
     def _get_session_pnl(self) -> float:

@@ -335,11 +335,11 @@ def test_build_entry_ladder_even_spacing():
 
 
 @pytest.mark.unit
-def test_scalper_logic_no_aegis_validate_call():
+def test_scalper_logic_invokes_aegis_validate():
     import bridge as bm
 
     src = inspect.getsource(bm.Bridge._scalper_logic)
-    assert "aegis.validate" not in src
+    assert "self.aegis.validate" in src
 
 
 @pytest.mark.unit

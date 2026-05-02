@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor v1.5.0            |
+//|  FORGE.mq5  — FORGE Multi-Mode Expert Advisor v1.6.0            |
 //|  Signal System  — XAUUSD Scalper + Native Price Action          |
 //|  Build order: #2 — independent of Python, compiled in MT5       |
 //+------------------------------------------------------------------+
@@ -11,7 +11,7 @@
 //
 //  DATA FLOW:
 //    BRIDGE writes → command.json  → FORGE reads + executes
-//    BRIDGE writes → config.json   → FORGE reads (mode, settings)
+//    BRIDGE writes → config.json   → FORGE reads (mode, thresholds, regime_* for native scalper gate)
 //    FORGE writes  → market_data.json → BRIDGE + ATHENA read
 //    FORGE writes  → broker_info.json  → ATHENA reads (account type)
 //    FORGE writes  → mode_status.json  → ATHENA reads
@@ -71,6 +71,8 @@ input int     ScalperTrades  = 4;            // Number of trades per native scal
 input double  PendingEntryThresholdPoints = 50.0;   // Market-vs-pending switch threshold (points)
 input double  TrendStrengthAtrThreshold   = 0.20;   // ATR-normalized EMA trend threshold
 input double  BreakoutBufferPoints        = 10.0;   // Breakout buffer beyond BB band (points)
+input bool    NativeScalperH4Align        = true;   // Require H4 EMA/ATR trend alignment (same threshold as H1)
+input bool    NativeScalperRegimeGate     = true;   // Block counter-trend vs TREND_BULL/BEAR when config regime_* says so
 
 // ── GLOBALS ───────────────────────────────────────────────────────
 // CTrade: MQL5 trade execution helper (buy, sell, modify, close)
@@ -144,6 +146,17 @@ int g_h_atr  = INVALID_HANDLE;
 int g_h_bb   = INVALID_HANDLE;
 int g_h_macd = INVALID_HANDLE;
 int g_h_adx  = INVALID_HANDLE;
+
+// H4 — native scalper higher-TF structure (EMA20/50 + ATR; same trend_strength formula as H1)
+int g_h4_ma20 = INVALID_HANDLE;
+int g_h4_ma50 = INVALID_HANDLE;
+int g_h4_atr  = INVALID_HANDLE;
+
+// Regime snapshot from BRIDGE config.json (Phase C — mirrors AEGIS counter-trend policy for Python LENS scalper)
+string g_regime_label = "";
+double g_regime_confidence = 0;
+bool   g_regime_apply_policy = false;
+double g_regime_ct_min_conf = 0.55;
 
 // MULTI-TIMEFRAME INDICATORS (M5, M15, M30) — for AURUM scalping context
 struct TFIndicators {
@@ -230,7 +243,8 @@ int OnInit() {
    EventSetTimer(TimerSeconds);
    EnsureIndicators();
    EnsureMTFIndicators();
-   if(g_h_rsi==INVALID_HANDLE || g_h_ma20==INVALID_HANDLE || g_h_ma50==INVALID_HANDLE || g_h_atr==INVALID_HANDLE)
+   if(g_h_rsi==INVALID_HANDLE || g_h_ma20==INVALID_HANDLE || g_h_ma50==INVALID_HANDLE || g_h_atr==INVALID_HANDLE
+      || g_h4_ma20==INVALID_HANDLE || g_h4_ma50==INVALID_HANDLE || g_h4_atr==INVALID_HANDLE)
       Print("FORGE: indicator handles unavailable (market closed?) — will retry on timer");
    // Print all path info for diagnostics
    Print("FORGE initialised — magic=",MagicNumber,
@@ -256,6 +270,9 @@ void OnDeinit(const int reason) {
    IndicatorRelease(g_h_bb);
    IndicatorRelease(g_h_macd);
    IndicatorRelease(g_h_adx);
+   IndicatorRelease(g_h4_ma20);
+   IndicatorRelease(g_h4_ma50);
+   IndicatorRelease(g_h4_atr);
    for(int i = 0; i < 3; i++) {
       IndicatorRelease(g_mtf[i].h_rsi);
       IndicatorRelease(g_mtf[i].h_ma20);
@@ -283,7 +300,8 @@ void ApplyStartupMode() {
 void EnsureIndicators() {
    if(g_h_rsi != INVALID_HANDLE && g_h_ma20 != INVALID_HANDLE && g_h_ma50 != INVALID_HANDLE
       && g_h_atr != INVALID_HANDLE && g_h_bb != INVALID_HANDLE && g_h_macd != INVALID_HANDLE
-      && g_h_adx != INVALID_HANDLE)
+      && g_h_adx != INVALID_HANDLE
+      && g_h4_ma20 != INVALID_HANDLE && g_h4_ma50 != INVALID_HANDLE && g_h4_atr != INVALID_HANDLE)
       return;
    IndicatorRelease(g_h_rsi);  g_h_rsi = INVALID_HANDLE;
    IndicatorRelease(g_h_ma20); g_h_ma20 = INVALID_HANDLE;
@@ -292,6 +310,9 @@ void EnsureIndicators() {
    IndicatorRelease(g_h_bb);   g_h_bb = INVALID_HANDLE;
    IndicatorRelease(g_h_macd); g_h_macd = INVALID_HANDLE;
    IndicatorRelease(g_h_adx);  g_h_adx = INVALID_HANDLE;
+   IndicatorRelease(g_h4_ma20); g_h4_ma20 = INVALID_HANDLE;
+   IndicatorRelease(g_h4_ma50); g_h4_ma50 = INVALID_HANDLE;
+   IndicatorRelease(g_h4_atr);  g_h4_atr = INVALID_HANDLE;
    g_h_rsi  = iRSI(_Symbol, PERIOD_H1, 14, PRICE_CLOSE);
    g_h_ma20 = iMA(_Symbol, PERIOD_H1, 20, 0, MODE_EMA, PRICE_CLOSE);
    g_h_ma50 = iMA(_Symbol, PERIOD_H1, 50, 0, MODE_EMA, PRICE_CLOSE);
@@ -299,6 +320,9 @@ void EnsureIndicators() {
    g_h_bb   = iBands(_Symbol, PERIOD_H1, 20, 0, 2.0, PRICE_CLOSE);
    g_h_macd = iMACD(_Symbol, PERIOD_H1, 12, 26, 9, PRICE_CLOSE);
    g_h_adx  = iADX(_Symbol, PERIOD_H1, 14);
+   g_h4_ma20 = iMA(_Symbol, PERIOD_H4, 20, 0, MODE_EMA, PRICE_CLOSE);
+   g_h4_ma50 = iMA(_Symbol, PERIOD_H4, 50, 0, MODE_EMA, PRICE_CLOSE);
+   g_h4_atr  = iATR(_Symbol, PERIOD_H4, 14);
 }
 
 void EnsureMTFIndicators() {
@@ -452,6 +476,24 @@ void ReadConfig() {
       v = JsonGetDouble(content, "breakout_buffer_points");
       if(v >= 0) g_sc.breakout_buffer_points = v;
    }
+   // Phase C: regime snapshot from BRIDGE (optional keys — defaults keep gate off)
+   if(JsonHasKey(content, "regime_label"))
+      g_regime_label = JsonGetString(content, "regime_label");
+   else
+      g_regime_label = "";
+   if(JsonHasKey(content, "regime_confidence"))
+      g_regime_confidence = JsonGetDouble(content, "regime_confidence");
+   else
+      g_regime_confidence = 0;
+   if(JsonHasKey(content, "regime_apply_entry_policy"))
+      g_regime_apply_policy = (JsonGetDouble(content, "regime_apply_entry_policy") >= 0.5);
+   else
+      g_regime_apply_policy = false;
+   if(JsonHasKey(content, "regime_countertrend_min_confidence")) {
+      v = JsonGetDouble(content, "regime_countertrend_min_confidence");
+      if(v > 0) g_regime_ct_min_conf = v;
+   } else
+      g_regime_ct_min_conf = 0.55;
 }
 
 //+------------------------------------------------------------------+
@@ -1024,7 +1066,7 @@ void WriteMarketData() {
    string j = "{";
    j += "\"symbol\":\"" + JsonEscape(_Symbol) + "\",";
    j += "\"hermes_version\":\"FORGE_1.2\",";
-   j += "\"forge_version\":\"1.5.0\",";
+   j += "\"forge_version\":\"1.6.0\",";
    j += "\"timestamp_utc\":\"" + JsonEscape(TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS)) + "Z\",";
    j += "\"timestamp_unix\":" + IntegerToString((long)TimeGMT()) + ",";
    j += "\"server_time_unix\":" + IntegerToString((long)TimeCurrent()) + ",";
@@ -1082,6 +1124,16 @@ void WriteMarketData() {
    j += "\"bb_lower\":" + DoubleToString(h1_bb_l,2) + ",";
    j += "\"macd_hist\":" + DoubleToString(h1_macd,5) + ",";
    j += "\"adx\":" + DoubleToString(h1_adx,1);
+   j += "},";
+   // H4 — structure / regime context (native scalper alignment)
+   j += "\"indicators_h4\":{";
+   double h4_ma20b[1], h4_ma50b[1], h4_atrb[1];
+   double h4_m20 = (CopyBuffer(g_h4_ma20,0,0,1,h4_ma20b)==1) ? h4_ma20b[0] : 0;
+   double h4_m50 = (CopyBuffer(g_h4_ma50,0,0,1,h4_ma50b)==1) ? h4_ma50b[0] : 0;
+   double h4_atr_v = (CopyBuffer(g_h4_atr, 0,0,1,h4_atrb)==1) ? h4_atrb[0] : 0;
+   j += "\"ema_20\":" + DoubleToString(h4_m20,2) + ",";
+   j += "\"ema_50\":" + DoubleToString(h4_m50,2) + ",";
+   j += "\"atr_14\":" + DoubleToString(h4_atr_v,2);
    j += "},";
    // Multi-timeframe indicators (M5, M15, M30)
    for(int ti = 0; ti < 3; ti++) {
@@ -1213,7 +1265,7 @@ void WriteBrokerInfo() {
    j += "\"chart_symbol\":\"" + JsonEscape(_Symbol) + "\",";
    j += "\"requested_mode\":\"" + JsonEscape(InputMode) + "\",";
    j += "\"effective_mode\":\"" + g_mode + "\",";
-   j += "\"forge_version\":\"1.4.1\",";
+   j += "\"forge_version\":\"1.6.0\",";
    j += "\"scalper_mode\":\"" + g_scalper_mode + "\"";
    j += "}";
    if(WriteJsonFileDual("broker_info.json", j))
@@ -1406,6 +1458,15 @@ bool ScalperOnePerBar() {
    return true;
 }
 
+bool NativeScalperRegimeBlocksDirection(const string direction) {
+   if(!NativeScalperRegimeGate) return false;
+   if(!g_regime_apply_policy) return false;
+   if(g_regime_confidence < g_regime_ct_min_conf) return false;
+   if(g_regime_label == "TREND_BULL" && direction == "SELL") return true;
+   if(g_regime_label == "TREND_BEAR" && direction == "BUY") return true;
+   return false;
+}
+
 void CheckNativeScalperSetups() {
    MqlDateTime dt;
    TimeGMT(dt);
@@ -1483,6 +1544,17 @@ void CheckNativeScalperSetups() {
    bool h1_bear = h1_trend_strength < -g_sc.trend_strength_atr_threshold;
    bool h1_flat = !h1_bull && !h1_bear;
 
+   // H4 structure alignment (same ATR-normalized EMA spread rule as H1)
+   double h4_ema20 = (CopyBuffer(g_h4_ma20,0,0,1,buf)==1) ? buf[0] : 0;
+   double h4_ema50 = (CopyBuffer(g_h4_ma50,0,0,1,buf)==1) ? buf[0] : 0;
+   double h4_atr   = (CopyBuffer(g_h4_atr, 0,0,1,buf)==1) ? buf[0] : 0;
+   double h4_trend_strength = (h4_ema20 - h4_ema50) / MathMax(h4_atr, point);
+   bool h4_bull = h4_trend_strength > g_sc.trend_strength_atr_threshold;
+   bool h4_bear = h4_trend_strength < -g_sc.trend_strength_atr_threshold;
+   bool h4_flat = !h4_bull && !h4_bear;
+   bool h4_ok_buy  = (!NativeScalperH4Align) || h4_bull || h4_flat;
+   bool h4_ok_sell = (!NativeScalperH4Align) || h4_bear || h4_flat;
+
    // Check sentinel (read sentinel_status.json for news guard)
    bool sentinel_tight = false;
    string sent_content = "";
@@ -1509,9 +1581,9 @@ void CheckNativeScalperSetups() {
 
       double proximity = bb_range * g_sc.bounce_bb_proximity_pct / 100.0;
 
-      // BUY: price near BB lower + RSI oversold + H1 not bearish
+      // BUY: price near BB lower + RSI oversold + H1 not bearish + optional H4 alignment
       if(mid <= m5_bb_l + proximity && m5_rsi < g_sc.bounce_rsi_buy_max
-         && (h1_bull || h1_flat)) {
+         && (h1_bull || h1_flat) && h4_ok_buy) {
          direction = "BUY";
          sl  = NormalizeDouble(bid - m5_atr * g_sc.bounce_sl_atr_mult, _Digits);
          tp1 = NormalizeDouble(m5_bb_m, _Digits);  // BB mid
@@ -1520,7 +1592,7 @@ void CheckNativeScalperSetups() {
       }
       // SELL: price near BB upper + RSI overbought + H1 not bullish
       else if(mid >= m5_bb_u - proximity && m5_rsi > g_sc.bounce_rsi_sell_min
-              && (h1_bear || h1_flat)) {
+              && (h1_bear || h1_flat) && h4_ok_sell) {
          direction = "SELL";
          sl  = NormalizeDouble(ask + m5_atr * g_sc.bounce_sl_atr_mult, _Digits);
          tp1 = NormalizeDouble(m5_bb_m, _Digits);
@@ -1542,7 +1614,7 @@ void CheckNativeScalperSetups() {
 
       // BUY breakout: close above upper BB + RSI strong + aligned
       if(prev_close > (m5_bb_u + breakout_buffer) && m5_rsi > g_sc.breakout_rsi_buy_min
-         && m5_bull && m15_ok_buy && (h1_bull || h1_flat)) {
+         && m5_bull && m15_ok_buy && (h1_bull || h1_flat) && h4_ok_buy) {
          direction = "BUY";
          sl  = NormalizeDouble(bid - m5_atr * g_sc.breakout_sl_atr_mult, _Digits);
          tp1 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
@@ -1551,7 +1623,7 @@ void CheckNativeScalperSetups() {
       }
       // SELL breakout
       else if(prev_close < (m5_bb_l - breakout_buffer) && m5_rsi < g_sc.breakout_rsi_sell_max
-              && m5_bear && m15_ok_sell && (h1_bear || h1_flat)) {
+              && m5_bear && m15_ok_sell && (h1_bear || h1_flat) && h4_ok_sell) {
          direction = "SELL";
          sl  = NormalizeDouble(ask + m5_atr * g_sc.breakout_sl_atr_mult, _Digits);
          tp1 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
@@ -1560,10 +1632,17 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   if(direction != "" && NativeScalperRegimeBlocksDirection(direction)) {
+      PrintFormat("FORGE SCALPER: skip gate=regime_countertrend label=%s conf=%.3f min=%.3f apply=%s dir=%s",
+                  g_regime_label, g_regime_confidence, g_regime_ct_min_conf,
+                  g_regime_apply_policy ? "true" : "false", direction);
+      return;
+   }
+
    if(direction == "") {
-      PrintFormat("FORGE SCALPER: no setup mode=%s adx=%.1f rsi=%.1f prev=%.2f bb=[%.2f,%.2f] h1=%.4f m5=%.4f m15=%.4f",
+      PrintFormat("FORGE SCALPER: no setup mode=%s adx=%.1f rsi=%.1f prev=%.2f bb=[%.2f,%.2f] h1=%.4f h4=%.4f m5=%.4f m15=%.4f",
                   g_scalper_mode, m5_adx, m5_rsi, prev_close, m5_bb_l, m5_bb_u,
-                  h1_trend_strength, m5_trend_strength, m15_trend_strength);
+                  h1_trend_strength, h4_trend_strength, m5_trend_strength, m15_trend_strength);
       return;
    }
 
@@ -1673,6 +1752,7 @@ void CheckNativeScalperSetups() {
    ej += "\"m5_adx\":" + DoubleToString(m5_adx, 1) + ",";
    ej += "\"m5_atr\":" + DoubleToString(m5_atr, 2) + ",";
    ej += "\"h1_trend_strength\":" + DoubleToString(h1_trend_strength, 4) + ",";
+   ej += "\"h4_trend_strength\":" + DoubleToString(h4_trend_strength, 4) + ",";
    ej += "\"prev_close\":" + DoubleToString(prev_close, _Digits) + ",";
    ej += "\"m5_bb_upper\":" + DoubleToString(m5_bb_u, _Digits) + ",";
    ej += "\"m5_bb_lower\":" + DoubleToString(m5_bb_l, _Digits) + ",";

@@ -29,7 +29,7 @@ Channel-origin `MODIFY_SL`/`MODIFY_TP` commands (originating from a Telegram sig
 **BRIDGE** writes:
 
 - `command.json` — `MT5_CMD_FILE` (default: repo `MT5/command.json` resolved to an absolute path)
-- `config.json` — `MT5_CONFIG_FILE`
+- `config.json` — `MT5_CONFIG_FILE` (refreshed **every BRIDGE loop** together with `status.json`, including **`regime_*`** keys for FORGE **v1.6.0+** native scalper — no BRIDGE restart needed for regime updates)
 - Reads `market_data.json`, `broker_info.json`, etc.
 
 **FORGE** reads/writes the **same filenames** via MQL5 `FileOpen`:

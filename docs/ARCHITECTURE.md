@@ -200,6 +200,8 @@
   HERALD: "✅ GROUP CLOSED — G19 BUY +$12.50"
 ```
 
+**BRIDGE LENS scalper (modes `SCALPER` / `HYBRID`):** `_scalper_logic` derives a candidate from LENS (ADX/RSI/MACD/BB), then passes the same signal shape through **AEGIS** (`SCALPER_SUBPATH_DIRECT`) with **regime_context** and **`trade_groups.regime_*`** persistence before `command.json` → FORGE. On failure, **`SCALPER_REJECTED`** is logged instead of `OPEN_GROUP`.
+
 ---
 
 ## Regime inference and policy flow
@@ -513,3 +515,9 @@ Reusability:
 Env:
 - `ANALYSIS_LOG_DIR` — override result/status directory (default `logs/analysis/`).
 - `ANALYSIS_MAX_CONCURRENCY` — worker thread cap (default 4).
+
+---
+
+## Related roadmaps
+
+- **Self-scalping vs regime / trend / MT5 backtest workflow:** step-by-step phased plan, Makefile commands (`forge-compile`, `reload-bridge`, `restart`), Strategy Tester orientation, per-phase testing checklist, and copy-paste prompts for implementers — **[SCALPER_REGIME_PHASED_PLAN.md](SCALPER_REGIME_PHASED_PLAN.md)**.

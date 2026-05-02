@@ -465,7 +465,7 @@ def api_live():
         "session_utc":     get_trading_session_utc(),
         "session_id":      status.get("session_id"),
         "cycle":           status.get("cycle", 0),
-        "version":         status.get("version", "1.1.0"),
+        "version":         status.get("version", "1.6.0"),
 
         # Safety state
         "sentinel_active":   status.get("sentinel_active", False),

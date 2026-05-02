@@ -98,7 +98,7 @@ FORGE_MAGIC_MAX  = int(os.environ.get("FORGE_MAGIC_MAX", "9999"))  # FORGE range
 
 BROKER_INFO_FILE = _under_root(os.environ.get("MT5_BROKER_FILE",    "MT5/broker_info.json"))
 
-VERSION     = "1.1.0"
+VERSION     = "1.6.0"
 VALID_MODES = ("OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID", "AUTO_SCALPER")
 BRIDGE_PIN_MODE = os.environ.get("BRIDGE_PIN_MODE", "").upper().strip()
 
@@ -2215,7 +2215,6 @@ class Bridge:
         self.scribe.log_system_event("STARTUP", new_mode=self._mode,
                                       triggered_by="USER")
         self.herald.system_start(self._mode, VERSION, restored=RESTORE_MODE_ON_RESTART)
-        self._write_config()
         self._write_status()
 
         while True:
@@ -3054,9 +3053,11 @@ class Bridge:
     # ── Scalper logic ─────────────────────────────────────────────
     def _scalper_logic(self, mt5: dict, lens_snap):
         """
-        LENS-driven autonomous scalping.
-        Only enters if strong signal + SENTINEL clear + no conflicting open groups.
-        Extend this with your own strategy logic.
+        LENS-driven autonomous scalping (SCALPER / HYBRID).
+
+        Candidate setups still originate from RSI/MACD/BB/ADX here; **every** placement
+        passes through ``Aegis.validate()`` (trend cascade, R:R, DD caps, etc.) and
+        persists regime metadata on ``trade_groups`` like SIGNAL/AURUM paths.
         """
         if len(self._open_groups) >= 2:
             return  # Don't over-stack in scalper mode
@@ -3079,7 +3080,7 @@ class Bridge:
         if not direction:
             return
 
-        # Build scalper signal
+        # Build scalper signal (same shape as FORGE OPEN_GROUP contract)
         atr_est = 3.0  # rough ATR in pips for scalping
         if direction == "BUY":
             entry = price
@@ -3094,46 +3095,139 @@ class Bridge:
             "direction":  direction,
             "entry_low":  round(entry - 0.5, 2),
             "entry_high": round(entry + 0.5, 2),
-            "sl": sl, "tp1": tp1, "tp2": None,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": None,
             "signal_id": None,
             "source": "SCALPER_SUBPATH_DIRECT",
+            "lot_per_trade": SCALPER_LOT_SIZE,
+            "num_trades": SCALPER_NUM_TRADES,
         }
         _tlog("SCALPER", "SETUP", f"{direction} @ {entry:.2f} SL={sl} TP1={tp1}")
+
         account = mt5.get("account", {}) if mt5 else {}
         account["open_groups_count"] = len(self._open_groups)
-        entry_ladder = _build_entry_ladder(signal["entry_low"], signal["entry_high"], SCALPER_NUM_TRADES)
-        group_data = {**signal, "lot_per_trade": SCALPER_LOT_SIZE,
-                      "num_trades": SCALPER_NUM_TRADES,
-                      "risk_pct": None,
-                      "account_balance": account.get("balance",0),
-                      "source": "SCALPER_SUBPATH_DIRECT"}
+        current_price = price
+        if current_price is None and mt5:
+            current_price = (mt5.get("price") or {}).get("bid")
+
+        regime_context = self._regime_context_for_trade(direction)
+        approval = self.aegis.validate(
+            signal,
+            account,
+            current_price,
+            mt5_data=mt5,
+            regime_context=regime_context,
+        )
+        regime_meta = {**regime_context, **(approval.regime_metadata or {})}
+
+        if not approval.approved:
+            log.warning(
+                "BRIDGE: AEGIS_REJECTED (SCALPER_SUBPATH_DIRECT) direction=%s reason=%s",
+                direction,
+                approval.reject_reason,
+            )
+            self._bridge_activity(
+                "SCALPER_REJECTED",
+                reason=f"AEGIS_REJECTED:{approval.reject_reason}",
+                notes=json.dumps(
+                    {
+                        "source": "SCALPER_SUBPATH_DIRECT",
+                        "gate": "AEGIS",
+                        "direction": direction,
+                        "reason": approval.reject_reason,
+                        "regime": {
+                            "label": regime_meta.get("label"),
+                            "confidence": regime_meta.get("confidence"),
+                            "policy": regime_meta.get("policy_name"),
+                            "entry_mode": regime_meta.get("entry_mode"),
+                        },
+                    },
+                    default=str,
+                ),
+            )
+            return
+
+        entry_ladder = approval.entry_ladder
+        group_data = {
+            **signal,
+            "lot_per_trade": approval.lot_per_trade,
+            "num_trades": approval.num_trades,
+            "risk_pct": approval.risk_pct,
+            "account_balance": account.get("balance", 0),
+            "lens_rating": lens_snap.bb_rating if lens_snap else None,
+            "lens_rsi": lens_snap.rsi if lens_snap else None,
+            "lens_confirmed": 1 if lens_snap else 0,
+            "source": "SCALPER_SUBPATH_DIRECT",
+            "regime_label": regime_meta.get("label"),
+            "regime_confidence": regime_meta.get("confidence"),
+            "regime_model": regime_meta.get("model_name"),
+            "regime_entry_mode": regime_meta.get("entry_mode"),
+            "regime_policy": regime_meta.get("policy_name"),
+            "regime_fallback_reason": regime_meta.get("fallback_reason")
+            or regime_meta.get("entry_gate_reason"),
+        }
+
         gid = self.scribe.log_trade_group(group_data, self._effective_mode())
         magic = FORGE_MAGIC_BASE + gid
         self.scribe.update_trade_group_magic(gid, magic)
+        self.scribe.update_group_open_meta(
+            gid,
+            entry_zone_pips=approval.entry_zone_pips
+            or abs(signal["entry_high"] - signal["entry_low"]),
+        )
+
         self._open_groups[gid] = {**group_data, "magic_number": magic}
-        cmd = {"action":"OPEN_GROUP","group_id":gid,"direction":direction,
-               "entry_ladder":entry_ladder,
-               "entry_legs":_entry_legs_from_ladder(entry_ladder),
-               "lot_per_trade":SCALPER_LOT_SIZE,
-               "sl":sl,"tp1":tp1,"tp2":None,"tp3":None,
-               "tp1_close_pct":TP1_CLOSE_PCT,
-               "move_be_on_tp1":MOVE_BE_ON_TP1,
-               "timestamp":_now()}
-        _write_forge_command(cmd)
+
+        cmd = {
+            "action": "OPEN_GROUP",
+            "group_id": gid,
+            "direction": direction,
+            "entry_ladder": entry_ladder,
+            "entry_legs": _entry_legs_from_ladder(entry_ladder),
+            "lot_per_trade": approval.lot_per_trade,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": None,
+            "tp3": None,
+            "tp1_close_pct": TP1_CLOSE_PCT,
+            "move_be_on_tp1": MOVE_BE_ON_TP1,
+            "timestamp": _now(),
+        }
+        cmd_paths = _write_forge_command(cmd)
+        log.info("BRIDGE: wrote OPEN_GROUP (SCALPER_SUBPATH_DIRECT) command.json → %s", cmd_paths[0])
         self._bridge_activity(
             "TRADE_QUEUED",
             reason="OPEN_GROUP_SCALPER_SUBPATH_DIRECT",
             notes=json.dumps(
                 {
                     "source": "SCALPER_SUBPATH_DIRECT",
-                    "gate": "DIRECT_NO_AEGIS",
+                    "gate": "AEGIS",
                     "group_id": gid,
                     "direction": direction,
-                    "num_trades": SCALPER_NUM_TRADES,
-                    "lot_per_trade": SCALPER_LOT_SIZE,
+                    "num_trades": approval.num_trades,
+                    "lot_per_trade": approval.lot_per_trade,
+                    "regime": {
+                        "label": regime_meta.get("label"),
+                        "confidence": regime_meta.get("confidence"),
+                        "model_name": regime_meta.get("model_name"),
+                        "entry_mode": regime_meta.get("entry_mode"),
+                        "policy": regime_meta.get("policy_name"),
+                        "applied": regime_meta.get("applied"),
+                    },
+                    "command_path": cmd_paths[0],
+                    "command_paths": cmd_paths,
                 },
                 default=str,
             ),
+        )
+        self.herald.trade_group_opened({**group_data, "id": gid})
+
+        _tlog(
+            "SCALPER",
+            "OPEN_GROUP",
+            f"{direction} {approval.num_trades}x{approval.lot_per_trade}lot SL={sl} TP1={tp1}",
+            group_id=gid,
         )
 
     # ── DRAWDOWN PROTECTION ─────────────────────────────────
@@ -4151,7 +4245,6 @@ class Bridge:
                                       new_mode=new_mode, triggered_by=triggered_by,
                                       session=_session())
         self.herald.mode_changed(prev, new_mode, triggered_by)
-        self._write_config()
         self._write_status()
         self.listener.set_mode(new_mode)
         self.aurum.set_mode(new_mode)
@@ -4188,6 +4281,15 @@ class Bridge:
     def _write_config(self):
         """Write config.json for FORGE to read (and mirror next to MT5_CMD_FILE_MIRROR if set)."""
         scalper_mode = _resolve_forge_scalper_mode(self._mode)
+        snap = dict(self._regime_snapshot or {})
+        try:
+            ct_min = float(
+                os.environ.get("AEGIS_REGIME_COUNTERTREND_MIN_CONFIDENCE", "0.55")
+            )
+        except (TypeError, ValueError):
+            ct_min = 0.55
+        lbl = snap.get("label")
+        conf = snap.get("confidence")
         body = {
             "mode":            self._mode,
             "effective_mode":  self._effective_mode(),
@@ -4200,12 +4302,20 @@ class Bridge:
             "trend_strength_atr_threshold": self._trend_strength_atr_threshold,
             "breakout_buffer_points": self._breakout_buffer_points,
             "timestamp":       _now(),
+            # Phase C: FORGE native scalper regime gate (numeric flags for MQL5 parsers)
+            "regime_label":    (str(lbl) if lbl is not None else ""),
+            "regime_confidence": float(conf) if conf is not None else 0.0,
+            "regime_apply_entry_policy": (
+                1 if bool(snap.get("apply_entry_policy")) else 0
+            ),
+            "regime_countertrend_min_confidence": ct_min,
         }
         for pth in _forge_config_targets():
             _write_json(pth, body)
 
     def _write_status(self, mt5: dict = None, lens_snap=None):
         """Write status.json for ATHENA + AURUM."""
+        self._write_config()
         acc = (mt5 or {}).get("account", {})
         _now_ts = time.time()
         _mt5_age = _now_ts - (mt5 or {}).get("timestamp_unix", 0) if mt5 else 9999

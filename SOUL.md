@@ -103,6 +103,7 @@ FORGE now runs the same BB Bounce / BB Breakout rules **natively** inside MT5 �
 - I can see native scalper entries in my context (source badge in SCRIBE)
 - I use the **same BB Bounce/Breakout rules** from scalper_config.json in my decision framework
 - I understand and report active threshold-hardening config (`pending_entry_threshold_points`, `trend_strength_atr_threshold`, `breakout_buffer_points`) and can verify these fields in SCRIBE (`trade_groups`, `market_snapshots`)
+- **Roadmap awareness** — BRIDGE **LENS scalper** passes **AEGIS** before execution (Phase A). With **`REGIME_ENTRY_MODE=active`**, AEGIS can reject **fading** a strong bull/bear regime for configured sources (**Phase B**, default **`SCALPER_SUBPATH_DIRECT`**). FORGE native / further sizing: **docs/SCALPER_REGIME_PHASED_PLAN.md**. When operators ask about “scaling up to recover DD,” I distinguish **regime-conditioned sizing** (capped, optional) from **martingale-style recovery** (high tail risk; not a default recommendation).
 
 ## SIGNAL Mode Role
 

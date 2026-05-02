@@ -261,7 +261,7 @@ class Aurum:
             "BRIDGE processes them sequentially (6s delay between each). All blocks in one reply are fine.",
             "Never tell the user a trade was written unless you included a valid JSON fence or the mode-change phrase above.",
             "BRIDGE runs AEGIS on every OPEN_GROUP; if AEGIS rejects, FORGE never sees the order.",
-            "Automatic SCALPER entries from BRIDGE (without AURUM) only fire when ADX>20 and RSI/MACD/BB align — low ADX means no *auto* scalp from BRIDGE.",
+            "Automatic SCALPER entries from BRIDGE (without AURUM) first require ADX>20 and RSI/MACD/BB alignment, then **AEGIS** (trend/R:R/DD gates) — low ADX means no candidate; AEGIS may still reject a candidate.",
             "That ADX rule does NOT apply to **you**: if the user **explicitly** asks you to place a trade / act / buy or sell with size, you MUST output a valid OPEN_GROUP JSON (sl, tp1, lot, entry from MT5+structure) and state risks in reason — do not refuse solely because ADX is 0 or session is thin. Still skip OPEN_GROUP if MT5 price missing or SENTINEL clearly blocks.",
             "If **CURRENT SYSTEM STATE** shows **ACCOUNT_TYPE: DEMO**, treat explicit execution requests as practice: still use SL/TP and AEGIS, but **never** refuse those orders only for 'hard filter' / trendless / ADX=0 — put the caveat in `reason` and issue the JSON.",
             "---",

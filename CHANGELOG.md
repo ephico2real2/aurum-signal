@@ -1,4 +1,31 @@
 # SIGNAL SYSTEM — CHANGELOG
+
+## [Unreleased]
+
+### Fixed
+- Version strings aligned with release **1.6.0**: **`python/bridge.py`** `VERSION`, **`README.md`**, **`.env.example`**, **`python/athena_api.py`** default, and **`python/config/status.json`** sample (BRIDGE overwrites `status.json` each run).
+
+---
+
+## [1.6.0] — 2026-05-04
+### Changed
+- **Phase C (FORGE native scalper + BRIDGE config bus)** (`ea/FORGE.mq5` **v1.6.0**): Native BB bounce/breakout setups optionally require **H4** EMA20/50 vs ATR trend alignment (same ATR-normalized threshold as H1) via input **`NativeScalperH4Align`** (default **true**). When **`regime_*`** in **`MT5/config.json`** indicates active entry policy and confidence ≥ min, input **`NativeScalperRegimeGate`** (default **true**) blocks **SELL** vs **`TREND_BULL`** and **BUY** vs **`TREND_BEAR`**, aligned with Python **AEGIS** Phase B. **`market_data.json`** adds **`indicators_h4`**; **`broker_info.json`** / **`market_data.json`** report **`forge_version` `1.6.0`**; **`scalper_entry.json`** adds **`h4_trend_strength`**.
+- **`python/bridge.py`**: **`_write_config()`** now includes **`regime_label`**, **`regime_confidence`**, **`regime_apply_entry_policy`** (0/1), **`regime_countertrend_min_confidence`** (from **`AEGIS_REGIME_COUNTERTREND_MIN_CONFIDENCE`**). **`_write_status()`** calls **`_write_config()`** each loop so FORGE sees a fresh regime snapshot without restarting BRIDGE. Test: **`tests/api/test_bridge_config_regime.py`**. Operator: **`make reload-bridge`** after deploy; **`make forge-compile`** after pulling EA changes.
+
+### Documentation
+- **`docs/FORGE_TRADING_RULES.md`**, **`docs/FORGE_BRIDGE.md`**, **`docs/DATA_CONTRACT.md`**, **`docs/SCALPER_REGIME_PHASED_PLAN.md`** — Phase C behaviour and **`config.json`** keys.
+
+---
+
+## [1.5.7] — 2026-05-03
+### Changed
+- **Phase B (regime counter-trend gate)** (`python/aegis.py`): optional **`REGIME_COUNTERTREND:*`** rejection when **`regime_context.apply_entry_policy`** is true (`REGIME_ENTRY_MODE=active`) and the trade **fades** a high-confidence **`TREND_BULL`** / **`TREND_BEAR`** label (SELL in bull, BUY in bear). Default gated sources: **`SCALPER_SUBPATH_DIRECT`** only — configurable via **`AEGIS_REGIME_COUNTERTREND_SOURCES`**, **`AEGIS_REGIME_COUNTERTREND_BLOCK`**, **`AEGIS_REGIME_COUNTERTREND_MIN_CONFIDENCE`**. Shadow/off regime modes leave **`apply_entry_policy`** false so this guard stays inactive. Tests: **`tests/services/test_aegis_regime_countertrend.py`**. Operator: **`make reload-bridge`**.
+- **Phase A (scalper + AEGIS)** (`python/bridge.py`): BRIDGE LENS-driven scalper (`_scalper_logic`, `SCALPER_SUBPATH_DIRECT`) now calls **`Aegis.validate()`** with `mt5_data`, **`regime_context`**, and **`current_price`** before `OPEN_GROUP`. Rejections emit **`SCALPER_REJECTED`** activity (`gate: AEGIS`). Approved rows persist **`regime_*`** on `trade_groups`, **`update_group_open_meta`** entry-zone pips, **`herald.trade_group_opened`**, and FORGE commands use **`approval.entry_ladder`** / **`approval.lot_per_trade`** / **`approval.num_trades`**. (`python/aegis.py`): fixed-lot mode respects **`SCALPER_SUBPATH_DIRECT`** alongside other fixed sources. Tests: **`tests/api/test_scalper_aegis_gate.py`**. Operator: **`make reload-bridge`** after deploy.
+
+### Documentation
+- Added **[docs/SCALPER_REGIME_PHASED_PLAN.md](docs/SCALPER_REGIME_PHASED_PLAN.md)** — phased roadmap for aligning self-scalping (BRIDGE LENS, FORGE native, AUTO_SCALPER) with regime/trend gates, Makefile verify/restart steps, MT5 Strategy Tester backtesting orientation, testing checklist per phase, copy-paste execution prompts, and documentation touch-points (`README`, `ARCHITECTURE`, `AEGIS`, `DATA_CONTRACT`, `SOUL`, `SKILL`, changelog, architecture diagram when flows change). Includes risk framing for lot scaling vs martingale-style recovery.
+
+---
 ## [1.5.6] — 2026-05-02
 ### Phase 3 cleanup sprint
 - **M1** (`python/listener.py`): added post-parse `ENTRY` range validation after text/vision merge and before dispatch. LISTENER now drops malformed signals with a WARNING when entry bounds are missing/non-positive, `entry_low > entry_high`, `sl <= 0`, `tp1 <= 0` when present, or XAU/GOLD `entry_low` falls outside `1000..99999`. Tests: `tests/services/test_signal_range_validation.py`.

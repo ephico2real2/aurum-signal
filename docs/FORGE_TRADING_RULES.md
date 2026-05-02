@@ -82,7 +82,16 @@ Result:
 - fewer false manual-close classifications,
 - closer alignment between MT5 and SCRIBE closure records.
 
-## 4) Active scalper profile and baseline
+## 4) Native scalper (FORGE) — H4 + regime (v1.6.0+)
+When **`ScalperMode`** is not **`NONE`** and mode allows scalping, FORGE evaluates BB bounce/breakout on **M5** with **H1** trend filter (ATR-normalized EMA20−EMA50 vs **`trend_strength_atr_threshold`** from `config.json` / `scalper_config.json`).
+
+**Phase C** adds:
+- **H4** structure filter (same formula as H1): inputs **`NativeScalperH4Align`** (default **true**) requires buys only when H4 is not structurally bearish (bull or flat), and sells when H4 is not structurally bullish. Set **false** to restore H1-only alignment.
+- **Regime gate:** inputs **`NativeScalperRegimeGate`** (default **true**) read **`regime_*`** from **`MT5/config.json`** (written by BRIDGE). When **`regime_apply_entry_policy`** is **1**, **`regime_confidence`** ≥ **`regime_countertrend_min_confidence`**, and label is **`TREND_BULL`** / **`TREND_BEAR`**, FORGE blocks **SELL** / **BUY** respectively (aligned with **`AEGIS_REGIME_COUNTERTREND_*`** on the Python side).
+
+**`market_data.json`** includes **`indicators_h4`** (`ema_20`, `ema_50`, `atr_14`). **`scalper_entry.json`** includes **`h4_trend_strength`**.
+
+## 5) Active scalper profile and baseline
 Active FAST profile (`config/scalper_config.json`):
 - `safety.max_spread_points=30`
 - `bb_bounce.adx_max=30`
@@ -141,7 +150,7 @@ PY
 make restart
 ```
 
-## 5) Verification checklist
+## 6) Verification checklist
 After changing rules or binaries:
 1. Confirm runtime version:
    - `make forge-verify-live`
@@ -161,7 +170,7 @@ ORDER BY id DESC
 LIMIT 30;
 ```
 
-## 6) Rollback quick path
+## 7) Rollback quick path
 To return to conservative behavior:
 1. Set `REGIME_ENTRY_MODE=off` in `.env`.
 2. Apply STRICT scalper profile.

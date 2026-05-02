@@ -1,9 +1,10 @@
 # AEGIS — risk gate decision logic
 
-**AEGIS** (`python/aegis.py`) validates every trade **before** FORGE sees an `OPEN_GROUP`. BRIDGE calls `get_aegis().validate(signal, account, current_price)` for:
+**AEGIS** (`python/aegis.py`) validates every trade **before** FORGE sees an `OPEN_GROUP`. BRIDGE calls `get_aegis().validate(signal, account, current_price, ...)` for:
 
 - AURUM-queued commands (`aurum_cmd.json` → `_dispatch_aurum_open_group`)
-- Internal / scalper paths that build the same signal shape
+- Telegram **SIGNAL** and **AUTO_SCALPER** paths that pass the full signal shape
+- **BRIDGE LENS-driven scalper** (`_scalper_logic`, source **`SCALPER_SUBPATH_DIRECT`**) in **SCALPER** / **HYBRID** — candidate setups still come from RSI/MACD/BB/ADX on LENS, then **AEGIS** applies trend cascade (H1-strict for this source), R:R, DD caps, etc.; rejects surface as **`SCALPER_REJECTED`** with `gate: AEGIS`. See **[SCALPER_REGIME_PHASED_PLAN.md](SCALPER_REGIME_PHASED_PLAN.md)** Phase A.
 
 If validation fails, BRIDGE logs a rejection (e.g. `TRADE_REJECTED · LOW_RR:1.04<1.2`) and does not write a FORGE command.
 
@@ -55,6 +56,23 @@ Config:
   - `buy`: enforce BUY check only
   - `sell`: enforce SELL check only
   - `off`: disable orientation checks for both BUY and SELL (signal still goes through all other AEGIS guards)
+
+### Guard 1b — Multi-TF trend cascade
+
+Runs when **`AEGIS_H1_TREND_FILTER=true`** and **`mt5_data`** is present (see implementation: `_check_trend_cascade`). Reject codes include **`TREND_CONFLICT:…`** and **`H1_TREND_CONFLICT:…`**.
+
+### Guard 1c — Regime counter-trend fade (Phase B)
+
+After the trend cascade, AEGIS may reject trades that **fade** a strong directional regime when the regime engine has **`apply_entry_policy: true`** (requires **`REGIME_ENTRY_MODE=active`** plus confidence/staleness gates in **`python/regime.py`**). **`REGIME_ENTRY_MODE=shadow|off`** keeps **`apply_entry_policy`** false — this guard does nothing (shadow stays logging-only for ladder policy elsewhere).
+
+| Condition | Reject prefix |
+|-----------|----------------|
+| Label **`TREND_BEAR`**, direction **BUY**, confidence ≥ min | **`REGIME_COUNTERTREND:TREND_BEAR_vs_BUY:…`** |
+| Label **`TREND_BULL`**, direction **SELL**, confidence ≥ min | **`REGIME_COUNTERTREND:TREND_BULL_vs_SELL:…`** |
+
+**Not blocked:** `RANGE`, `VOLATILE`, `UNKNOWN`, or confidence below the configured minimum.
+
+**Default scope:** only **`SCALPER_SUBPATH_DIRECT`** (BRIDGE LENS scalper). Add sources (e.g. **`AUTO_SCALPER`**) via **`AEGIS_REGIME_COUNTERTREND_SOURCES`** comma list. Native FORGE scalper is unchanged here (EA-side; see roadmap Phase C).
 
 ### Guard 2 — Max open groups
 
@@ -151,6 +169,7 @@ If all guards pass:
 | `SL_TOO_TIGHT` | SL closer than 3 price units |
 | `INVALID_TP1` | TP1 on wrong side of mid |
 | `LOW_RR` | R:R below `MIN_RR` |
+| `REGIME_COUNTERTREND` | Fading `TREND_BULL` / `TREND_BEAR` when regime policy is active (Phase B) |
 
 ---
 
@@ -235,6 +254,14 @@ Risk-based computation always runs internally for logging (`total_risk` in appro
 | `REGIME_RETRAIN_INTERVAL_SEC` | `3600` | HMM retraining cadence |
 | `REGIME_MIN_TRAIN_SAMPLES` | `120` | Minimum samples before HMM training is attempted |
 | `REGIME_LOG_INTERVAL_SEC` | `30` | Snapshot persistence cadence into `market_regimes` |
+
+### Regime counter-trend (Phase B)
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `AEGIS_REGIME_COUNTERTREND_BLOCK` | `true` | Enable fade blocking for listed sources when `apply_entry_policy` is true |
+| `AEGIS_REGIME_COUNTERTREND_SOURCES` | `SCALPER_SUBPATH_DIRECT` | Comma-separated `signal.source` values (e.g. add `AUTO_SCALPER`) |
+| `AEGIS_REGIME_COUNTERTREND_MIN_CONFIDENCE` | `0.55` | Minimum regime confidence before blocking a fade |
 
 ### Per-signal overrides
 

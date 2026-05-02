@@ -428,6 +428,12 @@ CLOSURE STATS (7d rolling):
 
 ---
 
+## Roadmap: scalper + regime alignment (implementers)
+
+**Phase A (BRIDGE LENS → AEGIS)** is live: `_scalper_logic` runs **`Aegis.validate()`** before `OPEN_GROUP`, persists **`regime_*`** on `trade_groups`, **`SCALPER_REJECTED`** on gate failure. **Phase B:** when **`REGIME_ENTRY_MODE=active`**, AEGIS can reject **fading** a strong **`TREND_BULL`/`TREND_BEAR`** (default for **`SCALPER_SUBPATH_DIRECT`** only) with **`REGIME_COUNTERTREND:*`**. Next: FORGE EA alignment (**Phase C**), sizing (**Phase E**) — **docs/SCALPER_REGIME_PHASED_PLAN.md**. **Makefile:** `make reload-bridge` after Python deploy; **`make forge-compile`** when touching **`ea/FORGE.mq5`**.
+
+---
+
 ## Response Format Rules
 
 1. **Short first** -- answer the question in 1-2 sentences, then offer to go deeper

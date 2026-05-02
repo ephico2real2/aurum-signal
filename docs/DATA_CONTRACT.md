@@ -76,6 +76,7 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 | File | Writer | Reader | Schema |
 |------|--------|--------|--------|
 | `MT5/command.json` | BRIDGE | FORGE | `schemas/files/forge_command.schema.json` |
+| `MT5/config.json` | BRIDGE (each status write) | FORGE | *(see §3 prose — regime_* for native scalper)* |
 | `python/config/aurum_cmd.json` | AURUM, ATHENA (`POST /api/mode` writes `MODE_CHANGE`) | BRIDGE (reads, acts, **deletes** the file) | `schemas/files/aurum_cmd.schema.json` |
 | `python/config/status.json` | BRIDGE | ATHENA (`/api/live`) | `schemas/files/status.schema.json` |
 | `MT5/market_data.json` | FORGE | BRIDGE, ATHENA | `schemas/files/market_data.schema.json` |
@@ -93,11 +94,18 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
   - `pending_entry_threshold_points`
   - `trend_strength_atr_threshold`
   - `breakout_buffer_points`
+- `indicators_h4` (FORGE **v1.6.0+**): `ema_20`, `ema_50`, `atr_14` on **H4** for structure context (native scalper alignment).
+
+`MT5/config.json` — BRIDGE writes on every status tick (same atomic write as other file-bus JSON). Core mode/scalper fields unchanged; **Phase C** adds optional regime mirror for the FORGE native scalper gate:
+- `regime_label` — string (e.g. `TREND_BULL`, `TREND_BEAR`, `RANGE`)
+- `regime_confidence` — number
+- `regime_apply_entry_policy` — **0** or **1** (numeric for MQL5)
+- `regime_countertrend_min_confidence` — number (same default semantics as **`AEGIS_REGIME_COUNTERTREND_MIN_CONFIDENCE`**)
 
 `MT5/scalper_entry.json` semantics (native FORGE scalper):
 - emitted by FORGE on native setup trigger (`FORGE_NATIVE_SCALP`)
 - consumed by BRIDGE and persisted into SCRIBE `trade_groups`
-- includes threshold-hardening fields above plus derived decision metrics (`h1_trend_strength`, `prev_close`, `m5_bb_upper`, `m5_bb_lower`)
+- includes threshold-hardening fields above plus derived decision metrics (`h1_trend_strength`, `h4_trend_strength` when FORGE **v1.6.0+**, `prev_close`, `m5_bb_upper`, `m5_bb_lower`)
 
 `python/config/listener_meta.json` semantics (written by LISTENER):
 - `status` — `"OK"` | `"WARN"` (WARN = no message received for > `LISTENER_STALE_THRESHOLD_SEC`, default 600s)
