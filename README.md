@@ -79,6 +79,15 @@ make setup-mt5-link
 python3 python/bridge.py --mode WATCH
 ```
 
+## FORGE Refresh Verify
+`make forge-refresh-verify` runs the full MT5 refresh check: `forge-compile` copies `ea/FORGE.mq5` into the Wine MT5 Experts folder and compiles it to `FORGE.ex5`, then opens MetaTrader 5 and polls `MT5/market_data.json` for up to 180 seconds until `forge_version` matches the source.
+
+If the copy step fails with `Operation not permitted`, restore write permission on the Wine MT5 Experts folder once:
+```bash
+chmod -R u+w "/Users/olasumbo/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/MQL5/Experts"
+```
+This one-time fix is needed when the Wine MT5 Experts folder loses write permission, for example after a MetaTrader update or macOS privacy reset.
+
 ## AURUM — Talk to your system
 From Telegram:
 > "What's my P&L today?"
