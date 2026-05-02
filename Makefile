@@ -60,7 +60,9 @@ help:
 	@echo "  make services-status   Show launchd/systemctl status"
 	@echo ""
 	@echo "  SETUP & OPS"
+	@echo "  make setup           One-time setup: venv + MT5 link + test deps"
 	@echo "  make setup-tests     Install all test dependencies"
+	@echo "  make setup-mt5-link  One-time: create MT5/ symlink from MT5_PATH in .env"
 	@echo "  make start-tradingview  Launch TradingView Desktop with CDP (required by LENS)"
 	@echo "  make stop-tradingview   Force-kill TradingView Desktop completely"
 	@echo "  make mt5-start          Open MetaTrader 5 app"
@@ -329,6 +331,7 @@ mt5-stop:
 	@pkill -f "terminal64.exe" 2>/dev/null && echo "✅ MetaTrader 5 stopped" || echo "  MetaTrader 5 was not running"
 
 setup-mt5-link:
+	@echo "One-time setup: creating MT5/ symlink from MT5_PATH in .env"
 	@test -f "$(ROOT_DIR)/.env" || { echo "Missing .env — copy .env.example and set MT5_PATH"; exit 1; }
 	@MT5_PATH=$$(sed -n 's/^MT5_PATH=//p' "$(ROOT_DIR)/.env" | tail -1 | sed 's/^"//;s/"$$//'); \
 	if [ -z "$$MT5_PATH" ]; then echo "MT5_PATH is not set in .env"; exit 1; fi; \
@@ -403,7 +406,13 @@ system-down: stop stop-tradingview mt5-stop
 	@echo "✅ System shutdown sequence complete."
 
 # ── Setup ─────────────────────────────────────────────────────────
-.PHONY: setup-tests check-tests scribe-gui
+.PHONY: setup setup-tests check-tests scribe-gui
+
+setup:
+	@$(MAKE) venv
+	@$(MAKE) setup-mt5-link
+	@$(MAKE) setup-tests
+	@echo "Setup complete."
 
 setup-tests:
 	@$(PYTHON) $(SCRIPTS)/setup_tests.py

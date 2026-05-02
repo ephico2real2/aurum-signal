@@ -72,6 +72,9 @@ Recent behavior notes:
 pip3 install -r requirements.txt
 cp .env.example .env
 # Fill in .env with your credentials
+# One-time MT5 file-bus link:
+make setup-mt5-link
+# Run once after cloning. Re-running is safe (uses ln -sfn) but not needed unless your MT5 path changes.
 # See docs/SETUP.md for full setup guide
 python3 python/bridge.py --mode WATCH
 ```
