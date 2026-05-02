@@ -18,6 +18,10 @@ ATHENA **Groups** come from **SCRIBE** (Python logged the trade group after **AE
 
 There is **no HTTP callback** into the EA. FORGE **polls a file**: `command.json` in the MT5 **Files** directory (Common or terminal-local — see below).
 
+All config and file-bus JSON writes (to `MT5/command.json`, `config/*.json`) now use an atomic temp-file + `os.replace` pattern so partial writes can never corrupt a reader.
+
+Channel-origin `MODIFY_SL`/`MODIFY_TP` commands (originating from a Telegram signal room rather than AURUM or the ATHENA dashboard) are dropped by BRIDGE if no scope (`group_id`, `ticket`, or `tp_stage`) is resolved. A WARNING is logged and no FORGE command is written. AURUM and dashboard MODIFY commands are unaffected — they can still issue global modifies by explicit intent.
+
 ---
 
 ## 1. One shared folder (most common failure)

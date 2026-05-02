@@ -20,6 +20,21 @@ make test-components   # /api/components tests
 
 ---
 
+## 1.5.4-1.5.5 Coverage Additions
+
+- `tests/api/test_athena_management_api.py` — management schema validation + ATHENA token auth
+- `tests/api/test_athena_scribe_query_limits.py` — SCRIBE table allowlist
+- `tests/services/test_sentinel_failsafe.py` — sentinel fail-closed + retry logic
+- `tests/services/test_mcp_timeout.py` — MCP timeout + LENS stale-on-timeout
+- `tests/api/test_config_io.py` — atomic JSON writes
+- `tests/api/test_no_bare_except.py` — AST scan for bare except blocks
+- `tests/api/test_requirements.py` — dependency upper-bound assertions
+- `tests/api/test_async_handlers.py` — no blocking calls in async handlers
+- `tests/services/test_regime_engine.py` — HMM shape mismatch + REGIME_HMM_COMPONENTS validation
+- `tests/services/test_freshness.py` — DATA_FRESHNESS_WINDOWS completeness
+
+---
+
 ## API Tests — `/api/live` (`test_live.py`)
 
 | Test | What it verifies |

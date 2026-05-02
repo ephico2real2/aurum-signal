@@ -265,6 +265,9 @@ TELEGRAM_CHAT_ID=987654321
 
 LENS_MCP_CMD=node /Users/YOUR_USERNAME/tradingview-mcp-jackson/src/server.js
 
+ATHENA_HOST=127.0.0.1       # default; change to 0.0.0.0 only if you need LAN access and have set ATHENA_SECRET
+ATHENA_SECRET=              # optional; when set, all state-mutating routes require X-Athena-Token header
+
 DEFAULT_MODE=WATCH
 AEGIS_RISK_PCT=2.0
 AEGIS_NUM_TRADES=8
@@ -281,6 +284,11 @@ LISTENER_SIGNAL_MEDIA_ARCHIVE_DIR=data/signal_media_archive
 
 **Risk gate (AEGIS):** `AEGIS_*` variables control min R:R, daily loss cap, max open groups, slippage, and lot scaling. Full decision order, formulas, and defaults are in **[docs/AEGIS.md](AEGIS.md)**. Restart **bridge** (or `make restart`) after changing them.
 
+Regime engine:
+```bash
+REGIME_HMM_COMPONENTS=3     # default 3; valid range 2-10; controls HMM hidden states for regime inference
+```
+
 ---
 
 ## STEP 5 — Install Python dependencies
@@ -291,6 +299,8 @@ pip3 install -r requirements.txt
 # If you get errors:
 pip3 install -r requirements.txt --break-system-packages
 ```
+
+`requirements.txt` now pins upper bounds on `anthropic`, `telethon`, and `flask`, and explicitly lists `httpx`, `hmmlearn`, and `numpy`. Run `pip install -r requirements.txt` after pulling to pick up the new pins.
 
 ### Optional: Install SCRIBE DB GUI (macOS)
 

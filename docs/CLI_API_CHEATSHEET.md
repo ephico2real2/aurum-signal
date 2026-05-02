@@ -131,6 +131,13 @@ curl -sS -X POST http://127.0.0.1:7842/api/mode \
 sleep 6
 curl -sS http://127.0.0.1:7842/api/mode
 ```
+When `ATHENA_SECRET` is set:
+```bash
+curl -X POST http://localhost:7842/api/mode \
+  -H "Content-Type: application/json" \
+  -H "X-Athena-Token: $ATHENA_SECRET" \
+  -d '{"mode":"SIGNAL"}'
+```
 Pass condition:
 - `effective_mode` is `SIGNAL` (or `HYBRID` for signal+scalper runs).
 ### 2) Check live market + guard state
@@ -205,8 +212,9 @@ In SCRIBE `signals_received.skip_reason` and bridge.log, AEGIS rejections are pr
 - `AEGIS_REJECTED:SLIPPAGE:<value>><max>`
   - Re-issue with a closer/current entry zone; avoid stale entries.
 
-Simulate a MODIFY_TP management command (global by default; add `group_id` to scope to one group, `tp_stage` to move only one TP bucket, or `ticket` to target a single leg):
+Simulate a scoped MODIFY_TP management command (`group_id` scopes to one group, `tp_stage` moves only one TP bucket, or `ticket` targets a single leg):
 ```bash
+# channel-origin MODIFY without group_id/ticket/tp_stage is dropped by BRIDGE
 python3 -c "
 import json
 from datetime import datetime, timezone
@@ -216,11 +224,11 @@ cmd = {
     'type': 'MANAGEMENT',
     'intent': 'MODIFY_TP',     # or MODIFY_SL, CLOSE_ALL, MOVE_BE, CLOSE_PCT
     'tp': 4665.50,             # new TP price (for MODIFY_TP)
-    'group_id': 9,             # optional: scope to one group; omit for global modify
+    'group_id': 9,             # explicit scope to one group
     'sl': None,                # new SL price (for MODIFY_SL)
     'pct': None,               # percentage (for CLOSE_PCT)
-    'tp_stage': 1,             # optional: 1/2/3 — only legs whose FORGE comment matches |TP<stage>
-    'ticket': None,            # optional: positive int — single position/pending; wins over tp_stage
+    'tp_stage': 1,             # explicit scope: 1/2/3 — only legs whose FORGE comment matches |TP<stage>
+    'ticket': None,            # explicit scope alternative: positive int — single position/pending; wins over tp_stage
     'signal_id': 9999,
     'timestamp': datetime.now(timezone.utc).isoformat(),
 }
@@ -245,6 +253,7 @@ print('Stage-scoped MODIFY_TP queued for AURUM → BRIDGE → FORGE')
 
 Simulate a MODIFY_SL command:
 ```bash
+# channel-origin MODIFY without group_id/ticket/tp_stage is dropped by BRIDGE
 python3 -c "
 import json
 from datetime import datetime, timezone
@@ -664,12 +673,28 @@ curl -s -X POST http://localhost:7842/api/mode \
   -d '{"mode": "AUTO_SCALPER"}'
 ```
 
+When `ATHENA_SECRET` is set:
+```bash
+curl -X POST http://localhost:7842/api/mode \
+  -H "Content-Type: application/json" \
+  -H "X-Athena-Token: $ATHENA_SECRET" \
+  -d '{"mode":"SIGNAL"}'
+```
+
 Check current mode:
 ```bash
 curl -s http://localhost:7842/api/mode | python3 -m json.tool
 ```
 
 ## Management Commands
+
+Bad payloads are rejected before BRIDGE sees them:
+```bash
+# Returns 400 {"error":"validation_failed",...} if body fails schema check
+curl -s -X POST http://localhost:7842/api/management \
+  -H 'Content-Type: application/json' \
+  -d '{"intent": "CLOSE_GROUP"}'
+```
 
 Close all positions + pending orders:
 ```bash
@@ -944,7 +969,8 @@ curl -s -X POST http://localhost:7842/api/management \
 python3 -c "
 import json; from datetime import datetime, timezone; from pathlib import Path
 Path('python/config/management_cmd.json').write_text(json.dumps({
-    'type':'MANAGEMENT','intent':'MODIFY_TP','tp':4665.50,
+    # channel-origin MODIFY without group_id/ticket/tp_stage is dropped by BRIDGE
+    'type':'MANAGEMENT','intent':'MODIFY_TP','tp':4665.50,'group_id':9,
     'timestamp':datetime.now(timezone.utc).isoformat()},indent=2))
 "
 # Result: TP modified → price already above 4665.50 → all 4 hit TP instantly

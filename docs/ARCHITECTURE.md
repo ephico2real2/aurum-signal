@@ -233,6 +233,8 @@ Rollout behavior (`REGIME_ENTRY_MODE`):
 - `shadow`: compute/log regime context without enforcing entry policy
 - `active`: apply regime-conditioned entry policy when confidence and freshness pass
 
+`feature_shape_mismatch: true` is added to the regime snapshot when the HMM was trained on a different feature vector shape than the current tick provides. BRIDGE surfaces this flag; treat regime confidence as degraded until the HMM retrains.
+
 ---
 
 ## File Bus (JSON IPC)
@@ -388,6 +390,8 @@ Mode overrides:
   BRIDGE_PIN_MODE  → blocks mode changes away from pinned mode (logs MODE_CHANGE_BLOCKED)
 ```
 
+SENTINEL fetch-failure path: if ForexFactory is unreachable after 2 retries, SENTINEL returns a fail-safe event that activates the news guard. The system never assumes clear-to-trade on a fetch error.
+
 ---
 
 ## Safety Layers
@@ -459,6 +463,8 @@ DOCS
   GET  /api/docs/             Swagger UI
   GET  /api/openapi.yaml      OpenAPI spec
 ```
+
+ATHENA binds to `ATHENA_HOST` (default `127.0.0.1`). State-mutating routes are protected by `ATHENA_SECRET` token auth when the env var is set. `/api/management` validates payloads against a JSON schema before writing to the file bus.
 
 Performance tab metric contract:
 - Window: **Rolling 7 days (UTC)**

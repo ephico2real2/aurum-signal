@@ -223,11 +223,18 @@ Base URL: `http://<host>:7842` (default). Responses are JSON unless noted.
 |--------|------|--------|
 | POST | `/api/mode` | Writes **`aurum_cmd.json`** with `MODE_CHANGE` for BRIDGE |
 | POST | `/api/components/heartbeat` | Persists heartbeat via SCRIBE |
+| POST | `/api/management` | Validates body against `schemas/files/management_cmd.schema.json`, then writes `management_cmd.json` for BRIDGE |
 | POST | `/api/aurum/ask` | Body `{ "query": "..." }`; AURUM may write `aurum_cmd.json` from fenced JSON |
 | POST | `/api/aurum/exec` | Executes AEB payload (`SCRIBE_QUERY` / `SHELL_EXEC`) through ATHENA shared executor; optional auth via `ATHENA_AURUM_EXEC_SECRET` |
 | POST | `/api/scribe/query` | Body `{ "sql": "SELECT ..." }` — read-only SQL (`SELECT`/`WITH`), guarded by read-only SQLite + authorizer. Examples: **`docs/SCRIBE_QUERY_EXAMPLES.md`**, **`schemas/scribe_query_examples.json`** (`make sync-openapi-scribe` → OpenAPI). Optional **`ATHENA_SCRIBE_QUERY_SECRET`**; row cap **`SCRIBE_QUERY_MAX_ROWS`**; response includes **`truncated`** / **`max_rows`** |
 
 **Important:** `POST /api/mode` does **not** switch mode inside Flask; it only enqueues the same file contract as AURUM.
+
+State-mutating ATHENA routes: when `ATHENA_SECRET` is set, POST routes (`/api/mode`, `/api/management`, `/api/exec`, `/api/aurum/exec`) require `X-Athena-Token: <secret>` header. Returns `403` if missing or wrong.
+
+Management validation: `POST /api/management` validates the request body against `schemas/files/management_cmd.schema.json` before writing. Bad payloads return `400 {"error":"validation_failed","intent":"...","details":[...]}`. The validator is backward-compatible — missing schema files fall through to the unvalidated write path.
+
+SCRIBE query limits: queries are restricted to `ALLOWED_SCRIBE_TABLES`: `trade_positions`, `trade_groups`, `signals`, `trade_closures`, `regime_snapshots`, `system_events`. Requests referencing any other table name return a `ValueError` / `400` error. Channel-origin `MODIFY_SL`/`MODIFY_TP` commands without a resolved `group_id`, `ticket`, or `tp_stage` are dropped by BRIDGE before reaching FORGE.
 
 ### 4.3 Services vs dev Python (launchd / systemd)
 

@@ -25,6 +25,10 @@ SENTINEL_CALENDAR_CURRENCIES=USD,EUR,GBP,JPY,CNY
 - ForexFactory uses **currency column** per row; only rows in this set are considered.
 - **Guard** still applies only to events classified **HIGH** impact in the HTML (red icon).
 
+### Fetch failure behaviour
+
+If the ForexFactory HTTP request fails (connection error, timeout, non-200 response), SENTINEL retries up to 2 times with a 3-second pause between attempts. If all attempts fail, SENTINEL returns a synthetic high-impact event that activates the guard — trading is blocked until the next successful fetch. This is intentional fail-safe behaviour. Do not treat a SENTINEL fetch error as clear-to-trade.
+
 Other env vars:
 
 | Variable | Default | Role |

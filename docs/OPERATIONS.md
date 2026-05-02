@@ -45,10 +45,13 @@ This re-renders `services/macos/rendered/*.plist` from templates + `.env`, then 
 
 **Interpreter:** If `.venv` exists at repo root, launchd uses `.venv/bin/python` automatically. Override with env `SIGNAL_PYTHON=/path/to/python` before install if needed.
 
+**ATHENA auth:** If `ATHENA_SECRET` is set in `.env`, all state-mutating HTTP calls (`POST /api/mode`, `POST /api/management`, etc.) require the header `X-Athena-Token: <secret>`. Dashboard calls from localhost without the token will return `403`.
+
 **Risk gate:** Trade validation is **AEGIS** — see [AEGIS.md](AEGIS.md). Tuning is via **`AEGIS_*`** env vars; **bridge** must be restarted/reloaded to pick them up.
 **Execution latency + mode stability:** `BRIDGE_LOOP_SEC` controls BRIDGE tick frequency (lower = faster signal consumption), and `BRIDGE_PIN_MODE` can lock runtime mode (for example `HYBRID`) to prevent accidental drift.
 
 **News / calendar:** **SENTINEL** — ForexFactory multi-currency calendar + free RSS (FXStreet, Google News, Investing.com forex, optional DailyFX/extras). Extended events (speeches, FOMC) hold the guard for 60min. See [SENTINEL.md](SENTINEL.md).
+If the ForexFactory fetch fails (network error, timeout), SENTINEL now retries twice then activates the guard as a safe default. Treat SENTINEL fetch errors as guarded — do not assume clear-to-trade.
 
 ---
 
@@ -193,7 +196,7 @@ Reply in 2–4 sentences: current mode, whether MT5/context looks connected, and
 
 For **mode switches** and **command JSON** examples, see repo root **SKILL.md** (sections 4–5).
 
-**After editing `SKILL.md` or `SOUL.md`:** no restart is required for prompt behavior updates — AURUM re-reads them on each query. Restart only if you changed service/env/runtime wiring.
+**After editing `SKILL.md` or `SOUL.md`:** `SOUL.md` and `SKILL.md` are cached at module level on startup. Send `kill -HUP <aurum_pid>` or run `make reload-aurum` to reload them without a full restart.
 
 ---
 
