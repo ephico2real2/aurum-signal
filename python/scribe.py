@@ -694,14 +694,27 @@ class Scribe:
             return 0
 
         try:
-            rows = src.execute(
+            # Migrate AURUM forge_signals with run_id (safe no-op if column exists)
+            try:
+                with self._conn() as c:
+                    c.execute("ALTER TABLE forge_signals ADD COLUMN run_id INTEGER DEFAULT 0")
+            except Exception:
+                pass  # column already exists
+
+            # Check if source journal has run_id column (v2 journals only)
+            src_cols = {r[1] for r in src.execute("PRAGMA table_info(SIGNALS)").fetchall()}
+            has_run_id = "run_id" in src_cols
+
+            select_sql = (
                 "SELECT id, time, symbol, setup_type, direction, outcome, gate_reason, "
                 "price, spread, atr, rsi, adx, bb_upper, bb_lower, bb_mid, "
                 "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
                 "pattern_score, h1_trend, regime_label, regime_confidence, "
-                "adx_trend_regime, high_vol_trend, session, magic "
-                f"FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
-            ).fetchall()
+                f"adx_trend_regime, high_vol_trend, session, magic"
+                + (", run_id" if has_run_id else "")
+                + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
+            )
+            rows = src.execute(select_sql).fetchall()
 
             if not rows:
                 return 0
@@ -711,6 +724,7 @@ class Scribe:
             inserted = 0
             with self._conn() as c:
                 for r in rows:
+                    run_id = r[28] if has_run_id else 0
                     existing = c.execute(
                         "SELECT 1 FROM forge_signals "
                         "WHERE forge_id=? AND time=? AND symbol=? AND journal_source=? LIMIT 1",
@@ -727,9 +741,9 @@ class Scribe:
                         "bb_upper, bb_lower, bb_mid, poc_price, vwap_price, fib_50, "
                         "rsi_divergence, psar_state, pattern_score, h1_trend, "
                         "regime_label, regime_confidence, adx_trend_regime, "
-                        "high_vol_trend, session, magic, journal_source) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (r[0], r[1], ts_utc, *r[2:], source),
+                        "high_vol_trend, session, magic, journal_source, run_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (r[0], r[1], ts_utc, *r[2:28], source, run_id),
                     )
                     synced_ids.append(r[0])
                     inserted += 1
@@ -774,24 +788,38 @@ class Scribe:
             return 0
 
         try:
-            rows = src.execute(
+            # Migrate AURUM forge_journal_trades with run_id (safe no-op if column exists)
+            try:
+                with self._conn() as c:
+                    c.execute("ALTER TABLE forge_journal_trades ADD COLUMN run_id INTEGER DEFAULT 0")
+            except Exception:
+                pass  # column already exists
+
+            # Check if source journal has run_id column
+            src_cols_t = {r[1] for r in src.execute("PRAGMA table_info(TRADES)").fetchall()}
+            has_run_id_t = "run_id" in src_cols_t
+
+            select_sql_t = (
                 "SELECT id, deal_ticket, order_ticket, symbol, type, direction, volume, "
-                "price, profit, swap, commission, magic, comment, time, time_msc "
-                f"FROM TRADES WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
-            ).fetchall()
+                "price, profit, swap, commission, magic, comment, time, time_msc"
+                + (", run_id" if has_run_id_t else "")
+                + f" FROM TRADES WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
+            )
+            rows = src.execute(select_sql_t).fetchall()
             if not rows:
                 return 0
 
             synced_ids: list[int] = []
             with self._conn() as c:
                 for r in rows:
+                    run_id_t = r[15] if has_run_id_t else 0
                     try:
                         c.execute(
                             "INSERT OR IGNORE INTO forge_journal_trades "
                             "(forge_rowid, deal_ticket, order_ticket, symbol, type, direction, "
                             "volume, price, profit, swap, commission, magic, comment, time, time_msc, "
-                            "journal_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (*r, source),
+                            "journal_source, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (*r[:15], source, run_id_t),
                         )
                     except Exception as row_e:
                         log.warning("SCRIBE forge_journal_trades row skip: %s", row_e)

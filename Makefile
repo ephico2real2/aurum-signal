@@ -266,9 +266,30 @@ monitor-forge-skips-watch:
 journal-diagnose:
 	@$(PYTHON) $(SCRIPTS)/diagnose_forge_journal.py
 
+journal-reset-tester:
+	@echo "[journal] Purging tester journal DB(s)..."
+	@find "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5" \
+		-name "FORGE_journal_*_tester.db" -delete 2>/dev/null && \
+		echo "[journal] Tester journal DB(s) deleted." || \
+		echo "[journal] No tester journal DBs found (already clean)."
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "  NEXT STEPS:"
+	@echo "  1. In MT5: remove FORGE from chart → Navigator → drag FORGE back"
+	@echo "     (loads new .ex5 and triggers fresh JournalInit)"
+	@echo "  2. Set inputs: InputMode=SCALPER  ScalperMode=DUAL  WarmupM5Bars=2"
+	@echo "  3. Run the backtest in Strategy Tester"
+	@echo "  4. After the run verify with:"
+	@echo ""
+	@echo "  DB=\$$(find \"\$$HOME/Library/Application Support/net.metaquotes.wine.metatrader5\" -name \"FORGE_journal_*_tester.db\" 2>/dev/null | head -1)"
+	@echo "  sqlite3 \"\$$DB\" \"SELECT id, wall_time, sim_start_time, scalper_mode FROM TESTER_RUNS;\""
+	@echo "  sqlite3 \"\$$DB\" \"SELECT id, run_id, datetime(time,'unixepoch') as ts, outcome, gate_reason, setup_type, direction, price, rsi, adx FROM SIGNALS ORDER BY id DESC LIMIT 10;\""
+	@echo "  sqlite3 \"\$$DB\" \"SELECT run_id, outcome, COUNT(*) FROM SIGNALS GROUP BY run_id, outcome;\""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 # ── Services ──────────────────────────────────────────────────────
 # install_services.py is chmod +x before each run so ./services/install_services.py works.
-.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-athena reload-all journal-diagnose
+.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-athena reload-all journal-diagnose journal-reset-tester
 
 services-install:
 	@chmod +x $(INSTALL_SVC)

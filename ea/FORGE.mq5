@@ -129,6 +129,7 @@ bool     g_scalper_config_missing_logged = false; // one-shot Journal hint when 
 bool     g_adx_trend_regime = false;           // persistent ADX hysteresis regime state (M5)
 string   g_warmup_last_reason = "";            // last warmup sub-reason for mode_status.json / journal
 bool     g_warmup_last_ok = false;              // true once warmup has passed (sticky after first success)
+int      g_tester_run_id = 0;                  // TESTER_RUNS.id for the current run (0 = live/unset)
 
 // Scalper config (from scalper_config.json or defaults)
 struct ScalperConfig {
@@ -3114,9 +3115,16 @@ bool NearLiquidityZone(double price, double atr) {
 
 bool JournalInit() {
    if(!g_sc.journal_enabled) return true;
-   if(g_journal_db != INVALID_HANDLE) return true;
-
    bool in_tester = (MQLInfoInteger(MQL_TESTER) != 0);
+   // Tester: always close previous handle and reopen to guarantee a fresh TESTER_RUNS
+   // insert even when the MT5 agent reuses the EA instance across consecutive runs.
+   if(in_tester && g_journal_db != INVALID_HANDLE) {
+      DatabaseClose(g_journal_db);
+      g_journal_db = INVALID_HANDLE;
+      PrintFormat("FORGE JOURNAL: closed previous tester handle for re-init");
+   }
+   if(!in_tester && g_journal_db != INVALID_HANDLE) return true;
+
    string db_name = in_tester
       ? "FORGE_journal_" + _Symbol + "_tester.db"
       : "FORGE_journal_" + _Symbol + ".db";
@@ -3214,30 +3222,51 @@ bool JournalInit() {
    // synced: SCRIBE incremental import (column may already exist on older journals)
    DatabaseExecute(g_journal_db, "ALTER TABLE TRADES ADD COLUMN synced INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_synced ON TRADES(synced);");
+   // run_id: per-run isolation — added via migration so existing DBs stay valid
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN run_id INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE TRADES ADD COLUMN run_id INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_run ON SIGNALS(run_id);");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_run ON TRADES(run_id);");
 
    if(in_tester) {
+      // TESTER_RUNS schema v2: wall_time = GetTickCount64() (real clock ms, unique per run);
+      // sim_start_time = TimeGMT() (simulated backtest start date); magic_base for attribution.
       DatabaseExecute(g_journal_db,
          "CREATE TABLE IF NOT EXISTS TESTER_RUNS ("
          "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-         "start_time INTEGER, "
+         "wall_time INTEGER NOT NULL, "
+         "sim_start_time INTEGER, "
          "symbol TEXT, "
          "balance REAL, "
          "forge_version TEXT, "
          "scalper_mode TEXT, "
          "warmup_m5_bars INTEGER, "
-         "warmup_seconds INTEGER"
+         "warmup_seconds INTEGER, "
+         "magic_base INTEGER"
          ");");
-      string ins = "INSERT INTO TESTER_RUNS (start_time, symbol, balance, forge_version, scalper_mode, warmup_m5_bars, warmup_seconds) VALUES ("
+      // Migrate legacy TESTER_RUNS (add wall_time / sim_start_time / magic_base if missing)
+      DatabaseExecute(g_journal_db, "ALTER TABLE TESTER_RUNS ADD COLUMN wall_time INTEGER NOT NULL DEFAULT 0;");
+      DatabaseExecute(g_journal_db, "ALTER TABLE TESTER_RUNS ADD COLUMN sim_start_time INTEGER;");
+      DatabaseExecute(g_journal_db, "ALTER TABLE TESTER_RUNS ADD COLUMN magic_base INTEGER;");
+      string ins = "INSERT INTO TESTER_RUNS (wall_time, sim_start_time, symbol, balance, forge_version, scalper_mode, warmup_m5_bars, warmup_seconds, magic_base) VALUES ("
+         + IntegerToString((long)GetTickCount64()) + ", "
          + IntegerToString((long)TimeGMT()) + ", '"
          + _Symbol + "', "
          + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2) + ", '"
          + FORGE_VERSION + "', '"
          + ScalperMode + "', "
          + IntegerToString(ScalperTesterWarmupM5Bars) + ", "
-         + IntegerToString(ScalperWarmupSeconds) + ")";
+         + IntegerToString(ScalperWarmupSeconds) + ", "
+         + IntegerToString(MagicNumber) + ")";
       DatabaseExecute(g_journal_db, ins);
-      PrintFormat("FORGE JOURNAL: tester run logged — balance=%.2f version=%s",
-                  AccountInfoDouble(ACCOUNT_BALANCE), FORGE_VERSION);
+      // Read the new run's id into g_tester_run_id so all signals/trades reference it
+      int rstmt = DatabasePrepare(g_journal_db, "SELECT last_insert_rowid()");
+      if(rstmt != INVALID_HANDLE) {
+         if(DatabaseRead(rstmt)) DatabaseColumnInteger(rstmt, 0, g_tester_run_id);
+         DatabaseFinalize(rstmt);
+      }
+      PrintFormat("FORGE JOURNAL: tester run=%d wall_time=%I64d balance=%.2f version=%s",
+                  g_tester_run_id, (long)GetTickCount64(), AccountInfoDouble(ACCOUNT_BALANCE), FORGE_VERSION);
    }
 
    return true;
@@ -3273,7 +3302,7 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "price, spread, atr, rsi, adx, bb_upper, bb_lower, bb_mid, "
       "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
       "pattern_score, h1_trend, regime_label, regime_confidence, "
-      "adx_trend_regime, high_vol_trend, session, magic, synced) VALUES ("
+      "adx_trend_regime, high_vol_trend, session, magic, synced, run_id) VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
       + "'" + setup_type + "', "
@@ -3300,7 +3329,8 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_adx_trend_regime ? 1 : 0) + ", "
       + IntegerToString(high_vol_flag) + ", "
       + "'" + session + "', "
-      + IntegerToString((long)MagicNumber) + ", 0)";
+      + IntegerToString((long)MagicNumber) + ", 0, "
+      + IntegerToString(g_tester_run_id) + ")";
 
    if(!DatabaseExecute(g_journal_db, sql)) {
       if(g_journal_signals_count == 0)
@@ -3348,7 +3378,7 @@ void JournalImportTrades() {
       else if(deal_entry == DEAL_ENTRY_OUT_BY) dir = 3;
 
       string ins = "INSERT OR IGNORE INTO TRADES (deal_ticket, order_ticket, symbol, type, direction, volume, price, "
-         "profit, swap, commission, magic, comment, time, time_msc) VALUES ("
+         "profit, swap, commission, magic, comment, time, time_msc, run_id) VALUES ("
          + IntegerToString((long)ticket) + ", "
          + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_ORDER)) + ", "
          + "'" + JournalSqlText(HistoryDealGetString(ticket, DEAL_SYMBOL)) + "', "
@@ -3362,7 +3392,8 @@ void JournalImportTrades() {
          + IntegerToString((long)deal_magic) + ", "
          + "'" + JournalSqlText(HistoryDealGetString(ticket, DEAL_COMMENT)) + "', "
          + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TIME)) + ", "
-         + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TIME_MSC)) + ")";
+         + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TIME_MSC)) + ", "
+         + IntegerToString(g_tester_run_id) + ")";
 
       if(DatabaseExecute(g_journal_db, ins))
          imported++;
@@ -3382,12 +3413,16 @@ void JournalComputeStats() {
       (now - g_journal_last_stats) < g_sc.journal_stats_interval_sec) return;
    g_journal_last_stats = now;
 
+   // Scope stats to current run when in tester mode — prevents multi-run contamination.
+   bool in_tester_stats = (MQLInfoInteger(MQL_TESTER) != 0) && (g_tester_run_id > 0);
+   string run_filter = in_tester_stats ? " AND run_id = " + IntegerToString(g_tester_run_id) : "";
+
    string sql_hr = "SELECT "
       "CAST(strftime('%H', time, 'unixepoch') AS INTEGER) as hour, "
       "COUNT(*) as trades, "
       "SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as wins, "
       "SUM(profit + swap + commission) as net_pnl "
-      "FROM TRADES WHERE direction IN (1,2,3) "
+      "FROM TRADES WHERE direction IN (1,2,3)" + run_filter + " "
       "GROUP BY hour ORDER BY hour";
 
    int stmt = DatabasePrepare(g_journal_db, sql_hr);
@@ -3429,7 +3464,7 @@ void JournalComputeStats() {
    }
 
    string sql_gates = "SELECT gate_reason, COUNT(*) as cnt "
-      "FROM SIGNALS WHERE outcome='SKIP' AND gate_reason != '' "
+      "FROM SIGNALS WHERE outcome='SKIP' AND gate_reason != ''" + run_filter + " "
       "GROUP BY gate_reason ORDER BY cnt DESC";
 
    stmt = DatabasePrepare(g_journal_db, sql_gates);
@@ -4280,7 +4315,10 @@ void CheckNativeScalperSetups() {
 
    DrawDivergenceArrow(g_rsi_div_type, direction == "BUY" ? ask : bid, iTime(_Symbol, PERIOD_M5, 0));
 
-   // Write scalper_entry.json for BRIDGE to pick up and log to SCRIBE
+   // Write scalper_entry.json for BRIDGE to pick up and log to SCRIBE.
+   // In Strategy Tester BRIDGE is not running — skip these writes to avoid leaving
+   // a stale tester artifact that BRIDGE could misread as a live entry after restart.
+   if(!in_tester) {
    string ej = "{";
    ej += "\"forge_version\":\"" + FORGE_VERSION + "\",";
    ej += "\"action\":\"FORGE_NATIVE_SCALP\",";
@@ -4345,6 +4383,7 @@ void CheckNativeScalperSetups() {
    // BRIDGE reads scalper_entry + market_data in one cycle; market_data was only refreshed from OnTimer,
    // causing no_mt5_exposure_for_magic when the snapshot predates these new positions. Flush immediately.
    WriteMarketData();
+   }  // end if(!in_tester)
 
    JournalRecordSignal("TAKEN","",setup_type,direction,
       direction=="BUY" ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID),
