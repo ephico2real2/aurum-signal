@@ -35,6 +35,7 @@ def test_scalper_rejected_skips_forge_and_scribe_log(monkeypatch):
     )
     stub._bridge_activity = MagicMock()
     stub.herald = MagicMock()
+    stub._trade_open_context_snapshot = MagicMock(return_value=None)
 
     lens = SimpleNamespace(
         rsi=35,
@@ -95,6 +96,7 @@ def test_scalper_approved_writes_group_forge_and_regime_columns(monkeypatch):
     )
     stub._bridge_activity = MagicMock()
     stub.herald = MagicMock()
+    stub._trade_open_context_snapshot = MagicMock(return_value=None)
 
     lens = SimpleNamespace(
         rsi=35,

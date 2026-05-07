@@ -1,6 +1,334 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.8.0] — 2026-05-07 (FORGE 2.5.1)
+
+### Fixed (ea/FORGE.mq5) — backtest stabilisation + logical error sprint
+
+- **`WriteBrokerInfo()` hardcoded version** — `forge_version` was hardcoded as `"1.6.19"` instead of using the `FORGE_VERSION` constant. `broker_info.json` now always reports the actual running build version.
+- **`ManageStagedNativeLegs()` guard asymmetry** — early-return guard only checked `staged_entry_enabled` but the opening path (`CheckNativeScalperSetups`) used `staged_entry_enabled || native_force_staged_scale_in`. Guard updated to match: staged legs now add correctly even when only `native_force_staged_scale_in=1` is set.
+- **`WriteModeStatus()` missing fields** — `mode_status.json` now emits `scalper_mode`, `warmup_ok`, and `warmup_reason` so the operator can remotely confirm both mode inputs and warmup state without MT5 Experts tab access.
+- **`InitScalperConfig()` defaults too strict** — `high_vol_apply_in_tester` and `high_vol_disable_bounce` were hardcoded `true` (matching the deployed JSON). Changed to `false` so the fail-safe (config unreadable) does not silently block tester trades.
+- **iMACD buffer-2 probe permanently failing** (`ForgeNativeScalperWarmupOk`) — The warmup function probed `CopyBuffer(h_macd, 2, ...)` (MACD histogram). MT5's built-in `iMACD` only exposes buffer `0` (MACD main) and buffer `1` (signal); buffer `2` does not exist and `CopyBuffer` always returns `-1`. This caused warmup to permanently fail with reason `m5_macd_buf` on every tick, producing zero TAKEN for the entire backtest. The probe was removed for both MTF (M5/M15/M30) and H1 MACD handles. MACD is only used for `market_data.json` display (`WriteMTFBlock`) which already handles `CopyBuffer` failure gracefully as `0`.
+- **Warmup bar-count check blocks fast-start** (`ForgeNativeScalperWarmupOk`) — When `ScalperTesterWarmupM5Bars=0` the operator intends "fire as soon as indicators are readable", but the old code still enforced `Bars() ≥ 70` and `SERIES_SYNCHRONIZED` checks on all timeframes before reaching the `CopyBuffer` probes. Added `do_bar_checks = !in_tester || (ScalperTesterWarmupM5Bars > 0)` gate: bar-count and sync proxy checks are now skipped in tester when `WarmupM5Bars=0`, leaving only the `CopyBuffer` readiness probes as the warmup gate.
+
+### Added (ea/FORGE.mq5)
+
+- **Warmup state observability** — globals `g_warmup_last_reason` (string) and `g_warmup_last_ok` (bool) track the latest warmup outcome. `WriteModeStatus()` exposes them in `mode_status.json`; the warmup failure branch in `CheckNativeScalperSetups()` now journals one `SKIP|warmup_<reason>` row per M5 bar so warmup blockers are visible in SQLite without MT5 Experts access.
+- **`TESTER_RUNS` warmup inputs** (`JournalInit`) — `warmup_m5_bars` and `warmup_seconds` columns added to `TESTER_RUNS` so each tester run is traceable (which warmup setting produced which results).
+
+### Changed (config/scalper_config.defaults.json + generated JSON)
+
+- **Tester gate relaxations** — Three `scalper_config` flags that were blocking bounces in the tester were changed to `0` (relaxed) in `scalper_config.defaults.json` and propagated via `make scalper-env-sync`:
+  - `bb_bounce.bounce_respect_adx_max_in_tester: 1 → 0` (EA uses ADX cap 99 for bounces in tester)
+  - `bb_bounce.bounce_respect_h1_filter_in_tester: 1 → 0` (H1 direction filter skipped in tester)
+  - `safety.high_vol_apply_in_tester: 1 → 0` (high-vol guard disabled in tester)
+
+### Added (docs)
+
+- **`docs/FORGE_BACKTEST_DIAGNOSTIC_COMMANDS.md`** — 11 numbered Python commands for remotely verifying warmup, mode, scalper_config gates, journal signal flow, TESTER_RUNS history, rr_too_low geometry, AURUM DB, and make targets. Includes warmup blocker reference table and Inputs checklist.
+
+---
+
+## [System 1.7.7] — 2026-05-06 (FORGE 2.4.6)
+
+### Changed
+- **Documentation:** **`docs/SCALPER_CONFIG_PIPELINE.md`** describes **`scalper_config.defaults.json`** → **`sync_scalper_config_from_env.py`** → **`scalper_config.json`**. Updated **`README.md`**, **`docs/WARP_FORGE_VERIFY_PROMPT.md`**, **`docs/FORGE_BRIDGE.md`**, **`docs/FORGE_TRADING_RULES.md`**, **`Makefile`** help text, **`.env.example`**, and **`sync_scalper_config_from_env.py`** module docstring so operators edit **defaults** (or mapped **`.env`** keys), not the generated JSON.
+- **`VERSION` / `#property version` / `FORGE_VERSION` / `scalper_config.json`**: **2.4.5 → 2.4.6** (MQL5 **`2.46`**) so MT5 recognises the new build and logs / `market_data.json` show the updated `forge_version`.
+
+---
+
+## [System 1.7.6] — 2026-05-06 (scalper config 2.4.6)
+
+### Changed
+- **`config/scalper_config.json` — higher native scalper trade frequency** (hot-reload / `make forge-refresh` as usual): **`high_vol_adx_min`** 28→**40**, **`high_vol_trend_strength_min`** 0.6→**0.82**, **`high_vol_disable_bounce`** 1→**0** (stops hard-blocking BB bounces whenever `high_vol_trend` is true). **`bb_bounce`**: **`adx_max`** 35→**38**, **`rsi_buy_max`**/**`rsi_sell_min`** widened toward 50, **`bb_proximity_pct`** 25→**28**, **`bounce_require_bar0_confirm`** 0. **`bb_breakout.adx_min`** 20→**18**. **`safety`**: **`loss_cooldown_sec`** 120→**90**, **`direction_cooldown_bars`** 3→**2**. Spread / open-groups / rejection-candle / min SL unchanged. See **`docs/FORGE_TRADING_RULES.md` §7** for rollback guidance.
+
+---
+
+## [System 1.7.5] — 2026-05-06 (FORGE 2.4.5)
+
+### Added
+- **Per-session skip flags** (`ea/FORGE.mq5`, `config/scalper_config.json`): `skip_london`, `skip_ny`, `skip_asian` — each independently gates that session's trades. Hot-reloaded via `scalper_config.json`; all default to `0` (off, 24h trading unchanged). To skip London: set `"skip_london": 1` in `scalper_config.json` and run `make forge-compile`.
+- **`ScalperSessionOK()`** updated to classify the current hour as London/NY/Asian and check the corresponding skip flag before allowing entry. Existing session-hour bounds (`london_start_utc`, `london_end_utc`, etc.) still define the classification window.
+
+---
+
+## [System 1.7.4] — 2026-05-06 (FORGE 2.4.4)
+
+### Changed
+- **Session filter disabled** (`config/scalper_config.json`): `london_start_utc=0`, `london_end_utc=24`, `ny_start_utc=0`, `ny_end_utc=24`, `skip_asian=false` — FORGE now evaluates setups 24 h/day. Previously London (07–12) + NY (12–24) only; Asian session was blocked entirely. Hot-reloaded via `scalper_config.json`; no live-session impact from `tester_session_filter` (remains 0).
+- **FORGE VERSION bumped `2.4.3 → 2.4.4`** to force MT5 to recognise and reload the new binary.
+
+---
+
+## [System 1.7.3] — 2026-05-06
+
+### Fixed (FORGE ADX — trade blocking)
+- **ADX hysteresis disabled** (`ea/FORGE.mq5` line 1707): `adx_hysteresis_enabled` default changed `true → false`. ADX 25–33 is routine XAUUSD — the gate locked `g_adx_trend_regime=true` continuously, suppressing all BB bounce entries on both live and tester. Live journal confirmed 500 consecutive `no_setup` rows (ADX range 25.91–33.28, avg 29.5); tester journal showed 2.2M rows with zero `TAKEN`. Thresholds `adx_trend_enter=35.0` / `adx_trend_exit=28.0` retained in code for future re-enablement via `.env` / hot-reload if needed.
+
+### Fixed
+- **`forge_signals` idempotency** (`python/scribe.py`): added existing-row guard keyed on `(forge_id, time, symbol, journal_source)` before each INSERT — prevents duplicate signals if source `synced` flag is reset while BRIDGE is running.
+- **Concurrency race — tester sync duplicates**: concurrent BRIDGE + manual terminal sync caused 500 duplicate rows (`forge_id` 65001–65500 each inserted twice). Deduplicated via `DELETE … WHERE rowid NOT IN (SELECT MIN(rowid) …)`; confirmed 0 dups post-fix. Root cause: application-level guard alone is insufficient under concurrent writers — see TODO below.
+
+### Changed
+- **`sync_forge_journal` / `sync_forge_journal_trades`** (`python/scribe.py`): batch limit is now a configurable `batch_size: int = 500` parameter (was hardcoded `LIMIT 500`). Default unchanged; `bridge.py` callers unaffected.
+- **Tester journal backlog — skipped intentionally**: `FORGE_journal_XAUUSD_tester.db` (503 MB, ~2.2M rows) backlog marked `synced=1` without syncing to SCRIBE. All rows were `SKIP|no_setup` or `SKIP|rr_too_low` with zero `TAKEN` outcomes — pre-spam-fix noise with no ML value. SCRIBE tester total held at ~102,000 rows. Fresh tester runs sync cleanly going forward.
+- **DB permissions**: `python/data/aurum_intelligence.db` temporarily `chmod 666` during sandbox sync; restored to `644`.
+
+### Added
+- **Focused offline tests** (`tests/services/test_scribe_forge_journal.py`): `test_scribe_db_path_resolution_rules`, `test_forge_journal_sync_tags_source_and_is_idempotent`, `test_forge_journal_sync_keeps_live_and_tester_sources_separate` — all pass, no network/MT5 required.
+- **`make test-journal`** (Makefile): runs focused journal test suite via `$(PYTHON)`.
+
+### TODO
+- Add `UNIQUE INDEX ON forge_signals(forge_id, time, symbol, journal_source)` to enforce idempotency at the DB layer and eliminate the concurrency race between BRIDGE and any manual sync.
+
+---
+
+## [System 1.7.2] — 2026-05-06
+### Added
+- **SCRIBE `forge_journal_trades`** — deal-level rows mirrored from FORGE journal **`TRADES`** (History deals with FORGE magic range). Incremental sync via **`synced`** on `TRADES` (`python/scribe.py`). Tagged with **`journal_source`** (`live` \| `tester`).
+- **`scripts/diagnose_forge_journal.py`** + **`make journal-diagnose`** — JSON health report: per-path `SIGNALS` / `TRADES` / `TESTER_RUNS` counts, top skip reasons, SCRIBE `forge_*` totals.
+
+### Changed
+- **SCRIBE DB path**: `SCRIBE_DB` defaults to **`python/data/aurum_intelligence.db`** relative to the **repo root** (was effectively under `python/` only; `.env` value `data/aurum_intelligence.db` still maps to the same file). Removed unused **`data/aurum_intelligence.db`** at repo root; watch/verify scripts and dashboard dep map now reference the canonical path only.
+- **BRIDGE journal discovery** (`python/bridge.py`): search root now includes **`Program Files/MetaTrader 5`** (recursive `FORGE_journal_*.db`) so **Strategy Tester Agent** paths (e.g. `Tester/Agent-*/MQL5/Files/`) are found — tester journals sync to SCRIBE while BRIDGE runs.
+- **BRIDGE** calls **`sync_forge_journal_trades`** alongside **`sync_forge_journal`** every 60s per discovered DB.
+- **Journal diagnose UX**: when no FORGE journal DBs are discovered, `scripts/diagnose_forge_journal.py` now emits a human-readable stderr note while keeping JSON on stdout and exit status 0.
+- **Journal sync return semantics**: `Scribe.sync_forge_journal()` now returns processed source rows, including duplicate rows marked synced after the SCRIBE idempotency guard; use SCRIBE table counts for inserted-row/idempotency assertions.
+
+### Operations
+- **Tester journal backlog gate**: before any bulk tester sync, run `make journal-diagnose`, count unsynced tester `SIGNALS` directly, snapshot SCRIBE `forge_signals` by `journal_source`, and confirm duplicate audits for `(forge_id,time,symbol,journal_source)` and `(deal_ticket,journal_source)` are zero. On 2026-05-06 the sync remains gated pending operator decision; no bulk sync was triggered by this review pass.
+
+### Documentation
+- **`README.md`**, **`docs/SCRIBE_QUERY_EXAMPLES.md`**, **`schemas/scribe_query_examples.json`**, **`docs/DATA_CONTRACT.md`**, **`docs/FORGE_JOURNAL_ML_PROMPT.md`** — consolidated ML data guidance (SCRIBE as primary; raw journal optional).
+- **`docs/FORGE_JOURNAL_SQL.md`** — SQL cookbook for **skipped** / **TAKEN** journal rows (`forge_signals` + raw `SIGNALS`); linked from README and SCRIBE query examples.
+
+## [2.4.3] — 2026-05-06
+### Fixed
+- **Journal spam**: `no_setup` and **`rr_too_low`** `SIGNALS` rows were written **every tick** when the condition persisted (millions of redundant rows, unusable for ML). Now **at most one row per M5 bar** for each (aligned with throttled `no_setup` logging).
+- **`JournalImportTrades()`** (`ea/FORGE.mq5`): replaced prepared-statement `INSERT` with **`DatabaseExecute`** + SQL text (same class of Strategy Tester reliability issue as `SIGNALS`). **`TRADES.synced`** column + index for SCRIBE incremental import (idempotent `ALTER TABLE` on init).
+- **Execution failures**: if all legs fail to open (`opened <= 0`), journal records **`SKIP` / `execution_failed`** (was silent).
+
+## [System 1.7.0] — 2026-05-06
+### Changed
+- **Versioning overhaul**: introduced `SYSTEM_VERSION` file for Python services (separate from FORGE `VERSION`). `bridge.py` and `athena_api.py` now read version from file at startup — no more hardcoded version strings.
+- Updated `SOUL.md` — FORGE v2.4.1 features: SL quality rules, native indicators (VWAP, Fibonacci, RSI divergence, PSAR), signal journal, dynamic leg count 1–30.
+- Updated `SKILL.md` §8 — full native scalper documentation: SL layers, `.env` hot-reload keys, indicator catalog, trade frequency tuning.
+- Updated `README.md` — version header, SCRIBE table count (14), FORGE v2.4.1 feature summary, two-file versioning docs.
+
+## [System 1.7.1] — 2026-05-06
+### Added
+- **`docs/FORGE_JOURNAL_ML_PROMPT.md`** — implementation blueprint for journal-based **missed-setup analysis** (MFE/MAE, gate accuracy), optional **scikit-learn setup scorer** training (walk-forward validation), and future **AUTO_SCALPER** / **AEGIS** integration. References MQL5 articles 19065/18985/14910 and practical XAUUSD ML patterns.
+- **SCRIBE `forge_signals.journal_source`** — column (default `live`) with auto-migration; tags rows synced from live (`FORGE_journal_<sym>.db`) vs Strategy Tester (`FORGE_journal_<sym>_tester.db`) journals (`python/scribe.py`).
+
+### Changed
+- **BRIDGE journal sync** (`python/bridge.py`): resolves **both** live Common-Files and local tester journal paths (same discovery rules as MT5/Wine layout), calls `sync_forge_journal(..., source="live"|"tester")` per file.
+- **Drawdown guard vs Strategy Tester** (`python/bridge.py`): `_check_drawdown()` returns early when `market_data` reports `strategy_tester` — avoids false WATCH transitions when tester virtual balance differs from live peak equity. One-shot log + HERALD notice when tester mode is detected.
+- **Operational visibility** (`python/bridge.py`, `python/athena_api.py`): `strategy_tester` written to `status.json` and exposed on **`GET /api/live`** so ATHENA shows tester runs distinctly from live.
+
+### Documentation
+- Updated **`README.md`**, **`SOUL.md`**, **`SKILL.md`** — FORGE **v2.4.2**, journal tester/live split, `journal_source`, tester drawdown bypass, link to journal ML prompt.
+
+## [2.4.2] — 2026-05-06
+### Fixed
+- **Signal journal in Strategy Tester** (`ea/FORGE.mq5`):
+  - When `MQL_TESTER` is active, journal DB is **`FORGE_journal_<SYMBOL>_tester.db`** under the terminal’s **local** `MQL5/Files` tree (writable in the tester sandbox), not Common Files — recovered skipped/taken rows that previously never persisted in backtests.
+  - **`SIGNALS` inserts** use **`DatabaseExecute`** with formatted SQL (MT5 tester proved unreliable for prepared-statement + `DatabaseRead` on `INSERT` in some builds).
+  - **Skip coverage:** `no_setup` and **`rr_too_low`** paths now call `JournalRecordSignal()` so high-volume skip reasons appear in the DB and sync to SCRIBE.
+
+### Added
+- **`TESTER_RUNS`** table in the tester journal DB — one metadata row per backtest run (start time, symbol, balance, `FORGE_VERSION`, scalper mode string).
+
+## [2.4.1] — 2026-05-06
+### Fixed
+- **SL placement quality overhaul** (`ea/FORGE.mq5`):
+  - `FindStructuralSL()` was selecting the **tightest** OB zone (nearest to entry), overriding ATR-based SL with dangerously close stops (e.g., 4.2 pts when ATR = 10.6). Fixed: structural SL can now only **widen** the stop (further from entry), never tighten it.
+  - `bounce_sl_atr_mult` / `breakout_sl_atr_mult` were never parsed from `scalper_config.json` — stuck at hardcoded defaults (1.2/1.5). Added JSON parsing from `bb_bounce` and `bb_breakout` sections.
+  - Added `min_sl_atr_mult` floor (default 0.8): SL can never be closer than 0.8×ATR from entry, regardless of structural SL. Applies to both bounce and breakout entries.
+  - Added per-trade SL diagnostic logging (`FORGE SL CALC`) showing entry, SL, distance, ATR, multiplier, and OB zone count.
+
+### Changed
+- **Trade frequency tuning** (`config/scalper_config.json`):
+  - `max_trades_per_session`: 3 → 100 (effectively uncapped — scalper trades every valid setup)
+  - `max_open_groups`: 2 → 4 (more concurrent groups)
+  - `loss_cooldown_sec`: 300 → 120 (2 min recovery for scalper pace)
+  - `direction_cooldown_bars`: 6 → 3 (15 min instead of 30 min before opposite direction)
+  - `bb_proximity_pct`: 20 → 25 (wider entry zone near BB bands)
+  - `adx_max`: 30 → 35 (bounces in slightly trendier markets)
+  - `rsi_buy_max`: 45 → 48, `rsi_sell_min`: 55 → 52 (wider RSI window)
+  - `bounce_min_candle_score`: 1 → 0 (other filters provide sufficient confirmation)
+- **Lot sizing cap** raised from 20 to 30 legs across all EA code paths.
+- Removed dead `mode` and `risk_pct` fields from `lot_sizing` config.
+- New `.env` overrides: `FORGE_MIN_SL_ATR_MULT`, `FORGE_BOUNCE_SL_ATR_MULT`, `FORGE_BREAKOUT_SL_ATR_MULT`.
+
+## [2.4.0] — 2026-05-06
+### Added
+- **Native SQLite signal journal** (`ea/FORGE.mq5`, `config/scalper_config.json`, `.env.example`, `scripts/sync_scalper_config_from_env.py`, `python/scribe.py`, `python/bridge.py`):
+  - Ref: [MQL5 Article 22009 — "Algorithmic Trading Without the Routine: Quick Trade Analysis in MetaTrader 5 with SQLite"](https://www.mql5.com/en/articles/22009)
+  - FORGE now writes a local SQLite database (`FORGE_journal_XAUUSD.db`) in MT5 Common Files, recording **every setup evaluation** — both taken trades and skipped signals — with full indicator context at the moment of decision.
+  - **SIGNALS table**: Records time, symbol, setup_type, direction, outcome (TAKEN/SKIP), gate_reason, and a snapshot of price, spread, ATR, RSI, ADX, Bollinger Bands, POC, VWAP, Fibonacci, RSI divergence, PSAR state, candle score, H1 trend, regime, session, and magic number. Includes `synced` column for Python pipeline integration.
+  - **TRADES table**: Periodically imports MT5 deal history (configurable depth) using `HistorySelect()`/`HistoryDealGetTicket()`, keyed by `deal_ticket` (INSERT OR IGNORE for idempotence).
+  - **STATS_CACHE table**: Self-computes hourly win rate, PnL, trade count, and gate-reason frequency at configurable intervals. Enables on-chart analytics without external tools.
+  - **Gate instrumentation**: `JournalRecordSignal()` calls at every exit point in `CheckNativeScalperSetups()` — session_off, spread, open_groups, session_trade_cap, cooldown, direction_cooldown, m1, regime_countertrend — plus TAKEN on successful execution.
+  - **SCRIBE sync**: New `forge_signals` table in `aurum_intelligence.db`. `Scribe.sync_forge_journal()` reads unsynced rows from FORGE's journal, inserts them, and marks them `synced=1`. BRIDGE calls sync every 60s via `_resolve_forge_journal_path()`.
+  - New `.env` overrides: `FORGE_JOURNAL_ENABLED`, `FORGE_JOURNAL_RECORD_SKIPS`, `FORGE_JOURNAL_IMPORT_TRADES`, `FORGE_JOURNAL_IMPORT_DEPTH_DAYS`, `FORGE_JOURNAL_STATS_INTERVAL_SEC`. All hot-reloadable.
+
+## [2.3.1] — 2026-05-06
+### Added
+- **Trade quality & survival improvements** (`ea/FORGE.mq5`, `config/scalper_config.json`, `.env.example`, `scripts/sync_scalper_config_from_env.py`):
+  Ref: Backtesting diagnosis — fast SL hits (4-minute whipsaws) from tight SL, aggressive ratchet, and missing tester-mode guards.
+  1. **Configurable tester session filter**: `ScalperTesterSessionOK()` lets users optionally apply session filtering in Strategy Tester via comma-separated session list (`tester_session_filter`, `tester_allowed_sessions`). Default off (trades all sessions).
+  2. **Tester cooldown enabled**: Loss cooldown now applies in tester too (`tester_cooldown_enabled`), preventing rapid opposite-direction whipsaw after a loss. Default on.
+  3. **Wider bounce SL**: `sl_atr_mult` default changed from 1.2 to 1.5 — ~25% more breathing room for M5 XAU.
+  4. **Longer fast-lock hold**: `fast_lock_min_hold_sec_bounce` default changed from 45s to 90s — lets bounce setups develop 1–2 M5 candles before ratcheting.
+  5. **Directional anti-whipsaw cooldown**: `ScalperDirectionCooldownOK()` prevents BUY→SELL flip within configurable N M5 bars (`direction_cooldown_enabled`, `direction_cooldown_bars`). Default 6 bars (30 min). Logged as `skip gate=direction_cooldown`.
+- New `.env` overrides: `FORGE_TESTER_SESSION_FILTER`, `FORGE_TESTER_ALLOWED_SESSIONS`, `FORGE_TESTER_COOLDOWN_ENABLED`, `FORGE_DIRECTION_COOLDOWN_ENABLED`, `FORGE_DIRECTION_COOLDOWN_BARS`. All hot-reloadable.
+- Sync script `_parse_value()` now supports `"string"` type for `tester_allowed_sessions`.
+
+## [2.3.0] — 2026-05-06
+### Added
+- **Parabolic SAR state tracking** (`ea/FORGE.mq5`, `config/scalper_config.json`, `scripts/sync_scalper_config_from_env.py`, `python/bridge.py`, `python/lens.py`, `python/scribe.py`):
+  - Ref: [MQL5 Article 17234 — "Parabolic Stop and Reverse Tool" by Christian Benjamin](https://www.mql5.com/en/articles/17234)
+  - Native `DetectPSARState()` creates an `iSAR` handle on M5 and detects five states: `FLIP_BULL`, `FLIP_BEAR`, `BELOW`, `ABOVE`, `NONE`. Throttled to once per M5 bar.
+  - **Informational only** — PSAR state is logged and streamed through the full data pipeline but does **not** gate or block any entries. Purely data collection to evaluate whether PSAR flips correlate with higher win rates before promoting to a gate.
+  - **Journal log**: `PSAR=` field in every trade entry Print. Flip events logged with `FORGE PSAR:` prefix.
+  - **Data pipeline**: `psar_state` field in `market_data.json`, `scalper_entry.json`, BRIDGE activity log, BRIDGE open_context, SCRIBE `market_snapshots` (TEXT column with auto-migration), and LENS pass-through.
+  - **Telegram alerts**: `PSAR: FLIP_BULL` (or `FLIP_BEAR`) appended to FORGE scalp entry notifications only when a flip is active at entry time.
+  - New `.env` overrides: `FORGE_PSAR_ENABLED`, `FORGE_PSAR_STEP`, `FORGE_PSAR_MAXIMUM`. All hot-reloadable.
+
+## [2.2.0] — 2026-05-06
+### Added
+- **RSI divergence detection** (`ea/FORGE.mq5`, `config/scalper_config.json`, `scripts/sync_scalper_config_from_env.py`, `python/bridge.py`, `python/lens.py`, `python/scribe.py`):
+  - Ref: [MQL5 Article 17198 — "RSI Sentinel Tool" by Christian Benjamin](https://www.mql5.com/en/articles/17198)
+  - Native `DetectRSIDivergence()` scans M5 RSI and price for four divergence types: Regular Bullish, Regular Bearish, Hidden Bullish, Hidden Bearish. Throttled to once per M5 bar.
+  - **Bounce entry gate**: counter-trend regular divergence blocks bounce entries (`REG_BEAR` blocks buy, `REG_BULL` blocks sell). Hidden divergences and NONE pass through. Breakout entries are never gated.
+  - **Chart visualization**: `DrawDivergenceArrow()` draws green (bullish) or red (bearish) arrows on the chart only when divergence contributes to an actual trade entry.
+  - **Journal log**: `RSI_DIV=` field in every trade entry Print.
+  - **Data pipeline**: `rsi_divergence` field in `market_data.json`, `scalper_entry.json`, BRIDGE activity log, BRIDGE open_context, SCRIBE `market_snapshots` (TEXT column with auto-migration), and LENS pass-through.
+  - **Telegram alerts**: `DIV: REG_BULL` (or similar) appended to FORGE scalp entry notifications when divergence is present.
+  - New `.env` overrides: `FORGE_RSI_DIV_ENABLED`, `FORGE_RSI_DIV_LOOKBACK`, `FORGE_RSI_DIV_SWING_BARS`, `FORGE_RSI_DIV_MIN_RSI_DIFF`, `FORGE_RSI_DIV_DRAW_ARROWS`. All hot-reloadable.
+
+## [2.1.0] — 2026-05-06
+### Added
+- **Fibonacci swing retracement** (`ea/FORGE.mq5`, `config/scalper_config.json`, `scripts/sync_scalper_config_from_env.py`, `python/bridge.py`, `python/lens.py`, `python/scribe.py`):
+  - Ref: [MQL5 Article 17121 — "External Flow (III) TrendMap"](https://www.mql5.com/en/articles/17121)
+  - Native `ComputeFibonacciSwing()` computes swing high/low and Fib 38.2%, 50%, 61.8% levels from M5 lookback (60s throttle, reuses `vp_lookback` by default).
+  - **Directional bias gate**: VWAP-vs-Fib50 optional confirmation for bounce entries (`fib_bias_enabled`). When VWAP < Fib50, sell bias; VWAP > Fib50, buy bias. Breakouts unaffected.
+  - **Fib TP targeting**: Fib 38.2% and 61.8% as intermediate TP candidates for bounce entries (`fib_tp_enabled`).
+  - All Fib levels flow through `market_data.json` (`volume_profile` section), `scalper_entry.json`, BRIDGE, LENS, and SCRIBE `market_snapshots` (`fib_50`, `fib_382`, `fib_618` columns with auto-migration).
+  - New `.env` overrides: `FORGE_FIB_BIAS_ENABLED`, `FORGE_FIB_TP_ENABLED`, `FORGE_FIB_LOOKBACK`. All hot-reloadable.
+- **Single-source versioning** (`VERSION`, `scripts/compile_forge_ea_macos.sh`, `scripts/sync_scalper_config_from_env.py`):
+  - New `VERSION` file at repo root — the single source of truth for all version stamps.
+  - Compile script reads `VERSION` and stamps both `FORGE_VERSION` constant and `#property version` in `ea/FORGE.mq5` before compilation.
+  - Sync script reads `VERSION` and stamps `scalper_config.json` version field automatically.
+  - To bump: `echo "X.Y.Z" > VERSION && make forge-compile` — no manual edits needed anywhere else.
+
+## [2.0.0] — 2026-05-06
+### Added
+- **FORGE Scalper V2** — 7 new features (`ea/FORGE.mq5`, `config/scalper_config.json`, `python/lens.py`, `python/bridge.py`, `python/scribe.py`):
+  1. **Stricter H1 filter** (`bounce_require_h1_direction`): H1 flat no longer allows bounce entries when enabled.
+  2. **Multi-candle bar-0 confirmation** (`bounce_require_bar0_confirm`): requires current price moving away from the band.
+  3. **Candlestick pattern scoring** (`ScalperCandlePatternScore()`): Hammer/Shooting Star (2), Engulfing (3), Basic (1) replace simple bullish/bearish check. Gated by `bounce_min_candle_score`.
+  4. **Volume Profile + POC** (`ComputeVolumeProfile()`): native M5 tick-volume POC computed every 60s.
+  5. **VWAP** (added to `ComputeVolumeProfile()`): typical-price * volume VWAP alongside POC for dual volume-based reference levels.
+  6. **Structural SL/TP using POC + VWAP + OB zones**: `FindStructuralSL()` places SL beyond nearest OB zone; `NearLiquidityZone()` checks proximity to POC, VWAP, or OB zones; POC/VWAP used as intermediate TP targets.
+  7. **Breakout retest state machine** (`BreakoutRetest` struct): arms retest instead of immediate entry when `breakout_use_retest` enabled; `BB_BREAKOUT_RETEST` setup type with configurable `breakout_retest_max_bars`.
+  - LENS writes OB zones to `ob_zones.json` for FORGE consumption.
+  - All V2 params hot-reloadable via `scalper_config.json` without recompilation.
+  - New `.env` overrides for all V2 params with `sync_scalper_config_from_env.py` mappings.
+- **SCRIBE `market_snapshots` VP columns**: `poc_price`, `vwap_price` with auto-migration. BRIDGE flattens `volume_profile` from `market_data.json` and passes through LENS to SCRIBE.
+- **`market_data.json` `volume_profile` section**: `poc_price`, `poc_strength`, `vwap_price` (and Fib levels in 2.1.0).
+- **`scalper_entry.json` V2 fields**: `poc_price`, `vwap_price`, `pattern_score` carried through BRIDGE to SCRIBE `open_context`.
+
+### Changed
+- **FORGE version**: bumped to `v2.0.0` (`FORGE_VERSION` constant + `#property version`).
+- **`scalper_config.json` version**: bumped to `"2.0"`.
+- **Fixed duplicate `forge_version`** in `WriteMarketData()`: removed hardcoded `"1.6.19"` that was silently overriding the `FORGE_VERSION` constant.
+- **`sync_scalper_config_from_env.py`**: now always copies updated config to `MT5/scalper_config.json` after writing, ensuring MT5 picks up changes without recompilation.
+- **`BB_BREAKOUT_RETEST` parity**: auto-lot and `move_be_on_tp1` logic now correctly treats retest entries as breakout setups. `ManageOpenGroups` fast-lock matches both `BB_BREAKOUT` and `BB_BREAKOUT_RETEST` comments.
+
 ## [Unreleased]
+
+### Added
+- **SCRIBE `trade_groups.open_context`** (`python/scribe.py`, `python/bridge.py`): JSON attribution snapshot at group open (regime + compact MT5 + optional AEGIS fields + `extra` per source). Toggle **`BRIDGE_OPEN_CONTEXT_ENABLE`**; size cap **`SCRIBE_OPEN_CONTEXT_MAX_BYTES`**. Migration is additive. Tests: `tests/services/test_scribe_open_context.py`. Example query: `docs/SCRIBE_QUERY_EXAMPLES.md`.
+
+### Changed
+- **Scalper regime roadmap — Phases D–F** (`python/bridge.py`, `python/aegis.py`, `python/aurum.py`, tests, `docs/AEGIS.md`, `docs/SCRIBE_QUERY_EXAMPLES.md`, `.env.example`):
+  - **Phase D:** `FORGE_NATIVE_SCALP` groups logged to SCRIBE now carry **`regime_*`** fields from the BRIDGE regime snapshot; `FORGE_SCALP_*` system events include a compact regime audit fragment.
+  - **Phase E (optional):** **`AEGIS_REGIME_LOT_SCALE_ENABLED`** applies an extra lot-scale multiplier after streak-based scaling when regime label/confidence align (or dampen in RANGE/VOLATILE). Capped by **`AEGIS_SCALE_COMBINED_MAX`**. Default **off**.
+  - **Phase F:** AURUM **`_build_context`** and BRIDGE **`AUTO_SCALPER`** AURUM prompts include the **`status.json`** regime block and counter-trend caution when policy is active.
+
+- **FORGE high-volatility trend guard** (`ea/FORGE.mq5`): added live-focused guardrails for trend bursts to reduce loss clusters during volatile runs. New `scalper_config.json` safety keys:
+  - `high_vol_trend_guard_enabled`,
+  - `high_vol_adx_min`,
+  - `high_vol_trend_strength_min`,
+  - `high_vol_disable_bounce`,
+  - `high_vol_require_h1_h4_breakout_align`,
+  - `high_vol_breakout_sl_boost`.
+- Behavior in live mode now:
+  - suppresses `BB_BOUNCE` entries during confirmed high-vol trend regimes (when enabled),
+  - requires stricter H1+H4 alignment for breakouts during those regimes (when enabled),
+  - widens breakout SL by configurable multiplier during those regimes to reduce premature stop-outs.
+- Added high-vol breakout ratchet dampening keys to reduce fast stop-outs:
+  - `high_vol_fast_lock_extra_hold_sec`,
+  - `high_vol_fast_lock_trigger_mult`,
+  - `high_vol_fast_lock_trail_mult`.
+  In high-vol trend regimes, breakout legs now wait longer before fast-lock engages, require deeper favorable progress before ratcheting, and trail with more breathing room.
+- Added fast-lock net-profit guards to avoid "locked then loss" exits in volatile spread conditions:
+  - `fast_lock_min_profit_points`,
+  - `fast_lock_spread_guard_mult`.
+  Fast-lock SL now enforces a minimum profit floor relative to entry (BUY above entry / SELL below entry) that scales with live spread, reducing negative SL_HIT outcomes after ratchet.
+- **Tester ratchet stabilization + high-vol guard parity**:
+  - `python/bridge.py`: disables BRIDGE `PROFIT_RATCHET` when `strategy_tester=true` to avoid frequent `Invalid stops` modify artifacts in tester runs.
+  - `ea/FORGE.mq5` + `config/scalper_config.json`: added `high_vol_apply_in_tester` and enabled it by default so high-vol trend bounce suppression applies consistently in Strategy Tester diagnostics.
+- **SCRIBE live watcher utility** (`scripts/watch_scribe_live.py`, `Makefile`, `docs/FORGE_TRADING_RULES.md`):
+  - Added `make scribe-watch` for real-time `trade_groups`/`trade_closures`/`system_events` monitoring.
+  - Added `make scribe-watch-log` to append watcher output into `logs/scribe_watch.log` for post-run review.
+  - Added utility usage and review commands to the trading rules documentation.
+- **FORGE ADX hysteresis anti-fade gate + SELL grace hold** (`ea/FORGE.mq5`, `config/scalper_config.json`):
+  - Added deterministic M5 ADX regime state with hysteresis (`adx_trend_enter`, `adx_trend_exit`, tester toggle) so `BB_BOUNCE` is blocked while ADX is in a trend regime and only re-enabled after cooldown.
+  - Added balanced SELL adverse grace window (`sell_loss_grace_sec`, `sell_loss_grace_adverse_points`) that defers ratchet/BE management during early adverse motion without widening SL.
+  - Added explicit regime transition and bounce-skip diagnostics for backtest/live verification.
+
+---
+
+## [1.6.19] — 2026-05-02
+### Changed
+- **FORGE deterministic anti-fade control** (`ea/FORGE.mq5`, `config/scalper_config.json`, `.env.example`, `scripts/sync_scalper_config_from_env.py`):
+  - Added M5 ADX hysteresis regime (`adx_trend_enter`/`adx_trend_exit`) to hard-block `BB_BOUNCE` while in trend regime and re-enable only after ADX cooldown.
+  - Added balanced SELL adverse grace hold (`sell_loss_grace_sec`, `sell_loss_grace_adverse_points`) that defers ratchet/BE actions in early adverse motion without widening SL.
+  - Added `.env` sync support for new hysteresis/grace safety knobs.
+- **Version alignment to current release**: FORGE runtime-reported `forge_version` is now **`1.6.19`** in `market_data.json` and `broker_info.json`.
+
+---
+
+## [1.6.17] — 2026-05-02
+### Changed
+- **FORGE native bounce confirmation + risk controls** (`ea/FORGE.mq5` **v1.6.17**):
+  - BB_BOUNCE confirmation is now configurable from `scalper_config.json`:
+    - `bounce_reclaim_pct` (0..100, default 20),
+    - `bounce_require_rejection_candle` (0/1, default 1).
+  - Bounce entries still avoid first-touch catches, but operators can now tune confirmation strictness without recompiling.
+- **Ratchet telemetry / hold controls** (`ea/FORGE.mq5`): `ReadScalperConfig()` now prints active bounce confirmation and fast-lock profile (`fast_lock_min_hold_sec_bounce`, `fast_lock_min_hold_sec_breakout`) for runtime auditability.
+- **Trend auto-lot guardrails + observability** (`ea/FORGE.mq5`):
+  - multiplier remains hard-bounded to `1.0..5.0`,
+  - trend reference clamped to `>=0.10`,
+  - entry logs now include trend context,
+  - `scalper_entry.json` now includes `lot_multiplier`, `auto_lot_*` inputs and derived trend ratio values.
+
+### Documentation
+- Updated `docs/FORGE_TRADING_RULES.md` and `docs/DATA_CONTRACT.md` with safe live defaults and expanded scalper-entry decision fields.
+
+---
+
+## [1.6.11] — 2026-05-02
+### Fixed
+- **FORGE Strategy Tester reliability** (`ea/FORGE.mq5` **v1.6.11**): Native scalper backtests no longer stall behind live-only gates. In **`MQL_TESTER`**, FORGE keeps EA Inputs authoritative (ignores live `config.json` mode/scalper/regime overrides), skips live-only session/spread/sentinel blocks, and avoids stale-feed false positives via **`strategy_tester`** + Python mtime freshness enrichment.
+- **Backtest trade generation** (`ea/FORGE.mq5`): Added Tester-only relaxed entry profile so test runs produce fills for diagnostics: looser ADX/trend/buffer/proximity thresholds, optional breakout M15 requirement off, R:R floor eased to 1.0, M1 gate bypassed, and session trade-cap/cooldown bypassed. **Live behavior remains strict**.
+- **Tester diagnostics / operator clarity** (`ea/FORGE.mq5`): Journal now prints explicit Strategy Tester startup context and clearer "no setup" hints. Repeated per-tick spam is throttled to once per M5 bar, and unchanged `scalper_config.json` no longer re-logs every reload cycle.
+- **Session default alignment** (`ea/FORGE.mq5`): native default NY session end aligned to **24 UTC** (matching `config/scalper_config.json`) to avoid silent 20:00-23:59 UTC shutoff when config is unavailable.
+
+### Changed
+- **Version alignment to current release**: FORGE runtime-reported `forge_version` is now **`1.6.11`** in `market_data.json` and `broker_info.json`.
 
 ---
 

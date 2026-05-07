@@ -18,6 +18,28 @@ make test-live         # /api/live endpoint tests
 make test-components   # /api/components tests
 ```
 
+### Phase 1 baseline (bisect-friendly, before persistence/config work)
+
+Phase 2 touches SCRIBE persistence and `.env`; keep a **fast green slice** so regressions are easy to bisect. You do **not** need full `make verify` every time.
+
+| Step | Command / action |
+|------|------------------|
+| **Minimal pytest** | `make test-phase1-baseline` — gate diagnostics service tests, `GET /api/signal_gate/diagnostics`, OpenAPI bundle + Swagger + JSON Schema checks (**~30s worth of tests, ~1s runtime** if deps warm). |
+| **Broader API** (optional) | `make test-api` |
+| **Contracts / SCRIBE SQL** (optional) | `make test-contracts` |
+| **Reload live processes** | **launchd does not reload on file save.** After changing `python/*.py` or repo `.env`, run **`make reload`** (all four: bridge, listener, aurum, athena) or selectively **`make reload-bridge`** + **`make reload-athena`** when only those need new code/env. See **`docs/OPERATIONS.md`**. |
+| **`.env` + AEGIS/regime** | Same as above: BRIDGE must reload to pick up `AEGIS_*`, `REGIME_*`, etc. Use **`make restart`** if you changed installed plist templates or want a full service reinstall. |
+
+**Phase 2+ product roadmap (explicitly deferred — not in baseline tests):**
+
+| Item | Status |
+|------|--------|
+| Operator profiles (conservative / balanced / aggressive) | Deferred |
+| SCRIBE outcome-attribution / `open_context` + read-only analytics | Deferred |
+| Structural level + liquidity sweep advisory (no hard gate) | Deferred |
+| Shadow confluence score (observe only) | Deferred |
+| ML / score as execution gate | Deferred (non-goal until validated) |
+
 ---
 
 ## 1.5.4-1.5.5 Coverage Additions

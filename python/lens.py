@@ -21,6 +21,7 @@ SNAPSHOT_FILE  = os.environ.get(
     "LENS_SNAPSHOT_FILE",
     os.environ.get("LENS_SNAPSHOT", "config/lens_snapshot.json"),
 )
+OB_ZONES_FILE = os.path.join(os.path.dirname(__file__), "..", "MT5", "ob_zones.json")
 BRIEF_FILE     = os.environ.get("LENS_BRIEF_FILE", "config/lens_brief.json")
 CACHE_SECONDS  = int(os.environ.get("LENS_CACHE_SEC", str(DATA_FRESHNESS_WINDOWS["LENS"])))
 MCP_SERVER_CMD = os.environ.get(
@@ -202,6 +203,13 @@ class Lens:
                     "pending_entry_threshold_points": mt5_data.get("pending_entry_threshold_points"),
                     "trend_strength_atr_threshold": mt5_data.get("trend_strength_atr_threshold"),
                     "breakout_buffer_points": mt5_data.get("breakout_buffer_points"),
+                    "poc_price": mt5_data.get("poc_price"),
+                    "vwap_price": mt5_data.get("vwap_price"),
+                    "fib_50": mt5_data.get("fib_50"),
+                    "fib_382": mt5_data.get("fib_382"),
+                    "fib_618": mt5_data.get("fib_618"),
+                    "rsi_divergence": mt5_data.get("rsi_divergence"),
+                    "psar_state": mt5_data.get("psar_state"),
                 })
             self.scribe.log_market_snapshot(d, mode, "LENS_MCP")
             log.debug(f"LENS fresh: RSI={snap.rsi:.1f} BB={snap.bb_rating} ADX={snap.adx:.1f}")
@@ -564,6 +572,18 @@ class Lens:
         return (self._cache is not None and
                 (time.time() - self._cache_ts) < CACHE_SECONDS)
 
+    def _write_ob_zones(self, snap: LensSnapshot):
+        zones = snap.order_block_values.get("zones", []) if isinstance(snap.order_block_values, dict) else []
+        payload = {
+            "zones": zones[:6],
+            "timestamp": snap.timestamp,
+        }
+        try:
+            with open(OB_ZONES_FILE, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            log.warning(f"LENS OB zones write error: {e}")
+
     def _write_snapshot(self, snap: LensSnapshot, mode: str):
         data = snap.to_dict()
         data["mode"] = mode
@@ -572,6 +592,7 @@ class Lens:
                 json.dump(data, f, indent=2)
         except Exception as e:
             log.error(f"LENS write error: {e}")
+        self._write_ob_zones(snap)
 
     @staticmethod
     def read_snapshot() -> dict:

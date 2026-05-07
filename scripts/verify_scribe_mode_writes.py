@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_DB = ROOT / "data" / "aurum_intelligence.db"
+_SCRIBE_DEFAULT_REL = "python/data/aurum_intelligence.db"
 
 AUDIT = """
 ══════════════════════════════════════════════════════════════════════════════
@@ -78,10 +78,15 @@ bridge.py, reconciler, listener, etc. (not implemented by this script).
 
 
 def _db_path() -> Path:
-    env = os.environ.get("SCRIBE_DB", "").strip()
-    if env:
-        return Path(env).expanduser()
-    return _DEFAULT_DB
+    raw = os.environ.get("SCRIBE_DB", "").strip()
+    if not raw:
+        return (ROOT / _SCRIBE_DEFAULT_REL).resolve()
+    if raw == "data/aurum_intelligence.db":
+        raw = _SCRIBE_DEFAULT_REL
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    return (ROOT / p).resolve()
 
 
 def _counts(conn: sqlite3.Connection) -> None:
@@ -120,7 +125,7 @@ def main() -> int:
     print(AUDIT)
     db = _db_path()
     if not db.is_file():
-        print(f"DB not found: {db}\n(Set SCRIBE_DB or create data/aurum_intelligence.db)\n")
+        print(f"DB not found: {db}\n(Set SCRIBE_DB or create {_SCRIBE_DEFAULT_REL} under repo root.)\n")
         return 0
     print(f"Using DB: {db}\n")
     conn = sqlite3.connect(str(db))

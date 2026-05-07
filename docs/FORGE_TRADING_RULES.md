@@ -83,6 +83,17 @@ Result:
 - closer alignment between MT5 and SCRIBE closure records.
 
 ## 4) Native scalper (FORGE) — M1 / H4 / regime (v1.6.0+)
+
+### iMACD buffer-2 probe bug (fixed FORGE v2.5.1)
+MT5's built-in `iMACD` only exposes **buffer 0** (MACD line) and **buffer 1** (signal line). Buffer 2 (histogram) does not exist. Earlier versions of `ForgeNativeScalperWarmupOk` probed `CopyBuffer(h_macd, 2, ...)` which always returned `-1`, permanently blocking warmup with reason `m5_macd_buf` and producing zero TAKEN in every backtest. The probe was removed in v2.5.1. MACD histogram is used only in `WriteMTFBlock()` for `market_data.json` display and that code already handles the failure gracefully as `0`.
+
+### Scalper JSON — defaults vs generated (read first)
+
+- **Edit:** `config/scalper_config.defaults.json` (committed baseline), and/or **`FORGE_*` keys in `.env`** where **`scripts/sync_scalper_config_from_env.py`** defines a mapping.
+- **Generate:** `make scalper-env-sync` or `make forge-compile` runs that script, which writes **`config/scalper_config.json`** (stamps **`version`** from **`VERSION`**) and copies to **`MT5/`** when possible. Avoid hand-editing **`scalper_config.json`** — it is overwritten on the next sync.
+- **Copy only:** `make scalper-config-sync` pushes the **existing** `config/scalper_config.json` to Wine Common Files (no regenerate).
+- Full detail: **`docs/SCALPER_CONFIG_PIPELINE.md`**.
+
 When **`ScalperMode`** is not **`NONE`** and mode allows scalping, FORGE evaluates BB bounce/breakout on **M5** (entry logic) with **H1** trend filter (ATR-normalized EMA20−EMA50 vs **`trend_strength_atr_threshold`** from `config.json` / `scalper_config.json`). **M15** participates in breakout confirmation via `scalper_config.json` (`breakout_require_m15`).
 
 **Higher timeframes (bias / structure, not the primary trigger):**
@@ -96,7 +107,7 @@ When **`ScalperMode`** is not **`NONE`** and mode allows scalping, FORGE evaluat
 **`market_data.json`** includes **`indicators_h4`**, **`indicators_m1`**. **`scalper_entry.json`** includes **`h4_trend_strength`**, **`native_scalper_m1_mode`**, **`m1_trend_strength`**, **`m1_prior_close`** / **`m1_prior_open`** (for TRIGGER diagnostics).
 
 ## 5) Active scalper profile and baseline
-Active FAST profile (`config/scalper_config.json`):
+Active FAST profile (apply in **`config/scalper_config.defaults.json`**, then `make scalper-env-sync`; FORGE still reads emitted **`scalper_config.json`**):
 - `safety.max_spread_points=30`
 - `bb_bounce.adx_max=30`
 - `bb_bounce.rsi_buy_max=45`
@@ -114,12 +125,12 @@ STRICT baseline:
 - `bb_breakout.rsi_buy_min=55`
 - `bb_breakout.rsi_sell_max=45`
 
-Apply FAST:
+Apply FAST (edit **defaults**, then regenerate):
 ```bash
 python3 - <<'PY'
 import json
 from pathlib import Path
-p = Path('config/scalper_config.json')
+p = Path('config/scalper_config.defaults.json')
 d = json.loads(p.read_text())
 d['safety']['max_spread_points'] = 30
 d['bb_bounce']['adx_max'] = 30
@@ -128,18 +139,19 @@ d['bb_bounce']['rsi_sell_min'] = 55
 d['bb_breakout']['adx_min'] = 20
 d['bb_breakout']['rsi_buy_min'] = 50
 d['bb_breakout']['rsi_sell_max'] = 50
-p.write_text(json.dumps(d, indent=2))
-print('applied FAST profile')
+p.write_text(json.dumps(d, indent=2) + "\n")
+print('updated defaults — run: make scalper-env-sync')
 PY
+make scalper-env-sync
 make restart
 ```
 
-Apply STRICT:
+Apply STRICT (edit **defaults**, then regenerate):
 ```bash
 python3 - <<'PY'
 import json
 from pathlib import Path
-p = Path('config/scalper_config.json')
+p = Path('config/scalper_config.defaults.json')
 d = json.loads(p.read_text())
 d['safety']['max_spread_points'] = 25
 d['bb_bounce']['adx_max'] = 20
@@ -148,23 +160,29 @@ d['bb_bounce']['rsi_sell_min'] = 65
 d['bb_breakout']['adx_min'] = 25
 d['bb_breakout']['rsi_buy_min'] = 55
 d['bb_breakout']['rsi_sell_max'] = 45
-p.write_text(json.dumps(d, indent=2))
-print('applied STRICT profile')
+p.write_text(json.dumps(d, indent=2) + "\n")
+print('updated defaults — run: make scalper-env-sync')
 PY
+make scalper-env-sync
 make restart
 ```
 
 ## 6) Verification checklist
 After changing rules or binaries:
-1. **Strategy Tester (backtest):** In **Expert properties → Inputs**, set **`InputMode`** to **`SCALPER`** or **`HYBRID`** if you want **native scalper** entries. Default **`WATCH`** only writes **`tick_data.json`** / ticks — **`CheckNativeScalperSetups` does not run**. Set **`ScalperMode`** to **`DUAL`**, **`BB_BOUNCE`**, or **`BB_BREAKOUT`** (not **`NONE`**). **FORGE v1.6.4+:** **`config.json`** from a **live** BRIDGE run must **not** override **`InputMode`** in the Tester (stale **`effective_mode`** **`WATCH`** / circuit-breaker state used to clobber Inputs every tick). **`tick_data.json via local Files (common err=5004)`** is a normal fallback when Common Files is not used in the Tester sandbox (write still succeeds locally).
-2. Confirm runtime version:
+1. **Strategy Tester (backtest):** In **Expert properties → Inputs**, set **`InputMode`** to **`SCALPER`** or **`HYBRID`** if you want **native scalper** entries. Default **`WATCH`** only writes **`tick_data.json`** / ticks — **`CheckNativeScalperSetups` does not run**. Set **`ScalperMode`** to **`DUAL`**, **`BB_BOUNCE`**, or **`BB_BREAKOUT`** (not **`NONE`**). **FORGE v1.6.4+:** **`config.json`** from a **live** BRIDGE run must **not** override **`InputMode`** in the Tester (stale **`effective_mode`** **`WATCH`** / circuit-breaker state used to clobber Inputs every tick). **Save inputs as a `.set` file** to avoid re-entering after reattach.
+2. **Confirm warmup cleared (FORGE v2.5.1+):**
+   ```bash
+   python3 -c "import json; ms=json.loads(open('MT5/mode_status.json').read()); print(ms.get('warmup_ok'), ms.get('warmup_reason'), ms.get('scalper_mode'))"
+   ```
+   Expected: `True  DUAL`. If `warmup_ok=False`, `warmup_reason` gives the exact sub-reason (`h4_bars`, `psar_buf`, etc.). See **`docs/FORGE_BACKTEST_DIAGNOSTIC_COMMANDS.md`** for full diagnostic command set.
+3. Confirm runtime version:
    - `make forge-verify-live`
-3. Confirm management scope behavior:
+4. Confirm management scope behavior:
    - send scoped `MODIFY_*` with `group_id`,
    - verify BRIDGE wrote `magic` in `MT5/command.json`.
-4. Confirm closure feed:
+5. Confirm closure feed:
    - inspect `MT5/market_data.json` for `recent_closed_deals`.
-5. Confirm SCRIBE reflects live state:
+6. Confirm SCRIBE reflects live state:
    - `trade_groups` and `trade_positions` SL/TP fields updated after modify.
 
 Useful query:
@@ -183,6 +201,7 @@ To return to conservative behavior:
 4. Verify FORGE and BRIDGE versions/paths are aligned.
 
 ## Related docs
+- `docs/SCALPER_CONFIG_PIPELINE.md` — scalper defaults → generated JSON → MT5
 - `docs/AEGIS.md`
 - `docs/FORGE_BRIDGE.md`
 - `docs/ARCHITECTURE.md`

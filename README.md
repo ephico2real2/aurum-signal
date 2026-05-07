@@ -1,4 +1,4 @@
-# ⚒ SIGNAL SYSTEM v1.6.1
+# ⚒ SIGNAL SYSTEM v2.4.3
 > XAUUSD signal-following scalper with AI intelligence layer.
 > macOS + MetaTrader 5 native. 12 components. 6 operating modes.
 
@@ -25,7 +25,8 @@ Core architecture and operations docs:
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
 - **Vision validation runbook**: [docs/VISION_CLI_RUNBOOK.md](docs/VISION_CLI_RUNBOOK.md)
 - **Signal replay runbook**: [docs/SIGNAL_REPLAY_RUNBOOK.md](docs/SIGNAL_REPLAY_RUNBOOK.md)
-- **Signal room policy**: [docs/SIGNAL_ROOM_POLICY.md](docs/SIGNAL_ROOM_POLICY.md)
+- **FORGE journal ML / missed-setup roadmap**: [docs/FORGE_JOURNAL_ML_PROMPT.md](docs/FORGE_JOURNAL_ML_PROMPT.md)
+- **FORGE journal SQL (skips, SCRIBE + raw DB)**: [docs/FORGE_JOURNAL_SQL.md](docs/FORGE_JOURNAL_SQL.md)
 - **Architecture diagram (PNG)**: [docs/assets/trading-system-architecture.png](docs/assets/trading-system-architecture.png)
 - **Architecture diagram (interactive HTML)**: [docs/assets/trading-system-architecture.drawio.html](docs/assets/trading-system-architecture.drawio.html)
 - **Architecture diagram source (Draw.io)**: [docs/assets/trading-system-architecture.drawio](docs/assets/trading-system-architecture.drawio)
@@ -36,6 +37,8 @@ Recent behavior notes:
 - Signal-room media uploads are archived and replayable via `scripts/replay_signal_uploads.py`, with channel-aware summary notifications to Telegram.
 - FORGE market export includes all account positions using `forge_managed=true/false`.
 - BRIDGE logs unmanaged/manual MT5 positions into SCRIBE as `MANUAL_MT5` lifecycle records.
+- **FORGE v2.4.3** — throttles **`no_setup`** / **`rr_too_low`** journal rows to **one per M5 bar** (avoids tick spam). Reliable **`JournalImportTrades`** (`DatabaseExecute`), **`TRADES.synced`** for SCRIBE. **`SKIP`/`execution_failed`** when no orders open. SCRIBE **`forge_journal_trades`** mirrors deal history; BRIDGE discovers tester agents under **`MetaTrader 5/**`** recursively. Builds on v2.4.2–v2.4.1: journals, `journal_source`, VWAP/Fib/RSI div/PSAR, SL rules, 1–30 legs.
+- FORGE journal + analytics roadmap: **`docs/FORGE_JOURNAL_ML_PROMPT.md`** — missed-setup CLI, optional ML scorer, AUTO_SCALPER/AEGIS hooks (planned implementation).
 
 ![Trading System Architecture](docs/assets/trading-system-architecture.png)
 ## System Design Rationale (SCRIBE-first)
@@ -48,7 +51,7 @@ Recent behavior notes:
 ## Components
 | # | Name | File | Role |
 |---|---|---|---|
-| 1 | SCRIBE | `python/scribe.py` | SQLite intelligence logger (11 tables, ML/ops-ready) |
+| 1 | SCRIBE | `python/scribe.py` | SQLite intelligence logger (15 tables, ML/ops-ready) |
 | 2 | FORGE | `ea/FORGE.mq5` | MT5 EA — 5 modes, trade groups, backtest |
 | 3 | HERALD | `python/herald.py` | Telegram notifications |
 | 4 | SENTINEL | `python/sentinel.py` | News guard, economic calendar |
@@ -81,6 +84,46 @@ make setup-mt5-link
 python3 python/bridge.py --mode WATCH
 ```
 
+## Testing (clean machine)
+
+Avoid PEP 668 “externally managed” Python: use a **repo `.venv`**, not system `pip`.
+
+```bash
+make venv
+# Optional: Playwright + npm UI harness (make test / test-ui)
+make setup-tests
+
+make test-api                           # scripts/test_api.py (needs services per that script)
+.venv/bin/python -m pytest tests/ -q    # full unit/API pytest tree (jsonschema, etc.)
+```
+
+`make venv` installs `requirements.txt` plus `tests/requirements-test.txt` (pytest stack including `jsonschema`).
+
+## Versioning
+
+Two version files at the repo root — no hardcoded versions in source for these:
+
+| File | Tracks | Read by |
+|---|---|---|
+| `VERSION` | FORGE EA (MQL5) | `make forge-compile` → stamps `ea/FORGE.mq5` and **`config/scalper_config.json`** `version` (via `make scalper-env-sync`) |
+| `SYSTEM_VERSION` | Signal System (Python) | `bridge.py`, `athena_api.py` at startup |
+
+### Native scalper JSON (`defaults` → generated)
+
+- **Edit:** `config/scalper_config.defaults.json` and/or `.env` `FORGE_*` keys (see `scripts/sync_scalper_config_from_env.py`).
+- **Regenerate:** `make scalper-env-sync` or `make forge-compile`.
+- **Details:** [docs/SCALPER_CONFIG_PIPELINE.md](docs/SCALPER_CONFIG_PIPELINE.md).
+
+```bash
+# Bump FORGE EA version
+echo "2.5.0" > VERSION
+make forge-compile
+
+# Bump Python system version
+echo "1.7.2" > SYSTEM_VERSION
+make reload           # services pick it up on restart
+```
+
 ## FORGE Refresh Verify
 `make forge-refresh-verify` runs the full MT5 refresh check: `forge-compile` copies `ea/FORGE.mq5` into the Wine MT5 Experts folder and compiles it to `FORGE.ex5`, then opens MetaTrader 5 and polls `MT5/market_data.json` for up to 180 seconds until `forge_version` matches the source.
 
@@ -98,7 +141,7 @@ From Telegram:
 > "Show me LENS analysis"
 
 ## Data Schema (SCRIBE)
-SCRIBE uses 11 SQLite tables, and every row is tagged with `mode` when applicable:
+SCRIBE uses 14 SQLite tables, and every row is tagged with `mode` when applicable:
 - `system_events` — mode switches, startups, shutdowns
 - `trading_sessions` — session windows and rolled-up performance
 - `market_snapshots` — OHLCV + indicators (LENS + MT5)
@@ -110,6 +153,8 @@ SCRIBE uses 11 SQLite tables, and every row is tagged with `mode` when applicabl
 - `trade_closures` — SL/TP hit log with inferred close reason
 - `component_heartbeats` — per-component liveness
 - `vision_extractions` — LISTENER/AURUM image extraction lineage + confidence
+- `regime_snapshots` — HMM regime state snapshots (label, confidence, policy)
+- `forge_signals` — FORGE native signal journal (evaluations — taken + skipped) + `forge_journal_trades` — MT5 deal mirror from FORGE journal `TRADES`, both with **`journal_source`**
 
 ## License
 For personal use only. Not financial advice. Always test on demo first.

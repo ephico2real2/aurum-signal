@@ -436,6 +436,24 @@ class Aurum:
         lines.append(f"TIME: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append(session_clock_summary())
 
+        reg = status.get("regime") if isinstance(status.get("regime"), dict) else {}
+        if reg:
+            lbl = reg.get("label", "?")
+            cf = reg.get("confidence")
+            em = str(reg.get("entry_mode", "?"))
+            ap = reg.get("apply_entry_policy")
+            stale_r = reg.get("stale")
+            lines.append(
+                f"\nREGIME (BRIDGE status.json — same snapshot as AEGIS/SCRIBE gates): "
+                f"label={lbl} confidence={cf} entry_mode={em} "
+                f"apply_entry_policy={ap} stale={stale_r}"
+            )
+            if reg.get("feature_shape_mismatch"):
+                lines.append(
+                    "  **Warning:** feature_shape_mismatch=true — HMM feature vector length drifted; "
+                    "treat regime readout as low trust until retrain."
+                )
+
         broker = _read_json(BROKER_FILE)
         acct_type = (broker.get("account_type") or "UNKNOWN").upper()
         if acct_type == "DEMO":

@@ -23,7 +23,7 @@ const NODES = [
     desc:"SQLite logger. No Python dependencies — pure stdlib. Must be built first as everything else writes to it.",
     deps:[],
     rdeps:["herald","sentinel","lens","aegis","listener","aurum","bridge","athena"],
-    files_out:["data/aurum_intelligence.db"],
+    files_out:["python/data/aurum_intelligence.db"],
     files_in:[],
     install:[],
   },
@@ -79,7 +79,7 @@ const NODES = [
     deps:["scribe"],
     rdeps:["bridge"],
     files_out:[],
-    files_in:["data/aurum_intelligence.db (SCRIBE)"],
+    files_in:["python/data/aurum_intelligence.db (SCRIBE)"],
     install:[],
   },
   {
@@ -123,7 +123,7 @@ const NODES = [
     deps:["scribe","forge"],
     rdeps:[],
     files_out:[],
-    files_in:["MT5/market_data.json","config/status.json","config/lens_snapshot.json","data/aurum_intelligence.db"],
+    files_in:["MT5/market_data.json","config/status.json","config/lens_snapshot.json","python/data/aurum_intelligence.db"],
     install:["pip install flask flask-cors","npm install (in dashboard/)","Serve on localhost:7842"],
   },
 ];
@@ -362,7 +362,7 @@ export default function DepMap() {
               {file:"config/sentinel_status.json",writer:"SENTINEL",readers:["BRIDGE"],                  color:G.red},
               {file:"config/status.json",        writer:"BRIDGE",   readers:["ATHENA","AURUM"],          color:G.teal},
               {file:"config/aurum_cmd.json",     writer:"AURUM",    readers:["BRIDGE"],                  color:G.gold},
-              {file:"data/aurum_intelligence.db",writer:"SCRIBE",   readers:["AEGIS","ATHENA","AURUM"],  color:G.purple},
+              {file:"python/data/aurum_intelligence.db",writer:"SCRIBE",   readers:["AEGIS","ATHENA","AURUM"],  color:G.purple},
               {file:"SOUL.md",                   writer:"(you)",    readers:["AURUM"],                   color:G.gold},
               {file:"SKILL.md",                  writer:"(you)",    readers:["AURUM"],                   color:G.gold},
             ].map((f,i) => (

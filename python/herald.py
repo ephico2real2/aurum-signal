@@ -13,6 +13,17 @@ from trading_session import get_trading_session_utc
 
 log = logging.getLogger("herald")
 
+
+def telegram_group_label(group_id: int | str | None) -> str:
+    """Human-readable trade group reference for Telegram only (not ATHENA / DB)."""
+    if group_id is None:
+        return "Group ?"
+    try:
+        return f"Group {int(group_id)}"
+    except (TypeError, ValueError):
+        return "Group ?"
+
+
 BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -263,49 +274,91 @@ class Herald:
             return None
 
     # ── Pre-built message templates ──────────────────────────────
+    @staticmethod
+    def _trade_group_open_head_label(group: dict) -> str:
+        """Short label after FORGE (matches native: FORGE SCALP BB_BOUNCE -- …)."""
+        src = str(group.get("source") or "").strip().upper()
+        if src == "SIGNAL":
+            return "SIGNAL"
+        if src == "SCALPER_SUBPATH_DIRECT":
+            return "SCALPER"
+        if src == "AURUM":
+            return "AURUM"
+        if src == "FORGE_NATIVE_SCALP":
+            return "SCALP"
+        return html.escape(str(group.get("source") or "OPEN"))
+
     def trade_group_opened(self, group: dict):
-        d   = group.get("direction","?")
-        n   = group.get("num_trades",8)
-        el  = group.get("entry_low",0)
-        eh  = group.get("entry_high",0)
-        sl  = group.get("sl",0)
-        tp1 = group.get("tp1",0)
-        tp2 = group.get("tp2","?")
-        tp3 = group.get("tp3","OPEN")
-        lot = group.get("lot_per_trade",0)
-        emoji = "🟢" if d=="BUY" else "🔴"
+        d = group.get("direction", "?")
+        d_h = html.escape(str(d))
+        try:
+            gid_int = int(group.get("id"))
+        except (TypeError, ValueError):
+            gid_int = 0
+        label = self._trade_group_open_head_label(group)
+        n = int(group.get("num_trades") or 0)
+        el = float(group.get("entry_low") or 0)
+        eh = float(group.get("entry_high") or 0)
+        sl = float(group.get("sl") or 0)
+        tp1 = float(group.get("tp1") or 0)
+        tp2_raw = group.get("tp2")
+        tp3_raw = group.get("tp3")
+        try:
+            tp2_f = float(tp2_raw) if tp2_raw not in (None, "", "?") else 0.0
+        except (TypeError, ValueError):
+            tp2_f = 0.0
+        try:
+            tp3_f = float(tp3_raw) if tp3_raw not in (None, "", "?", "OPEN") else 0.0
+        except (TypeError, ValueError):
+            tp3_f = 0.0
+        lot = float(group.get("lot_per_trade") or 0)
+        emoji = "\U0001f7e2" if d == "BUY" else "\U0001f534"
+        tp2_seg = f" TP2: <code>{tp2_raw}</code>" if tp2_f > 0 else ""
+        tp3_seg = f" TP3: <code>{tp3_raw}</code>" if tp3_f > 0 else ""
+        entry_seg = ""
+        if el > 0 and eh > 0:
+            entry_seg = f"Entry: <code>{el:.2f}\u2013{eh:.2f}</code>\n"
         self.send(
-            f"{emoji} <b>GROUP OPENED</b> — {d} ×{n}\n"
-            f"📍 Entry: <code>{el:.2f}–{eh:.2f}</code>\n"
-            f"🛑 SL: <code>{sl:.2f}</code>\n"
-            f"🎯 TP1: <code>{tp1:.2f}</code>  TP2: <code>{tp2}</code>  TP3: <code>{tp3}</code>\n"
-            f"📦 {n} trades × {lot} lot"
+            f"{emoji} <b>FORGE {label}</b> -- {telegram_group_label(gid_int)} {d_h}\n"
+            f"SL: <code>{sl:.2f}</code> TP1: <code>{tp1:.2f}</code>{tp2_seg}{tp3_seg}\n"
+            f"{entry_seg}"
+            f"{n} x {lot} lot"
         )
 
     def trade_group_closed(self, group_id: int, direction: str, trades: int,
                            total_pnl: float, pips: float, reason: str):
         emoji = "✅" if total_pnl >= 0 else "❌"
+        reason_h = html.escape(str(reason))
+        dir_h = html.escape(str(direction))
         self.send(
-            f"{emoji} <b>GROUP CLOSED</b> — G{group_id} {direction}\n"
+            f"{emoji} <b>GROUP CLOSED</b> — {telegram_group_label(group_id)} {dir_h}\n"
             f"💰 P&L: <code>${total_pnl:+.2f}</code>  Pips: {pips:+.1f}\n"
             f"📦 {trades} trades closed\n"
-            f"Reason: {reason}"
+            f"📌 Outcome: <code>{reason_h}</code>"
         )
 
-    def position_closed(self, ticket: int, direction: str, pnl: float, pips: float):
-        emoji = "💚" if pnl >= 0 else "💔"
+    def position_closed(self, ticket: int, direction: str, pnl: float, pips: float,
+                        *, group_id: int | None = None,
+                        outcome: str = "SL HIT"):
+        """Per-leg close (typically stop loss). ``outcome`` is shown as the title e.g. SL HIT."""
+        emoji = "💔" if pnl < 0 else "💚"
+        g_part = f" {telegram_group_label(group_id)}" if group_id is not None else ""
+        title = html.escape(str(outcome or "CLOSED"))
+        dir_h = html.escape(str(direction))
         self.send(
-            f"{emoji} Position #{ticket} {direction} closed\n"
-            f"P&L: ${pnl:+.2f}  Pips: {pips:+.1f}"
+            f"{emoji} <b>{title}</b> —{g_part} #{ticket} {dir_h}\n"
+            f"P&L: <code>${pnl:+.2f}</code>  Pips: {pips:+.1f}"
         )
 
     def tp_hit(self, group_id: str, tp_stage: int, closed_n: int,
-               remaining_n: int, pips: float, pnl: float, be_moved: bool):
+               remaining_n: int, pips: float, pnl: float, be_moved: bool,
+               *, direction: str | None = None):
+        dir_part = f" {html.escape(direction)}" if direction else ""
         self.send(
-            f"✅ <b>TP{tp_stage} HIT</b> — Group {group_id}\n"
-            f"Closed {closed_n} trades  +{pips:.1f} pips  +${pnl:.2f}\n"
-            f"Holding {remaining_n} trades"
-            + ("  ✓ SL → Breakeven" if be_moved else "")
+            f"✅ <b>TP{tp_stage} HIT</b> — {telegram_group_label(group_id)}{dir_part}\n"
+            f"Closed {closed_n} leg(s)  P&L: <code>${pnl:+.2f}</code>  +{pips:.1f} pips\n"
+            f"Remaining: {remaining_n} leg(s)"
+            + ("  · SL → BE" if be_moved else "")
         )
 
     def news_guard_on(self, event: str, minutes: int, prev_mode: str,
@@ -339,11 +392,21 @@ class Herald:
             f"{prev} → <b>{new}</b>  (by {by})"
         )
 
-    def signal_skipped(self, direction: str, reason: str, entry: str):
-        self.send(
+    def signal_skipped(
+        self,
+        direction: str,
+        reason: str,
+        entry: str,
+        *,
+        gate_summary: str | None = None,
+    ):
+        msg = (
             f"⏭ Signal skipped — {direction} @ {entry}\n"
             f"Reason: {reason}"
         )
+        if gate_summary:
+            msg += f"\n<code>{html.escape(gate_summary)}</code>"
+        self.send(msg)
 
     def upcoming_events(self, events: list, guard_active: bool):
         if not events:

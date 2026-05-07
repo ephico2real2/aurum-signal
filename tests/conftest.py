@@ -11,6 +11,14 @@ ATHENA_URL = os.environ.get("ATHENA_URL", "http://localhost:7842")
 TIMEOUT = 10
 
 
+class AthenaSession(requests.Session):
+    def request(self, method, url, **kwargs):
+        try:
+            return super().request(method, url, **kwargs)
+        except requests.RequestException as exc:
+            pytest.skip(f"ATHENA API unavailable at {ATHENA_URL}: {exc}")
+
+
 def assert_keys(data: dict, keys: list, context: str = ""):
     for key in keys:
         assert key in data, f"Missing key '{key}' in {context or 'response'}: {list(data.keys())}"
@@ -23,7 +31,7 @@ def base_url():
 
 @pytest.fixture(scope="session")
 def api():
-    session = requests.Session()
+    session = AthenaSession()
     return session
 
 

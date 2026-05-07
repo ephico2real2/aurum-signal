@@ -71,6 +71,9 @@ def test_scribe_migration_adds_threshold_columns_on_existing_db(tmp_path):
     assert "pending_entry_threshold_points" in cols_t
     assert "trend_strength_atr_threshold" in cols_t
     assert "breakout_buffer_points" in cols_t
+    assert "trades_range_min" in cols_t
+    assert "trades_range_max" in cols_t
+    assert "trades_policy_reason" in cols_t
 
 
 @pytest.mark.unit
@@ -100,6 +103,9 @@ def test_scribe_persists_threshold_fields_for_snapshots_and_trade_groups(tmp_pat
             "tp1": 3301.0,
             "num_trades": 4,
             "lot_per_trade": 0.01,
+            "trades_range_min": 2,
+            "trades_range_max": 6,
+            "trades_policy_reason": "trades_policy:test",
             "pending_entry_threshold_points": 50.0,
             "trend_strength_atr_threshold": 0.2,
             "breakout_buffer_points": 10.0,
@@ -113,7 +119,8 @@ def test_scribe_persists_threshold_fields_for_snapshots_and_trade_groups(tmp_pat
         "FROM market_snapshots ORDER BY id DESC LIMIT 1"
     )[0]
     t = scribe.query(
-        "SELECT pending_entry_threshold_points, trend_strength_atr_threshold, breakout_buffer_points "
+        "SELECT pending_entry_threshold_points, trend_strength_atr_threshold, breakout_buffer_points, "
+        "trades_range_min, trades_range_max, trades_policy_reason "
         "FROM trade_groups WHERE id=?",
         (gid,),
     )[0]
@@ -124,6 +131,9 @@ def test_scribe_persists_threshold_fields_for_snapshots_and_trade_groups(tmp_pat
     assert t["pending_entry_threshold_points"] == 50.0
     assert t["trend_strength_atr_threshold"] == 0.2
     assert t["breakout_buffer_points"] == 10.0
+    assert t["trades_range_min"] == 2
+    assert t["trades_range_max"] == 6
+    assert t["trades_policy_reason"] == "trades_policy:test"
 
 
 @pytest.mark.unit
@@ -145,6 +155,9 @@ def test_bridge_forwards_scalper_threshold_fields(monkeypatch, tmp_path):
                 "tp2": 3302.0,
                 "num_trades": 4,
                 "trades_opened": 1,
+                "trades_range_min": 3,
+                "trades_range_max": 8,
+                "trades_policy_reason": "forge_resolve base=6 n=4",
                 "lot_per_trade": 0.01,
                 "pending_entry_threshold_points": 50.0,
                 "trend_strength_atr_threshold": 0.2,
@@ -158,6 +171,21 @@ def test_bridge_forwards_scalper_threshold_fields(monkeypatch, tmp_path):
 
     stub = MagicMock()
     stub._last_scalper_entry_ts = None
+    stub._regime_snapshot = {
+        "label": "TREND_BULL",
+        "confidence": 0.71,
+        "model_name": "HMM_GAUSSIAN",
+        "entry_mode": "active",
+        "apply_entry_policy": True,
+        "fallback_reason": None,
+        "entry_gate_reason": None,
+        "stale": False,
+        "age_sec": 3.0,
+        "posterior": {},
+    }
+    stub._regime_context_for_trade = lambda d: bm.Bridge._regime_context_for_trade(stub, d)
+    stub._trade_group_regime_fields = lambda d: bm.Bridge._trade_group_regime_fields(stub, d)
+    stub._regime_audit_fragment = lambda: bm.Bridge._regime_audit_fragment(stub)
     stub.scribe = MagicMock()
     stub.scribe.query.return_value = []
     stub.scribe.log_trade_group.return_value = 42
@@ -179,6 +207,13 @@ def test_bridge_forwards_scalper_threshold_fields(monkeypatch, tmp_path):
     assert group_data["pending_entry_threshold_points"] == 50.0
     assert group_data["trend_strength_atr_threshold"] == 0.2
     assert group_data["breakout_buffer_points"] == 10.0
+    assert group_data["trades_range_min"] == 3
+    assert group_data["trades_range_max"] == 8
+    assert group_data["trades_policy_reason"] == "forge_resolve base=6 n=4"
+    assert group_data["regime_label"] == "TREND_BULL"
+    assert group_data["regime_confidence"] == 0.71
+    assert group_data["regime_model"] == "HMM_GAUSSIAN"
+    assert group_data["regime_entry_mode"] == "active"
 
 
 @pytest.mark.unit

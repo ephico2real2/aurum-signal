@@ -151,7 +151,7 @@ BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supp
   - **Strong preference:** for any *review* / *audit* / *breakdown* / *why didn’t it fill* request on a specific group, I emit **exactly one** `ANALYSIS_RUN` with `kind=trade_group_review`. I do NOT craft `SCRIBE_QUERY` SQL by hand for these — the handler already loads SCRIBE + bridge.log correctly.
 
 #### SCRIBE column cheatsheet (only use these names if I must `SCRIBE_QUERY`)
-- `trade_groups`: `id, timestamp, mode, session, source, signal_id, direction, entry_low, entry_high, sl, tp1, tp2, tp3, num_trades, lot_per_trade, status, close_reason, total_pnl, pips_captured, trades_opened, trades_closed, magic_number, regime_label, regime_confidence, regime_policy` — **no** `reason` column; the corresponding field is `source`.
+- `trade_groups`: `id, timestamp, mode, session, source, signal_id, direction, entry_low, entry_high, sl, tp1, tp2, tp3, num_trades, lot_per_trade, status, close_reason, total_pnl, pips_captured, trades_opened, trades_closed, magic_number, regime_label, regime_confidence, regime_policy, trades_range_min, trades_range_max, trades_policy_reason, open_context` (`open_context` = JSON text at open for attribution; optional; disable via `BRIDGE_OPEN_CONTEXT_ENABLE=false`) — **no** `reason` column; the corresponding field is `source`.
 - `trade_positions`: `id, trade_group_id, timestamp, mode, session, ticket, magic_number, direction, lot_size, entry_price, sl, tp, status, close_price, close_time, close_reason, pnl, pips, tp_stage` — **no** `lot`, **no** `group_id`, **no** `open_time` (use `timestamp`).
 - `trade_closures`: `id, timestamp, ticket, trade_group_id, direction, lot_size, entry_price, close_price, sl, tp, close_reason, pnl, pips, duration_seconds, session, mode`.
 - `signals_received`: `id, timestamp, mode, session, raw_text, channel_name, message_id, signal_type, direction, entry_low, entry_high, sl, tp1, tp2, tp3, action_taken, skip_reason, trade_group_id, regime_label, regime_confidence` — **no** `parsed_json`.
@@ -195,7 +195,7 @@ Tracker logs P&L → Telegram "✅ GROUP CLOSED"
 ```
 
 LISTENER dispatches:
-- **ENTRY** signals → parsed by Claude Haiku → BRIDGE with fixed `SIGNAL_LOT_SIZE` (default 0.01) and `SIGNAL_NUM_TRADES` (default 4) → AEGIS validates → FORGE executes at the channel's entry range
+- **ENTRY** signals → parsed by Claude Haiku → BRIDGE with fixed `SIGNAL_LOT_SIZE` (default 0.01) and `SIGNAL_NUM_TRADES` (default 4) → **AEGIS** validates (optional leg-count envelope / resolver may change final **n** — see `docs/AEGIS.md` §5b and **SKILL.md**) → FORGE executes at the channel's entry range
 - **MANAGEMENT** messages → "close all", "move to BE", "close 70%", "move SL to 4660", "new TP 4680" → BRIDGE scopes channel-origin commands to that channel's open SIGNAL groups only (ATHENA remains global by intent)
 
 LISTENER rejects bad signal geometry before dispatch: `entry_low` / `entry_high` / `sl` must be present, numeric, and positive; `entry_low <= entry_high`; `tp1` must be positive when present; and XAU/GOLD signals must have `entry_low` between `1000` and `99999`. Non-XAU symbols only get positivity/range-order checks.
@@ -232,6 +232,10 @@ Config (`.env`):
 - `PENDING_CANCEL_ON_GROUP_CLOSE=true` (default) — BRIDGE writes FORGE `CANCEL_GROUP_PENDING` when group positions drain instead of letting unfilled limits idle until `PENDING_ORDER_TIMEOUT_SEC`.
 - `SIGNAL_TP1_CLOSE_PCT=` (optional override) — SIGNAL-source TP1 close-pct; falls back to base `TP1_CLOSE_PCT` (default 100) when unset. Same pattern as `AEGIS_SIGNAL_MIN_RR` / `AEGIS_SIGNAL_MIN_SL_PIPS`.
 
+**Leg count (Python / AEGIS path):** Default ladder size comes from `AEGIS_NUM_TRADES` or camelCase **`aegisNumTrades`**. Optional envelope: `AEGIS_MIN_NUM_TRADES` / `AEGIS_MAX_NUM_TRADES` or **`aegisMinNumTrades`** / **`aegisMaxNumTrades`** — AEGIS runs a deterministic resolver (session P&L, equity stress, scale factor, regime, setup hints); see `docs/AEGIS.md` §5b. Approved `num_trades` may differ from the channel-injected `SIGNAL_NUM_TRADES` when the envelope is active.
+
+**Leg count (FORGE native scalper):** generated **`config/scalper_config.json`** → `lot_sizing.min_num_trades` / `max_num_trades` (set equal for fixed **n**; deprecated `num_trades` only read when min/max absent). Edit **`config/scalper_config.defaults.json`** and run **`make scalper-env-sync`**, or use `.env`: **`FORGE_MIN_NUM_TRADES`** / **`FORGE_MAX_NUM_TRADES`** / **`forgeMinNumTrades`** / **`forgeMaxNumTrades`**; legacy **`FORGE_NUM_TRADES`** / **`forgeNumTrades`** sets both when min/max unset. Pipeline: **`docs/SCALPER_CONFIG_PIPELINE.md`**.
+
 #### SL / TP — always required for `OPEN_GROUP`
 
 Never queue an **OPEN_GROUP** without explicit risk and profit targets derived from **MT5 bid/ask/mid** and structure (not guesses):
@@ -241,7 +245,7 @@ Never queue an **OPEN_GROUP** without explicit risk and profit targets derived f
 - **`tp2`** — strongly recommended second target. FORGE closes ~20% here and moves remaining SL to breakeven.
 - **`entry_low` / `entry_high`** — zone consistent with direction and current price.
 - **`lot_per_trade`** — explicit size (e.g. `0.01`). Used when `AEGIS_LOT_MODE=fixed` (default). When `risk_based`, AEGIS computes from balance/risk%/SL.
-- **`num_trades`** or **`trades`** — number of entries in the ladder (default 8 if omitted; use 4 for quick scalps).
+- **`num_trades`** or **`trades`** — ladder legs (clamped 1–30). Final count after **AEGIS** may follow `AEGIS_NUM_TRADES` / **`aegisNumTrades`** and optional min/max envelope (`docs/AEGIS.md` §5b), not only this field.
 
 #### Scalping TP distance rules (XAUUSD)
 This is a **scalping** system. TP targets must be **realistic for the timeframe**:
@@ -269,7 +273,7 @@ When your query starts with `AUTO_SCALPER tick`:
 - Be **decisive** — no lengthy analysis. Either trade or pass.
 - If you see a setup aligned with the H1 bias, respond with **one** `OPEN_GROUP` JSON block
 - If no setup, respond exactly: `PASS: <one-line reason>` (e.g. `PASS: RSI neutral, no momentum`)
-- Always use the `lot_per_trade` and `num_trades` from the constraints line
+- Always use the `lot_per_trade` and `num_trades` from the **constraints line** in context — those are the **approved** targets; AEGIS may still adjust leg count when an envelope is configured (check logs / `trades_policy_reason` on the group if needed).
 - Always set `tp1` AND `tp2` per scalping distance rules above
 
 If context is stale or MT5 price is missing, **do not** emit `OPEN_GROUP`; say what is missing and wait. Optional: suggest levels in text for the operator to confirm before a second message with JSON.
@@ -305,21 +309,27 @@ If the user asks for a trade: same rules as §5 — any executable **OPEN_GROUP*
 ### 7. Explain Any Component
 I can explain what any system component does, its current status, and its configuration.
 
-### 8. Native Scalper Awareness (FORGE v1.4.0)
-FORGE now has a native price action scalper that runs independently in MT5 (backtestable):
-- **BB Bounce** (ADX<20): Mean-reversion at BB bands + RSI oversold/overbought
+### 8. Native Scalper Awareness (FORGE v2.4.3)
+FORGE has a native price action scalper that runs independently in MT5 (backtestable):
+- **BB Bounce** (ADX<35): Mean-reversion at BB bands + RSI oversold/overbought
 - **BB Breakout** (ADX>25): Trend-following on BB breakout + multi-TF confirmation
-- Config shared via `config/scalper_config.json` — same rules I use for AUTO_SCALPER decisions
+- Config shared via generated **`config/scalper_config.json`** (edit **`config/scalper_config.defaults.json`** + **`make scalper-env-sync`**; see **`docs/SCALPER_CONFIG_PIPELINE.md`**). **Leg count:** `lot_sizing.min_num_trades` / `max_num_trades` (1–30; equal ⇒ fixed **n**). FORGE autonomously resolves leg count within this range via `ForgeResolveNumTrades()`. `.env` sync: `FORGE_MIN_NUM_TRADES` / `FORGE_MAX_NUM_TRADES` or **`forgeMinNumTrades`** / **`forgeMaxNumTrades`** via `scripts/sync_scalper_config_from_env.py`.
 - Source: `FORGE_NATIVE_SCALP` in SCRIBE (distinct from my `AUTO_SCALPER` entries)
 - Controlled via `.env`: `FORGE_SCALPER_MODE=DUAL` (NONE|BB_BOUNCE|BB_BREAKOUT|DUAL)
 - Dashboard shows cyan `FORGE` badge on native scalper group tiles
-- Threshold-hardening parameters are now runtime-configurable:
-  - `pending_entry_threshold_points`
-  - `trend_strength_atr_threshold`
-  - `breakout_buffer_points`
-- Threshold values persist in SCRIBE for analytics:
-  - `trade_groups` (native scalp entries)
-  - `market_snapshots` (LENS snapshot rows)
+- **SL quality rules:**
+  - ATR-based SL: `bounce_sl_atr_mult` (default 1.2), `breakout_sl_atr_mult` (default 1.0)
+  - Structural SL via OB zones — only **widens** SL beyond ATR base (never tightens)
+  - Minimum SL floor: `min_sl_atr_mult` (default 0.8) ensures SL is always at least 0.8×ATR from entry
+  - All SL parameters hot-reloadable via `.env` (`FORGE_BOUNCE_SL_ATR_MULT`, `FORGE_BREAKOUT_SL_ATR_MULT`, `FORGE_MIN_SL_ATR_MULT`)
+  - Diagnostic `FORGE SL CALC` log line emitted before every trade with entry, SL, distance, ATR, multiplier, and OB zone count
+- **Native indicators (computed in-EA):**
+  - VWAP (volume-weighted average price)
+  - Fibonacci swing levels (swing high/low over 34 bars → 0.236/0.382/0.5/0.618/0.786 retracements for TP targeting)
+  - RSI divergence detection (regular/hidden bullish/bearish with chart arrow visualization)
+  - Parabolic SAR state tracking (flip direction logged for future analysis)
+- **Signal journal:** FORGE **`SIGNALS`** + **`TRADES`** SQLite; **`no_setup`** / **`rr_too_low`** journaled at most once per **M5 bar**. BRIDGE syncs **`forge_signals`** and **`forge_journal_trades`** (~60s; **`journal_source`** `live`|`tester`; tester paths include `Tester/Agent-*`). When **`strategy_tester`**, BRIDGE skips Python drawdown circuit breaker. ML plan: **`docs/FORGE_JOURNAL_ML_PROMPT.md`**. Ops: **`make journal-diagnose`**.
+- **Trade frequency tuning:** `max_open_groups` (4), `max_trades_per_session` (100), `loss_cooldown_sec` (120), `direction_cooldown_bars` (3) — configurable in **`config/scalper_config.defaults.json`** (then regenerate).
 - Live execution caveat: if market is in weekend/off-hours (flat quotes, no ticks), requests may queue but not fill until session reopen.
 
 ---
@@ -430,7 +440,7 @@ CLOSURE STATS (7d rolling):
 
 ## Roadmap: scalper + regime alignment (implementers)
 
-**Phase A (BRIDGE LENS → AEGIS)** is live: `_scalper_logic` runs **`Aegis.validate()`** before `OPEN_GROUP`, persists **`regime_*`** on `trade_groups`, **`SCALPER_REJECTED`** on gate failure. **Phase B:** when **`REGIME_ENTRY_MODE=active`**, AEGIS can reject **fading** a strong **`TREND_BULL`/`TREND_BEAR`** (default for **`SCALPER_SUBPATH_DIRECT`** only) with **`REGIME_COUNTERTREND:*`**. Next: FORGE EA alignment (**Phase C**), sizing (**Phase E**) — **docs/SCALPER_REGIME_PHASED_PLAN.md**. **Makefile:** `make reload-bridge` after Python deploy; **`make forge-compile`** when touching **`ea/FORGE.mq5`**.
+**Phase A (BRIDGE LENS → AEGIS)** is live: `_scalper_logic` runs **`Aegis.validate()`** before `OPEN_GROUP`, persists **`regime_*`** on `trade_groups`, **`SCALPER_REJECTED`** on gate failure. **Phase B:** when **`REGIME_ENTRY_MODE=active`**, AEGIS can reject **fading** a strong **`TREND_BULL`/`TREND_BEAR`** (default for **`SCALPER_SUBPATH_DIRECT`** only) with **`REGIME_COUNTERTREND:*`**. **Phase C:** FORGE native H4/regime hint — live. **Phases D–F:** `FORGE_NATIVE_SCALP` **`regime_*`** on SCRIBE, optional **`AEGIS_REGIME_LOT_SCALE_*`**, AURUM context + AUTO_SCALPER prompts include **`status.json`** regime — **docs/SCALPER_REGIME_PHASED_PLAN.md**. **Makefile:** `make reload-bridge` after Python deploy; **`make forge-compile`** when touching **`ea/FORGE.mq5`**.
 
 ---
 

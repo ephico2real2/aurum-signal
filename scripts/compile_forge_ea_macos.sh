@@ -4,7 +4,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION_FILE="${ROOT}/VERSION"
 SRC="${ROOT}/ea/FORGE.mq5"
+
+# ── Stamp version from VERSION file into FORGE.mq5 ──────────────
+if [[ -f "${VERSION_FILE}" ]]; then
+  VER="$(tr -d '[:space:]' < "${VERSION_FILE}")"
+  # MQL5 #property version uses "M.mm" format (e.g. "2.10" for 2.1.0)
+  MQL_VER="$(echo "${VER}" | awk -F. '{printf "%d.%02d", $1, $2*10+$3}')"
+  # Update const string FORGE_VERSION = "X.Y.Z";
+  sed -i '' "s/const string FORGE_VERSION = \"[^\"]*\";/const string FORGE_VERSION = \"${VER}\";/" "${SRC}"
+  # Update #property version "M.mm"
+  sed -i '' "s/#property version \"[^\"]*\"/#property version \"${MQL_VER}\"/" "${SRC}"
+  echo "✓ Stamped FORGE version ${VER} (MQL5: ${MQL_VER}) from VERSION file"
+fi
 WINE_BASE="${WINEPREFIX:-${HOME}/Library/Application Support/net.metaquotes.wine.metatrader5}"
 MT5_DIR="${WINE_BASE}/drive_c/Program Files/MetaTrader 5"
 DST_MQ5="${MT5_DIR}/MQL5/Experts/FORGE.mq5"
@@ -32,6 +45,17 @@ if [[ -f "${ORPHAN_JSON}" ]]; then
   echo "✓ Removed orphan MQL5/Files/market_data.json (live file is Terminal/Common/Files)"
 fi
 echo "✓ Synced FORGE.mq5 → Wine Experts/"
+
+# Sync scalper_config.json to Common Files so FORGE reads the latest at runtime.
+COMMON_FILES="${WINE_BASE}/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files"
+SCALPER_CFG="${ROOT}/config/scalper_config.json"
+if [[ -f "${SCALPER_CFG}" ]] && [[ -d "${COMMON_FILES}" ]]; then
+  cp -f "${SCALPER_CFG}" "${COMMON_FILES}/scalper_config.json"
+  echo "✓ Synced scalper_config.json → Common Files"
+elif [[ -f "${SCALPER_CFG}" ]] && [[ -L "${ROOT}/MT5" ]]; then
+  cp -f "${SCALPER_CFG}" "${ROOT}/MT5/scalper_config.json"
+  echo "✓ Synced scalper_config.json → MT5/ symlink"
+fi
 
 export WINEPREFIX="${WINE_BASE}"
 export WINEDEBUG=-all

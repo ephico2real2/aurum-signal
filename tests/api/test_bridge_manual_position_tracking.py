@@ -29,6 +29,8 @@ def _make_stub():
     stub._bridge_activity = MagicMock()
     stub._infer_close_reason = bm.Bridge._infer_close_reason.__get__(stub, type(stub))
     stub._match_tp_stage = bm.Bridge._match_tp_stage.__get__(stub, type(stub))
+    stub._regime_context_for_trade = lambda _d: {}
+    stub._trade_open_context_snapshot = MagicMock(return_value=None)
     return stub, bm
 
 

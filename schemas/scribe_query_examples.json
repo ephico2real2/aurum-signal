@@ -70,6 +70,21 @@
       "id": "join_signals_groups",
       "summary": "Signals linked to trade groups (mid — join)",
       "sql": "SELECT sr.id AS signal_id, sr.timestamp, sr.channel_name, sr.action_taken, tg.id AS group_id, tg.status AS group_status, tg.total_pnl FROM signals_received sr LEFT JOIN trade_groups tg ON sr.trade_group_id = tg.id ORDER BY sr.id DESC LIMIT 30"
+    },
+    {
+      "id": "forge_signals_skip_breakdown",
+      "summary": "FORGE journal sync — skip reasons by source (live vs tester)",
+      "sql": "SELECT journal_source, outcome, gate_reason, COUNT(*) AS n FROM forge_signals WHERE outcome = 'SKIP' GROUP BY journal_source, gate_reason ORDER BY n DESC LIMIT 50"
+    },
+    {
+      "id": "forge_signals_recent",
+      "summary": "Latest FORGE journal rows synced to SCRIBE",
+      "sql": "SELECT id, timestamp_utc, journal_source, setup_type, direction, outcome, gate_reason, price, atr, rsi FROM forge_signals ORDER BY id DESC LIMIT 40"
+    },
+    {
+      "id": "forge_journal_trades_recent",
+      "summary": "Latest MT5 deals mirrored from FORGE journal TRADES",
+      "sql": "SELECT id, journal_source, deal_ticket, magic, profit, comment, time FROM forge_journal_trades ORDER BY id DESC LIMIT 40"
     }
   ]
 }

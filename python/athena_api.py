@@ -34,6 +34,14 @@ log = logging.getLogger("athena_api")
 _HERE = os.path.dirname(os.path.abspath(__file__))   # ~/signal_system/python
 _ROOT = os.path.normpath(os.path.join(_HERE, ".."))  # ~/signal_system
 
+def _read_system_version() -> str:
+    try:
+        return open(os.path.join(_ROOT, "SYSTEM_VERSION")).read().strip()
+    except OSError:
+        return "0.0.0"
+
+_SYSTEM_VERSION = _read_system_version()
+
 def _py_path(rel: str) -> str:
     """Absolute path anchored at python/ directory."""
     if os.path.isabs(rel):
@@ -71,6 +79,9 @@ STATUS_FILE    = _py_path(os.environ.get("BRIDGE_STATUS_FILE",   "config/status.
 LENS_FILE      = _py_path(os.environ.get("LENS_SNAPSHOT_FILE",   "config/lens_snapshot.json"))
 LENS_BRIEF_FILE = _py_path(os.environ.get("LENS_BRIEF_FILE", "config/lens_brief.json"))
 SENTINEL_FILE  = _py_path(os.environ.get("SENTINEL_STATUS_FILE", "config/sentinel_status.json"))
+GATE_DIAGNOSTICS_LAST_FILE = _py_path(
+    os.environ.get("GATE_DIAGNOSTICS_FILE", "config/gate_diagnostics_last.json")
+)
 AURUM_CMD_FILE = _py_path(os.environ.get("AURUM_CMD_FILE",       "config/aurum_cmd.json"))
 MGMT_FILE      = _py_path(os.environ.get("LISTENER_MGMT_FILE",   "config/management_cmd.json"))
 # reconciler writes to signal_system/config/ using __file__-relative path
@@ -467,9 +478,10 @@ def api_live():
         "session_utc":     get_trading_session_utc(),
         "session_id":      status.get("session_id"),
         "cycle":           status.get("cycle", 0),
-        "version":         status.get("version", "1.6.1"),
+        "version":         status.get("version", _SYSTEM_VERSION),
 
         # Safety state
+        "strategy_tester":   status.get("strategy_tester", False),
         "sentinel_active":   status.get("sentinel_active", False),
         "circuit_breaker":   status.get("circuit_breaker", False),
         "mt5_fresh":         status.get("mt5_fresh", False),
@@ -610,6 +622,26 @@ def api_autoscalper_conditions():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(report)
+
+
+@app.route("/api/signal_gate/diagnostics")
+def api_signal_gate_diagnostics():
+    """Last SIGNAL-path gate snapshot written by BRIDGE (requires GATE_DIAGNOSTICS_ENABLED=1)."""
+    data = _read_json(GATE_DIAGNOSTICS_LAST_FILE)
+    if not data:
+        return jsonify(
+            {
+                "status": "UNAVAILABLE",
+                "message": (
+                    "No gate diagnostics file yet. Enable GATE_DIAGNOSTICS_ENABLED=1 in BRIDGE "
+                    "and process a signal (or trigger a skip) to populate "
+                    f"{GATE_DIAGNOSTICS_LAST_FILE!s}."
+                ),
+                "path": GATE_DIAGNOSTICS_LAST_FILE,
+            }
+        ), 404
+    return jsonify(data)
+
 
 # ── TradingView brief endpoint ─────────────────────────────────────
 @app.route("/api/brief")

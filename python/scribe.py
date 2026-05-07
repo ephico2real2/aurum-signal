@@ -15,12 +15,20 @@ log = logging.getLogger("scribe")
 _PY_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PY_DIR.parent
 _DEFAULT_AUDIT_JSONL = _REPO_ROOT / "logs" / "audit" / "system_events.jsonl"
+_SCRIBE_DB_DEFAULT = "python/data/aurum_intelligence.db"
+
+
 def _resolve_db_path() -> str:
-    raw = os.environ.get("SCRIBE_DB", "data/aurum_intelligence.db")
+    raw = (os.environ.get("SCRIBE_DB") or _SCRIBE_DB_DEFAULT).strip() or _SCRIBE_DB_DEFAULT
+    # Legacy: was relative to python/ only — same on-disk file, path from repo root
+    if raw == "data/aurum_intelligence.db":
+        raw = _SCRIBE_DB_DEFAULT
     p = Path(raw)
     if p.is_absolute():
         return str(p)
-    return str((_PY_DIR / p).resolve())
+    return str((_REPO_ROOT / p).resolve())
+
+
 DB_PATH = _resolve_db_path()
 
 ALLOWED_SCRIBE_TABLES = frozenset({
@@ -98,7 +106,69 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     regime_label TEXT,
     regime_confidence REAL,
     regime_model TEXT,
+    poc_price REAL,
+    vwap_price REAL,
+    fib_50 REAL,
+    fib_382 REAL,
+    fib_618 REAL,
+    rsi_divergence TEXT,
+    psar_state TEXT,
     outcome_label TEXT, label_filled INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS forge_signals (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    forge_id          INTEGER,
+    time              INTEGER NOT NULL,
+    timestamp_utc     TEXT NOT NULL,
+    symbol            TEXT NOT NULL,
+    setup_type        TEXT,
+    direction         TEXT,
+    outcome           TEXT NOT NULL,
+    gate_reason       TEXT,
+    price             REAL,
+    spread            REAL,
+    atr               REAL,
+    rsi               REAL,
+    adx               REAL,
+    bb_upper          REAL,
+    bb_lower          REAL,
+    bb_mid            REAL,
+    poc_price         REAL,
+    vwap_price        REAL,
+    fib_50            REAL,
+    rsi_divergence    TEXT,
+    psar_state        TEXT,
+    pattern_score     INTEGER,
+    h1_trend          REAL,
+    regime_label      TEXT,
+    regime_confidence REAL,
+    adx_trend_regime  INTEGER,
+    high_vol_trend    INTEGER,
+    session           TEXT,
+    magic             INTEGER,
+    journal_source    TEXT DEFAULT 'live'
+);
+
+CREATE TABLE IF NOT EXISTS forge_journal_trades (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    forge_rowid       INTEGER NOT NULL,
+    deal_ticket       INTEGER NOT NULL,
+    order_ticket      INTEGER,
+    symbol            TEXT NOT NULL,
+    type              INTEGER,
+    direction         INTEGER,
+    volume            REAL,
+    price             REAL,
+    profit            REAL,
+    swap              REAL,
+    commission        REAL,
+    magic             INTEGER,
+    comment           TEXT,
+    time              INTEGER NOT NULL,
+    time_msc          INTEGER,
+    journal_source    TEXT DEFAULT 'live',
+    UNIQUE(deal_ticket, journal_source)
 );
 
 CREATE TABLE IF NOT EXISTS market_regimes (
@@ -397,6 +467,77 @@ class Scribe:
         if "regime_model" not in ms_cols:
             conn.execute("ALTER TABLE market_snapshots ADD COLUMN regime_model TEXT")
             log.info("SCRIBE migration: added regime_model to market_snapshots")
+        if "poc_price" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN poc_price REAL")
+            log.info("SCRIBE migration: added poc_price to market_snapshots")
+        if "vwap_price" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN vwap_price REAL")
+            log.info("SCRIBE migration: added vwap_price to market_snapshots")
+        if "fib_50" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN fib_50 REAL")
+            log.info("SCRIBE migration: added fib_50 to market_snapshots")
+        if "fib_382" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN fib_382 REAL")
+            log.info("SCRIBE migration: added fib_382 to market_snapshots")
+        if "fib_618" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN fib_618 REAL")
+            log.info("SCRIBE migration: added fib_618 to market_snapshots")
+        if "rsi_divergence" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN rsi_divergence TEXT")
+            log.info("SCRIBE migration: added rsi_divergence to market_snapshots")
+        if "psar_state" not in ms_cols:
+            conn.execute("ALTER TABLE market_snapshots ADD COLUMN psar_state TEXT")
+            log.info("SCRIBE migration: added psar_state to market_snapshots")
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "forge_signals" not in tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS forge_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    forge_id INTEGER, time INTEGER NOT NULL,
+                    timestamp_utc TEXT NOT NULL, symbol TEXT NOT NULL,
+                    setup_type TEXT, direction TEXT, outcome TEXT NOT NULL,
+                    gate_reason TEXT, price REAL, spread REAL, atr REAL,
+                    rsi REAL, adx REAL, bb_upper REAL, bb_lower REAL,
+                    bb_mid REAL, poc_price REAL, vwap_price REAL, fib_50 REAL,
+                    rsi_divergence TEXT, psar_state TEXT, pattern_score INTEGER,
+                    h1_trend REAL, regime_label TEXT, regime_confidence REAL,
+                    adx_trend_regime INTEGER, high_vol_trend INTEGER,
+                    session TEXT, magic INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
+                CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
+                CREATE INDEX IF NOT EXISTS idx_fs_gate ON forge_signals(gate_reason);
+            """)
+            log.info("SCRIBE migration: created forge_signals table")
+        fs_cols = [r[1] for r in conn.execute("PRAGMA table_info(forge_signals)").fetchall()]
+        if "journal_source" not in fs_cols:
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN journal_source TEXT DEFAULT 'live'")
+            log.info("SCRIBE migration: added journal_source to forge_signals")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS forge_journal_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                forge_rowid INTEGER NOT NULL,
+                deal_ticket INTEGER NOT NULL,
+                order_ticket INTEGER,
+                symbol TEXT NOT NULL,
+                type INTEGER,
+                direction INTEGER,
+                volume REAL,
+                price REAL,
+                profit REAL,
+                swap REAL,
+                commission REAL,
+                magic INTEGER,
+                comment TEXT,
+                time INTEGER NOT NULL,
+                time_msc INTEGER,
+                journal_source TEXT DEFAULT 'live',
+                UNIQUE(deal_ticket, journal_source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
+            CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
+        """)
         tg_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
         if "pending_entry_threshold_points" not in tg_cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN pending_entry_threshold_points REAL")
@@ -438,6 +579,56 @@ class Scribe:
         if "entry_cluster" not in tg_cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN entry_cluster INTEGER")
             log.info("SCRIBE migration: added entry_cluster to trade_groups")
+        tg_cols2 = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
+        if "trades_range_min" not in tg_cols2:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN trades_range_min INTEGER")
+            log.info("SCRIBE migration: added trades_range_min to trade_groups")
+        if "trades_range_max" not in tg_cols2:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN trades_range_max INTEGER")
+            log.info("SCRIBE migration: added trades_range_max to trade_groups")
+        if "trades_policy_reason" not in tg_cols2:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN trades_policy_reason TEXT")
+            log.info("SCRIBE migration: added trades_policy_reason to trade_groups")
+        tg_cols3 = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
+        if "open_context" not in tg_cols3:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN open_context TEXT")
+            log.info("SCRIBE migration: added open_context to trade_groups (JSON attribution snapshot)")
+
+    @staticmethod
+    def _serialize_open_context(value) -> str | None:
+        """JSON for SQLite TEXT; caps size (see SCRIBE_OPEN_CONTEXT_MAX_BYTES)."""
+        if value is None:
+            return None
+        raw_lim = os.environ.get("SCRIBE_OPEN_CONTEXT_MAX_BYTES", "65536").strip()
+        try:
+            lim = int(raw_lim)
+        except ValueError:
+            lim = 65536
+        lim = max(64, lim)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+            except (TypeError, ValueError):
+                return None
+        raw = text.encode("utf-8")
+        if len(raw) <= lim:
+            return text
+        log.warning(
+            "SCRIBE: open_context oversized (%d bytes > %d); storing stub JSON",
+            len(raw),
+            lim,
+        )
+        stub = {
+            "open_context_version": 1,
+            "truncated": True,
+            "original_bytes": len(raw),
+            "limit_bytes": lim,
+        }
+        return json.dumps(stub, separators=(",", ":"))
 
     @staticmethod
     def _now() -> str:
@@ -488,6 +679,137 @@ class Scribe:
             "notes": notes,
         })
 
+    def sync_forge_journal(self, journal_db_path: str, source: str = "live", batch_size: int = 500) -> int:
+        """Read unsynced SIGNALS from FORGE journal DB, insert into forge_signals,
+        then mark them synced=1 in the source DB. Returns count of synced rows."""
+        from pathlib import Path as _P
+        if not _P(journal_db_path).exists():
+            return 0
+
+        import sqlite3 as _sqlite3
+        try:
+            src = _sqlite3.connect(journal_db_path, timeout=5)
+        except Exception as e:
+            log.warning("SCRIBE sync_forge_journal: cannot open %s — %s", journal_db_path, e)
+            return 0
+
+        try:
+            rows = src.execute(
+                "SELECT id, time, symbol, setup_type, direction, outcome, gate_reason, "
+                "price, spread, atr, rsi, adx, bb_upper, bb_lower, bb_mid, "
+                "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
+                "pattern_score, h1_trend, regime_label, regime_confidence, "
+                "adx_trend_regime, high_vol_trend, session, magic "
+                f"FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
+            ).fetchall()
+
+            if not rows:
+                return 0
+
+            from datetime import datetime, timezone
+            synced_ids: list[int] = []
+            inserted = 0
+            with self._conn() as c:
+                for r in rows:
+                    existing = c.execute(
+                        "SELECT 1 FROM forge_signals "
+                        "WHERE forge_id=? AND time=? AND symbol=? AND journal_source=? LIMIT 1",
+                        (r[0], r[1], r[2], source),
+                    ).fetchone()
+                    if existing:
+                        synced_ids.append(r[0])
+                        continue
+                    ts_utc = datetime.fromtimestamp(r[1], tz=timezone.utc).isoformat()
+                    c.execute(
+                        "INSERT INTO forge_signals "
+                        "(forge_id, time, timestamp_utc, symbol, setup_type, direction, "
+                        "outcome, gate_reason, price, spread, atr, rsi, adx, "
+                        "bb_upper, bb_lower, bb_mid, poc_price, vwap_price, fib_50, "
+                        "rsi_divergence, psar_state, pattern_score, h1_trend, "
+                        "regime_label, regime_confidence, adx_trend_regime, "
+                        "high_vol_trend, session, magic, journal_source) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (r[0], r[1], ts_utc, *r[2:], source),
+                    )
+                    synced_ids.append(r[0])
+                    inserted += 1
+
+            if synced_ids:
+                placeholders = ",".join(str(i) for i in synced_ids)
+                src.execute(f"UPDATE SIGNALS SET synced = 1 WHERE id IN ({placeholders})")
+                src.commit()
+                log.info("SCRIBE: synced %d forge journal signals", inserted)
+
+            return len(synced_ids)
+        except Exception as e:
+            log.warning("SCRIBE sync_forge_journal error: %s", e)
+            return 0
+        finally:
+            src.close()
+
+    def sync_forge_journal_trades(self, journal_db_path: str, source: str = "live", batch_size: int = 500) -> int:
+        """Read unsynced TRADES deal rows from FORGE journal DB into forge_journal_trades."""
+        from pathlib import Path as _P
+        if not _P(journal_db_path).exists():
+            return 0
+
+        import sqlite3 as _sqlite3
+        try:
+            src = _sqlite3.connect(journal_db_path, timeout=5)
+        except Exception as e:
+            log.warning("SCRIBE sync_forge_journal_trades: cannot open %s — %s", journal_db_path, e)
+            return 0
+
+        try:
+            cols = [r[1] for r in src.execute("PRAGMA table_info(TRADES)").fetchall()]
+            if "synced" not in cols:
+                try:
+                    src.execute("ALTER TABLE TRADES ADD COLUMN synced INTEGER DEFAULT 0")
+                    src.commit()
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning("SCRIBE sync_forge_journal_trades: no TRADES table in %s — %s", journal_db_path, e)
+            src.close()
+            return 0
+
+        try:
+            rows = src.execute(
+                "SELECT id, deal_ticket, order_ticket, symbol, type, direction, volume, "
+                "price, profit, swap, commission, magic, comment, time, time_msc "
+                f"FROM TRADES WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
+            ).fetchall()
+            if not rows:
+                return 0
+
+            synced_ids: list[int] = []
+            with self._conn() as c:
+                for r in rows:
+                    try:
+                        c.execute(
+                            "INSERT OR IGNORE INTO forge_journal_trades "
+                            "(forge_rowid, deal_ticket, order_ticket, symbol, type, direction, "
+                            "volume, price, profit, swap, commission, magic, comment, time, time_msc, "
+                            "journal_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (*r, source),
+                        )
+                    except Exception as row_e:
+                        log.warning("SCRIBE forge_journal_trades row skip: %s", row_e)
+                    synced_ids.append(r[0])
+
+            if synced_ids:
+                placeholders = ",".join(str(i) for i in synced_ids)
+                src.execute(f"UPDATE TRADES SET synced = 1 WHERE id IN ({placeholders})")
+                src.commit()
+                log.info("SCRIBE: synced %d forge journal trade deals", len(synced_ids))
+
+            return len(synced_ids)
+        except Exception as e:
+            log.warning("SCRIBE sync_forge_journal_trades error: %s", e)
+            return 0
+        finally:
+            src.close()
+
     def log_market_snapshot(self, data: dict, mode: str, source: str):
         with self._conn() as c:
             c.execute("""INSERT INTO market_snapshots
@@ -496,8 +818,9 @@ class Scribe:
                  rsi_14,macd_hist,ema_20,ema_50,bb_upper,bb_mid,bb_lower,bb_width,
                  adx,tv_rating,timeframe,session,news_guard_active,
                  pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points,
-                 regime_label,regime_confidence,regime_model)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 regime_label,regime_confidence,regime_model,
+                 poc_price,vwap_price,fib_50,fib_382,fib_618,rsi_divergence,psar_state)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, source,
                  data.get("symbol","XAUUSD"),
                  data.get("bid"), data.get("ask"), data.get("spread"),
@@ -515,7 +838,14 @@ class Scribe:
                  data.get("breakout_buffer_points"),
                  data.get("regime_label"),
                  data.get("regime_confidence"),
-                 data.get("regime_model")))
+                 data.get("regime_model"),
+                 data.get("poc_price"),
+                 data.get("vwap_price"),
+                 data.get("fib_50"),
+                 data.get("fib_382"),
+                 data.get("fib_618"),
+                 data.get("rsi_divergence"),
+                 data.get("psar_state")))
 
     def log_market_regime(self, snapshot: dict, mode: str = None, session: str = None) -> int:
         if not snapshot:
@@ -657,8 +987,10 @@ class Scribe:
                  lens_rating,lens_rsi,lens_confirmed,
                  pending_entry_threshold_points,trend_strength_atr_threshold,breakout_buffer_points,
                  regime_label,regime_confidence,regime_model,regime_entry_mode,regime_policy,regime_fallback_reason,
+                 trades_range_min,trades_range_max,trades_policy_reason,
+                 open_context,
                  magic_number,trades_opened,trades_closed)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), mode, data.get("source","SIGNAL"),
                  data.get("signal_id"), data.get("direction"),
                  data.get("entry_low"), data.get("entry_high"),
@@ -676,6 +1008,10 @@ class Scribe:
                  data.get("regime_entry_mode"),
                  data.get("regime_policy"),
                  data.get("regime_fallback_reason"),
+                 data.get("trades_range_min"),
+                 data.get("trades_range_max"),
+                 data.get("trades_policy_reason"),
+                 self._serialize_open_context(data.get("open_context")),
                  magic_number,
                  data.get("num_trades",8), 0))
             return cur.lastrowid

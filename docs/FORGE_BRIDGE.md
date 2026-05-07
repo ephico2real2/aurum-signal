@@ -121,6 +121,18 @@ These update every 3 seconds (OnTimer). Python reads them via `market_view.py` (
 
 **Note:** After recompiling FORGE, you must **reattach** the EA in MT5 for new indicators to appear. If `indicators_m5` shows all zeros, the old .ex5 is still loaded.
 
+## 7. Scalper JSON — defaults, generated file, Make targets
+
+Native scalper parameters live in JSON consumed by FORGE (hot-reloaded) and by Python (**`python/bridge.py`**, etc.).
+
+| Step | Artifact |
+|------|----------|
+| **Edit (source)** | **`config/scalper_config.defaults.json`** — committed baseline; optional **`.env`** **`FORGE_*`** keys merged per **`MAPPING`** in this repo’s sync script. |
+| **Generate** | **`make scalper-env-sync`** or **`make forge-compile`** runs **`scripts/sync_scalper_config_from_env.py`** → writes **`config/scalper_config.json`** (stamps **`version`** from **`VERSION`**) and copies to **`MT5/`** when present. |
+| **Copy only** | **`make scalper-config-sync`** — pushes **existing** `config/scalper_config.json` to Wine **Common Files** without regenerating. |
+
+Do not hand-edit **`config/scalper_config.json`** as the source of truth; sync will overwrite it. Full rationale and tradeoffs: **`docs/SCALPER_CONFIG_PIPELINE.md`**.
+
 ## 8. Threshold hardening (v1.4.0+)
 
 FORGE native execution now supports threshold-hardening parameters that are runtime-configurable and persisted downstream:
@@ -132,7 +144,7 @@ FORGE native execution now supports threshold-hardening parameters that are runt
 ### Where values come from
 
 1. FORGE defaults (`input` values in `FORGE.mq5`)
-2. `scalper_config.json` overrides (hot-reloaded)
+2. Generated `scalper_config.json` (from `scalper_config.defaults.json` + `.env` + `VERSION`; hot-reloaded) — see §7 above
 3. BRIDGE `config.json` overrides (`MT5/config.json`)
 
 ### Where values appear

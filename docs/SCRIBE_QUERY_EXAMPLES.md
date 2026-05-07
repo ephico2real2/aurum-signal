@@ -1,6 +1,8 @@
 # SCRIBE Query Examples
 Practical SQL examples for `POST /api/scribe/query` in ATHENA.
 
+FORGE-native **journal / skipped setups** (including raw SQLite journal vs `forge_signals`): see **`docs/FORGE_JOURNAL_SQL.md`**.
+
 ## Purpose
 SCRIBE is the audit backbone of the system. This guide exists so operators can quickly answer:
 - what the system decided,
@@ -166,6 +168,61 @@ GROUP BY session
 ORDER BY closes DESC;
 ```
 
+## Self-scalp sources with regime (Phase D+)
+### Recent FORGE native + LENS scalper groups (7d)
+```sql
+SELECT
+  id,
+  timestamp,
+  source,
+  direction,
+  status,
+  regime_label,
+  regime_confidence,
+  regime_entry_mode,
+  num_trades,
+  total_pnl
+FROM trade_groups
+WHERE source IN ('FORGE_NATIVE_SCALP', 'SCALPER_SUBPATH_DIRECT')
+  AND timestamp >= datetime('now', '-7 days')
+ORDER BY id DESC
+LIMIT 200;
+```
+
+### Self-scalp P&L by regime label (30d)
+```sql
+SELECT
+  COALESCE(regime_label, 'UNKNOWN') AS regime_label,
+  source,
+  COUNT(*) AS n_groups,
+  ROUND(SUM(COALESCE(total_pnl, 0)), 2) AS pnl_total
+FROM trade_groups
+WHERE source IN ('FORGE_NATIVE_SCALP', 'SCALPER_SUBPATH_DIRECT')
+  AND timestamp >= datetime('now', '-30 days')
+GROUP BY COALESCE(regime_label, 'UNKNOWN'), source
+ORDER BY n_groups DESC;
+```
+
+### Open-context attribution (`trade_groups.open_context` JSON)
+BRIDGE writes a bounded JSON snapshot at group open (regime + compact MT5 + optional AEGIS approval). Opt out: `BRIDGE_OPEN_CONTEXT_ENABLE=false`. Max size: `SCRIBE_OPEN_CONTEXT_MAX_BYTES` (default 65536).
+
+```sql
+SELECT
+  id,
+  timestamp,
+  source,
+  direction,
+  json_extract(open_context, '$.source') AS ctx_source,
+  json_extract(open_context, '$.regime.label') AS ctx_regime_label,
+  json_extract(open_context, '$.aegis.scale_factor') AS ctx_scale_factor,
+  json_extract(open_context, '$.mt5.age_sec') AS mt5_age_sec
+FROM trade_groups
+WHERE open_context IS NOT NULL
+  AND timestamp >= datetime('now', '-14 days')
+ORDER BY id DESC
+LIMIT 100;
+```
+
 ## Manual / unmanaged MT5 tracking queries
 ### 10) All manual/unmanaged groups created by BRIDGE
 ```sql
@@ -316,6 +373,36 @@ WHERE status NOT IN ('OPEN','PARTIAL')
   AND closed_at >= datetime('now', '-30 days')
 GROUP BY COALESCE(regime_label, 'UNKNOWN')
 ORDER BY groups_closed DESC;
+```
+
+### 21) FORGE journal in SCRIBE (`forge_signals`)
+Rows are synced from FORGE’s native SQLite journal (live Common Files DB and Strategy Tester `*_tester.db`). Use **`journal_source`** to separate backtest from live.
+
+Skip reasons (volume diagnostics):
+```sql
+SELECT journal_source, gate_reason, COUNT(*) AS n
+FROM forge_signals
+WHERE outcome = 'SKIP'
+GROUP BY journal_source, gate_reason
+ORDER BY n DESC
+LIMIT 30;
+```
+
+Recent evaluations:
+```sql
+SELECT id, timestamp_utc, journal_source, setup_type, direction, outcome, gate_reason, rsi, adx
+FROM forge_signals
+ORDER BY id DESC
+LIMIT 50;
+```
+
+### 22) FORGE journal deals in SCRIBE (`forge_journal_trades`)
+Deal rows imported from FORGE’s journal **`TRADES`** table (FORGE magic range). Use with **`forge_signals`** (`TAKEN` + context) for ML labels.
+
+```sql
+SELECT journal_source, COUNT(*) AS deals, SUM(profit) AS pnl
+FROM forge_journal_trades
+GROUP BY journal_source;
 ```
 
 ## Query hygiene notes

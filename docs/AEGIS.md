@@ -137,10 +137,12 @@ If all guards pass:
 
    ```text
    risk_amount = balance * (effective_risk_pct / 100)
-   lot_per_trade = risk_amount / (NUM_TRADES * sl_pips * PIP_VALUE_PER_LOT)
+   lot_per_trade = risk_amount / (num_trades * sl_pips * PIP_VALUE_PER_LOT)
    ```
 
-   then clamped to at least **MIN_LOT** (0.01) and so that `lot_per_trade * NUM_TRADES <= MAX_LOT_TOTAL`.
+   where **`num_trades`** is the resolved leg count (§5b), not necessarily `AEGIS_NUM_TRADES`.
+
+   then clamped to at least **MIN_LOT** (0.01) and so that `lot_per_trade * num_trades <= MAX_LOT_TOTAL`.
 
 4. **`PIP_VALUE_PER_LOT`** is fixed at **100.0** in code (XAUUSD assumption: **$100 per 1.0 lot per $1.00 adverse move** in the simplified model — align your mental model with your broker’s contract specs).
 
@@ -185,6 +187,42 @@ This only changes **risk % used for sizing**, not the R:R or SL guards.
 
 ---
 
+## 5b. Leg-count envelope and resolver (Phase 1)
+
+After all guards pass, AEGIS chooses an integer **`num_trades`** for the group:
+
+1. **Base count** — `AEGIS_NUM_TRADES` or **`aegisNumTrades`**, unless the signal sets `num_trades` (clamped to **1–20**). Invalid overrides are clamped, not rejected.
+2. **Optional env range** — If **either** `AEGIS_MIN_NUM_TRADES` / **`aegisMinNumTrades`** or `AEGIS_MAX_NUM_TRADES` / **`aegisMaxNumTrades`** is set (non-empty), both ends are resolved to a sub-range of **1–20** (missing side defaults to **1** or **20**). If **both** env vars are unset or empty, the envelope collapses to **`(base, base)`** — behavior matches the old fixed-`n` model.
+3. **Deterministic resolver** — When the envelope spans more than one integer (`lo < hi`), AEGIS adjusts the starting point (`base` clamped into `[lo, hi]`) using only:
+   - **Session P&L** (same window as the daily loss guard): deeper session loss → fewer legs (stepped by loss % vs balance); material session profit → at most +2 legs from win tiers.
+   - **Equity stress** from `mt5_data.account.equity` vs balance: ≥2% and ≥4% drawdown → −1 leg each (capped later by envelope).
+   - **Lot scale factor** from recent closes: scaled down (&lt;1) → −1 leg; scaled up (&gt;1) → +1 leg.
+   - **Regime**: `VOLATILE` with confidence ≥ **0.45** → −1 leg; `RANGE` with confidence ≥ **0.55** → +1 leg.
+   - **Setup hint** from optional signal fields (`setup_type`, `strategy`, etc.): substring `BREAKOUT` → +1; `BOUNCE` → −1.
+4. **Final clamp** — Result is clamped to **`[lo, hi]`** and **`[1, 20]`**.
+5. **Risk / lots** — `risk_amount / (num_trades * sl_pips * PIP_VALUE_PER_LOT)` and **`MAX_LOT_TOTAL / num_trades`** run **after** `num_trades` is final, so total group exposure does not silently grow when `n` increases.
+
+**`trades_policy_reason`** on `TradeApproval` logs the resolver trail for SCRIBE / activity JSON.
+
+**FORGE native scalper** (`ea/FORGE.mq5`) mirrors this where MQL5 allows: `min_num_trades` / `max_num_trades` in `scalper_config.json` (flat JSON key search). Deprecated `num_trades` in that file is still read when **both** min and max are absent after load. There is **no** session closed-P&L query in the EA; equity drawdown uses **AccountBalance** vs **AccountEquity**. Regime uses **`config.json`** snapshot fields when present.
+
+Operator-facing summaries of env aliases and SCRIBE columns: **`SKILL.md`** (SCRIBE cheatsheet, §8 Native Scalper), **`SOUL.md`** (Native Scalper, SIGNAL flow). `.env` examples: repo **`.env.example`**.
+
+---
+
+## 5c. Regime-conditioned lot scale (Phase E — optional)
+
+After **streak-based** `scale_factor` (§5), AEGIS may apply an additional multiplier from **`regime_context`**:
+
+- **Default:** **off** (`AEGIS_REGIME_LOT_SCALE_ENABLED` unset or false).
+- **When on:** trend-aligned setups (`TREND_BULL`+`BUY` or `TREND_BEAR`+`SELL`) with confidence above a floor can **increase** scale toward **`AEGIS_REGIME_LOT_SCALE_MAX`**; **`RANGE`** / **`VOLATILE`** apply configured **damps**.
+- **Stale** regime context → multiplier **1.0** (no regime lot bump).
+- The product `(streak_scale × regime_mult)` is clamped by **`AEGIS_SCALE_COMBINED_MAX`** (default **2.0**).
+
+This does **not** increase size to “recover” recent losses. A separate recovery-style assist is **not** implemented by default.
+
+---
+
 ## 6. Session P&L window (daily loss guard)
 
 Session start = **today at `trading_day_reset_hour_utc():00` UTC**, or **yesterday** if current time is still before that hour.
@@ -204,7 +242,9 @@ Set these in **repo root `.env`** (or the environment of **bridge** / launchd pl
 |----------|---------|------|
 | `AEGIS_RISK_PCT` | `2.0` | Base risk % of balance for sizing |
 | `AEGIS_MAX_RISK_PCT` | `5.0` | Ceiling used when scaling **up** after wins |
-| `AEGIS_NUM_TRADES` | `8` | Trades in the group ladder; divisor in lot formula |
+| `AEGIS_NUM_TRADES` | `8` | Trades in the group ladder; divisor in lot formula when no per-signal override. Alias: **`aegisNumTrades`**. |
+| `AEGIS_MIN_NUM_TRADES` | *(unset)* | Optional floor for resolved leg count (with `AEGIS_MAX_NUM_TRADES`). Alias: **`aegisMinNumTrades`**. Unset = legacy (no env range). |
+| `AEGIS_MAX_NUM_TRADES` | *(unset)* | Optional ceiling for resolved leg count. Alias: **`aegisMaxNumTrades`**. Unset = legacy. |
 | `AEGIS_MAX_SLIPPAGE` | `20.0` | Max allowed slippage vs entry zone |
 | `AEGIS_MIN_RR` | `1.2` | Minimum **tp_pips / sl_pips** |
 | `AEGIS_MAX_DAILY_LOSS` | `5.0` | Max session loss as **% of balance** |
@@ -213,6 +253,14 @@ Set these in **repo root `.env`** (or the environment of **bridge** / launchd pl
 | `AEGIS_SCALE_DOWN_LOSSES` | `3` | Consecutive losses to halve (by default) risk |
 | `AEGIS_SCALE_UP_WINS` | `3` | Consecutive wins to scale risk up |
 | `AEGIS_SCALE_DOWN_FACTOR` | `0.5` | Multiplier on `RISK_PCT` when scaled down |
+| `AEGIS_REGIME_LOT_SCALE_ENABLED` | `false` | When true, multiply streak scale by regime knob (§5c) |
+| `AEGIS_REGIME_LOT_SCALE_MIN` | `0.82` | Floor on regime lot multiplier |
+| `AEGIS_REGIME_LOT_SCALE_MAX` | `1.35` | Ceiling on regime lot multiplier (aligned trend) |
+| `AEGIS_REGIME_LOT_SCALE_MIN_CONFIDENCE` | `0.58` | Min confidence for aligned-trend upsize |
+| `AEGIS_REGIME_LOT_SCALE_CONF_TARGET` | `0.78` | Confidence at which upsize reaches max |
+| `AEGIS_REGIME_LOT_SCALE_RANGE_MULT` | `0.94` | Multiplier when label is RANGE |
+| `AEGIS_REGIME_LOT_SCALE_VOLATILE_MULT` | `0.87` | Multiplier when label is VOLATILE |
+| `AEGIS_SCALE_COMBINED_MAX` | `2.0` | Cap on `(streak × regime)` scale product in validate |
 | `AEGIS_SESSION_RESET_HOUR` | *(unset)* | UTC hour for session P&L window; else `SESSION_LONDON_START` |
 
 ### New guards (v1.2.4+)

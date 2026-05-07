@@ -24,6 +24,7 @@ help:
 	@echo "  make verify          Health + key API curls + API pytest + Playwright"
 	@echo "  make test            Run all tests (API + UI)"
 	@echo "  make test-api        Run API tests only"
+	@echo "  make test-journal    Run focused SCRIBE/FORGE journal tests"
 	@echo "  make test-ui         Run UI tests (headed Chrome)"
 	@echo "  make test-ui-silent  Run UI tests headless"
 	@echo "  make test-ui-audit   Playwright: all tabs + screenshots + tests/results/athena-ui-audit.json"
@@ -31,9 +32,10 @@ help:
 	@echo "  make review-ui       test-ui-audit then claude-review-ui (one shot)"
 	@echo "  make test-live       Run /api/live tests only"
 	@echo "  make test-components Run /api/components tests only"
+	@echo "  make test-phase1-baseline  Fast slice: gate diagnostics + GET /api/signal_gate/diagnostics + OpenAPI (bisect-friendly)"
 	@echo "  make test-contracts  File-bus JSON Schema + OpenAPI/Swagger tests (see docs/DATA_CONTRACT.md)"
 	@echo "  make sync-openapi-scribe  Regenerate OpenAPI /api/scribe/query examples from scribe_query_examples.json"
-	@echo "  make venv            Create .venv + pip install requirements.txt + pytest"
+	@echo "  make venv            Create .venv + pip install requirements + tests/requirements-test.txt"
 	@echo "  make test-contracts-venv  make venv then test-contracts (first-time / clean machine)"
 	@echo "  make test-report     Open last Playwright HTML report"
 	@echo "  make test-record     Record new UI tests by clicking"
@@ -45,6 +47,11 @@ help:
 	@echo "  make logs-aurum      Follow aurum log live"
 	@echo "  make logs-athena     Follow athena log live"
 	@echo "  make logs-errors     Show only error lines"
+	@echo "  make scribe-watch    Live watch trade_groups + trade_closures writes"
+	@echo "  make scribe-watch-log  Same as scribe-watch + append logs/scribe_watch.log"
+	@echo "  make monitor-forge-skips  SCRIBE forge_signals: SKIP rollup + tail (last 24h)"
+	@echo "  make monitor-forge-skips-watch  Same, poll every 60s (Ctrl-C to stop)"
+	@echo "  make journal-diagnose  JSON summary: FORGE journal DBs + SCRIBE forge_* mirror"
 	@echo ""
 	@echo "  SERVICES (install_services.py — macOS: launchd; Linux: sudo systemctl)"
 	@echo "  make start             Install/load all services (same as services-install)"
@@ -78,7 +85,10 @@ help:
 	@echo "  make verify-forge-bridge  python3 scripts/verify_forge_bridge.py (paths + market_data age)"
 	@echo "  make check-tests     Check test deps (no install)"
 	@echo "  make forge-ea        Copy FORGE.mq5 into Wine MT5 Experts (macOS)"
-	@echo "  make forge-compile   Copy + compile FORGE.mq5 → FORGE.ex5 (MetaEditor CLI)"
+	@echo "  make scalper-env-sync  Regenerate config/scalper_config.json from defaults + .env + VERSION"
+	@echo "  make scalper-config-sync  Copy-only: repo scalper_config.json → MT5 Common Files (no regenerate)"
+	@echo "  make forge-compile   Sync scalper config + copy + compile FORGE.mq5 → FORGE.ex5"
+	@echo "  make forge-recompile Same as forge-compile (alias)"
 	@echo "  make forge-refresh   forge-compile + open MetaTrader 5 (re-attach FORGE on chart)"
 	@echo "  make scribe-gui      Open SCRIBE DB in DB Browser for SQLite (macOS)"
 	@echo "  make system-up       Start TradingView + MetaTrader 5 + Python services"
@@ -103,9 +113,9 @@ status services-status:
 		echo "Services: check ~/Library/LaunchAgents/com.signalsystem.*"
 
 # ── Testing ───────────────────────────────────────────────────────
-.PHONY: verify verify-forge-bridge forge-verify-live forge-refresh-verify test test-api test-ui test-ui-silent test-ui-audit test-live \
-        test-closures test-components test-contracts test-contracts-venv venv sync-openapi-scribe test-report test-record claude-review-ui review-ui forge-ea forge-compile \
-        services-install services-stop services-restart forge-refresh
+.PHONY: verify verify-forge-bridge forge-verify-live forge-refresh-verify test test-api test-journal test-phase1-baseline test-ui test-ui-silent test-ui-audit test-live \
+        test-closures test-components test-contracts test-contracts-venv venv sync-openapi-scribe test-report test-record claude-review-ui review-ui forge-ea forge-compile forge-recompile \
+        services-install services-stop services-restart forge-refresh scalper-env-sync
 
 verify-forge-bridge:
 	@$(PYTHON) $(SCRIPTS)/verify_forge_bridge.py
@@ -156,11 +166,22 @@ test-live:
 test-closures:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file closures
 
+test-journal:
+	@$(PYTHON) -m pytest $(ROOT_DIR)/tests/services/test_scribe_forge_journal.py -v
+
 test-mgmt-scoping:
 	@$(PYTHON) -m pytest $(ROOT_DIR)/tests/api/test_mgmt_channel_scoping.py -v -m unit --tb=short
 
 test-components:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file components
+
+# Fast baseline before persistence / config work (Phase 1 surface: diagnostics + OpenAPI).
+test-phase1-baseline:
+	@$(PYTHON) -m pytest $(ROOT_DIR)/tests/services/test_gate_diagnostics.py \
+		$(ROOT_DIR)/tests/api/test_athena_signal_gate_diagnostics_api.py \
+		$(ROOT_DIR)/tests/api/test_schema_bundle_integrity.py \
+		$(ROOT_DIR)/tests/api/test_swagger_ui.py \
+		$(ROOT_DIR)/tests/api/test_json_schemas.py -q --tb=short
 
 test-contracts:
 	@$(PYTHON) -m pytest $(ROOT_DIR)/tests/api/test_mgmt_channel_scoping.py \
@@ -180,8 +201,9 @@ VENV_PIP = $(ROOT_DIR)/.venv/bin/pip
 venv:
 	@test -d "$(ROOT_DIR)/.venv" || python3 -m venv "$(ROOT_DIR)/.venv"
 	@"$(VENV_PIP)" install -r "$(ROOT_DIR)/requirements.txt"
-	@"$(VENV_PIP)" install pytest
+	@"$(VENV_PIP)" install -r "$(ROOT_DIR)/tests/requirements-test.txt"
 	@echo "venv ready: $(VENV_PY)"
+	@echo "  (API/unit pytest deps are installed; for Playwright UI tests run: make setup-tests)"
 
 test-contracts-venv: venv
 	@$(MAKE) test-contracts
@@ -208,7 +230,7 @@ review-ui: test-ui-audit claude-review-ui
 	@echo "→ Screens: tests/results/athena-ui/screens/*.png"
 
 # ── Logs ─────────────────────────────────────────────────────────
-.PHONY: logs logs-bridge logs-listener logs-aurum logs-athena logs-errors
+.PHONY: logs logs-bridge logs-listener logs-aurum logs-athena logs-errors scribe-watch scribe-watch-log monitor-forge-skips monitor-forge-skips-watch
 
 logs:
 	@$(PYTHON) $(SCRIPTS)/logs.py
@@ -228,9 +250,25 @@ logs-athena:
 logs-errors:
 	@$(PYTHON) $(SCRIPTS)/logs.py --errors
 
+scribe-watch:
+	@$(PYTHON) -u $(SCRIPTS)/watch_scribe_live.py --show-events
+
+scribe-watch-log:
+	@mkdir -p "$(ROOT_DIR)/logs"
+	@$(PYTHON) -u $(SCRIPTS)/watch_scribe_live.py --show-events --log-file "$(ROOT_DIR)/logs/scribe_watch.log"
+
+monitor-forge-skips:
+	@$(PYTHON) -u $(SCRIPTS)/monitor_forge_skips.py
+
+monitor-forge-skips-watch:
+	@$(PYTHON) -u $(SCRIPTS)/monitor_forge_skips.py --watch --interval-sec 60
+
+journal-diagnose:
+	@$(PYTHON) $(SCRIPTS)/diagnose_forge_journal.py
+
 # ── Services ──────────────────────────────────────────────────────
 # install_services.py is chmod +x before each run so ./services/install_services.py works.
-.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-athena reload-all
+.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-athena reload-all journal-diagnose
 
 services-install:
 	@chmod +x $(INSTALL_SVC)
@@ -311,7 +349,7 @@ reload-athena:
 LENS_MCP_DIR = $(HOME)/tradingview-mcp-jackson
 LENS_RULES_CANONICAL = $(ROOT_DIR)/config/tradingview_rules.json
 
-.PHONY: start-tradingview stop-tradingview mt5-start mt5-stop setup-mt5-link check-tradingview update-lens-mcp system-up system-down
+.PHONY: start-tradingview stop-tradingview mt5-start mt5-stop mt5-kill-residual setup-mt5-link check-tradingview update-lens-mcp system-up system-down
 
 start-tradingview:
 	@chmod +x $(SCRIPTS)/start_tradingview_cdp.sh
@@ -328,7 +366,36 @@ mt5-start:
 
 mt5-stop:
 	@echo "Stopping MetaTrader 5..."
-	@pkill -f "terminal64.exe" 2>/dev/null && echo "✅ MetaTrader 5 stopped" || echo "  MetaTrader 5 was not running"
+	@PATS="terminal64\\.exe|MetaTrader 5|Agent-127.0.0.1-3000|wineserver|winedevice\\.exe|wine64-preloader.*MetaTrader 5"; \
+	PIDS=$$(pgrep -f "$$PATS" 2>/dev/null || true); \
+	if [ -z "$$PIDS" ]; then \
+		echo "  MetaTrader 5/Wine tester processes were not running"; \
+	else \
+		kill $$PIDS 2>/dev/null || true; \
+		sleep 1; \
+		REM=$$(pgrep -f "$$PATS" 2>/dev/null || true); \
+		if [ -n "$$REM" ]; then \
+			kill -9 $$REM 2>/dev/null || true; \
+		fi; \
+		echo "✅ MetaTrader 5 + Wine/Tester processes stopped"; \
+	fi
+
+mt5-kill-residual:
+	@echo "Final sweep for residual MT5/Wine tester processes..."
+	@PATS="terminal64\\.exe|MetaTrader 5|Agent-127.0.0.1-3000|wineserver|winedevice\\.exe|wine64-preloader"; \
+	REM=$$(pgrep -f "$$PATS" 2>/dev/null || true); \
+	if [ -z "$$REM" ]; then \
+		echo "  No residual MT5/Wine tester processes found"; \
+	else \
+		kill -9 $$REM 2>/dev/null || true; \
+		sleep 1; \
+		LEFT=$$(pgrep -f "$$PATS" 2>/dev/null || true); \
+		if [ -n "$$LEFT" ]; then \
+			echo "⚠️  Some residual MT5/Wine processes still detected: $$LEFT"; \
+		else \
+			echo "✅ Residual MT5/Wine tester processes cleared"; \
+		fi; \
+	fi
 
 setup-mt5-link:
 	@echo "One-time setup: creating MT5/ symlink from MT5_PATH in .env"
@@ -401,7 +468,7 @@ system-up: start-tradingview mt5-start start
 #   1) Python services (stop writers/consumers first)
 #   2) TradingView
 #   3) MetaTrader 5
-system-down: stop stop-tradingview mt5-stop
+system-down: stop stop-tradingview mt5-stop mt5-kill-residual
 	@echo ""
 	@echo "✅ System shutdown sequence complete."
 
@@ -424,7 +491,7 @@ scribe-gui:
 	@open -a "DB Browser for SQLite" "$(ROOT_DIR)/python/data/aurum_intelligence.db"
 
 scalper-config-sync:
-	@echo "Syncing scalper_config.json → MT5 Common Files..."
+	@echo "Syncing scalper_config.json → MT5 Common Files (copy-only; run make scalper-env-sync first if you edited defaults or .env)..."
 	@cp $(ROOT_DIR)/config/scalper_config.json "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/scalper_config.json" 2>/dev/null \
 		&& echo "  ✅ Synced" \
 		|| echo "  ⚠ Common Files path not found — copy manually"
@@ -433,9 +500,15 @@ forge-ea:
 	@chmod +x $(SCRIPTS)/install_forge_ea_macos.sh
 	@$(SCRIPTS)/install_forge_ea_macos.sh
 
-forge-compile:
+scalper-env-sync:
+	@$(PYTHON) $(SCRIPTS)/sync_scalper_config_from_env.py
+
+forge-compile: scalper-env-sync
 	@chmod +x $(SCRIPTS)/compile_forge_ea_macos.sh
 	@$(SCRIPTS)/compile_forge_ea_macos.sh
+
+# Alias — same as forge-compile (sync scalper JSON + build FORGE.ex5)
+forge-recompile: forge-compile
 
 forge-refresh: forge-compile
 	@test -d "/Applications/MetaTrader 5.app" && open -a "MetaTrader 5" || true

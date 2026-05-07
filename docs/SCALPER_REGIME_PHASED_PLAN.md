@@ -219,6 +219,8 @@ Implement Phase C from docs/SCALPER_REGIME_PHASED_PLAN.md:
 
 ## Phase D — SCRIBE & observability for all self-scalp sources
 
+**Status:** implemented — `FORGE_NATIVE_SCALP` `trade_groups` rows include **`regime_*`** from BRIDGE snapshot; `FORGE_SCALP_*` events carry regime audit fields; examples in **`docs/SCRIBE_QUERY_EXAMPLES.md`**.
+
 ### Goals
 
 - Ensure **`FORGE_NATIVE_SCALP`** rows receive **`regime_*`** and optional **`skip_reason`** / audit when BRIDGE blocks duplicate or unhealthy entries.
@@ -246,6 +248,8 @@ Phase D per docs/SCALPER_REGIME_PHASED_PLAN.md:
 ---
 
 ## Phase E — Intelligent lot scaling (regime + streak; not raw martingale)
+
+**Status:** implemented (regime lot multiplier) — **`AEGIS_REGIME_LOT_SCALE_*`** env family, **`Aegis._regime_lot_scale_mult`**, tests **`tests/services/test_aegis_regime_lot_scale.py`**, **`docs/AEGIS.md` §5c**. Post-DD “recovery assist” remains **not** implemented by default.
 
 ### Goals
 
@@ -278,6 +282,8 @@ Implement Phase E from docs/SCALPER_REGIME_PHASED_PLAN.md:
 ---
 
 ## Phase F — AURUM AUTO_SCALPER + prompts & context
+
+**Status:** implemented — **`python/aurum.py`** `_build_context` includes **`status.json`** regime block + **`feature_shape_mismatch`** warning; **`python/bridge.py`** `_auto_scalp_tick` injects regime lines into the AURUM prompt.
 
 ### Goals
 

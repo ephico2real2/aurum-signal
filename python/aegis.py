@@ -20,10 +20,44 @@ from trading_session import trading_day_reset_hour_utc
 
 log = logging.getLogger("aegis")
 
+
+def _first_int_env_or_default(keys: tuple[str, ...], default: int) -> int:
+    for key in keys:
+        raw = os.environ.get(key)
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if s == "":
+            continue
+        try:
+            return int(float(s))
+        except (TypeError, ValueError):
+            log.warning("AEGIS: invalid integer for %s=%r — ignoring", key, raw)
+    return default
+
+
+def _parse_optional_int_env(*keys: str) -> int | None:
+    for key in keys:
+        raw = os.environ.get(key)
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if s == "":
+            continue
+        try:
+            return int(float(s))
+        except (TypeError, ValueError):
+            log.warning("AEGIS: invalid integer for %s=%r — ignoring", key, raw)
+            continue
+    return None
+
+
 # ── Configuration ─────────────────────────────────────────────────
 RISK_PCT        = float(os.environ.get("AEGIS_RISK_PCT",        "2.0"))
 MAX_RISK_PCT    = float(os.environ.get("AEGIS_MAX_RISK_PCT",    "5.0"))
-NUM_TRADES      = int(os.environ.get("AEGIS_NUM_TRADES",        "8"))
+NUM_TRADES      = _first_int_env_or_default(("AEGIS_NUM_TRADES", "aegisNumTrades"), 8)
+NUM_TRADES_GLOBAL_MIN = 1
+NUM_TRADES_GLOBAL_MAX = 20
 MAX_SLIPPAGE    = float(os.environ.get("AEGIS_MAX_SLIPPAGE",    "20.0"))
 MIN_RR          = float(os.environ.get("AEGIS_MIN_RR",          "1.2"))
 MAX_DAILY_LOSS  = float(os.environ.get("AEGIS_MAX_DAILY_LOSS",  "5.0"))   # % balance
@@ -74,6 +108,137 @@ SCALE_DOWN_FACTOR       = float(os.environ.get("AEGIS_SCALE_DOWN_FACTOR","0.5"))
 SESSION_RESET_HOUR_UTC = trading_day_reset_hour_utc()
 
 
+def trades_envelope_bounds(base_n: int) -> tuple[int, int, bool]:
+    """
+    Env-driven leg-count envelope (optional).
+
+    When both min and max env names are unset or empty (see ``AEGIS_MIN_NUM_TRADES`` or
+    ``aegisMinNumTrades``, and ``AEGIS_MAX_NUM_TRADES`` or ``aegisMaxNumTrades``),
+    returns ``(base_n, base_n, False)`` so behavior matches legacy fixed ``n``.
+
+    If only one side is set, the other defaults to global min (1) or max (20).
+    """
+    mn = _parse_optional_int_env("AEGIS_MIN_NUM_TRADES", "aegisMinNumTrades")
+    mx = _parse_optional_int_env("AEGIS_MAX_NUM_TRADES", "aegisMaxNumTrades")
+    b = max(NUM_TRADES_GLOBAL_MIN, min(NUM_TRADES_GLOBAL_MAX, int(base_n)))
+    if mn is None and mx is None:
+        return b, b, False
+    lo = mn if mn is not None else NUM_TRADES_GLOBAL_MIN
+    hi = mx if mx is not None else NUM_TRADES_GLOBAL_MAX
+    lo = max(NUM_TRADES_GLOBAL_MIN, min(NUM_TRADES_GLOBAL_MAX, lo))
+    hi = max(NUM_TRADES_GLOBAL_MIN, min(NUM_TRADES_GLOBAL_MAX, hi))
+    if lo > hi:
+        lo, hi = hi, lo
+    return lo, hi, True
+
+
+def _signal_setup_kind(signal: dict) -> str:
+    """Classify mean-reversion vs trend follow from optional signal metadata (no LLM)."""
+    for key in ("setup_type", "scalper_setup", "strategy", "reason", "signal_type"):
+        v = signal.get(key)
+        if v is None:
+            continue
+        s = str(v).upper()
+        if "BREAKOUT" in s:
+            return "breakout"
+        if "BOUNCE" in s:
+            return "bounce"
+    return ""
+
+
+def resolve_num_trades(
+    base_n: int,
+    envelope_lo: int,
+    envelope_hi: int,
+    envelope_from_env: bool,
+    signal: dict,
+    account: dict,
+    mt5_data: dict | None,
+    regime_context: dict | None,
+    scale_factor: float,
+    session_pnl: float,
+) -> tuple[int, str]:
+    """
+    Pick integer leg count ``n`` in ``[envelope_lo, envelope_hi]`` (also clamped to
+    ``[NUM_TRADES_GLOBAL_MIN, NUM_TRADES_GLOBAL_MAX]``). See ``docs/AEGIS.md`` §8.
+    """
+    lo = max(NUM_TRADES_GLOBAL_MIN, min(NUM_TRADES_GLOBAL_MAX, int(envelope_lo)))
+    hi = max(NUM_TRADES_GLOBAL_MIN, min(NUM_TRADES_GLOBAL_MAX, int(envelope_hi)))
+    if lo > hi:
+        lo, hi = hi, lo
+
+    if not envelope_from_env or lo == hi:
+        tag = "trades_policy:single_point" if not envelope_from_env else "trades_policy:env_pin"
+        return lo, f"{tag} n={lo}"
+
+    n = max(lo, min(hi, int(base_n)))
+    reasons: list[str] = []
+    balance = float(account.get("balance") or 0)
+    equity = float(account.get("equity", balance) or balance)
+
+    if balance > 0 and session_pnl < 0:
+        loss_pct = abs(session_pnl) / balance * 100.0
+        steps = min(3, int(loss_pct // 1.5))
+        if steps:
+            n -= steps
+            reasons.append(f"session_loss-{steps}")
+
+    if balance > 0 and session_pnl > 0:
+        win_pct = session_pnl / balance * 100.0
+        if win_pct >= 1.0:
+            bump = min(2, int(win_pct // 2.5))
+            if bump:
+                n += bump
+                reasons.append(f"session_win+{bump}")
+
+    if mt5_data and balance > 0:
+        acc = mt5_data.get("account") or {}
+        try:
+            eq_mt5 = float(acc.get("equity", equity) or equity)
+        except (TypeError, ValueError):
+            eq_mt5 = equity
+        dd_pct = max(0.0, (balance - eq_mt5) / balance * 100.0)
+        if dd_pct >= 2.0:
+            n -= 1
+            reasons.append("equity_dd_ge_2pct")
+        if dd_pct >= 4.0:
+            n -= 1
+            reasons.append("equity_dd_ge_4pct")
+
+    if scale_factor < 1.0 - 1e-9:
+        n -= 1
+        reasons.append("scale_down")
+    elif scale_factor > 1.0 + 1e-9:
+        n += 1
+        reasons.append("scale_up")
+
+    ctx = regime_context or {}
+    label = str(ctx.get("label") or "").upper()
+    try:
+        conf = float(ctx.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    if label == "VOLATILE" and conf >= 0.45:
+        n -= 1
+        reasons.append("regime_volatile")
+    if label == "RANGE" and conf >= 0.55:
+        n += 1
+        reasons.append("regime_range_layers")
+
+    sk = _signal_setup_kind(signal)
+    if sk == "breakout":
+        n += 1
+        reasons.append("setup_breakout")
+    elif sk == "bounce":
+        n -= 1
+        reasons.append("setup_bounce")
+
+    n = max(lo, min(hi, n))
+    n = max(NUM_TRADES_GLOBAL_MIN, min(NUM_TRADES_GLOBAL_MAX, n))
+    trail = ";".join(reasons) if reasons else "neutral"
+    return n, f"trades_policy:resolve {trail} -> n={n} [{lo},{hi}] base_in={base_n}"
+
+
 @dataclass
 class TradeApproval:
     approved:       bool
@@ -90,13 +255,26 @@ class TradeApproval:
     warnings:       list  = field(default_factory=list)   # advisory flags (e.g. WIDE_ZONE)
     entry_zone_pips: float = 0.0
     scale_zone_risk: bool  = False  # True when scale>1.0 AND entry_zone_pips>5
+    trades_policy_reason: str = ""
+    trades_envelope_min: int | None = None
+    trades_envelope_max: int | None = None
 
 
 class Aegis:
     def __init__(self):
         self.scribe = get_scribe()
-        log.info(f"AEGIS initialised — risk={RISK_PCT}% trades={NUM_TRADES} "
-                 f"session_reset={SESSION_RESET_HOUR_UTC:02d}:00 UTC")
+        _mn = _parse_optional_int_env("AEGIS_MIN_NUM_TRADES", "aegisMinNumTrades")
+        _mx = _parse_optional_int_env("AEGIS_MAX_NUM_TRADES", "aegisMaxNumTrades")
+        _rng = ""
+        if _mn is not None or _mx is not None:
+            _rng = f" trades_env=[{_mn if _mn is not None else '?'}, {_mx if _mx is not None else '?'}]"
+        log.info(
+            "AEGIS initialised — risk=%s%% default_trades=%s%s session_reset=%02d:00 UTC",
+            RISK_PCT,
+            NUM_TRADES,
+            _rng,
+            SESSION_RESET_HOUR_UTC,
+        )
         try:
             report_component_status(
                 "AEGIS",
@@ -424,19 +602,53 @@ class Aegis:
             )
             warnings.append("WIDE_ZONE")
 
-        # ── Per-signal num_trades override ───────────────────────
-        num_trades = NUM_TRADES
+        # ── Per-signal num_trades override (precedence) ────────────
+        base_num_trades = NUM_TRADES
         sig_nt = signal.get("num_trades")
         if sig_nt is not None:
             try:
                 sig_nt = int(sig_nt)
-                if 1 <= sig_nt <= 20:
-                    num_trades = sig_nt
+                if NUM_TRADES_GLOBAL_MIN <= sig_nt <= NUM_TRADES_GLOBAL_MAX:
+                    base_num_trades = sig_nt
+                else:
+                    base_num_trades = max(
+                        NUM_TRADES_GLOBAL_MIN,
+                        min(NUM_TRADES_GLOBAL_MAX, sig_nt),
+                    )
             except (TypeError, ValueError):
                 pass
+        base_num_trades = max(
+            NUM_TRADES_GLOBAL_MIN,
+            min(NUM_TRADES_GLOBAL_MAX, int(base_num_trades)),
+        )
 
-        # ── Lot scaling ────────────────────────────────────────────
+        session_pnl = self._get_session_pnl()
+
+        # ── Lot scaling (also an input to leg-count resolver) ──────
         scale_factor, scale_reason = self._get_scale_factor()
+        regime_mult, regime_scale_note = Aegis._regime_lot_scale_mult(
+            direction, regime_context, mt5_data
+        )
+        comb_max = float(os.environ.get("AEGIS_SCALE_COMBINED_MAX", "2.0"))
+        scale_factor = min(max(0.01, scale_factor * regime_mult), comb_max)
+        if abs(regime_mult - 1.0) > 1e-6:
+            scale_reason = f"{scale_reason}; {regime_scale_note}"
+
+        envelope_lo, envelope_hi, envelope_from_env = trades_envelope_bounds(base_num_trades)
+        num_trades, trades_policy_reason = resolve_num_trades(
+            base_num_trades,
+            envelope_lo,
+            envelope_hi,
+            envelope_from_env,
+            signal,
+            account,
+            mt5_data,
+            regime_context,
+            scale_factor,
+            session_pnl,
+        )
+        env_min = envelope_lo if envelope_from_env else None
+        env_max = envelope_hi if envelope_from_env else None
 
         # ── Lot sizing ─────────────────────────────────────────────
         # Risk-based sizing always computed (for logging/reference)
@@ -482,7 +694,7 @@ class Aegis:
             f"AEGIS APPROVED: {direction} {num_trades}×{lot_per_trade}lot "
             f"SL={sl_pips:.1f}p R:R={rr:.2f} risk=${total_risk:.2f} "
             f"scale={scale_factor:.0%} ({scale_reason}) "
-            f"entry_zone_pips={entry_zone_pips:.1f}"
+            f"entry_zone_pips={entry_zone_pips:.1f} | {trades_policy_reason}"
         )
         if scale_zone_risk:
             approved_line += " scale_zone_risk=true"
@@ -495,7 +707,7 @@ class Aegis:
                 "AEGIS",
                 "OK",
                 note=f"scale={scale_factor:.0%} ({scale_reason})",
-                last_action=f"approved {direction} {NUM_TRADES}x{lot_per_trade}lot rr={rr:.1f}",
+                last_action=f"approved {direction} {num_trades}x{lot_per_trade}lot rr={rr:.1f}",
             )
         except Exception as e:
             log.debug(f"AEGIS heartbeat error: {e}")
@@ -514,6 +726,9 @@ class Aegis:
             warnings=warnings,
             entry_zone_pips=round(entry_zone_pips, 2),
             scale_zone_risk=scale_zone_risk,
+            trades_policy_reason=trades_policy_reason,
+            trades_envelope_min=env_min,
+            trades_envelope_max=env_max,
         )
 
     # ── Multi-TF trend cascade ───────────────────────────────
@@ -713,6 +928,54 @@ class Aegis:
             return factor, reason
 
         return 1.0, "NORMAL"
+
+    @staticmethod
+    def _regime_lot_scale_mult(
+        direction: str,
+        regime_context: dict | None,
+        mt5_data: dict | None,
+    ) -> tuple[float, str]:
+        """
+        Optional extra multiplier on streak based scale_factor (Phase E).
+        Default off — enable AEGIS_REGIME_LOT_SCALE_ENABLED=true. Capped by
+        per-knob min/max and AEGIS_SCALE_COMBINED_MAX after multiply in validate().
+        """
+        del mt5_data  # reserved for future MTF alignment checks
+        if not _env_bool("AEGIS_REGIME_LOT_SCALE_ENABLED", False):
+            return 1.0, "regime_lot_scale_off"
+        ctx = regime_context or {}
+        if ctx.get("stale"):
+            return 1.0, "regime_stale_no_lot_scale"
+        try:
+            conf = float(ctx.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        lo = float(os.environ.get("AEGIS_REGIME_LOT_SCALE_MIN", "0.82"))
+        hi = float(os.environ.get("AEGIS_REGIME_LOT_SCALE_MAX", "1.35"))
+
+        def clamp(v: float) -> float:
+            return max(lo, min(hi, v))
+
+        label = str(ctx.get("label") or "").upper()
+        d = (direction or "").upper()
+        min_conf = float(os.environ.get("AEGIS_REGIME_LOT_SCALE_MIN_CONFIDENCE", "0.58"))
+        target_conf = float(os.environ.get("AEGIS_REGIME_LOT_SCALE_CONF_TARGET", "0.78"))
+
+        aligned = (label == "TREND_BULL" and d == "BUY") or (label == "TREND_BEAR" and d == "SELL")
+        if aligned and conf >= min_conf:
+            span = max(1e-6, target_conf - min_conf)
+            t = max(0.0, min(1.0, (conf - min_conf) / span))
+            m = 1.0 + t * (hi - 1.0)
+            return clamp(m), f"regime_lot_aligned:{label}"
+
+        if label == "RANGE":
+            r = float(os.environ.get("AEGIS_REGIME_LOT_SCALE_RANGE_MULT", "0.94"))
+            return clamp(r), "regime_lot_range"
+        if label == "VOLATILE":
+            r = float(os.environ.get("AEGIS_REGIME_LOT_SCALE_VOLATILE_MULT", "0.87"))
+            return clamp(r), "regime_lot_volatile"
+
+        return 1.0, "regime_lot_neutral"
 
 
 # ── Singleton ─────────────────────────────────────────────────────

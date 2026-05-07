@@ -87,6 +87,7 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 | `python/config/channel_messages.json` | LISTENER (every 5min) | ATHENA | `{ "<chat_id>": [ {date,text,id}, … ], … }` |
 `MT5/market_data.json` semantics (current runtime):
 - **`strategy_tester`** (FORGE **v1.6.5+**, Strategy Tester only): when **`true`**, BRIDGE/ATHENA treat feed freshness using **file mtime** (FORGE’s **`timestamp_unix`** is simulated bar time in the Tester, not wall clock).
+- **Tester execution policy note (FORGE v1.6.11+):** when `strategy_tester=true`, FORGE may apply Tester-only entry relaxations and bypass selected live safety gates to ensure backtests produce observable fills. This is execution-policy behavior, not a shape change in the file contract.
 - `account.open_positions_count` is account-wide.
 - `open_positions[]` exports all account positions and includes `forge_managed` (`true` for FORGE magic-range positions, `false` for manual/non-FORGE).
 - `pending_orders[]` exports symbol-scope pending orders and includes `forge_managed`.
@@ -104,10 +105,33 @@ Paths are relative to repo root unless noted. Machine-readable definitions live 
 - `regime_apply_entry_policy` — **0** or **1** (numeric for MQL5)
 - `regime_countertrend_min_confidence` — number (same default semantics as **`AEGIS_REGIME_COUNTERTREND_MIN_CONFIDENCE`**)
 
+`MT5/market_data.json` `volume_profile` section (FORGE v2.0.0+):
+- `poc_price` — Point of Control (highest volume price level from M5 tick volume)
+- `poc_strength` — POC volume share (0..1)
+- `vwap_price` — Volume Weighted Average Price (typical price × volume / total volume)
+- `fib_high`, `fib_low` — swing high/low over M5 lookback (FORGE v2.1.0+)
+- `fib_50`, `fib_382`, `fib_618` — Fibonacci retracement levels (FORGE v2.1.0+)
+- `rsi_divergence` — current RSI divergence state: `NONE`, `REG_BULL`, `REG_BEAR`, `HID_BULL`, `HID_BEAR` (FORGE v2.2.0+). Top-level field (not inside `volume_profile`).
+- `psar_state` — Parabolic SAR state: `NONE`, `FLIP_BULL`, `FLIP_BEAR`, `BELOW`, `ABOVE` (FORGE v2.3.0+). Informational only — logged but never gates entries. Top-level field.
+- Flattened by BRIDGE `_extract_forge_thresholds()` into top-level keys for LENS → SCRIBE pipeline.
+
 `MT5/scalper_entry.json` semantics (native FORGE scalper):
 - emitted by FORGE on native setup trigger (`FORGE_NATIVE_SCALP`)
 - consumed by BRIDGE and persisted into SCRIBE `trade_groups`
+- V2.0.0+ fields: `poc_price`, `vwap_price`, `pattern_score`
+- V2.1.0+ fields: `fib_50`, `fib_382`, `fib_618`
+- V2.2.0+ fields: `rsi_divergence`
+- V2.3.0+ fields: `psar_state`
+- **`trade_groups.open_context`** (optional TEXT, JSON): bounded snapshot at **open** time — regime slice, compact MT5 indicators + account excerpt, optional AEGIS approval fields (`scale_factor`, leg resolver, R:R, etc.), and source-specific `extra`. Written by BRIDGE for SIGNAL, AURUM, LENS scalper, FORGE native, and MANUAL_MT5 groups unless **`BRIDGE_OPEN_CONTEXT_ENABLE=false`**. Max serialized size **`SCRIBE_OPEN_CONTEXT_MAX_BYTES`** (default 65536); oversized payloads store a stub JSON with `truncated: true`. Query examples: **`docs/SCRIBE_QUERY_EXAMPLES.md`**.
 - includes threshold-hardening fields above plus derived decision metrics (`h1_trend_strength`, `h4_trend_strength` when FORGE **v1.6.0+**, `native_scalper_m1_mode` / `m1_trend_strength` / `m1_prior_close` / `m1_prior_open` when **v1.6.1+**, `prev_close`, `m5_bb_upper`, `m5_bb_lower`)
+- FORGE **v1.6.17+** adds lot-decision observability fields for native entries:
+  - `lot_multiplier`
+  - `auto_lot_enabled`
+  - `auto_lot_breakout_only`
+  - `auto_lot_max_multiplier`
+  - `auto_lot_trend_ref`
+  - `auto_lot_dir_trend`
+  - `auto_lot_ratio`
 
 `python/config/listener_meta.json` semantics (written by LISTENER):
 - `status` — `"OK"` | `"WARN"` (WARN = no message received for > `LISTENER_STALE_THRESHOLD_SEC`, default 600s)
@@ -251,7 +275,7 @@ State-mutating ATHENA routes: when `ATHENA_SECRET` is set, POST routes (`/api/mo
 
 Management validation: `POST /api/management` validates the request body against `schemas/files/management_cmd.schema.json` before writing. Bad payloads return `400 {"error":"validation_failed","intent":"...","details":[...]}`. The validator is backward-compatible — missing schema files fall through to the unvalidated write path.
 
-SCRIBE query limits: queries are restricted to `ALLOWED_SCRIBE_TABLES`: `trade_positions`, `trade_groups`, `signals`, `trade_closures`, `regime_snapshots`, `system_events`. Requests referencing any other table name return a `ValueError` / `400` error. Channel-origin `MODIFY_SL`/`MODIFY_TP` commands without a resolved `group_id`, `ticket`, or `tp_stage` are dropped by BRIDGE before reaching FORGE.
+`POST /api/scribe/query` runs **read-only** SQL against the intelligence DB (SQLite authorizer: SELECT-only). It is **not** limited to the `ALLOWED_SCRIBE_TABLES` frozenset in `python/scribe.py` — that set applies to **other** SCRIBE helpers (e.g. dynamic table export). Prefer bounded queries; examples in **`docs/SCRIBE_QUERY_EXAMPLES.md`** (including **`forge_signals`** for the FORGE journal sync). Channel-origin `MODIFY_SL`/`MODIFY_TP` commands without a resolved `group_id`, `ticket`, or `tp_stage` are dropped by BRIDGE before reaching FORGE.
 
 ### 4.3 Services vs dev Python (launchd / systemd)
 

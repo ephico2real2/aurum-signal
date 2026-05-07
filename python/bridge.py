@@ -11,11 +11,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 from aeb_executor import execute_action, format_result_for_telegram
 
 from scribe      import get_scribe
-from herald      import get_herald
+from herald      import get_herald, telegram_group_label
 from sentinel    import Sentinel
 from lens        import get_lens
 from aegis       import get_aegis
@@ -28,6 +28,7 @@ from trading_session import get_trading_session_utc, sydney_open_alert_info
 from freshness import DATA_FRESHNESS_WINDOWS
 from config_io import atomic_write_json
 from market_data import enrich_mt5_for_stale_check
+from gate_diagnostics import build_signal_gate_diagnostics, format_gate_diagnostics_herald_line
 
 log = logging.getLogger("bridge")
 
@@ -60,6 +61,23 @@ MT5_STALE_RELAXED_SEC = int(os.environ.get("BRIDGE_MT5_STALE_RELAXED", str(MT5_S
 if MT5_STALE_RELAXED_SEC < MT5_STALE_SEC:
     MT5_STALE_RELAXED_SEC = MT5_STALE_SEC
 MT5_READ_FAIL_STREAK = max(1, int(os.environ.get("BRIDGE_MT5_READ_FAIL_STREAK", "2")))
+
+# Signal-path gate diagnostics (Nixie-style confluence visibility) — default off
+GATE_DIAGNOSTICS_ENABLED = os.environ.get("GATE_DIAGNOSTICS_ENABLED", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+GATE_DIAGNOSTICS_HERALD = os.environ.get("GATE_DIAGNOSTICS_HERALD", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+GATE_DIAGNOSTICS_FILE = _under_python(
+    os.environ.get("GATE_DIAGNOSTICS_FILE", "config/gate_diagnostics_last.json")
+)
 
 STATUS_FILE     = _under_python(os.environ.get("BRIDGE_STATUS_FILE", "config/status.json"))
 CMD_FILE_MT5    = _under_root(os.environ.get("MT5_CMD_FILE",        "MT5/command.json"))
@@ -99,7 +117,14 @@ FORGE_MAGIC_MAX  = int(os.environ.get("FORGE_MAGIC_MAX", "9999"))  # FORGE range
 
 BROKER_INFO_FILE = _under_root(os.environ.get("MT5_BROKER_FILE",    "MT5/broker_info.json"))
 
-VERSION     = "1.6.1"
+def _read_version() -> str:
+    vf = os.path.join(_ROOT, "SYSTEM_VERSION")
+    try:
+        return open(vf).read().strip()
+    except OSError:
+        return "0.0.0"
+
+VERSION     = _read_version()
 VALID_MODES = ("OFF", "WATCH", "SIGNAL", "SCALPER", "HYBRID", "AUTO_SCALPER")
 BRIDGE_PIN_MODE = os.environ.get("BRIDGE_PIN_MODE", "").upper().strip()
 
@@ -558,6 +583,7 @@ def _resolve_forge_scalper_mode(mode: str) -> str:
 
 def _extract_forge_thresholds(mt5_data: dict) -> dict:
     cfg = (mt5_data or {}).get("forge_config") or {}
+    vp = (mt5_data or {}).get("volume_profile") or {}
     return {
         "pending_entry_threshold_points": cfg.get(
             "pending_entry_threshold_points",
@@ -571,6 +597,13 @@ def _extract_forge_thresholds(mt5_data: dict) -> dict:
             "breakout_buffer_points",
             (mt5_data or {}).get("breakout_buffer_points"),
         ),
+        "poc_price": vp.get("poc_price"),
+        "vwap_price": vp.get("vwap_price"),
+        "fib_50": vp.get("fib_50"),
+        "fib_382": vp.get("fib_382"),
+        "fib_618": vp.get("fib_618"),
+        "rsi_divergence": (mt5_data or {}).get("rsi_divergence"),
+        "psar_state": (mt5_data or {}).get("psar_state"),
     }
 
 
@@ -883,6 +916,8 @@ class Bridge:
         # ratchet drop (so the next eligibility window can retry), and on
         # SIGNAL group close (to wipe stale entries pointing at recycled tickets).
         self._profit_ratcheted: set[int] = set()
+        self._profit_ratchet_tester_warned = False
+        self._tester_mode_logged = False
         # FORGE command queue: serialises command.json writes so rapid-fire
         # MODIFY_SL/MODIFY_TP sequences (per-ticket profit-ratchet, multi-stage
         # MGMT modifies) don't race against each other on the shared file. See
@@ -1268,6 +1303,13 @@ class Bridge:
                             "lens_rating": None,
                             "lens_rsi": None,
                             "lens_confirmed": 0,
+                            "open_context": self._trade_open_context_snapshot(
+                                mt5,
+                                self._regime_context_for_trade(direction),
+                                None,
+                                source="MANUAL_MT5",
+                                extras={"ticket": ticket, "magic": magic},
+                            ),
                         }
                         gid = self.scribe.log_trade_group(group_data, mode)
                         self.scribe.update_trade_group_magic(gid, magic)
@@ -1325,6 +1367,13 @@ class Bridge:
                     "lens_rating": None,
                     "lens_rsi": None,
                     "lens_confirmed": 0,
+                    "open_context": self._trade_open_context_snapshot(
+                        mt5,
+                        self._regime_context_for_trade(direction),
+                        None,
+                        source="MANUAL_MT5",
+                        extras={"ticket": ticket, "magic": magic},
+                    ),
                 }
                 gid = self.scribe.log_trade_group(group_data, mode)
                 self.scribe.update_trade_group_magic(gid, magic)
@@ -1432,7 +1481,7 @@ class Bridge:
                     if not has_open_positions:
                         self.scribe.update_trade_group(gid, "CLOSED", close_reason="PENDING_EXPIRED")
                     self.herald.send(
-                        f"⏰ <b>PENDING EXPIRED</b> — G{gid}\n"
+                        f"⏰ <b>PENDING EXPIRED</b> — {telegram_group_label(gid)}\n"
                         f"FULFILLED_PENDING orders cancelled after {PENDING_ORDER_TIMEOUT_SEC}s")
                     self._bridge_activity(
                         "PENDING_EXPIRED",
@@ -1533,7 +1582,9 @@ class Bridge:
 
             # Herald notification per position
             if close_reason == "SL_HIT":
-                self.herald.position_closed(ticket, direction, pnl, pips)
+                self.herald.position_closed(
+                    ticket, direction, pnl, pips, group_id=gid, outcome="SL HIT"
+                )
             elif close_reason.startswith("TP"):
                 remaining = sum(
                     1 for s in self._known_positions.values()
@@ -1544,6 +1595,7 @@ class Bridge:
                     closed_n=1, remaining_n=remaining,
                     pips=pips, pnl=pnl,
                     be_moved=False,
+                    direction=direction,
                 )
 
         # ── Disappeared unmanaged/manual positions → closed ───────
@@ -1573,6 +1625,17 @@ class Bridge:
                     "lens_rating": None,
                     "lens_rsi": None,
                     "lens_confirmed": 0,
+                    "open_context": self._trade_open_context_snapshot(
+                        mt5,
+                        self._regime_context_for_trade(direction_seed),
+                        None,
+                        source="MANUAL_MT5",
+                        extras={
+                            "ticket": ticket,
+                            "magic": int(snap.get("magic", 0) or 0),
+                            "unmanaged_disappeared": True,
+                        },
+                    ),
                 }
                 gid = self.scribe.log_trade_group(group_data, mode)
                 self.scribe.update_trade_group_magic(gid, int(snap.get("magic", 0) or 0))
@@ -1767,7 +1830,21 @@ class Bridge:
         # Runs after fills/closes are reconciled so we only ratchet on legs
         # that are still live this tick. Opt-in via PROFIT_RATCHET_ENABLED.
         if PROFIT_RATCHET_ENABLED:
-            self._apply_profit_ratchet(live_positions)
+            in_tester = bool(mt5.get("strategy_tester"))
+            if in_tester:
+                # Strategy Tester frequently rejects per-ticket MODIFY_SL/TP
+                # ratchet writes as "Invalid stops". That can leave original
+                # SL in place and distort backtest outcomes. Native FORGE
+                # management remains active; disable BRIDGE ratchet in tester.
+                if not self._profit_ratchet_tester_warned:
+                    log.info(
+                        "BRIDGE: PROFIT_RATCHET disabled in strategy_tester mode "
+                        "(avoids Invalid stops / stale-SL artifacts)."
+                    )
+                    self._profit_ratchet_tester_warned = True
+            else:
+                self._profit_ratchet_tester_warned = False
+                self._apply_profit_ratchet(live_positions)
 
     def _enqueue_forge_command(
         self,
@@ -1828,6 +1905,72 @@ class Bridge:
             return True
 
         return _verify
+
+    @staticmethod
+    def _mt5_point_bid_ask(mt5: dict) -> tuple[float, float, float]:
+        """Best-effort (point, bid, ask) from FORGE market_data.json snapshot."""
+        price = (mt5 or {}).get("price") or {}
+        bid = float(price.get("bid") or 0.0)
+        ask = float(price.get("ask") or 0.0)
+        spr_pt = float(price.get("spread_points") or 0.0)
+        if bid > 0 and ask > 0 and spr_pt > 0:
+            point = (ask - bid) / spr_pt
+        else:
+            digits = int((mt5 or {}).get("digits") or 2)
+            point = 10.0 ** (-digits)
+        return point, bid, ask
+
+    @staticmethod
+    def _breakeven_sl_for_leg(
+        entry_price: float, direction: str, bid: float, ask: float, point: float
+    ) -> float | None:
+        """Match FORGE ExecuteMoveBeAll: SL = entry ± (spread + 5×point)."""
+        if entry_price <= 0 or point <= 0:
+            return None
+        spread = max(0.0, ask - bid) if bid > 0 and ask > 0 else 0.0
+        buffer = spread + 5.0 * point
+        d = (direction or "").upper()
+        if d == "BUY":
+            return float(entry_price + buffer)
+        return float(entry_price - buffer)
+
+    def _enqueue_move_be_for_group(self, mt5: dict, group_id: int, log_label: str) -> None:
+        """Per-ticket MODIFY_SL to true breakeven — required when legs have different entries."""
+        magic = self._lookup_group_magic(int(group_id))
+        if not magic:
+            return
+        positions = self.scribe.get_open_positions_by_group(int(group_id))
+        point, bid, ask = self._mt5_point_bid_ask(mt5)
+        for pos in positions:
+            try:
+                ticket = pos.get("ticket")
+                ep = pos.get("entry_price")
+                if ticket is None or ep is None:
+                    continue
+                ef = float(ep)
+                if ef <= 100:
+                    continue
+                direction = str(pos.get("direction") or "BUY")
+                sl_be = self._breakeven_sl_for_leg(ef, direction, bid, ask, point)
+                if sl_be is None:
+                    continue
+                t_int = int(ticket)
+                hint = direction.upper() if direction.upper() in ("BUY", "SELL") else "BUY"
+                forge_cmd: dict = {
+                    "action": "MODIFY_SL",
+                    "magic": magic,
+                    "sl": sl_be,
+                    "ticket": t_int,
+                    "timestamp": _now(),
+                }
+                verifier = self._build_ticket_sl_verifier(t_int, sl_be, hint)
+                self._enqueue_forge_command(
+                    forge_cmd,
+                    verifier=verifier,
+                    description=f"{log_label} MOVE_BE G{group_id} #{t_int} sl={sl_be:.5f}",
+                )
+            except (TypeError, ValueError) as e:
+                log.debug("BRIDGE: MOVE_BE leg skipped: %s", e)
 
     @staticmethod
     def _build_ticket_tp_verifier(
@@ -2008,7 +2151,7 @@ class Bridge:
                     if target_tp is not None else ""
                 )
                 self.herald.send(
-                    f"🛡️ <b>PROFIT LOCKED</b> — G{gid} #{ticket}\n"
+                    f"🛡️ <b>PROFIT LOCKED</b> — {telegram_group_label(gid)} #{ticket}\n"
                     f"{direction} +{pips:.1f}p → SL moved to <code>{target_sl}</code> "
                     f"({lock:+.1f}p from entry)"
                     f"{tp_msg}"
@@ -2118,6 +2261,141 @@ class Bridge:
             "direction": (direction or "").upper(),
         }
 
+    def _trade_group_regime_fields(self, direction: str) -> dict:
+        """Flatten regime context into SCRIBE ``trade_groups`` columns (Phase D)."""
+        ctx = self._regime_context_for_trade(direction)
+        return {
+            "regime_label": ctx.get("label"),
+            "regime_confidence": ctx.get("confidence"),
+            "regime_model": ctx.get("model_name"),
+            "regime_entry_mode": ctx.get("entry_mode"),
+            "regime_policy": None,
+            "regime_fallback_reason": ctx.get("fallback_reason")
+            or ctx.get("entry_gate_reason"),
+        }
+
+    def _regime_audit_fragment(self) -> dict:
+        """Compact regime snapshot for system_events / bridge activity JSON."""
+        s = self._regime_snapshot or {}
+        return {
+            "regime_label": s.get("label"),
+            "regime_confidence": s.get("confidence"),
+            "regime_entry_mode": s.get("entry_mode"),
+            "regime_stale": s.get("stale"),
+        }
+
+    @staticmethod
+    def _compact_indicators_for_open_context(mt5: dict | None) -> dict:
+        keys_tf = (
+            ("indicators_h1", "h1"),
+            ("indicators_m5", "m5"),
+            ("indicators_m15", "m15"),
+        )
+        keys_ind = (
+            "rsi_14", "adx", "ema_20", "ema_50", "atr_14", "bb_width", "macd_hist",
+        )
+        out: dict = {}
+        if not mt5:
+            return out
+        for src_key, label in keys_tf:
+            ind = mt5.get(src_key) or {}
+            if not ind:
+                continue
+            slim = {k: ind.get(k) for k in keys_ind if ind.get(k) is not None}
+            if slim:
+                out[label] = slim
+        return out
+
+    @staticmethod
+    def _account_excerpt_for_open_context(acc: dict | None) -> dict:
+        if not acc:
+            return {}
+        keep = (
+            "balance",
+            "equity",
+            "total_floating_pnl",
+            "open_positions_count",
+            "session_pnl",
+        )
+        return {k: acc.get(k) for k in keep if acc.get(k) is not None}
+
+    def _trade_open_context_snapshot(
+        self,
+        mt5: dict | None,
+        regime_ctx: dict | None,
+        approval: Any | None,
+        *,
+        source: str,
+        extras: dict | None = None,
+    ) -> dict | None:
+        """
+        Bounded JSON snapshot at trade open for SCRIBE ``open_context`` (attribution / analytics).
+        Opt out: BRIDGE_OPEN_CONTEXT_ENABLE=false
+        """
+        if os.environ.get("BRIDGE_OPEN_CONTEXT_ENABLE", "1").strip().lower() in (
+            "0", "false", "no", "off",
+        ):
+            return None
+        rc = regime_ctx or {}
+        regime_out = {
+            "label": rc.get("label"),
+            "confidence": rc.get("confidence"),
+            "entry_mode": rc.get("entry_mode"),
+            "apply_entry_policy": rc.get("apply_entry_policy"),
+            "stale": rc.get("stale"),
+            "model_name": rc.get("model_name"),
+        }
+        regime_out = {k: v for k, v in regime_out.items() if v is not None}
+
+        px = (mt5 or {}).get("price") or {}
+        tsu = (mt5 or {}).get("timestamp_unix")
+        age_sec = None
+        if tsu is not None:
+            try:
+                age_sec = max(0.0, time.time() - float(tsu))
+            except (TypeError, ValueError):
+                age_sec = None
+
+        aegis_out: dict | None = None
+        if approval is not None:
+            aegis_out = {
+                "scale_factor": getattr(approval, "scale_factor", None),
+                "scale_reason": getattr(approval, "scale_reason", None),
+                "num_trades": getattr(approval, "num_trades", None),
+                "trades_policy_reason": getattr(approval, "trades_policy_reason", None),
+                "rr_ratio": getattr(approval, "rr_ratio", None),
+                "risk_pct": getattr(approval, "risk_pct", None),
+                "trades_envelope_min": getattr(approval, "trades_envelope_min", None),
+                "trades_envelope_max": getattr(approval, "trades_envelope_max", None),
+            }
+            aegis_out = {k: v for k, v in aegis_out.items() if v is not None}
+            if not aegis_out:
+                aegis_out = None
+
+        body: dict = {
+            "open_context_version": 1,
+            "recorded_at_unix": time.time(),
+            "source": source,
+            "bridge_mode": self._mode,
+            "effective_mode": self._effective_mode(),
+            "session": self._current_session,
+            "regime": regime_out or None,
+            "mt5": {
+                "timestamp_unix": tsu,
+                "age_sec": round(age_sec, 3) if age_sec is not None else None,
+                "bid": px.get("bid"),
+                "ask": px.get("ask"),
+                "indicators": self._compact_indicators_for_open_context(mt5),
+                "account": self._account_excerpt_for_open_context(
+                    (mt5 or {}).get("account") if isinstance((mt5 or {}).get("account"), dict) else None
+                ),
+            },
+            "aegis": aegis_out,
+        }
+        if extras:
+            body["extra"] = {k: v for k, v in extras.items() if v is not None}
+        return body
+
     def _bridge_activity(
         self,
         event_type: str,
@@ -2140,6 +2418,40 @@ class Bridge:
             )
         except Exception as e:
             log.debug("BRIDGE activity log failed: %s", e)
+
+    def _write_signal_gate_diagnostics(
+        self,
+        mt5: dict | None,
+        signal: dict,
+        regime_context: dict,
+        *,
+        reject_gate: str | None = None,
+        reject_reason: str | None = None,
+    ) -> dict | None:
+        """Persist last SIGNAL-path environment snapshot for ATHENA (feature-flagged)."""
+        if not GATE_DIAGNOSTICS_ENABLED:
+            return None
+        try:
+            status = _read_json(STATUS_FILE) or {}
+            sentinel = _read_json(SENTINEL_FILE) or {}
+            diag = build_signal_gate_diagnostics(
+                status=status,
+                sentinel=sentinel,
+                mt5=mt5,
+                regime_context=regime_context,
+                bridge_mode=self._effective_mode(),
+                trading_session_label=self._current_session or get_trading_session_utc(),
+                mt5_stale_sec=MT5_STALE_SEC,
+                signal_id=signal.get("signal_id"),
+                direction=signal.get("direction"),
+                reject_gate=reject_gate,
+                reject_reason=reject_reason,
+            )
+            atomic_write_json(GATE_DIAGNOSTICS_FILE, diag)
+            return diag
+        except Exception as e:
+            log.debug("BRIDGE: gate diagnostics write failed: %s", e)
+            return None
 
     # ── Main loop ─────────────────────────────────────────────────
     def run(self):
@@ -2260,6 +2572,10 @@ class Bridge:
                 self._last_mt5_snapshot = dict(mt5)
                 self._mt5_read_fail_streak = 0
                 mt5_read_error = None
+                if not self._tester_mode_logged:
+                    log.info("BRIDGE: Strategy Tester detected — DD breaker, profit ratchet bypassed")
+                    self.herald.send("🧪 <b>STRATEGY TESTER</b> detected — drawdown guard bypassed")
+                    self._tester_mode_logged = True
             else:
                 ts_unix = _coerce_unix_ts(mt5.get("timestamp_unix"))
                 if ts_unix is None:
@@ -2422,6 +2738,22 @@ class Bridge:
         # ── 5c. FORGE native scalper entry detection ─────────────
         self._check_forge_scalper_entry(mt5 or {})
 
+        # ── 5d. Sync FORGE signal journal → SCRIBE (every 60s)
+        _now = time.time()
+        if _now - getattr(self, "_last_journal_sync", 0) >= 60:
+            self._last_journal_sync = _now
+            for journal_path in self._resolve_forge_journal_paths():
+                tag = "tester" if "_tester" in journal_path else "live"
+                synced_sig = self.scribe.sync_forge_journal(journal_path, source=tag)
+                synced_td = self.scribe.sync_forge_journal_trades(journal_path, source=tag)
+                if synced_sig or synced_td:
+                    log.info(
+                        "BRIDGE: synced FORGE journal %s — signals=%d deals=%d",
+                        tag,
+                        synced_sig,
+                        synced_td,
+                    )
+
         # ── 5b. Management (ATHENA / Telegram LISTENER) — all modes incl. SCALPER/WATCH
         self._process_mgmt_command(mt5)
 
@@ -2576,6 +2908,14 @@ class Bridge:
                     self.scribe.update_signal_action(
                         signal.get("signal_id"), "EXPIRED",
                         f"stale:{age:.0f}s>{SIGNAL_EXPIRY_SEC}s")
+                    reg_ctx = self._regime_context_for_trade(signal.get("direction"))
+                    self._write_signal_gate_diagnostics(
+                        mt5,
+                        signal,
+                        reg_ctx,
+                        reject_gate="SIGNAL_EXPIRED",
+                        reject_reason=f"stale {age:.0f}s>{SIGNAL_EXPIRY_SEC}s",
+                    )
                     return
             except Exception:
                 pass
@@ -2630,10 +2970,23 @@ class Bridge:
             )
             self.scribe.update_signal_action(
                 signal.get("signal_id"), "SKIPPED", aegis_reason)
+            diag = self._write_signal_gate_diagnostics(
+                mt5,
+                signal,
+                regime_meta,
+                reject_gate="AEGIS",
+                reject_reason=approval.reject_reason,
+            )
+            summary = (
+                format_gate_diagnostics_herald_line(diag)
+                if (diag and GATE_DIAGNOSTICS_HERALD)
+                else None
+            )
             self.herald.signal_skipped(
-                signal.get("direction","?"),
+                signal.get("direction", "?"),
                 approval.reject_reason,
-                f"{signal.get('entry_low')}–{signal.get('entry_high')}"
+                f"{signal.get('entry_low')}–{signal.get('entry_high')}",
+                gate_summary=summary,
             )
             return
 
@@ -2658,6 +3011,25 @@ class Bridge:
                 )
                 self.scribe.update_signal_action(
                     signal.get("signal_id"), "SKIPPED", entry_check["reason"])
+                diag = self._write_signal_gate_diagnostics(
+                    mt5,
+                    signal,
+                    regime_meta,
+                    reject_gate="LENS",
+                    reject_reason=entry_check.get("reason"),
+                )
+                summary = (
+                    format_gate_diagnostics_herald_line(diag)
+                    if (diag and GATE_DIAGNOSTICS_HERALD)
+                    else None
+                )
+                if GATE_DIAGNOSTICS_HERALD:
+                    self.herald.signal_skipped(
+                        signal.get("direction", "?"),
+                        entry_check["reason"],
+                        f"{signal.get('entry_low')}–{signal.get('entry_high')}",
+                        gate_summary=summary,
+                    )
                 return
 
         # Build trade group
@@ -2667,6 +3039,9 @@ class Bridge:
             "num_trades":     approval.num_trades,
             "risk_pct":       approval.risk_pct,
             "account_balance":account.get("balance", 0),
+            "trades_range_min": approval.trades_envelope_min,
+            "trades_range_max": approval.trades_envelope_max,
+            "trades_policy_reason": approval.trades_policy_reason,
             "lens_rating":    lens_snap.bb_rating if lens_snap else None,
             "lens_rsi":       lens_snap.rsi if lens_snap else None,
             "lens_confirmed": 1 if (lens_snap and not lens_snap.conflict_with_mt5(
@@ -2679,6 +3054,16 @@ class Bridge:
             "regime_entry_mode": regime_meta.get("entry_mode"),
             "regime_policy": regime_meta.get("policy_name"),
             "regime_fallback_reason": regime_meta.get("fallback_reason") or regime_meta.get("entry_gate_reason"),
+            "open_context": self._trade_open_context_snapshot(
+                mt5,
+                regime_meta,
+                approval,
+                source="SIGNAL",
+                extras={
+                    "signal_id": signal.get("signal_id"),
+                    "lens_price": lens_snap.price if lens_snap else None,
+                },
+            ),
         }
 
         group_id = self.scribe.log_trade_group(
@@ -2744,6 +3129,7 @@ class Bridge:
                     "direction": signal["direction"],
                     "num_trades": approval.num_trades,
                     "lot_per_trade": approval.lot_per_trade,
+                    "trades_policy_reason": approval.trades_policy_reason,
                     "signal_id": signal.get("signal_id"),
                     "regime": {
                         "label": regime_meta.get("label"),
@@ -2869,18 +3255,11 @@ class Bridge:
 
         elif intent == "MOVE_BE":
             if mgmt_gid:
-                # Scope to specific group
-                magic = self._lookup_group_magic(int(mgmt_gid))
-                if magic:
-                    # FORGE MOVE_BE_ALL affects all — but we can MODIFY_SL per group
-                    # Get entry prices for this group and set SL to entry
-                    positions = self.scribe.get_open_positions_by_group(int(mgmt_gid))
-                    for pos in positions:
-                        ep = pos.get("entry_price")
-                        if ep and ep > 100:
-                            cmd = {"action": "MODIFY_SL", "magic": magic, "sl": float(ep), "timestamp": _now()}
-                            self._sync_group_targets(int(mgmt_gid), sl=float(ep))
-                    _tlog("MGMT", "MOVE_BE", f"scoped to G{mgmt_gid}", group_id=mgmt_gid)
+                self._enqueue_move_be_for_group(
+                    mt5, int(mgmt_gid), "MGMT",
+                )
+                _tlog("MGMT", "MOVE_BE", f"scoped to G{mgmt_gid}", group_id=mgmt_gid)
+                cmd = None
             elif mgmt_source == "ATHENA":
                 cmd = {"action": "MOVE_BE_ALL", "timestamp": _now()}
             else:
@@ -2892,22 +3271,8 @@ class Bridge:
                     return
                 _tlog("MGMT", "MOVE_BE_SIGNAL_ONLY", f"channel {ch} — scoped SIGNAL groups only", level="warning")
                 for gid in gids:
-                    magic = self._lookup_group_magic(int(gid))
-                    if magic:
-                        positions = self.scribe.get_open_positions_by_group(int(gid))
-                        for pos in positions:
-                            ep = pos.get("entry_price")
-                            if ep and ep > 100:
-                                _write_forge_command(
-                                    {
-                                        "action": "MODIFY_SL",
-                                        "magic": magic,
-                                        "sl": float(ep),
-                                        "timestamp": _now(),
-                                    }
-                                )
-                                self._sync_group_targets(int(gid), sl=float(ep))
-                        _tlog("MGMT", "MOVE_BE", f"channel scoped to SIGNAL group", group_id=gid)
+                    self._enqueue_move_be_for_group(mt5, int(gid), "MGMT")
+                    _tlog("MGMT", "MOVE_BE", f"channel scoped to SIGNAL group", group_id=gid)
                 return  # Don't send global MOVE_BE_ALL
 
         elif intent == "CLOSE_PCT":
@@ -3165,6 +3530,9 @@ class Bridge:
             "num_trades": approval.num_trades,
             "risk_pct": approval.risk_pct,
             "account_balance": account.get("balance", 0),
+            "trades_range_min": approval.trades_envelope_min,
+            "trades_range_max": approval.trades_envelope_max,
+            "trades_policy_reason": approval.trades_policy_reason,
             "lens_rating": lens_snap.bb_rating if lens_snap else None,
             "lens_rsi": lens_snap.rsi if lens_snap else None,
             "lens_confirmed": 1 if lens_snap else 0,
@@ -3176,6 +3544,13 @@ class Bridge:
             "regime_policy": regime_meta.get("policy_name"),
             "regime_fallback_reason": regime_meta.get("fallback_reason")
             or regime_meta.get("entry_gate_reason"),
+            "open_context": self._trade_open_context_snapshot(
+                mt5,
+                regime_meta,
+                approval,
+                source="SCALPER_SUBPATH_DIRECT",
+                extras={"lens_bb": lens_snap.bb_rating if lens_snap else None},
+            ),
         }
 
         gid = self.scribe.log_trade_group(group_data, self._effective_mode())
@@ -3217,6 +3592,7 @@ class Bridge:
                     "direction": direction,
                     "num_trades": approval.num_trades,
                     "lot_per_trade": approval.lot_per_trade,
+                    "trades_policy_reason": approval.trades_policy_reason,
                     "regime": {
                         "label": regime_meta.get("label"),
                         "confidence": regime_meta.get("confidence"),
@@ -3243,6 +3619,8 @@ class Bridge:
     # ── DRAWDOWN PROTECTION ─────────────────────────────────
     def _check_drawdown(self, mt5: dict, now: float) -> None:
         """Equity drawdown circuit breaker. Runs every tick when mt5 is fresh."""
+        if mt5.get("strategy_tester"):
+            return
         acc = mt5.get("account", {})
         equity = acc.get("equity", 0)
         balance = acc.get("balance", 0)
@@ -3420,6 +3798,18 @@ class Bridge:
         # Build structured prompt for AURUM
         mtf_text = format_for_aurum(view)
 
+        st0 = _read_json(STATUS_FILE) or {}
+        reg0 = st0.get("regime") if isinstance(st0.get("regime"), dict) else {}
+        regime_prompt = ""
+        if reg0.get("label"):
+            regime_prompt = (
+                f"\nREGIME (BRIDGE): label={reg0.get('label')} "
+                f"confidence={reg0.get('confidence')} entry_mode={reg0.get('entry_mode')} "
+                f"apply_entry_policy={reg0.get('apply_entry_policy')}.\n"
+                f"If this is a strong TREND_* regime against your intended direction, respond PASS "
+                f"(BRIDGE+AEGIS may block counter-trend AUTO_SCALPER when policy is active).\n"
+            )
+
         # Price action context for better decision-making
         m5 = view.get("m5", {})
         m15 = view.get("m15", {})
@@ -3438,6 +3828,7 @@ class Bridge:
             f"AUTO_SCALPER tick. H1 bias: {h1_bias}. "
             f"Only {h1_bias.replace('BULL','BUY').replace('BEAR','SELL')} trades allowed.\n"
             f"Constraints: lot_per_trade={AUTO_SCALPER_LOT_SIZE}, num_trades={AUTO_SCALPER_NUM_TRADES}\n"
+            f"{regime_prompt}"
             f"\n{mtf_text}\n"
         )
         if pa_hints:
@@ -3857,6 +4248,29 @@ class Bridge:
         out.setdefault("duration_ms", int((time.monotonic() - started) * 1000))
         return out
 
+    def _resolve_forge_journal_paths(self) -> list[str]:
+        """Locate FORGE journal DBs — both live (Common Files) and tester (local Files)."""
+        import platform
+        home = Path.home()
+        found = []
+        if platform.system() == "Darwin":
+            mt5_base = home / "Library" / "Application Support" / "net.metaquotes.wine.metatrader5" / "drive_c"
+            search_roots = [
+                mt5_base / "users" / "user" / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files",
+                mt5_base / "Program Files" / "MetaTrader 5" / "MQL5" / "Files",
+                mt5_base / "Program Files" / "MetaTrader 5",
+            ]
+        else:
+            search_roots = [
+                home / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files",
+            ]
+        for root in search_roots:
+            if root.exists():
+                for p in root.rglob("FORGE_journal_*.db"):
+                    if p.exists() and p.stat().st_size > 0 and str(p) not in found:
+                        found.append(str(p))
+        return found
+
     def _check_forge_scalper_entry(self, mt5: dict | None = None):
         """Detect native FORGE scalper entries and log them to SCRIBE."""
         entry = _read_json(SCALPER_ENTRY_FILE)
@@ -3903,6 +4317,7 @@ class Bridge:
                         "direction": direction,
                         "trades_opened": trades_opened,
                         "requested_trades": requested_trades,
+                        **self._regime_audit_fragment(),
                     },
                     default=str,
                 ),
@@ -3927,7 +4342,12 @@ class Bridge:
                 "FORGE_SCALP_ENTRY_IGNORED",
                 reason="duplicate_open_group_magic",
                 notes=json.dumps(
-                    {"forge_group_id": gid, "magic": magic, "existing_group_id": existing_open[0].get("id")},
+                    {
+                        "forge_group_id": gid,
+                        "magic": magic,
+                        "existing_group_id": existing_open[0].get("id"),
+                        **self._regime_audit_fragment(),
+                    },
                     default=str,
                 ),
             )
@@ -3946,9 +4366,33 @@ class Bridge:
             "lot_per_trade": entry.get("lot_per_trade", 0.01),
             "source": "FORGE_NATIVE_SCALP",
             "signal_id": None,
+            "trades_range_min": entry.get("trades_range_min"),
+            "trades_range_max": entry.get("trades_range_max"),
+            "trades_policy_reason": entry.get("trades_policy_reason"),
             "pending_entry_threshold_points": entry.get("pending_entry_threshold_points"),
             "trend_strength_atr_threshold": entry.get("trend_strength_atr_threshold"),
             "breakout_buffer_points": entry.get("breakout_buffer_points"),
+            **self._trade_group_regime_fields(direction),
+            "open_context": self._trade_open_context_snapshot(
+                mt5,
+                self._regime_context_for_trade(direction),
+                None,
+                source="FORGE_NATIVE_SCALP",
+                extras={
+                    "forge_group_id": gid,
+                    "setup_type": setup_type,
+                    "m5_rsi": entry.get("m5_rsi"),
+                    "m5_adx": entry.get("m5_adx"),
+                    "poc_price": entry.get("poc_price"),
+                    "vwap_price": entry.get("vwap_price"),
+                    "fib_50": entry.get("fib_50"),
+                    "fib_382": entry.get("fib_382"),
+                    "fib_618": entry.get("fib_618"),
+                    "rsi_divergence": entry.get("rsi_divergence"),
+                    "psar_state": entry.get("psar_state"),
+                    "pattern_score": entry.get("pattern_score"),
+                },
+            ),
         }
         scribe_gid = self.scribe.log_trade_group(
             group_data, self._effective_mode(), magic_number=magic)
@@ -3967,20 +4411,47 @@ class Bridge:
                 "trades_opened": trades_opened,
                 "rsi": entry.get("m5_rsi"),
                 "adx": entry.get("m5_adx"),
+                "poc_price": entry.get("poc_price"),
+                "vwap_price": entry.get("vwap_price"),
+                "fib_50": entry.get("fib_50"),
+                "rsi_divergence": entry.get("rsi_divergence"),
+                "psar_state": entry.get("psar_state"),
+                "pattern_score": entry.get("pattern_score"),
                 "sentinel_tight": entry.get("sentinel_tight"),
                 "pending_entry_threshold_points": entry.get("pending_entry_threshold_points"),
                 "trend_strength_atr_threshold": entry.get("trend_strength_atr_threshold"),
                 "breakout_buffer_points": entry.get("breakout_buffer_points"),
+                **self._regime_audit_fragment(),
             }, default=str),
         )
 
+        try:
+            forge_gid = int(gid)
+        except (TypeError, ValueError):
+            forge_gid = 0
+        tp2_raw = entry.get("tp2")
+        try:
+            tp2_f = float(tp2_raw) if tp2_raw is not None else 0.0
+        except (TypeError, ValueError):
+            tp2_f = 0.0
+        tp2_seg = ""
+        if tp2_f > 0:
+            tp2_seg = f" TP2: <code>{tp2_raw}</code>"
+        legs_disp = trades_opened if trades_opened > 0 else int(entry.get("num_trades") or 0)
+        staged_pending = int(entry.get("staged_legs_pending") or 0)
+        staged_note = ""
+        if entry.get("staged_entry") and staged_pending > 0:
+            staged_note = f" (+{staged_pending} staged)"
         self.herald.send(
             f"{'\U0001f7e2' if direction == 'BUY' else '\U0001f534'} "
-            f"<b>FORGE SCALP {setup_type}</b> -- {direction}\n"
-            f"SL: <code>{entry.get('sl')}</code> TP1: <code>{entry.get('tp1')}</code>\n"
+            f"<b>FORGE SCALP {setup_type}</b> -- {telegram_group_label(forge_gid)} {direction}\n"
+            f"SL: <code>{entry.get('sl')}</code> TP1: <code>{entry.get('tp1')}</code>{tp2_seg}\n"
             f"RSI: {entry.get('m5_rsi')} ADX: {entry.get('m5_adx')} "
-            f"ATR: {entry.get('m5_atr')}\n"
-            f"{entry.get('num_trades')} x {entry.get('lot_per_trade')} lot"
+            f"ATR: {entry.get('m5_atr')}"
+            + (f" DIV: {entry.get('rsi_divergence')}" if entry.get("rsi_divergence", "NONE") != "NONE" else "")
+            + (f" PSAR: {entry.get('psar_state')}" if (entry.get("psar_state") or "NONE").startswith("FLIP") else "")
+            + "\n"
+            f"{legs_disp} x {entry.get('lot_per_trade')} lot{staged_note}"
             + (" [TIGHT TP]" if entry.get("sentinel_tight") else ""))
 
         _tlog("FORGE_NATIVE", setup_type, f"{direction} magic={magic} scribe_gid={scribe_gid}",
@@ -4070,7 +4541,11 @@ class Bridge:
             "source": "AURUM",
         }
         if req_nt is not None:
-            signal["num_trades"] = req_nt
+            try:
+                nt = int(req_nt)
+                signal["num_trades"] = max(1, min(20, nt))
+            except (TypeError, ValueError):
+                pass
 
         account = dict((mt5 or {}).get("account", {}) or {})
         account["open_groups_count"] = len(self._open_groups)
@@ -4137,6 +4612,9 @@ class Bridge:
             "num_trades": approval.num_trades,
             "risk_pct": approval.risk_pct,
             "account_balance": account.get("balance", 0),
+            "trades_range_min": approval.trades_envelope_min,
+            "trades_range_max": approval.trades_envelope_max,
+            "trades_policy_reason": approval.trades_policy_reason,
             "source": "AURUM",
             "regime_label": regime_meta.get("label"),
             "regime_confidence": regime_meta.get("confidence"),
@@ -4144,6 +4622,13 @@ class Bridge:
             "regime_entry_mode": regime_meta.get("entry_mode"),
             "regime_policy": regime_meta.get("policy_name"),
             "regime_fallback_reason": regime_meta.get("fallback_reason") or regime_meta.get("entry_gate_reason"),
+            "open_context": self._trade_open_context_snapshot(
+                mt5,
+                regime_meta,
+                approval,
+                source="AURUM",
+                extras={"origin_source": (cmd.get("origin_source") or cmd.get("source"))},
+            ),
         }
         gid = self.scribe.log_trade_group(group_data, eff)
         magic = FORGE_MAGIC_BASE + gid
@@ -4204,6 +4689,7 @@ class Bridge:
                     "direction": direction,
                     "num_trades": approval.num_trades,
                     "lot_per_trade": lot_pt,
+                    "trades_policy_reason": approval.trades_policy_reason,
                     "regime": {
                         "label": regime_meta.get("label"),
                         "confidence": regime_meta.get("confidence"),
@@ -4336,6 +4822,7 @@ class Bridge:
             "sentinel_active":   self._sentinel_override,
             "circuit_breaker":   self._mt5_blind_override,
             "mt5_fresh":         _mt5_fresh,
+            "strategy_tester":   bool((mt5 or {}).get("strategy_tester")),
             "session":           self._current_session,
             "session_utc":       get_trading_session_utc(),
             "session_id":        self._current_session_id,

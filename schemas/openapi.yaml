@@ -170,6 +170,29 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
 
+  /api/signal_gate/diagnostics:
+    get:
+      tags: [trading]
+      summary: Last SIGNAL-path gate diagnostics snapshot
+      description: |
+        Returns the most recent structured snapshot from BRIDGE when `GATE_DIAGNOSTICS_ENABLED=1`,
+        capturing session, regime context, MT5 freshness, sentinel state, and the last reject gate
+        (AEGIS, LENS, or SIGNAL_EXPIRED). For AUTO_SCALPER-specific checks, use `/api/autoscalper/conditions`.
+      operationId: getSignalGateDiagnostics
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "404":
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
   /api/components:
     get:
       tags: [components]
@@ -748,6 +771,18 @@ paths:
                 summary: "14 · Signals linked to trade groups (mid — join)"
                 value:
                   sql: "SELECT sr.id AS signal_id, sr.timestamp, sr.channel_name, sr.action_taken, tg.id AS group_id, tg.status AS group_status, tg.total_pnl FROM signals_received sr LEFT JOIN trade_groups tg ON sr.trade_group_id = tg.id ORDER BY sr.id DESC LIMIT 30"
+              forge_signals_skip_breakdown:
+                summary: "15 · FORGE journal sync — skip reasons by source (live vs tester)"
+                value:
+                  sql: "SELECT journal_source, outcome, gate_reason, COUNT(*) AS n FROM forge_signals WHERE outcome = 'SKIP' GROUP BY journal_source, gate_reason ORDER BY n DESC LIMIT 50"
+              forge_signals_recent:
+                summary: "16 · Latest FORGE journal rows synced to SCRIBE"
+                value:
+                  sql: "SELECT id, timestamp_utc, journal_source, setup_type, direction, outcome, gate_reason, price, atr, rsi FROM forge_signals ORDER BY id DESC LIMIT 40"
+              forge_journal_trades_recent:
+                summary: "17 · Latest MT5 deals mirrored from FORGE journal TRADES"
+                value:
+                  sql: "SELECT id, journal_source, deal_ticket, magic, profit, comment, time FROM forge_journal_trades ORDER BY id DESC LIMIT 40"
             # --END_SCRIBE_OPENAPI_EXAMPLES--
       responses:
         "200":
