@@ -106,6 +106,20 @@ When **`ScalperMode`** is not **`NONE`** and mode allows scalping, FORGE evaluat
 
 **`market_data.json`** includes **`indicators_h4`**, **`indicators_m1`**. **`scalper_entry.json`** includes **`h4_trend_strength`**, **`native_scalper_m1_mode`**, **`m1_trend_strength`**, **`m1_prior_close`** / **`m1_prior_open`** (for TRIGGER diagnostics).
 
+### Entry Quality Gate (FORGE v2.6.5+)
+
+After BB bounce/breakout logic sets a **direction**, FORGE runs **`CheckEntryQuality()`** on **M5** before R:R and order placement:
+
+| `scalper_config.json` → **`safety`** key | Default | Effect |
+|------------------------------------------|---------|--------|
+| **`min_entry_atr`** | `3.5` | Reject if M5 ATR &lt; floor (quiet/compressed tape). |
+| **`entry_quality_bars`** | `3` | Lookback closed M5 bars for body and direction stats. |
+| **`min_body_ratio`** | `0.40` | Minimum average **body ÷ range** across those bars (filters doji/wick-heavy microstructure). |
+| **`min_directional_bars`** | `2` | Minimum bars with close in trade direction (bearish closes for SELL, bullish for BUY). |
+| **`require_bb_expansion`** | `1` | If true, reject when BB width **contracts** vs prior bar (default rule: current width &lt; **0.95 ×** previous width). |
+
+Failed checks journal **`SKIP`** with **`gate_reason`**: **`entry_quality_atr`**, **`entry_quality_body`**, **`entry_quality_direction`**, **`entry_quality_bb_contraction`**. Tune via **`config/scalper_config.defaults.json`** then **`make scalper-env-sync`**, or **`.env`**: **`FORGE_MIN_ENTRY_ATR`**, **`FORGE_ENTRY_QUALITY_BARS`**, **`FORGE_MIN_BODY_RATIO`**, **`FORGE_MIN_DIRECTIONAL_BARS`**, **`FORGE_REQUIRE_BB_EXPANSION`** (see sync script **`MAPPING`**).
+
 ## 5) Active scalper profile and baseline
 Active FAST profile (apply in **`config/scalper_config.defaults.json`**, then `make scalper-env-sync`; FORGE still reads emitted **`scalper_config.json`**):
 - `safety.max_spread_points=30`

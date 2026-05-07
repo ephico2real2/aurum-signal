@@ -1,5 +1,28 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.8.2] — 2026-05-07 (FORGE 2.6.5 — native entry quality gate)
+
+### Added (ea/FORGE.mq5)
+
+- **M5 Entry Quality Gate** (`CheckEntryQuality`) — runs after a native scalp direction is chosen and before R:R / execution:
+  - **`safety.min_entry_atr`** — skip when M5 ATR is below floor (default **3.5**); journal **`entry_quality_atr`**.
+  - **`safety.entry_quality_bars`** (default **3**) — average candle **body/range** ratio vs **`min_body_ratio`** (default **0.40**); journal **`entry_quality_body`**.
+  - **`safety.min_directional_bars`** (default **2**) — minimum completed M5 bars agreeing with trade direction; journal **`entry_quality_direction`**.
+  - **`safety.require_bb_expansion`** (default **on**) — reject when BB width contracts vs prior bar (~**5%** threshold); journal **`entry_quality_bb_contraction`**.
+- **Version** **2.6.5** (`FORGE_VERSION`, `#property version`).
+
+### Changed (config + tooling)
+
+- **`config/scalper_config.defaults.json`** — new **`safety.*`** keys above; regenerate with **`make scalper-env-sync`**.
+- **`scripts/sync_scalper_config_from_env.py`** — **`.env`** overrides: **`FORGE_MIN_ENTRY_ATR`**, **`FORGE_ENTRY_QUALITY_BARS`**, **`FORGE_MIN_BODY_RATIO`**, **`FORGE_MIN_DIRECTIONAL_BARS`**, **`FORGE_REQUIRE_BB_EXPANSION`**.
+- **`.env.example`** — documents entry-quality overrides.
+
+### Documentation
+
+- **`docs/FORGE_TRADING_RULES.md`**, **`docs/FORGE_JOURNAL_SQL.md`**, **`docs/DATA_CONTRACT.md`** (`forge_signals.gate_reason`), **`SKILL.md`** §8, **`SOUL.md`** — operator and AURUM context for the gate and journal reasons.
+
+---
+
 ## [System 1.8.1] — 2026-05-07 (AURUM journal contract + BRIDGE tester gate)
 
 ### Changed (BRIDGE — `python/bridge.py`)

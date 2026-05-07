@@ -10,7 +10,7 @@ All components that open the operational SCRIBE DB resolve to `python/data/aurum
 | **Live journal** | MT5 Common Files → `FORGE_journal_<SYMBOL>.db` → **`SIGNALS`** | `synced` 0/1 until exported to SCRIBE. |
 | **Tester journal** | Tester agent `MQL5/Files` → `FORGE_journal_<SYMBOL>_tester.db` → **`SIGNALS`** | Same schema; `TESTER_RUNS` metadata. |
 
-Skipped evaluations use **`outcome = 'SKIP'`** and a non-empty **`gate_reason`** (e.g. `no_setup`, `rr_too_low`, `direction_cooldown`, `execution_failed`). **`TAKEN`** rows have **`outcome = 'TAKEN'`** and usually an empty **`gate_reason`**.
+Skipped evaluations use **`outcome = 'SKIP'`** and a non-empty **`gate_reason`** (e.g. `no_setup`, `rr_too_low`, `direction_cooldown`, `execution_failed`, and **FORGE v2.6.5+** native **`entry_quality_atr`**, **`entry_quality_body`**, **`entry_quality_direction`**, **`entry_quality_bb_contraction`**). **`TAKEN`** rows have **`outcome = 'TAKEN'`** and usually an empty **`gate_reason`**.
 
 ---
 

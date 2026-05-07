@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.64"
+#property version "2.65"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.6.4";
+const string FORGE_VERSION = "2.6.5";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -213,6 +213,12 @@ struct ScalperConfig {
    double min_rr_floor;
    // After ATR + structural + min-distance SL: widen by this many points (BUY → SL lower, SELL → SL higher).
    double native_sl_extra_buffer_points;
+   // Entry Quality Gate — M5 bar-based pre-entry validation
+   double min_entry_atr;           // reject entries when ATR < this (default 3.5)
+   int    entry_quality_bars;      // look-back bars for body/direction checks (default 3)
+   double min_body_ratio;          // min avg body/candle ratio — filters doji/wick bars (default 0.40)
+   int    min_directional_bars;    // min bars agreeing with trade direction out of entry_quality_bars (default 2)
+   bool   require_bb_expansion;    // reject entries when BB width is contracting (default true)
    string lot_sizing_source;
    bool   lot_inputs_override;
    // Lot sizing precedence: config/scalper_config.json lot_sizing by default,
@@ -2035,6 +2041,11 @@ void InitScalperConfig() {
    g_sc.min_rr = 1.5;
    g_sc.min_rr_floor = 1.5;
    g_sc.native_sl_extra_buffer_points = 5.0;
+   g_sc.min_entry_atr = 3.5;
+   g_sc.entry_quality_bars = 3;
+   g_sc.min_body_ratio = 0.40;
+   g_sc.min_directional_bars = 2;
+   g_sc.require_bb_expansion = true;
    g_sc.lot_sizing_source = "AUTO";
    g_sc.lot_inputs_override = false;
    g_sc.lot_fixed = ScalperLot;
@@ -2486,6 +2497,26 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "native_sl_extra_buffer_points")) {
       v = JsonGetDouble(content, "native_sl_extra_buffer_points");
       if(v >= 0.0 && v <= 500.0) g_sc.native_sl_extra_buffer_points = v;
+   }
+   if(JsonHasKey(content, "min_entry_atr")) {
+      v = JsonGetDouble(content, "min_entry_atr");
+      if(v >= 0.0 && v <= 50.0) g_sc.min_entry_atr = v;
+   }
+   if(JsonHasKey(content, "entry_quality_bars")) {
+      v = JsonGetDouble(content, "entry_quality_bars");
+      if(v >= 1 && v <= 20) g_sc.entry_quality_bars = (int)v;
+   }
+   if(JsonHasKey(content, "min_body_ratio")) {
+      v = JsonGetDouble(content, "min_body_ratio");
+      if(v >= 0.0 && v <= 1.0) g_sc.min_body_ratio = v;
+   }
+   if(JsonHasKey(content, "min_directional_bars")) {
+      v = JsonGetDouble(content, "min_directional_bars");
+      if(v >= 0 && v <= 20) g_sc.min_directional_bars = (int)v;
+   }
+   if(JsonHasKey(content, "require_bb_expansion")) {
+      v = JsonGetDouble(content, "require_bb_expansion");
+      g_sc.require_bb_expansion = (v >= 0.5);
    }
    // V2 bounce filters
    if(JsonHasKey(content, "bounce_require_h1_direction")) {
@@ -3772,6 +3803,60 @@ bool ForgeNativeScalperWarmupOk(string &reason_out) {
    return true;
 }
 
+// M5 bar quality gate — checks ATR floor, bar body consistency, directional alignment, BB expansion.
+// Returns false (and logs reason) if the proposed entry does not meet quality thresholds.
+bool CheckEntryQuality(const string direction, const double atr,
+                       const double bb_upper_now, const double bb_lower_now) {
+   // 1. Minimum ATR floor — no entries in compressed/noise markets
+   if(g_sc.min_entry_atr > 0.0 && atr < g_sc.min_entry_atr) {
+      JournalRecordSignal("SKIP","entry_quality_atr","",direction,
+         SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,0,0,bb_upper_now,bb_lower_now,0,0,0,0);
+      return false;
+   }
+   int n = MathMax(1, g_sc.entry_quality_bars);
+   double total_body_ratio = 0.0;
+   int directional_count = 0;
+   for(int i = 1; i <= n; i++) {
+      double o = iOpen(_Symbol,  PERIOD_M5, i);
+      double c = iClose(_Symbol, PERIOD_M5, i);
+      double h = iHigh(_Symbol,  PERIOD_M5, i);
+      double l = iLow(_Symbol,   PERIOD_M5, i);
+      double candle_range = h - l;
+      double body         = MathAbs(c - o);
+      // 2. Body ratio — filter doji and wick-dominant candles
+      total_body_ratio += (candle_range > 0.0) ? (body / candle_range) : 1.0;
+      // 3. Directional alignment — bar close in trade direction
+      if(direction == "SELL" && c < o) directional_count++;
+      if(direction == "BUY"  && c > o) directional_count++;
+   }
+   double avg_body_ratio = total_body_ratio / n;
+   if(g_sc.min_body_ratio > 0.0 && avg_body_ratio < g_sc.min_body_ratio) {
+      JournalRecordSignal("SKIP","entry_quality_body","",direction,
+         SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,0,0,bb_upper_now,bb_lower_now,0,0,0,0);
+      return false;
+   }
+   if(g_sc.min_directional_bars > 0 && directional_count < g_sc.min_directional_bars) {
+      JournalRecordSignal("SKIP","entry_quality_direction","",direction,
+         SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,0,0,bb_upper_now,bb_lower_now,0,0,0,0);
+      return false;
+   }
+   // 4. BB band expansion — reject entries when bands are contracting.
+   // Uses the existing g_mtf[0].h_bb handle (M5 Bollinger Bands, already initialised).
+   if(g_sc.require_bb_expansion && g_mtf[0].h_bb != INVALID_HANDLE) {
+      double buf1[1];
+      double bb_upper_prev = (CopyBuffer(g_mtf[0].h_bb, 1, 1, 1, buf1)==1) ? buf1[0] : 0.0;
+      double bb_lower_prev = (CopyBuffer(g_mtf[0].h_bb, 2, 1, 1, buf1)==1) ? buf1[0] : 0.0;
+      double width_now  = bb_upper_now  - bb_lower_now;
+      double width_prev = bb_upper_prev - bb_lower_prev;
+      if(width_prev > 0.0 && width_now < width_prev * 0.95) {
+         JournalRecordSignal("SKIP","entry_quality_bb_contraction","",direction,
+            SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,0,0,bb_upper_now,bb_lower_now,0,0,0,0);
+         return false;
+      }
+   }
+   return true;
+}
+
 void CheckNativeScalperSetups() {
    EnsureIndicators();
    EnsureMTFIndicators();
@@ -4260,6 +4345,9 @@ void CheckNativeScalperSetups() {
       }
       return;
    }
+
+   // Entry Quality Gate — M5 bar body/direction/ATR/BB-expansion pre-filter
+   if(!CheckEntryQuality(direction, m5_atr, m5_bb_u, m5_bb_l)) return;
 
    // DD event: tighten TP
    if(sentinel_tight) {

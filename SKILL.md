@@ -309,7 +309,7 @@ If the user asks for a trade: same rules as §5 — any executable **OPEN_GROUP*
 ### 7. Explain Any Component
 I can explain what any system component does, its current status, and its configuration.
 
-### 8. Native Scalper Awareness (FORGE v2.4.3)
+### 8. Native Scalper Awareness (FORGE v2.6.5)
 FORGE has a native price action scalper that runs independently in MT5 (backtestable):
 - **BB Bounce** (ADX<35): Mean-reversion at BB bands + RSI oversold/overbought
 - **BB Breakout** (ADX>25): Trend-following on BB breakout + multi-TF confirmation
@@ -323,6 +323,7 @@ FORGE has a native price action scalper that runs independently in MT5 (backtest
   - Minimum SL floor: `min_sl_atr_mult` (default 0.8) ensures SL is always at least 0.8×ATR from entry
   - All SL parameters hot-reloadable via `.env` (`FORGE_BOUNCE_SL_ATR_MULT`, `FORGE_BREAKOUT_SL_ATR_MULT`, `FORGE_MIN_SL_ATR_MULT`)
   - Diagnostic `FORGE SL CALC` log line emitted before every trade with entry, SL, distance, ATR, multiplier, and OB zone count
+- **Entry Quality Gate (v2.6.5+):** After direction is set, FORGE filters on **M5** — **`min_entry_atr`**, candle **body/ratio** over **`entry_quality_bars`**, **`min_directional_bars`**, and optional **BB band expansion** (**`require_bb_expansion`**). Skips journal as **`entry_quality_*`**. Keys live under **`scalper_config.json` → `safety`**; **`.env`**: **`FORGE_MIN_ENTRY_ATR`**, **`FORGE_ENTRY_QUALITY_BARS`**, **`FORGE_MIN_BODY_RATIO`**, **`FORGE_MIN_DIRECTIONAL_BARS`**, **`FORGE_REQUIRE_BB_EXPANSION`**. See **`docs/FORGE_TRADING_RULES.md`** (§4).
 - **Native indicators (computed in-EA):**
   - VWAP (volume-weighted average price)
   - Fibonacci swing levels (swing high/low over 34 bars → 0.236/0.382/0.5/0.618/0.786 retracements for TP targeting)
@@ -334,7 +335,7 @@ FORGE has a native price action scalper that runs independently in MT5 (backtest
 
 ---
 
-### 8. Live Web Search (Google News RSS)
+### 9. Live Web Search (Google News RSS)
 When you ask about live events, breaking news, or whether someone is still speaking,
 I automatically search Google News RSS and inject the results into my context.
 Trigger keywords: "news", "speaking", "happening", "live", "right now", "trump", "powell", "fomc", etc.
@@ -343,7 +344,7 @@ Also available: `GET /api/search?q=trump+speaking+gold&n=5`
 
 ---
 
-### 9. System / Environment Awareness
+### 10. System / Environment Awareness
 
 - `REGIME_HMM_COMPONENTS` controls HMM hidden states for regime inference (default `3`, valid range `2`-`10`).
 - `ATHENA_SECRET`, when set, requires state-mutating ATHENA routes to include `X-Athena-Token`; callers without the token get `403`.

@@ -117,6 +117,11 @@
     "min_rr": 1.5,
     "min_rr_floor": 1.5,
     "native_sl_extra_buffer_points": 5,
+    "min_entry_atr": 3.5,
+    "entry_quality_bars": 3,
+    "min_body_ratio": 0.40,
+    "min_directional_bars": 2,
+    "require_bb_expansion": 1,
     "news_post_guard_skip_min": 15,
     "dd_equity_close_all_pct": 3.0
   },
