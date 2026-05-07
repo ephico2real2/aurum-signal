@@ -29,60 +29,75 @@ with full indicator context. Current backtest shows:
 2. Can we train an ML model to score setup quality using the journal's feature set?
 3. Can that model feed AUTO_SCALPER (via AURUM) and AEGIS to improve decisions?
 
-### Data stack for ML (consolidated vs raw)
+### Data stack for ML (tester vs live are now split)
 
-- **Preferred:** query **`aurum_intelligence.db`** only. After BRIDGE runs, **`forge_signals`** holds one row per journaled evaluation (**TAKEN** + **SKIP** with `gate_reason`). **`forge_journal_trades`** holds **deal-level** P&L rows imported from MT5 history into the FORGE journal, tagged with **`journal_source`** (`live` \| `tester`). Join on **time / magic / comment** (e.g. `SCALP|…|G5001`) as needed. **`trade_groups`** / **`trade_closures`** add lifecycle context for actual executions.
-- **Optional:** read the raw **`FORGE_journal_*.db`** files for debugging, backfill, or when BRIDGE was offline — same schema, no `journal_source` in the file (path/filename implies tester vs live).
-- **Health check:** `make journal-diagnose` or `python3 scripts/diagnose_forge_journal.py`.
+- **ML training (tester data) — read directly from the tester DB.**
+  BRIDGE no longer syncs tester journals to AURUM (`BRIDGE_SYNC_TESTER_JOURNAL=0` default).
+  Query `FORGE_journal_XAUUSD_tester.db` directly. Filter by `run_id` to scope a specific
+  backtest run (`TESTER_RUNS.id`). `SIGNALS` and `TRADES` both carry `run_id`.
+  `UNIQUE(deal_ticket, run_id)` allows the same deal ticket to appear in multiple runs.
+- **Live analytics / inference scoring — use AURUM.**
+  `forge_signals WHERE journal_source='live'` holds every live evaluation (TAKEN + SKIP).
+  `forge_journal_trades WHERE journal_source='live'` holds live deal P&L.
+  `trade_groups` / `trade_closures` add lifecycle context for actual live executions.
+- **Health check:** `make journal-diagnose` (table output, per-run breakdown) or
+  `python3 scripts/diagnose_forge_journal.py`.
 
 ---
 
 ## 2. Architecture Overview
 
 ```
-                    ┌──────────────────────────────────┐
-                    │   FORGE Journal DB (SQLite)       │
-                    │   live: FORGE_journal_XAUUSD.db   │
-                    │   test: ..._tester.db             │
-                    └──────────┬───────────────────────┘
-                               │
-                    ┌──────────▼───────────────────────┐
-                    │  Phase 1: analyze_journal.py      │
-                    │  - Load journal signals (pandas)  │
-                    │  - Fetch M5 bars (MT5 Python lib) │
-                    │  - Compute MFE/MAE per skip       │
-                    │  - Label: MISSED_TP / CORRECT_SKIP│
-                    │  - Gate accuracy report            │
-                    │  - CSV export                      │
-                    └──────────┬───────────────────────┘
-                               │
-                    ┌──────────▼───────────────────────┐
-                    │  Phase 2: train_setup_scorer.py   │
-                    │  - Feature matrix from journal    │
-                    │  - Label: PROFITABLE / UNPROFITABLE│
-                    │  - GradientBoosting / XGBoost     │
-                    │  - Walk-forward TimeSeriesSplit    │
-                    │  - Export model.pkl + metrics      │
-                    └──────────┬───────────────────────┘
-                               │
-                    ┌──────────▼───────────────────────┐
-                    │  Phase 3: Integration             │
-                    │  ┌─────────────────────────────┐  │
-                    │  │  BRIDGE / AUTO_SCALPER      │  │
-                    │  │  ml_score injected into     │  │
-                    │  │  AURUM prompt context       │  │
-                    │  └─────────────────────────────┘  │
-                    │  ┌─────────────────────────────┐  │
-                    │  │  AEGIS                      │  │
-                    │  │  ml_confidence gate:        │  │
-                    │  │  reject if score < threshold│  │
-                    │  └─────────────────────────────┘  │
-                    │  ┌─────────────────────────────┐  │
-                    │  │  FORGE native (future)      │  │
-                    │  │  Read model predictions via │  │
-                    │  │  JSON file or REST endpoint │  │
-                    │  └─────────────────────────────┘  │
-                    └──────────────────────────────────┘
+ ┌──────────────────────────────┐    ┌──────────────────────────────────┐
+ │  FORGE tester DB (SQLite)    │    │  FORGE live DB (SQLite)          │
+ │  ..._tester.db               │    │  FORGE_journal_XAUUSD.db         │
+ │  SIGNALS + TRADES (run_id)   │    │  SIGNALS + TRADES (run_id=0)     │
+ │  TESTER_RUNS metadata        │    │                                  │
+ └──────────┬───────────────────┘    └──────────┬───────────────────────┘
+            │  READ DIRECTLY                    │  BRIDGE syncs every 60s
+            │  (never via AURUM)                │  (BRIDGE_SYNC_TESTER_JOURNAL=0)
+            │                                   ▼
+            │                       ┌──────────────────────────────────┐
+            │                       │  AURUM (aurum_intelligence.db)   │
+            │                       │  forge_signals (live only)       │
+            │                       │  forge_journal_trades (live only) │
+            │                       │  trade_groups / trade_closures   │
+            │                       └──────────────────────────────────┘
+            ▼
+ ┌──────────────────────────────────┐
+ │  Phase 1: analyze_journal.py     │
+ │  - Load SIGNALS by run_id        │
+ │  - Fetch M5 bars (MT5 Python)    │
+ │  - Compute MFE/MAE per skip      │
+ │  - Label: MISSED_TP/CORRECT_SKIP │
+ │  - Gate accuracy report          │
+ │  - CSV export                    │
+ └──────────┬───────────────────────┘
+            │
+ ┌──────────▼───────────────────────┐
+ │  Phase 2: train_setup_scorer.py  │
+ │  - Feature matrix from journal   │
+ │  - Label: PROFITABLE/UNPROFITABLE│
+ │  - GradientBoosting / XGBoost    │
+ │  - Walk-forward TimeSeriesSplit  │
+ │  - Export model.pkl + metrics    │
+ └──────────┬───────────────────────┘
+            │
+ ┌──────────▼───────────────────────┐
+ │  Phase 3: Integration (live)     │
+ │  ┌────────────────────────────┐  │
+ │  │  BRIDGE / AUTO_SCALPER    │  │
+ │  │  ml_score in AURUM prompt │  │
+ │  └────────────────────────────┘  │
+ │  ┌────────────────────────────┐  │
+ │  │  AEGIS                    │  │
+ │  │  ml_confidence gate       │  │
+ │  └────────────────────────────┘  │
+ │  ┌────────────────────────────┐  │
+ │  │  FORGE native (future)    │  │
+ │  │  ml_signal.json endpoint  │  │
+ │  └────────────────────────────┘  │
+ └──────────────────────────────────┘
 ```
 
 ---
@@ -97,17 +112,20 @@ skipped setup, and reports which skips were genuinely missed profitable trades.
 ### 3b. CLI Interface
 
 ```bash
-# Analyze tester journal — 30 min lookahead
+# Analyze tester journal run_id=1 — 30 min lookahead (reads DB file directly)
+python3 scripts/analyze_journal.py --source tester --run-id 1 --lookahead 30
+
+# Analyze all tester runs combined
 python3 scripts/analyze_journal.py --source tester --lookahead 30
 
-# Analyze live journal, filter to R:R rejects only
+# Analyze live journal via AURUM forge_signals
 python3 scripts/analyze_journal.py --source live --gate rr_too_low
 
 # Export full results to CSV
-python3 scripts/analyze_journal.py --source tester --export results/journal_missed.csv
+python3 scripts/analyze_journal.py --source tester --run-id 1 --export results/journal_missed.csv
 
 # Show top 20 biggest missed opportunities
-python3 scripts/analyze_journal.py --source tester --top 20
+python3 scripts/analyze_journal.py --source tester --run-id 1 --top 20
 ```
 
 ### 3c. Implementation Steps
@@ -115,12 +133,33 @@ python3 scripts/analyze_journal.py --source tester --top 20
 **Step 1 — DB Loader**
 
 ```python
-def load_journal(source: str) -> pd.DataFrame:
-    """Auto-detect tester or live journal DB path, load SIGNALS table."""
-    # Use same path resolution as bridge.py _resolve_forge_journal_paths()
-    # Return DataFrame with columns: time, setup_type, direction, outcome,
-    #   gate_reason, price, atr, rsi, adx, bb_upper, bb_lower, bb_mid,
-    #   vwap_price, fib_50, rsi_divergence, psar_state, h1_trend, session
+def load_journal(source: str, run_id: int | None = None) -> pd.DataFrame:
+    """
+    - source='tester': read directly from FORGE_journal_*_tester.db.
+      Optionally filter to a specific run_id (from TESTER_RUNS).
+      Never uses AURUM — tester data stays in its native file.
+    - source='live': read from AURUM forge_signals WHERE journal_source='live'.
+    Returns DataFrame with columns: time, run_id, setup_type, direction, outcome,
+      gate_reason, price, atr, rsi, adx, bb_upper, bb_lower, bb_mid,
+      vwap_price, fib_50, rsi_divergence, psar_state, h1_trend, session
+    """
+    if source == 'tester':
+        # Use same path resolution as diagnose_forge_journal.py
+        db = _find_tester_db()  # returns path to *_tester.db
+        conn = sqlite3.connect(db)
+        run_filter = f"AND run_id = {run_id}" if run_id is not None else ""
+        df = pd.read_sql(
+            f"SELECT *, run_id FROM SIGNALS WHERE 1=1 {run_filter}", conn
+        )
+        conn.close()
+        return df
+    # source='live': query AURUM
+    conn = sqlite3.connect(AURUM_DB_PATH)
+    df = pd.read_sql(
+        "SELECT * FROM forge_signals WHERE journal_source='live'", conn
+    )
+    conn.close()
+    return df
 ```
 
 **Step 2 — Price Fetcher (M5 bars)**
@@ -265,15 +304,19 @@ joblib.dump(search.best_estimator_, 'models/setup_scorer.pkl')
 ### 4e. CLI
 
 ```bash
-# Train on tester journal
+# Train on specific tester run (reads DB file directly, not AURUM)
+python3 scripts/train_setup_scorer.py --source tester --run-id 1 --lookahead 30
+
+# Train on all tester runs combined
 python3 scripts/train_setup_scorer.py --source tester --lookahead 30
 
-# Train on live journal
+# Train on live journal (reads AURUM forge_signals WHERE journal_source='live')
 python3 scripts/train_setup_scorer.py --source live --lookahead 15
 
 # Output:
 #   models/setup_scorer.pkl       — serialized model
-#   models/setup_scorer_meta.json — accuracy, features, train date, sample count
+#   models/setup_scorer_meta.json — accuracy, features, train date, sample count,
+#                                   run_ids used, source (tester|live)
 #   models/feature_importance.csv — ranked feature weights
 ```
 
@@ -567,7 +610,19 @@ Per research on gold market ML overfitting (MQL5 blog Feb 2026):
 
 ## 11. Version & Changelog
 
-- **Shipped:** `SYSTEM_VERSION` **1.7.3**, FORGE **`VERSION` 2.4.3** — `forge_signals` idempotency guard, configurable `batch_size` on sync methods, focused offline journal tests, `make test-journal`. Prior: 1.7.2 — journal skip throttling, `forge_journal_trades`, BRIDGE tester discovery, `make journal-diagnose`. See root `CHANGELOG.md`.
-- **Data quality note (2026-05-06):** `forge_signals WHERE journal_source='tester'` currently contains ~102,000 rows synced before the spam fix. The remaining 2.1M-row pre-fix backlog was **intentionally skipped** (100% `SKIP|no_setup` / `SKIP|rr_too_low`, zero `TAKEN`). Always filter `WHERE gate_reason NOT LIKE 'SKIP%'` or `WHERE outcome IS NOT NULL` before using tester rows for ML training.
+- **Shipped:** `SYSTEM_VERSION` **1.7.3+**, FORGE **`VERSION` 2.5.1**.
+  Key changes relevant to ML:
+  - `TRADES` schema: `UNIQUE(deal_ticket, run_id)` — same deal ticket can appear across runs without collision.
+  - `SIGNALS` and `TRADES` both carry `run_id`; `TESTER_RUNS` table identifies each backtest.
+  - `BRIDGE_SYNC_TESTER_JOURNAL=0` (default) — tester journals **no longer sync to AURUM**.
+    ML reads tester data **directly from the tester DB file** per `run_id`.
+  - AURUM `forge_signals` and `forge_journal_trades` now contain **live data only**.
+  - `make journal-diagnose` prints a per-`run_id` table with signal counts and P&L.
+- **Data strategy (2026-05-07):**
+  - **ML training source:** `FORGE_journal_XAUUSD_tester.db` — read directly, filter by `run_id`.
+    Use `SELECT * FROM SIGNALS WHERE run_id=? ` and `SELECT * FROM TRADES WHERE run_id=?`.
+  - **Live inference context:** AURUM `forge_signals WHERE journal_source='live'` — no tester pollution.
+  - **Do not** use `forge_signals WHERE journal_source='tester'` in AURUM for new ML work;
+    those rows were synced before the split and have `run_id=0` (all mixed together).
 - **After Phase 1 (analyze_journal CLI):** bump `SYSTEM_VERSION` if the script ships standalone.
 - **After Phase 3 (ML in production):** consider `SYSTEM_VERSION` **1.9.0** (or next minor) and full CHANGELOG entry.
