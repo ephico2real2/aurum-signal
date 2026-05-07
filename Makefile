@@ -52,6 +52,7 @@ help:
 	@echo "  make monitor-forge-skips  SCRIBE forge_signals: SKIP rollup + tail (last 24h)"
 	@echo "  make monitor-forge-skips-watch  Same, poll every 60s (Ctrl-C to stop)"
 	@echo "  make journal-diagnose  JSON summary: FORGE journal DBs + SCRIBE forge_* mirror"
+	@echo "  (env) BRIDGE_SYNC_TESTER_JOURNAL=1  re-enable syncing *_tester.db → SCRIBE (default 0)"
 	@echo ""
 	@echo "  SERVICES (install_services.py — macOS: launchd; Linux: sudo systemctl)"
 	@echo "  make start             Install/load all services (same as services-install)"

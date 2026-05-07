@@ -25,7 +25,7 @@ Core architecture and operations docs:
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
 - **Vision validation runbook**: [docs/VISION_CLI_RUNBOOK.md](docs/VISION_CLI_RUNBOOK.md)
 - **Signal replay runbook**: [docs/SIGNAL_REPLAY_RUNBOOK.md](docs/SIGNAL_REPLAY_RUNBOOK.md)
-- **FORGE journal ML / missed-setup roadmap**: [docs/FORGE_JOURNAL_ML_PROMPT.md](docs/FORGE_JOURNAL_ML_PROMPT.md)
+- **FORGE journal ML / missed-setup roadmap**: [docs/prompts/FORGE_JOURNAL_ML_PROMPT.md](docs/prompts/FORGE_JOURNAL_ML_PROMPT.md)
 - **FORGE journal SQL (skips, SCRIBE + raw DB)**: [docs/FORGE_JOURNAL_SQL.md](docs/FORGE_JOURNAL_SQL.md)
 - **Architecture diagram (PNG)**: [docs/assets/trading-system-architecture.png](docs/assets/trading-system-architecture.png)
 - **Architecture diagram (interactive HTML)**: [docs/assets/trading-system-architecture.drawio.html](docs/assets/trading-system-architecture.drawio.html)
@@ -37,8 +37,8 @@ Recent behavior notes:
 - Signal-room media uploads are archived and replayable via `scripts/replay_signal_uploads.py`, with channel-aware summary notifications to Telegram.
 - FORGE market export includes all account positions using `forge_managed=true/false`.
 - BRIDGE logs unmanaged/manual MT5 positions into SCRIBE as `MANUAL_MT5` lifecycle records.
-- **FORGE v2.4.3** — throttles **`no_setup`** / **`rr_too_low`** journal rows to **one per M5 bar** (avoids tick spam). Reliable **`JournalImportTrades`** (`DatabaseExecute`), **`TRADES.synced`** for SCRIBE. **`SKIP`/`execution_failed`** when no orders open. SCRIBE **`forge_journal_trades`** mirrors deal history; BRIDGE discovers tester agents under **`MetaTrader 5/**`** recursively. Builds on v2.4.2–v2.4.1: journals, `journal_source`, VWAP/Fib/RSI div/PSAR, SL rules, 1–30 legs.
-- FORGE journal + analytics roadmap: **`docs/FORGE_JOURNAL_ML_PROMPT.md`** — missed-setup CLI, optional ML scorer, AUTO_SCALPER/AEGIS hooks (planned implementation).
+- **FORGE v2.4.3+** — throttles **`no_setup`** / **`rr_too_low`** journal rows to **one per M5 bar** (avoids tick spam). Reliable **`JournalImportTrades`** (`DatabaseExecute`), **`TRADES.synced`** / **`run_id`** for multi-run tester DBs; SCRIBE **`forge_journal_trades`** uses **`UNIQUE(deal_ticket, journal_source, run_id)`**. BRIDGE discovers tester agents under **`MetaTrader 5/**`** recursively but **does not sync** `*_tester.db` into AURUM unless **`BRIDGE_SYNC_TESTER_JOURNAL=1`** (keeps analytics DB live-only by default). Builds on v2.4.2–v2.4.1: journals, `journal_source`, VWAP/Fib/RSI div/PSAR, SL rules, 1–30 legs.
+- FORGE journal + analytics roadmap: **`docs/prompts/FORGE_JOURNAL_ML_PROMPT.md`** — missed-setup CLI, optional ML scorer, AUTO_SCALPER/AEGIS hooks (planned implementation).
 
 ![Trading System Architecture](docs/assets/trading-system-architecture.png)
 ## System Design Rationale (SCRIBE-first)
@@ -154,7 +154,7 @@ SCRIBE uses 14 SQLite tables, and every row is tagged with `mode` when applicabl
 - `component_heartbeats` — per-component liveness
 - `vision_extractions` — LISTENER/AURUM image extraction lineage + confidence
 - `regime_snapshots` — HMM regime state snapshots (label, confidence, policy)
-- `forge_signals` — FORGE native signal journal (evaluations — taken + skipped) + `forge_journal_trades` — MT5 deal mirror from FORGE journal `TRADES`, both with **`journal_source`**
+- `forge_signals` / `forge_journal_trades` — FORGE native journal mirror (evaluations + deals) with **`journal_source`** (`live`|`tester`) and **`run_id`** (tester runs isolated; live uses `0`)
 
 ## License
 For personal use only. Not financial advice. Always test on demo first.

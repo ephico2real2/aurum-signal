@@ -277,6 +277,8 @@ Management validation: `POST /api/management` validates the request body against
 
 `POST /api/scribe/query` runs **read-only** SQL against the intelligence DB (SQLite authorizer: SELECT-only). It is **not** limited to the `ALLOWED_SCRIBE_TABLES` frozenset in `python/scribe.py` — that set applies to **other** SCRIBE helpers (e.g. dynamic table export). Prefer bounded queries; examples in **`docs/SCRIBE_QUERY_EXAMPLES.md`** (including **`forge_signals`** for the FORGE journal sync). Channel-origin `MODIFY_SL`/`MODIFY_TP` commands without a resolved `group_id`, `ticket`, or `tp_stage` are dropped by BRIDGE before reaching FORGE.
 
+**FORGE journal mirror (`forge_signals`, `forge_journal_trades`):** Both tables include **`journal_source`** (`live` \| `tester`) and **`run_id`** (integer; **live** rows use **`0`**). **`forge_journal_trades`** uniqueness is **`(deal_ticket, journal_source, run_id)`** so per-backtest isolation matches FORGE journal **`TRADES`**. **BRIDGE** syncs **live** journals automatically; **tester** journals are **skipped by default** (**`BRIDGE_SYNC_TESTER_JOURNAL`** unset or `0`) so **`aurum_intelligence.db`** stays representative of production — see **`docs/FORGE_BRIDGE.md`** §11.
+
 ### 4.3 Services vs dev Python (launchd / systemd)
 
 `services/install_services.py` writes **`__SIGNAL_PYTHON__`** into each plist/unit: **`PROJECT/.venv/bin/python`** if that file exists, else env **`SIGNAL_PYTHON`**, else `python3` on **`PATH`**. After **`make venv`** and **`make restart`**, running services match the same venv as **`make test-contracts`** when you use the repo `.venv`. Edit **`python/athena_api.py`** (or other service entrypoints), then **`make restart`** so the process reloads.

@@ -159,6 +159,7 @@ Not every item may be committed yet; verify in `git diff` / **`VERSION`**.
 13. **Logic bug fixes (v2.5.1)** — `WriteBrokerInfo()` hardcoded version `"1.6.19"` → now uses `FORGE_VERSION`; `ManageStagedNativeLegs()` guard fixed to check both `staged_entry_enabled` and `native_force_staged_scale_in`; `InitScalperConfig()` fail-safe defaults relaxed (`high_vol_apply_in_tester=false`, `high_vol_disable_bounce=false`).
 14. **Scalper config tester relaxations (v2.5.1)** — `scalper_config.defaults.json` changed: `bounce_respect_adx_max_in_tester`, `bounce_respect_h1_filter_in_tester`, `high_vol_apply_in_tester` all set to `0`. Regenerated via `make scalper-env-sync`.
 15. **`docs/FORGE_BACKTEST_DIAGNOSTIC_COMMANDS.md`** — 11 numbered Python one-liners for remote warmup/mode/journal/rr_too_low diagnosis. Also added to `FORGE_BACKTEST_NO_TRADES_FIX_PROMPT.md` and `WARP_FORGE_VERIFY_PROMPT.md`.
+16. **BRIDGE tester journal gate (v1.8.1)** — **`BRIDGE_SYNC_TESTER_JOURNAL`** defaults **off**: BRIDGE does not copy `FORGE_journal_*_tester.db` into **`aurum_intelligence.db`**; query tester DBs on disk for ML. Set **`=1`** to restore SCRIBE sync. **`forge_journal_trades`** / **`forge_signals`** use **`run_id`**; uniqueness **`(deal_ticket, journal_source, run_id)`** on imported deals.
 
 ---
 

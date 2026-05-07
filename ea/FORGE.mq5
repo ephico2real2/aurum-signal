@@ -3172,10 +3172,13 @@ bool JournalInit() {
       "synced INTEGER DEFAULT 0"
       ");";
 
+   // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
+   // to accumulate in the same DB without silently losing deals.
+   // For live (run_id=0 always): UNIQUE(deal_ticket,0) = UNIQUE(deal_ticket) — no change.
    string sql_trades =
       "CREATE TABLE IF NOT EXISTS TRADES ("
       "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-      "deal_ticket INTEGER UNIQUE, "
+      "deal_ticket INTEGER NOT NULL, "
       "order_ticket INTEGER, "
       "symbol TEXT NOT NULL, "
       "type INTEGER, "
@@ -3188,7 +3191,10 @@ bool JournalInit() {
       "magic INTEGER, "
       "comment TEXT, "
       "time INTEGER, "
-      "time_msc INTEGER"
+      "time_msc INTEGER, "
+      "synced INTEGER DEFAULT 0, "
+      "run_id INTEGER DEFAULT 0, "
+      "UNIQUE(deal_ticket, run_id)"
       ");";
 
    string sql_stats =
@@ -3219,14 +3225,72 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_synced ON SIGNALS(synced);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_time ON TRADES(time);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_magic ON TRADES(magic);");
-   // synced: SCRIBE incremental import (column may already exist on older journals)
+   // Additive column migrations — silently ignored when column already exists
    DatabaseExecute(g_journal_db, "ALTER TABLE TRADES ADD COLUMN synced INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_synced ON TRADES(synced);");
-   // run_id: per-run isolation — added via migration so existing DBs stay valid
+   // run_id: per-run isolation
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN run_id INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE TRADES ADD COLUMN run_id INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_run ON SIGNALS(run_id);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_run ON TRADES(run_id);");
+   // ── TRADES unique-constraint migration ─────────────────────────────────────
+   // Old schema used deal_ticket INTEGER UNIQUE (can't be extended via ALTER).
+   // Detect it via sqlite_master and recreate the table atomically.
+   {
+      int chk = DatabasePrepare(g_journal_db,
+         "SELECT name FROM sqlite_master WHERE type='table' AND name='TRADES' "
+         "AND sql LIKE '%deal_ticket INTEGER UNIQUE%'");
+      bool old_schema = false;
+      if(chk != INVALID_HANDLE) {
+         if(DatabaseRead(chk)) old_schema = true;
+         DatabaseFinalize(chk);
+      }
+      if(old_schema) {
+         PrintFormat("FORGE JOURNAL: migrating TRADES to UNIQUE(deal_ticket, run_id)...");
+         DatabaseExecute(g_journal_db, "BEGIN TRANSACTION;");
+         bool ok = true;
+         ok = ok && DatabaseExecute(g_journal_db, "ALTER TABLE TRADES RENAME TO _TRADES_old;");
+         ok = ok && DatabaseExecute(g_journal_db,
+            "CREATE TABLE TRADES ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "deal_ticket INTEGER NOT NULL, "
+            "order_ticket INTEGER, "
+            "symbol TEXT NOT NULL, "
+            "type INTEGER, "
+            "direction INTEGER, "
+            "volume REAL, "
+            "price REAL, "
+            "profit REAL, "
+            "swap REAL, "
+            "commission REAL, "
+            "magic INTEGER, "
+            "comment TEXT, "
+            "time INTEGER, "
+            "time_msc INTEGER, "
+            "synced INTEGER DEFAULT 0, "
+            "run_id INTEGER DEFAULT 0, "
+            "UNIQUE(deal_ticket, run_id));");
+         ok = ok && DatabaseExecute(g_journal_db,
+            "INSERT INTO TRADES (deal_ticket, order_ticket, symbol, type, direction, "
+            "volume, price, profit, swap, commission, magic, comment, time, time_msc, "
+            "synced, run_id) "
+            "SELECT deal_ticket, order_ticket, symbol, type, direction, "
+            "volume, price, profit, swap, commission, magic, comment, time, time_msc, "
+            "COALESCE(synced,0), COALESCE(run_id,0) FROM _TRADES_old;");
+         ok = ok && DatabaseExecute(g_journal_db, "DROP TABLE _TRADES_old;");
+         if(ok) {
+            DatabaseExecute(g_journal_db, "COMMIT;");
+            PrintFormat("FORGE JOURNAL: TRADES migration complete — now UNIQUE(deal_ticket, run_id)");
+         } else {
+            DatabaseExecute(g_journal_db, "ROLLBACK;");
+            PrintFormat("FORGE JOURNAL: TRADES migration FAILED — rolled back (error=%d)", GetLastError());
+         }
+         DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_time ON TRADES(time);");
+         DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_magic ON TRADES(magic);");
+         DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_synced ON TRADES(synced);");
+         DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_run ON TRADES(run_id);");
+      }
+   }
 
    if(in_tester) {
       // TESTER_RUNS schema v2: wall_time = GetTickCount64() (real clock ms, unique per run);

@@ -397,12 +397,25 @@ LIMIT 50;
 ```
 
 ### 22) FORGE journal deals in SCRIBE (`forge_journal_trades`)
-Deal rows imported from FORGE’s journal **`TRADES`** table (FORGE magic range). Use with **`forge_signals`** (`TAKEN` + context) for ML labels.
+Deal rows imported from FORGE's journal **`TRADES`** table (FORGE magic range). Use **`run_id`** to scope to a specific backtest run (live trades always have `run_id=0`). Use with **`forge_signals`** (`TAKEN` + context) for ML labels.
 
+P&L by run (tester):
 ```sql
-SELECT journal_source, COUNT(*) AS deals, SUM(profit) AS pnl
+SELECT run_id, COUNT(*) AS deals,
+  SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) AS wins,
+  SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END) AS losses,
+  ROUND(SUM(profit), 2) AS total_pnl
 FROM forge_journal_trades
-GROUP BY journal_source;
+WHERE journal_source = 'tester'
+GROUP BY run_id
+ORDER BY run_id;
+```
+
+All sources summary:
+```sql
+SELECT journal_source, run_id, COUNT(*) AS deals, SUM(profit) AS pnl
+FROM forge_journal_trades
+GROUP BY journal_source, run_id;
 ```
 
 ## Query hygiene notes

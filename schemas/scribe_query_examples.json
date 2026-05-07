@@ -84,7 +84,7 @@
     {
       "id": "forge_journal_trades_recent",
       "summary": "Latest MT5 deals mirrored from FORGE journal TRADES",
-      "sql": "SELECT id, journal_source, deal_ticket, magic, profit, comment, time FROM forge_journal_trades ORDER BY id DESC LIMIT 40"
+      "sql": "SELECT id, journal_source, run_id, deal_ticket, magic, profit, comment, time FROM forge_journal_trades ORDER BY id DESC LIMIT 40"
     }
   ]
 }

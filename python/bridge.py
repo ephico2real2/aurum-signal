@@ -156,6 +156,13 @@ FORGE_TREND_STRENGTH_ATR_THRESHOLD = float(os.environ.get("FORGE_TREND_STRENGTH_
 FORGE_BREAKOUT_BUFFER_POINTS = float(os.environ.get("FORGE_BREAKOUT_BUFFER_POINTS", "10"))
 SYDNEY_OPEN_ALERT_ENABLED = os.environ.get("SYDNEY_OPEN_ALERT_ENABLED", "true").lower() == "true"
 
+# Journal sync: tester journals are ML training data — read directly from the
+# tester DB; do NOT pollute AURUM with backtest signals/trades.
+# Set BRIDGE_SYNC_TESTER_JOURNAL=1 to re-enable (e.g. for debugging).
+BRIDGE_SYNC_TESTER_JOURNAL = os.environ.get("BRIDGE_SYNC_TESTER_JOURNAL", "0").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+
 # Drawdown protection
 DD_EQUITY_CLOSE_ALL_PCT  = float(os.environ.get("DD_EQUITY_CLOSE_ALL_PCT",  "3.0"))
 DD_FLOATING_BLOCK_PCT    = float(os.environ.get("DD_FLOATING_BLOCK_PCT",    "2.0"))   # block new groups if floating loss exceeds this % of balance
@@ -2739,11 +2746,17 @@ class Bridge:
         self._check_forge_scalper_entry(mt5 or {})
 
         # ── 5d. Sync FORGE signal journal → SCRIBE (every 60s)
+        # Only live journals sync to AURUM. Tester journals are ML training data
+        # and must be read directly from the tester DB. Set
+        # BRIDGE_SYNC_TESTER_JOURNAL=1 to override.
         _now = time.time()
         if _now - getattr(self, "_last_journal_sync", 0) >= 60:
             self._last_journal_sync = _now
             for journal_path in self._resolve_forge_journal_paths():
-                tag = "tester" if "_tester" in journal_path else "live"
+                is_tester = "_tester" in Path(journal_path).name
+                if is_tester and not BRIDGE_SYNC_TESTER_JOURNAL:
+                    continue
+                tag = "tester" if is_tester else "live"
                 synced_sig = self.scribe.sync_forge_journal(journal_path, source=tag)
                 synced_td = self.scribe.sync_forge_journal_trades(journal_path, source=tag)
                 if synced_sig or synced_td:

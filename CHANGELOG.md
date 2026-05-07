@@ -1,5 +1,35 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.8.1] — 2026-05-07 (AURUM journal contract + BRIDGE tester gate)
+
+### Changed (BRIDGE — `python/bridge.py`)
+
+- **Tester journal sync to SCRIBE is off by default.** Strategy-tester SQLite files (`FORGE_journal_*_tester.db`) are **ML training data** and should be queried **in place** (agent `MQL5/Files`) so backtest history does not inflate or distort **`forge_signals`** / **`forge_journal_trades`** in **`aurum_intelligence.db`**. BRIDGE still discovers tester paths but **skips** `sync_forge_journal` / `sync_forge_journal_trades` unless **`BRIDGE_SYNC_TESTER_JOURNAL=1`** (`true`/`yes`/`on`). **Live** journals are unchanged.
+
+### Changed (SCRIBE — `python/scribe.py`)
+
+- **`forge_journal_trades`** — added **`run_id`** (default `0`). **Unique key** is now **`(deal_ticket, journal_source, run_id)`** so the same deal ticket can appear once per FORGE tester run without collision. Startup migration recreates the table atomically when the old **`UNIQUE(deal_ticket, journal_source)`** schema is detected.
+- **`sync_forge_journal` / `sync_forge_journal_trades`** — propagate **`run_id`** from journal **`SIGNALS`** / **`TRADES`** when present (v2 journals); **`forge_signals`** gains **`run_id`** via additive **`ALTER TABLE`** when missing.
+
+### Fixed (ea/FORGE.mq5)
+
+- **Journal `TRADES` uniqueness** — old schema used **`deal_ticket INTEGER UNIQUE`**, which drops duplicate deals across tester runs. **`CREATE TABLE`** now uses **`UNIQUE(deal_ticket, run_id)`** with **`synced`** / **`run_id`** columns on create. **`JournalInit`** detects legacy **`deal_ticket INTEGER UNIQUE`** via **`sqlite_master`** and migrates with **`ALTER RENAME` → copy → drop** inside a transaction.
+
+### Changed (ops / docs)
+
+- **`scripts/diagnose_forge_journal.py`** — **`per_run`** breakdown in each journal summary (signal counts, top skips, optional TRADES stats per **`run_id`**).
+- **`docs/FORGE_BRIDGE.md`** — §11 documents live vs tester journal sync and **`BRIDGE_SYNC_TESTER_JOURNAL`**.
+- **`docs/DATA_CONTRACT.md`** — FORGE mirror tables: **`run_id`**, unique keys, tester sync default.
+- **`docs/SCRIBE_QUERY_EXAMPLES.md`**, **`docs/FORGE_TESTER_JOURNAL_QUERIES.md`** — queries grouped by **`run_id`** for tester P&amp;L.
+- **`.env.example`** — documents **`BRIDGE_SYNC_TESTER_JOURNAL`**.
+- **`README.md`** — journal prompt paths under **`docs/prompts/`**; note on tester DB vs AURUM and optional re-enable flag.
+
+### Added (tests)
+
+- **`tests/api/test_bridge_tester_journal_sync.py`** — default skips tester DB sync; **`BRIDGE_SYNC_TESTER_JOURNAL=1`** restores behaviour.
+
+---
+
 ## [System 1.8.0] — 2026-05-07 (FORGE 2.5.1)
 
 ### Fixed (ea/FORGE.mq5) — backtest stabilisation + logical error sprint

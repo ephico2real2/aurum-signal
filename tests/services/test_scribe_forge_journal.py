@@ -73,7 +73,9 @@ def _create_journal(path: Path) -> None:
                 comment TEXT,
                 time INTEGER NOT NULL,
                 time_msc INTEGER,
-                synced INTEGER DEFAULT 0
+                synced INTEGER DEFAULT 0,
+                run_id INTEGER DEFAULT 0,
+                UNIQUE(deal_ticket, run_id)
             )
             """
         )
@@ -89,10 +91,12 @@ def _create_journal(path: Path) -> None:
         )
         conn.execute(
             """
-            INSERT INTO TRADES VALUES (
-                20, 777001, 888001, 'XAUUSD', 0, 0, 0.01, 2200.0, 1.5,
-                0.0, 0.0, 202401, 'SCALP|G1', 1710000100, 1710000100000, 0
-            )
+            INSERT INTO TRADES
+                (id, deal_ticket, order_ticket, symbol, type, direction, volume,
+                 price, profit, swap, commission, magic, comment, time, time_msc,
+                 synced, run_id)
+            VALUES (20, 777001, 888001, 'XAUUSD', 0, 0, 0.01, 2200.0, 1.5,
+                    0.0, 0.0, 202401, 'SCALP|G1', 1710000100, 1710000100000, 0, 0)
             """
         )
         conn.commit()
@@ -141,6 +145,39 @@ def test_forge_journal_sync_tags_source_and_is_idempotent(tmp_path, monkeypatch)
     with sqlite3.connect(str(journal)) as conn:
         assert conn.execute("SELECT synced FROM SIGNALS WHERE id=10").fetchone()[0] == 1
         assert conn.execute("SELECT synced FROM TRADES WHERE id=20").fetchone()[0] == 1
+
+
+def test_forge_journal_trades_multi_run_dedup(tmp_path, monkeypatch):
+    """Same deal_ticket with different run_id values must both be stored."""
+    scribe_mod = _reload_scribe(monkeypatch, str(tmp_path / "scribe.db"))
+    journal = tmp_path / "FORGE_journal_XAUUSD_tester.db"
+    _create_journal(journal)
+
+    # Add a second row: same deal_ticket (777001) but run_id=2
+    with sqlite3.connect(str(journal)) as conn:
+        conn.execute(
+            """
+            INSERT INTO TRADES
+                (id, deal_ticket, order_ticket, symbol, type, direction, volume,
+                 price, profit, swap, commission, magic, comment, time, time_msc,
+                 synced, run_id)
+            VALUES (21, 777001, 888001, 'XAUUSD', 0, 0, 0.01, 2201.0, 2.5,
+                    0.0, 0.0, 202401, 'SCALP|G1', 1710001000, 1710001000000, 0, 2)
+            """
+        )
+        conn.commit()
+
+    scribe = scribe_mod.Scribe(str(tmp_path / "scribe.db"))
+    synced = scribe.sync_forge_journal_trades(str(journal), source="tester")
+    assert synced == 2  # both rows accepted
+
+    with sqlite3.connect(str(tmp_path / "scribe.db")) as conn:
+        rows = conn.execute(
+            "SELECT deal_ticket, run_id FROM forge_journal_trades ORDER BY run_id"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0] == (777001, 0)
+        assert rows[1] == (777001, 2)
 
 
 def test_forge_journal_sync_keeps_live_and_tester_sources_separate(tmp_path, monkeypatch):

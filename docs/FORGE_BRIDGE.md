@@ -196,6 +196,19 @@ BRIDGE tracks individual position fills and closes by diffing `open_positions` a
   - `trade_positions` + `trade_closures` rows
   - `UNMANAGED_POSITION_OPEN` / `UNMANAGED_POSITION_CLOSED` audit events in `system_events`
 
+## 11. FORGE journal → SCRIBE (live vs tester)
+
+BRIDGE periodically (**~60s**) calls **`Scribe.sync_forge_journal()`** and **`sync_forge_journal_trades()`** for every path returned by **`_resolve_forge_journal_paths()`** (live Common Files + recursive **MetaTrader 5** tree, including Strategy Tester **Agent-*/MQL5/Files**).
+
+| Source | Path hint | Synced to AURUM by default? |
+|--------|-----------|------------------------------|
+| **Live** | `FORGE_journal_<SYMBOL>.db` (no `_tester` in filename) | **Yes** — rows go to **`forge_signals`** / **`forge_journal_trades`** with **`journal_source='live'`**. |
+| **Tester** | `FORGE_journal_<SYMBOL>_tester.db` | **No** — skipped unless **`BRIDGE_SYNC_TESTER_JOURNAL=1`** in **`.env`**. Tester DBs are **ML/backtest ground truth**; query them directly with **`sqlite3`** (see **`docs/FORGE_TESTER_JOURNAL_QUERIES.md`**, **`make journal-diagnose`**). Syncing them into the same SCRIBE DB as live can **pollute** analytics and duplicate keys across runs. |
+
+**Override (debug only):** set **`BRIDGE_SYNC_TESTER_JOURNAL=1`** (`true` / `yes` / `on`) and **`make reload-bridge`**. Synced tester rows use **`journal_source='tester'`** and a per-run **`run_id`** (from FORGE **`SIGNALS.run_id`** / **`TRADES.run_id`**) so **`UNIQUE(deal_ticket, journal_source, run_id)`** on **`forge_journal_trades`** can admit the same broker deal index across different backtest runs.
+
+**SCRIBE contract:** **`forge_signals`** and **`forge_journal_trades`** both support **`run_id`** (live rows keep **`run_id=0`**). See **`docs/DATA_CONTRACT.md`** and **`docs/SCRIBE_QUERY_EXAMPLES.md`**.
+
 ## Related
 
 - [SETUP.md](SETUP.md) — MT5 paths, symlink, `make forge-ea`

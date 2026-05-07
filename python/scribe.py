@@ -168,7 +168,8 @@ CREATE TABLE IF NOT EXISTS forge_journal_trades (
     time              INTEGER NOT NULL,
     time_msc          INTEGER,
     journal_source    TEXT DEFAULT 'live',
-    UNIQUE(deal_ticket, journal_source)
+    run_id            INTEGER DEFAULT 0,
+    UNIQUE(deal_ticket, journal_source, run_id)
 );
 
 CREATE TABLE IF NOT EXISTS market_regimes (
@@ -514,30 +515,84 @@ class Scribe:
         if "journal_source" not in fs_cols:
             conn.execute("ALTER TABLE forge_signals ADD COLUMN journal_source TEXT DEFAULT 'live'")
             log.info("SCRIBE migration: added journal_source to forge_signals")
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS forge_journal_trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                forge_rowid INTEGER NOT NULL,
-                deal_ticket INTEGER NOT NULL,
-                order_ticket INTEGER,
-                symbol TEXT NOT NULL,
-                type INTEGER,
-                direction INTEGER,
-                volume REAL,
-                price REAL,
-                profit REAL,
-                swap REAL,
-                commission REAL,
-                magic INTEGER,
-                comment TEXT,
-                time INTEGER NOT NULL,
-                time_msc INTEGER,
-                journal_source TEXT DEFAULT 'live',
-                UNIQUE(deal_ticket, journal_source)
-            );
-            CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
-            CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
-        """)
+        # forge_journal_trades: create fresh with UNIQUE(deal_ticket, journal_source, run_id)
+        # or migrate old schema (UNIQUE on deal_ticket+journal_source only) atomically.
+        fjt_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='forge_journal_trades'"
+        ).fetchone()
+        if fjt_sql is None:
+            # New table
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS forge_journal_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    forge_rowid INTEGER NOT NULL,
+                    deal_ticket INTEGER NOT NULL,
+                    order_ticket INTEGER,
+                    symbol TEXT NOT NULL,
+                    type INTEGER,
+                    direction INTEGER,
+                    volume REAL,
+                    price REAL,
+                    profit REAL,
+                    swap REAL,
+                    commission REAL,
+                    magic INTEGER,
+                    comment TEXT,
+                    time INTEGER NOT NULL,
+                    time_msc INTEGER,
+                    journal_source TEXT DEFAULT 'live',
+                    run_id INTEGER DEFAULT 0,
+                    UNIQUE(deal_ticket, journal_source, run_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
+                CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
+                CREATE INDEX IF NOT EXISTS idx_fjt_run ON forge_journal_trades(run_id);
+            """)
+            log.info("SCRIBE migration: created forge_journal_trades with UNIQUE(deal_ticket,journal_source,run_id)")
+        elif "run_id" not in fjt_sql[0]:
+            # Old schema — recreate atomically
+            conn.executescript("""
+                ALTER TABLE forge_journal_trades RENAME TO _fjt_old;
+                CREATE TABLE forge_journal_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    forge_rowid INTEGER NOT NULL,
+                    deal_ticket INTEGER NOT NULL,
+                    order_ticket INTEGER,
+                    symbol TEXT NOT NULL,
+                    type INTEGER,
+                    direction INTEGER,
+                    volume REAL,
+                    price REAL,
+                    profit REAL,
+                    swap REAL,
+                    commission REAL,
+                    magic INTEGER,
+                    comment TEXT,
+                    time INTEGER NOT NULL,
+                    time_msc INTEGER,
+                    journal_source TEXT DEFAULT 'live',
+                    run_id INTEGER DEFAULT 0,
+                    UNIQUE(deal_ticket, journal_source, run_id)
+                );
+                INSERT INTO forge_journal_trades
+                    SELECT id, forge_rowid, deal_ticket, order_ticket, symbol,
+                           type, direction, volume, price, profit, swap,
+                           commission, magic, comment, time, time_msc,
+                           journal_source, 0
+                    FROM _fjt_old;
+                DROP TABLE _fjt_old;
+                CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
+                CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
+                CREATE INDEX IF NOT EXISTS idx_fjt_run ON forge_journal_trades(run_id);
+            """)
+            log.info("SCRIBE migration: forge_journal_trades upgraded to UNIQUE(deal_ticket,journal_source,run_id)")
+        else:
+            # Correct schema already — just ensure indexes
+            conn.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
+                CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
+                CREATE INDEX IF NOT EXISTS idx_fjt_run ON forge_journal_trades(run_id);
+            """)
         tg_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
         if "pending_entry_threshold_points" not in tg_cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN pending_entry_threshold_points REAL")

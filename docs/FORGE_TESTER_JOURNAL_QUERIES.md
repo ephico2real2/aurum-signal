@@ -124,4 +124,13 @@ sqlite3 python/data/aurum_intelligence.db \
   "SELECT run_id, outcome, COUNT(*) as cnt
    FROM forge_signals WHERE journal_source='tester'
    GROUP BY run_id, outcome ORDER BY run_id, outcome;"
+
+# Check synced trades in AURUM — per-run P&L
+sqlite3 python/data/aurum_intelligence.db \
+  "SELECT run_id, COUNT(*) as deals,
+   SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as wins,
+   SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END) as losses,
+   ROUND(SUM(profit),2) as total_pnl
+   FROM forge_journal_trades WHERE journal_source='tester'
+   GROUP BY run_id ORDER BY run_id;"
 ```
