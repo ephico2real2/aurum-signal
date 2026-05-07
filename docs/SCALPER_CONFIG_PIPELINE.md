@@ -1,5 +1,7 @@
 # Scalper config — defaults, sync, and runtime
 
+**Agents and contributors:** never edit **`config/scalper_config.json`** directly. It is a **generated artifact**. Edit **`config/scalper_config.defaults.json`** (and **`.env`** for mapped `FORGE_*` keys), then run **`make scalper-env-sync`**. See repo **`AGENTS.md`** (and local **`.cursor/rules/scalper_config_generated.mdc`** if present).
+
 This document is the **source of truth** for how native scalper JSON is produced and consumed. Use it when changing parameters or debugging “why doesn’t MT5 see my edit?”.
 
 ## Files and roles

@@ -19,6 +19,7 @@ For full installation and configuration flow, see [docs/SETUP.md](docs/SETUP.md)
 
 ## Architecture
 Core architecture and operations docs:
+- **AI/automation:** do not hand-edit **`config/scalper_config.json`** — see **`AGENTS.md`** and **`docs/SCALPER_CONFIG_PIPELINE.md`**
 - **Scalper + regime phased roadmap** (execution prompts, testing, MT5 Tester, doc checklist): [docs/SCALPER_REGIME_PHASED_PLAN.md](docs/SCALPER_REGIME_PHASED_PLAN.md)
 - **System architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **Mode architecture**: [docs/MODES_ARCHITECTURE.md](docs/MODES_ARCHITECTURE.md)

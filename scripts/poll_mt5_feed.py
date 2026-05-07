@@ -26,7 +26,7 @@ def _root() -> Path:
 
 def _expected_version_from_mq5(mq5_path: Path) -> str:
     text = mq5_path.read_text(encoding="utf-8", errors="replace")
-    # Primary: constant declaration — const string FORGE_VERSION = "2.5.1";
+    # Primary: constant declaration — const string FORGE_VERSION = "X.Y.Z"; (from VERSION file)
     m = re.search(r'FORGE_VERSION\s*=\s*"([0-9.]+)"', text)
     if m:
         return m.group(1)

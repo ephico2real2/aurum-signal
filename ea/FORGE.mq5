@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.51"
+#property version "2.64"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.5.1";
+const string FORGE_VERSION = "2.6.4";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -117,6 +117,8 @@ datetime g_scalper_last_reset_day = 0;  // UTC day marker for session counter re
 datetime g_scalper_last_nosetup_log_bar = 0;   // throttle noisy "no setup" (once per M5 bar)
 datetime g_scalper_last_rrtoolow_log_bar = 0;  // throttle journal rr_too_low (once per M5 bar)
 datetime g_scalper_last_sesswarn_log_bar = 0; // throttle session_off log (once per M5 bar)
+datetime g_scalper_last_cooldown_log_bar = 0; // throttle cooldown log (once per M5 bar)
+datetime g_scalper_last_attempt_time = 0;     // rate-limit order retries (one attempt per second)
 datetime g_forge_init_gmt = 0;                 // TimeGMT() at OnInit — warmup delay anchor (Tester + live)
 datetime g_scalper_last_warmup_log_bar = 0;   // throttle warmup skip log (once per M5 bar)
 bool     g_scalper_warmup_ready_logged = false; // one-shot "entries enabled" after first successful warmup
@@ -207,6 +209,8 @@ struct ScalperConfig {
    int    sell_loss_grace_sec;
    double sell_loss_grace_adverse_points;
    double min_sl_atr_mult;
+   double min_rr;
+   double min_rr_floor;
    // After ATR + structural + min-distance SL: widen by this many points (BUY → SL lower, SELL → SL higher).
    double native_sl_extra_buffer_points;
    string lot_sizing_source;
@@ -241,6 +245,8 @@ struct ScalperConfig {
    double native_legs_clear_trend_factor;
    // If true, when n>1 always probe+scale (never market all legs at once), even if staged_entry_enabled is false.
    bool   native_force_staged_scale_in;
+   // If true, BB_BOUNCE native entries use BUY_LIMIT/SELL_LIMIT at the band price instead of market orders.
+   bool   native_scalper_use_limit_entry;
    // V2: stricter H1 filter, multi-candle confirmation, candle pattern scoring
    bool   bounce_require_h1_direction;
    bool   bounce_require_bar0_confirm;
@@ -378,6 +384,7 @@ struct TradeGroup {
    int    magic_offset;  // magic + id to differentiate groups
    // Native scalper staged scale-in (optional); inactive when staging_active=false.
    bool   staging_active;
+   bool   had_positions;
    string scalper_setup;
    int    legs_planned;
    int    next_staged_leg_i;
@@ -962,6 +969,7 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].move_be_on_tp1 = move_be;
    g_groups[gi].magic_offset  = group_magic;
    g_groups[gi].staging_active = false;
+   g_groups[gi].had_positions = false;
    g_groups[gi].scalper_setup = "";
    g_groups[gi].legs_planned = 0;
    g_groups[gi].next_staged_leg_i = 0;
@@ -971,6 +979,9 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].staged_tp1_legs = 0;
    g_groups[gi].staged_anchor = 0;
    g_groups[gi].staged_next_add = 0;
+   int bridge_group_positions[];
+   GetGroupPositions(group_magic, bridge_group_positions);
+   g_groups[gi].had_positions = (ArraySize(bridge_group_positions) > 0);
 
    Print("FORGE: Group ", group_id, " opened — ", opened, "/", n, " trades");
    g_trade.SetExpertMagicNumber(MagicNumber);
@@ -1127,6 +1138,37 @@ void ManagePendingLadderAbort() {
    }
 }
 
+int CountGroupPendingOrders(int magic) {
+   int count = 0;
+   for(int i = 0; i < OrdersTotal(); i++) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) == magic) count++;
+   }
+   return count;
+}
+
+int CancelGroupPendingOrders(int magic) {
+   int cancelled = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      if((int)OrderGetInteger(ORDER_MAGIC) != magic) continue;
+      if(g_trade.OrderDelete(ot)) cancelled++;
+   }
+   return cancelled;
+}
+
+void RemoveGroupAt(int index) {
+   int n = ArraySize(g_groups);
+   if(index < 0 || index >= n) return;
+   for(int i = index; i < n - 1; i++)
+      g_groups[i] = g_groups[i + 1];
+   ArrayResize(g_groups, n - 1);
+}
+
 //+------------------------------------------------------------------+
 //| Manage open groups: TP1 partial close + BE move                   |
 //+------------------------------------------------------------------+
@@ -1138,6 +1180,26 @@ void ManageOpenGroups() {
       int gm_lock = g_groups[gi].magic_offset;
       int pos_lock[];
       GetGroupPositions(gm_lock, pos_lock);
+      if(ArraySize(pos_lock) > 0) {
+         g_groups[gi].had_positions = true;
+      } else {
+         int pending_count = CountGroupPendingOrders(gm_lock);
+         if(g_groups[gi].had_positions) {
+            int cancelled = CancelGroupPendingOrders(gm_lock);
+            PrintFormat("FORGE: Group %d closed — removed from lifecycle, cancelled %d orphan pending orders",
+                        g_groups[gi].id, cancelled);
+            RemoveGroupAt(gi);
+            gi--;
+            continue;
+         }
+         if(pending_count == 0 && !g_groups[gi].staging_active) {
+            PrintFormat("FORGE: Group %d removed from lifecycle — no positions or pending orders",
+                        g_groups[gi].id);
+            RemoveGroupAt(gi);
+            gi--;
+            continue;
+         }
+      }
       int ratchet_updates = 0;
       if(ArraySize(pos_lock) > 0) {
          double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -1917,14 +1979,14 @@ void InitScalperConfig() {
    g_sc.bounce_bb_proximity_pct = 20;
    g_sc.bounce_reclaim_pct = 20;
    g_sc.bounce_require_rejection_candle = true;
-   g_sc.bounce_sl_atr_mult = 1.2;
+   g_sc.bounce_sl_atr_mult = 2.0;
    g_sc.bounce_tp1_close_pct = 40;
    g_sc.bounce_tp2_close_pct = 30;
    g_sc.breakout_enabled = true;
    g_sc.breakout_adx_min = 25;
    g_sc.breakout_rsi_buy_min = 55;
    g_sc.breakout_rsi_sell_max = 45;
-   g_sc.breakout_sl_atr_mult = 1.5;
+   g_sc.breakout_sl_atr_mult = 2.0;
    g_sc.breakout_tp1_atr_mult = 1.0;
    g_sc.breakout_tp2_atr_mult = 1.5;
    g_sc.breakout_tp3_atr_mult = 2.5;
@@ -1969,8 +2031,10 @@ void InitScalperConfig() {
    g_sc.adx_trend_exit = 28.0;
    g_sc.sell_loss_grace_sec = 90;
    g_sc.sell_loss_grace_adverse_points = 20.0;
-   g_sc.min_sl_atr_mult = 0.8;
-   g_sc.native_sl_extra_buffer_points = 0.0;
+   g_sc.min_sl_atr_mult = 1.5;
+   g_sc.min_rr = 1.5;
+   g_sc.min_rr_floor = 1.5;
+   g_sc.native_sl_extra_buffer_points = 5.0;
    g_sc.lot_sizing_source = "AUTO";
    g_sc.lot_inputs_override = false;
    g_sc.lot_fixed = ScalperLot;
@@ -1992,6 +2056,7 @@ void InitScalperConfig() {
    g_sc.native_legs_max_when_unclear = 3;
    g_sc.native_legs_clear_trend_factor = 1.35;
    g_sc.native_force_staged_scale_in = true;
+   g_sc.native_scalper_use_limit_entry = false;
    g_sc.bounce_require_h1_direction = true;
    g_sc.bounce_require_bar0_confirm = true;
    g_sc.bounce_min_candle_score = 1;
@@ -2324,6 +2389,10 @@ void ReadScalperConfig() {
       v = JsonGetDouble(lot_json, "native_force_staged_scale_in");
       g_sc.native_force_staged_scale_in = (v >= 0.5);
    }
+   if(JsonHasKey(lot_json, "native_scalper_use_limit_entry")) {
+      v = JsonGetDouble(lot_json, "native_scalper_use_limit_entry");
+      g_sc.native_scalper_use_limit_entry = (v >= 0.5);
+   }
    if(JsonHasKey(content, "high_vol_trend_guard_enabled")) {
       v = JsonGetDouble(content, "high_vol_trend_guard_enabled");
       g_sc.high_vol_trend_guard_enabled = (v >= 0.5);
@@ -2405,6 +2474,14 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "min_sl_atr_mult")) {
       v = JsonGetDouble(content, "min_sl_atr_mult");
       if(v >= 0.3 && v <= 3.0) g_sc.min_sl_atr_mult = v;
+   }
+   if(JsonHasKey(content, "min_rr")) {
+      v = JsonGetDouble(content, "min_rr");
+      if(v > 0 && v <= 5.0) g_sc.min_rr = v;
+   }
+   if(JsonHasKey(content, "min_rr_floor")) {
+      v = JsonGetDouble(content, "min_rr_floor");
+      if(v > 0 && v <= 5.0) g_sc.min_rr_floor = v;
    }
    if(JsonHasKey(content, "native_sl_extra_buffer_points")) {
       v = JsonGetDouble(content, "native_sl_extra_buffer_points");
@@ -3742,8 +3819,12 @@ void CheckNativeScalperSetups() {
    }
    if((MQLInfoInteger(MQL_TESTER) == 0 || g_sc.tester_cooldown_enabled) && !ScalperCooldownOK()) {
       int remaining = (int)MathMax(0, g_sc.loss_cooldown_sec - (int)(TimeGMT() - g_scalper_last_loss_time));
-      PrintFormat("FORGE SCALPER: skip gate=cooldown remaining_sec=%d", remaining);
-      JournalRecordSignal("SKIP","cooldown","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      datetime m5b_cd = iTime(_Symbol, PERIOD_M5, 0);
+      if(m5b_cd != g_scalper_last_cooldown_log_bar) {
+         g_scalper_last_cooldown_log_bar = m5b_cd;
+         PrintFormat("FORGE SCALPER: skip gate=cooldown remaining_sec=%d", remaining);
+         JournalRecordSignal("SKIP","cooldown","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      }
       return;
    }
 
@@ -3813,7 +3894,7 @@ void CheckNativeScalperSetups() {
    double trend_thr_eff = g_sc.trend_strength_atr_threshold;
    double bounce_bb_prox_eff = g_sc.bounce_bb_proximity_pct;
    double breakout_buf_eff_pts = g_sc.breakout_buffer_points;
-   double rr_min_eff = 1.2;
+   double rr_min_eff = MathMax(g_sc.min_rr, g_sc.min_rr_floor);
    bool breakout_m15_req_eff = g_sc.breakout_require_m15;
    if(in_tester) {
       if(!g_sc.bounce_respect_adx_max_in_tester)
@@ -3822,7 +3903,7 @@ void CheckNativeScalperSetups() {
       trend_thr_eff = MathMax(0.08, g_sc.trend_strength_atr_threshold * 0.45);
       bounce_bb_prox_eff = MathMax(g_sc.bounce_bb_proximity_pct, 40.0);
       breakout_buf_eff_pts = MathMax(1.0, g_sc.breakout_buffer_points * 0.30);
-      rr_min_eff = 1.0;
+      rr_min_eff = MathMax(1.0, MathMin(MathMax(g_sc.min_rr, g_sc.min_rr_floor), 1.5));
       breakout_m15_req_eff = false;
    }
    double breakout_buffer = breakout_buf_eff_pts * point;
@@ -3889,6 +3970,15 @@ void CheckNativeScalperSetups() {
                       && (m5_adx >= g_sc.high_vol_adx_min)
                       && trend_dir_agree
                       && (trend_mag >= g_sc.high_vol_trend_strength_min);
+
+   // In tester, BRIDGE does not push regime updates — derive it from native indicators so the journal is populated.
+   if(in_tester) {
+      if(high_vol_trend)                              g_regime_label = "VOLATILE";
+      else if(h1_bull && (h4_bull || h4_flat))        g_regime_label = "TREND_BULL";
+      else if(h1_bear && (h4_bear || h4_flat))        g_regime_label = "TREND_BEAR";
+      else                                             g_regime_label = "RANGE";
+      g_regime_confidence = 1.0;
+   }
 
    // M1 — execution TF confirmation (bias remains H1/H4/regime only)
    double m1_ema20 = (CopyBuffer(g_m1_ma20,0,0,1,buf)==1) ? buf[0] : 0;
@@ -4071,7 +4161,8 @@ void CheckNativeScalperSetups() {
       // BUY breakout: close above upper BB + RSI strong + aligned
       if(prev_close > (m5_bb_u + breakout_buffer) && m5_rsi > g_sc.breakout_rsi_buy_min
          && m5_bull && m15_ok_buy && h1_ok_buy && h4_ok_buy && strict_breakout_buy_ok) {
-         double bo_sl  = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
+         // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
+         double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
          double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
          if(bo_sl > bo_sl_floor) bo_sl = bo_sl_floor;
          double bo_tp1 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
@@ -4097,7 +4188,8 @@ void CheckNativeScalperSetups() {
       // SELL breakout
       else if(prev_close < (m5_bb_l - breakout_buffer) && m5_rsi < g_sc.breakout_rsi_sell_max
               && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok) {
-         double bo_sl  = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
+         // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
+         double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
          double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
          if(bo_sl < bo_sl_ceil) bo_sl = bo_sl_ceil;
          double bo_tp1 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
@@ -4191,11 +4283,25 @@ void CheckNativeScalperSetups() {
                setup_type, direction, sl_entry_ref, sl, sl_dist, m5_atr,
                (setup_type == "BB_BOUNCE") ? g_sc.bounce_sl_atr_mult : g_sc.breakout_sl_atr_mult,
                g_sc.min_sl_atr_mult, g_sc.native_sl_extra_buffer_points, g_ob_zone_count);
-   double risk = MathAbs((direction == "BUY" ? ask : bid) - sl);
-   double reward = MathAbs(tp1 - (direction == "BUY" ? ask : bid));
+   double rr_entry_ref = (direction == "BUY") ? ask : bid;
+   double risk = MathAbs(rr_entry_ref - sl);
+   double reward_tp1 = (direction == "BUY") ? (tp1 - rr_entry_ref) : (rr_entry_ref - tp1);
+   double reward_tp2 = (tp2 > 0.0) ? ((direction == "BUY") ? (tp2 - rr_entry_ref) : (rr_entry_ref - tp2)) : 0.0;
+   double reward = reward_tp1;
+   if(setup_type == "BB_BOUNCE")
+      reward = MathMax(reward_tp1, reward_tp2);
+   if(setup_type == "BB_BREAKOUT" || setup_type == "BB_BREAKOUT_RETEST") {
+      // Breakout scales out across 4 TPs — use the best reachable TP for the RR gate.
+      // TP1(1.0x) and TP2(1.5x) always give RR<1.0 at 2.0x SL; TP3(2.5x) gives RR=1.25, TP4(4.0x)=2.0.
+      double reward_tp3 = m5_atr * g_sc.breakout_tp3_atr_mult;
+      double reward_tp4 = m5_atr * g_sc.breakout_tp4_atr_mult;
+      reward = MathMax(reward_tp1, MathMax(reward_tp2, MathMax(reward_tp3, reward_tp4)));
+   }
    if(risk <= 0 || reward / risk < rr_min_eff) {
+      double rr_calc = (risk > 0.0) ? (reward / risk) : 0.0;
       Print("FORGE SCALPER: ", setup_type, " ", direction, " skipped — R:R ",
-            DoubleToString(reward / risk, 2), " < ", DoubleToString(rr_min_eff, 2));
+            DoubleToString(rr_calc, 2), " < ", DoubleToString(rr_min_eff, 2),
+            " tp1_rwd=", DoubleToString(reward_tp1, 2), " tp2_rwd=", DoubleToString(reward_tp2, 2));
       datetime m5rr = iTime(_Symbol, PERIOD_M5, 0);
       if(m5rr != g_scalper_last_rrtoolow_log_bar) {
          g_scalper_last_rrtoolow_log_bar = m5rr;
@@ -4295,28 +4401,54 @@ void CheckNativeScalperSetups() {
                n, init_cap, open_first,
                staging_on ? "true" : "false", trades_policy_out);
 
+   // One order attempt per second — prevents sub-second tick floods while still allowing retries across ticks.
+   if(TimeCurrent() == g_scalper_last_attempt_time) return;
+
    for(int i = 0; i < open_first; i++) {
       double tp_for_this = (i < tp1_count) ? tp1 : tp2_price;
       string tp_label = (i < tp1_count) ? "TP1" : "TP2";
       string comment = "SCALP|" + setup_type + "|G" + IntegerToString(group_id) + "|" + tp_label;
       bool ok = false;
       if(direction == "BUY") {
-         if(!ValidateStops(ask, sl, tp_for_this, ORDER_TYPE_BUY)) {
-            Print("FORGE SCALPER: invalid BUY stops for group ", group_id, " leg ", i + 1);
-            continue;
+         if(g_sc.native_scalper_use_limit_entry && !is_breakout_setup && m5_bb_l > 0) {
+            double limit_px = NormalizeDouble(m5_bb_l, _Digits);
+            if(!ValidateStops(limit_px, sl, tp_for_this, ORDER_TYPE_BUY_LIMIT)) {
+               Print("FORGE SCALPER: invalid BUY_LIMIT stops for group ", group_id, " leg ", i + 1);
+               continue;
+            }
+            ok = g_trade.BuyLimit(lot, limit_px, _Symbol, NormalizeDouble(sl, _Digits),
+                                  NormalizeDouble(tp_for_this, _Digits), 0, 0, comment);
+         } else {
+            if(!ValidateStops(ask, sl, tp_for_this, ORDER_TYPE_BUY)) {
+               Print("FORGE SCALPER: invalid BUY stops for group ", group_id, " leg ", i + 1);
+               continue;
+            }
+            ok = g_trade.Buy(lot, _Symbol, ask, NormalizeDouble(sl, _Digits),
+                             NormalizeDouble(tp_for_this, _Digits), comment);
          }
-         ok = g_trade.Buy(lot, _Symbol, ask, NormalizeDouble(sl, _Digits),
-                          NormalizeDouble(tp_for_this, _Digits), comment);
       } else {
-         if(!ValidateStops(bid, sl, tp_for_this, ORDER_TYPE_SELL)) {
-            Print("FORGE SCALPER: invalid SELL stops for group ", group_id, " leg ", i + 1);
-            continue;
+         if(g_sc.native_scalper_use_limit_entry && !is_breakout_setup && m5_bb_u > 0) {
+            double limit_px = NormalizeDouble(m5_bb_u, _Digits);
+            if(!ValidateStops(limit_px, sl, tp_for_this, ORDER_TYPE_SELL_LIMIT)) {
+               Print("FORGE SCALPER: invalid SELL_LIMIT stops for group ", group_id, " leg ", i + 1);
+               continue;
+            }
+            ok = g_trade.SellLimit(lot, limit_px, _Symbol, NormalizeDouble(sl, _Digits),
+                                   NormalizeDouble(tp_for_this, _Digits), 0, 0, comment);
+         } else {
+            if(!ValidateStops(bid, sl, tp_for_this, ORDER_TYPE_SELL)) {
+               Print("FORGE SCALPER: invalid SELL stops for group ", group_id, " leg ", i + 1);
+               continue;
+            }
+            ok = g_trade.Sell(lot, _Symbol, bid, NormalizeDouble(sl, _Digits),
+                              NormalizeDouble(tp_for_this, _Digits), comment);
          }
-         ok = g_trade.Sell(lot, _Symbol, bid, NormalizeDouble(sl, _Digits),
-                           NormalizeDouble(tp_for_this, _Digits), comment);
       }
       if(ok) opened++;
-      else Print("FORGE SCALPER: leg failed retcode=", g_trade.ResultRetcode(), " group=", group_id, " leg=", i + 1);
+      else {
+         Print("FORGE SCALPER: leg failed retcode=", g_trade.ResultRetcode(), " group=", group_id, " leg=", i + 1);
+         g_scalper_last_attempt_time = TimeCurrent();
+      }
       Sleep(50);
    }
 
@@ -4329,8 +4461,9 @@ void CheckNativeScalperSetups() {
 
    g_scalper_session_trades++;
    g_scalper_last_entry_bar = iTime(_Symbol, PERIOD_M5, 0);
+   if(g_scalper_last_direction != direction)
+      g_scalper_last_direction_time = TimeCurrent();
    g_scalper_last_direction = direction;
-   g_scalper_last_direction_time = TimeCurrent();
 
    // Register group for TP management
    int gi = ArraySize(g_groups);
@@ -4346,6 +4479,7 @@ void CheckNativeScalperSetups() {
    g_groups[gi].move_be_on_tp1 = is_breakout_setup ? g_sc.breakout_move_be : true;
    g_groups[gi].magic_offset  = group_magic;
    g_groups[gi].staging_active = staging_on;
+   g_groups[gi].had_positions = false;
    g_groups[gi].scalper_setup = staging_on ? setup_type : "";
    g_groups[gi].legs_planned = staging_on ? n : 0;
    g_groups[gi].next_staged_leg_i = staging_on ? open_first : 0;
@@ -4355,6 +4489,9 @@ void CheckNativeScalperSetups() {
    g_groups[gi].staged_tp1_legs = staging_on ? tp1_count : 0;
    g_groups[gi].staged_anchor = staging_on ? ((direction == "BUY") ? ask : bid) : 0;
    g_groups[gi].staged_next_add = staging_on ? (TimeCurrent() + MathMax(3, g_sc.staged_add_interval_sec)) : 0;
+   int native_group_positions[];
+   GetGroupPositions(group_magic, native_group_positions);
+   g_groups[gi].had_positions = (ArraySize(native_group_positions) > 0);
 
    int entry_candle_score = ScalperCandlePatternScore(direction == "BUY");
    Print("FORGE SCALPER: ", setup_type, " ", direction, " G", group_id,
@@ -4524,6 +4661,7 @@ void RebuildGroups() {
       g_groups[n].move_be_on_tp1 = true;
       g_groups[n].magic_offset = pm;
       g_groups[n].staging_active = false;
+      g_groups[n].had_positions = true;
       g_groups[n].scalper_setup = "";
       g_groups[n].legs_planned = 0;
       g_groups[n].next_staged_leg_i = 0;
@@ -4639,6 +4777,8 @@ bool PlaceOpenGroupLeg(
    string &order_kind,
    string &fail_reason
 ) {
+   // RR floor context: at RR=1.5 the break-even win rate is 40%
+   // (1 / (1 + 1.5) = 0.4). At RR=2.0 it drops to 33.3%.
    ok = false;
    fail_reason = "";
    string tp_label = (leg_index < (int)MathCeil(leg_count * 0.7)) ? "TP1" : "TP2";
@@ -4667,90 +4807,141 @@ bool PlaceOpenGroupLeg(
    if(direction == "BUY" && StringFind(req_type, "SELL_") == 0) {
       order_kind = req_type;
       fail_reason = "direction/order_type mismatch";
+      JournalRecordSignal("SKIP","open_group_" + fail_reason,"OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
       return false;
    }
    if(direction == "SELL" && StringFind(req_type, "BUY_") == 0) {
       order_kind = req_type;
       fail_reason = "direction/order_type mismatch";
+      JournalRecordSignal("SKIP","open_group_" + fail_reason,"OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
       return false;
    }
    if(req_type != "BUY_MARKET" && req_type != "SELL_MARKET" && !SymbolSupportsOrderType(req_type)) {
       order_kind = req_type;
       fail_reason = "symbol does not support order type";
+      JournalRecordSignal("SKIP","open_group_unsupported_order_type","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
       return false;
    }
 
    order_kind = req_type;
+
+   double entry_for_stops = entry;
+   if(req_type == "BUY_MARKET")  entry_for_stops = ask;
+   else if(req_type == "SELL_MARKET") entry_for_stops = bid;
+
+   double sl_for_this = sl;
+   double base_entry = (direction == "BUY") ? ask : bid;
+   bool is_market_req = (req_type == "BUY_MARKET" || req_type == "SELL_MARKET");
+
+   // Pending ladder legs need the group SL/TP distances rebased onto each leg's actual entry.
+   if(!is_market_req && leg.tp <= 0 && base_entry > 0.0 && entry_for_stops > 0.0) {
+      if(direction == "BUY") {
+         double sl_dist = base_entry - sl;
+         double tp_dist = tp_for_this - base_entry;
+         if(sl_dist > 0.0) sl_for_this = NormalizeDouble(entry_for_stops - sl_dist, _Digits);
+         if(tp_dist > 0.0) tp_for_this = NormalizeDouble(entry_for_stops + tp_dist, _Digits);
+      } else {
+         double sl_dist = sl - base_entry;
+         double tp_dist = base_entry - tp_for_this;
+         if(sl_dist > 0.0) sl_for_this = NormalizeDouble(entry_for_stops + sl_dist, _Digits);
+         if(tp_dist > 0.0) tp_for_this = NormalizeDouble(entry_for_stops - tp_dist, _Digits);
+      }
+   }
+
+   double rr_risk = 0.0, rr_reward = 0.0;
+   if(direction == "BUY") { rr_risk = entry_for_stops - sl_for_this; rr_reward = tp_for_this - entry_for_stops; }
+   else                   { rr_risk = sl_for_this - entry_for_stops; rr_reward = entry_for_stops - tp_for_this; }
+   double rr_floor = (g_sc.min_rr_floor > 0.0) ? g_sc.min_rr_floor : 1.5;
+   double rr = (rr_risk > 0.0) ? (rr_reward / rr_risk) : 0.0;
+   if(rr_risk <= 0.0 || rr_reward <= 0.0 || rr < rr_floor) {
+      fail_reason = "RR below floor";
+      PrintFormat("FORGE: skipped %s leg %d/%d entry=%.2f sl=%.2f tp=%.2f RR=%.2f floor=%.2f",
+                  req_type, leg_index+1, leg_count, entry_for_stops, sl_for_this, tp_for_this, rr, rr_floor);
+      JournalRecordSignal("SKIP","open_group_rr_below_floor","OPEN_GROUP",direction,entry_for_stops,0,0,0,0,0,0,0,0,0,0);
+      return false;
+   }
+
    if(req_type == "BUY_MARKET") {
-      if(!ValidateStops(ask, sl, tp_for_this, ORDER_TYPE_BUY)) {
+      if(!ValidateStops(ask, sl_for_this, tp_for_this, ORDER_TYPE_BUY)) {
          fail_reason = "invalid BUY market stops";
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,ask,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
-      ok = g_trade.Buy(lot_norm, _Symbol, ask, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
+      ok = g_trade.Buy(lot_norm, _Symbol, ask, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
       return true;
    }
    if(req_type == "SELL_MARKET") {
-      if(!ValidateStops(bid, sl, tp_for_this, ORDER_TYPE_SELL)) {
+      if(!ValidateStops(bid, sl_for_this, tp_for_this, ORDER_TYPE_SELL)) {
          fail_reason = "invalid SELL market stops";
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,bid,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
-      ok = g_trade.Sell(lot_norm, _Symbol, bid, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
+      ok = g_trade.Sell(lot_norm, _Symbol, bid, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
       return true;
    }
    if(req_type == "BUY_LIMIT") {
-      if(!ValidateStops(entry, sl, tp_for_this, ORDER_TYPE_BUY_LIMIT)) {
+      if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_BUY_LIMIT)) {
          fail_reason = "invalid BUY_LIMIT stops";
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
-      ok = g_trade.BuyLimit(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      ok = g_trade.BuyLimit(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
       return true;
    }
    if(req_type == "SELL_LIMIT") {
-      if(!ValidateStops(entry, sl, tp_for_this, ORDER_TYPE_SELL_LIMIT)) {
+      if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_SELL_LIMIT)) {
          fail_reason = "invalid SELL_LIMIT stops";
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
-      ok = g_trade.SellLimit(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      ok = g_trade.SellLimit(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
       return true;
    }
    if(req_type == "BUY_STOP") {
-      if(!ValidateStops(entry, sl, tp_for_this, ORDER_TYPE_BUY_STOP)) {
+      if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_BUY_STOP)) {
          fail_reason = "invalid BUY_STOP stops";
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
-      ok = g_trade.BuyStop(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      ok = g_trade.BuyStop(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
       return true;
    }
    if(req_type == "SELL_STOP") {
-      if(!ValidateStops(entry, sl, tp_for_this, ORDER_TYPE_SELL_STOP)) {
+      if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_SELL_STOP)) {
          fail_reason = "invalid SELL_STOP stops";
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
-      ok = g_trade.SellStop(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
+      ok = g_trade.SellStop(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
       return true;
    }
    if(req_type == "BUY_STOP_LIMIT" || req_type == "SELL_STOP_LIMIT") {
       double slp = leg.stoplimit_price;
       if(slp <= 0) {
          fail_reason = "missing stoplimit_price";
+         JournalRecordSignal("SKIP","open_group_missing_stoplimit","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
       if(req_type == "BUY_STOP_LIMIT") {
          if(entry <= ask + entry_tolerance) {
             fail_reason = "BUY_STOP_LIMIT trigger must be above current ask";
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_trigger","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
             return false;
          }
          if(slp > entry) {
             fail_reason = "BUY_STOP_LIMIT stoplimit_price must be <= trigger";
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_price","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
             return false;
          }
       } else {
          if(entry >= bid - entry_tolerance) {
             fail_reason = "SELL_STOP_LIMIT trigger must be below current bid";
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_trigger","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
             return false;
          }
          if(slp < entry) {
             fail_reason = "SELL_STOP_LIMIT stoplimit_price must be >= trigger";
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_price","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
             return false;
          }
       }
@@ -4765,11 +4956,12 @@ bool PlaceOpenGroupLeg(
       req.type = (req_type == "BUY_STOP_LIMIT") ? ORDER_TYPE_BUY_STOP_LIMIT : ORDER_TYPE_SELL_STOP_LIMIT;
       req.price = NormalizeDouble(entry, _Digits);
       req.stoplimit = NormalizeDouble(slp, _Digits);
-      if(!ValidateStops(entry, sl, tp_for_this, req.type)) {
+      if(!ValidateStops(entry, sl_for_this, tp_for_this, req.type)) {
          fail_reason = "invalid stop-limit stops";
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
          return false;
       }
-      req.sl = NormalizeDouble(sl, _Digits);
+      req.sl = NormalizeDouble(sl_for_this, _Digits);
       req.tp = NormalizeDouble(tp_for_this, _Digits);
       req.type_time = ORDER_TIME_GTC;
       req.deviation = 30;
@@ -4782,6 +4974,7 @@ bool PlaceOpenGroupLeg(
       return true;
    }
    fail_reason = "unsupported order_type";
+   JournalRecordSignal("SKIP","open_group_unsupported_order_type","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
    return false;
 }
 
