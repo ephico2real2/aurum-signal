@@ -1,5 +1,35 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.8.4] — 2026-05-08 (FORGE 2.6.7 — RSI exhaustion gates + bounce ADX tester fix)
+
+### Added (ea/FORGE.mq5)
+
+- **`bb_breakout.rsi_buy_ceil`** (default **`70`**) — before SL/TP calculation and retest state machine, skip BB_BREAKOUT **BUY** when M5 RSI ≥ ceiling; journal **`SKIP`** **`entry_quality_rsi_buy_ceil`**. Blocked the May 1 cluster (RSI 74.9–83.6) and Apr 17 BUY exhaustion losses from Run 10.
+- **`bb_breakout.rsi_sell_floor`** (default **`30`**) — skip BB_BREAKOUT **SELL** when M5 RSI ≤ floor; journal **`SKIP`** **`entry_quality_rsi_sell_floor`**. Blocked 6 confirmed SL hits (Apr 27–May 1, RSI 16–29) from Run 10.
+- Both gates apply to the immediate-entry path **and** the retest state machine path (`breakout_use_retest`).
+- **Version** **2.6.7** (`FORGE_VERSION`, `#property version`).
+
+### Changed (ea/FORGE.mq5)
+
+- Struct **`ScalperConfig`** — two new fields: **`breakout_rsi_buy_ceil`**, **`breakout_rsi_sell_floor`**.
+- **`InitScalperConfig`** — defaults 70.0 / 30.0.
+- **`ReadScalperConfig`** bb_breakout section — parses **`rsi_buy_ceil`** / **`rsi_sell_floor`** from `bb_breakout` JSON object.
+
+### Changed (config + tooling)
+
+- **`config/scalper_config.defaults.json`**, **`config/scalper_config.json`**:
+  - **`bb_breakout.rsi_buy_ceil: 70`**, **`bb_breakout.rsi_sell_floor: 30`** (new keys).
+  - **`bb_bounce.adx_max`**: `38` → `50` — aligns tester and live cap at a single value.
+  - **`bb_bounce.bounce_respect_adx_max_in_tester`**: `0` → `1` — tester no longer relaxes the ADX cap to 99; bounce entries above ADX 50 are now blocked in backtests. Closed the Run 10 May 1 09:35 ADX=62 anti-trend entry.
+- **`scripts/sync_scalper_config_from_env.py`** — **`FORGE_BREAKOUT_RSI_BUY_CEIL`** (50–100), **`FORGE_BREAKOUT_RSI_SELL_FLOOR`** (0–50).
+
+### Documentation
+
+- **`docs/FORGE_TRADING_RULES.md`** — new §§ "BB_BREAKOUT RSI exhaustion gates" and "BB_BOUNCE ADX cap — tester enforcement".
+- **`docs/FORGE_JOURNAL_SQL.md`**, **`docs/DATA_CONTRACT.md`** — added **`entry_quality_rsi_buy_ceil`** and **`entry_quality_rsi_sell_floor`** to the `gate_reason` enum.
+
+---
+
 ## [System 1.8.3] — 2026-05-08 (FORGE 2.6.6 — same-direction group cap)
 
 ### Added (ea/FORGE.mq5)

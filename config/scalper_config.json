@@ -1,10 +1,10 @@
 {
-  "version": "2.6.6",
+  "version": "2.6.7",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
     "description": "Mean-reversion: buy at BB lower, sell at BB upper in ranging markets",
-    "adx_max": 38,
+    "adx_max": 50,
     "rsi_buy_max": 50,
     "rsi_sell_min": 50,
     "bb_proximity_pct": 28,
@@ -16,7 +16,7 @@
     "bounce_min_candle_score": 0,
     "bounce_require_liquidity_zone": 0,
     "bounce_block_htf_trend_align": 0,
-    "bounce_respect_adx_max_in_tester": 0,
+    "bounce_respect_adx_max_in_tester": 1,
     "bounce_respect_h1_filter_in_tester": 0,
     "sl_atr_mult": 1.5,
     "tp1_target": "bb_mid",
@@ -45,7 +45,9 @@
     "tp4_close_pct": 10,
     "move_be_on_tp1": true,
     "breakout_use_retest": 1,
-    "breakout_retest_max_bars": 6
+    "breakout_retest_max_bars": 6,
+    "rsi_buy_ceil": 70,
+    "rsi_sell_floor": 30
   },
   "indicators": {
     "bb_period": 20,

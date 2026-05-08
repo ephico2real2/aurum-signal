@@ -121,6 +121,21 @@ After BB bounce/breakout logic sets a **direction**, FORGE runs **`CheckEntryQua
 
 Failed checks journal **`SKIP`** with **`gate_reason`**: **`entry_quality_direction_cap`** (cap), **`entry_quality_atr`**, **`entry_quality_body`**, **`entry_quality_direction`**, **`entry_quality_bb_contraction`**. Tune via **`config/scalper_config.defaults.json`** then **`make scalper-env-sync`**, or **`.env`**: **`FORGE_MAX_OPEN_SAME_DIRECTION`**, **`FORGE_MIN_ENTRY_ATR`**, **`FORGE_ENTRY_QUALITY_BARS`**, **`FORGE_MIN_BODY_RATIO`**, **`FORGE_MIN_DIRECTIONAL_BARS`**, **`FORGE_REQUIRE_BB_EXPANSION`** (see sync script **`MAPPING`**).
 
+### BB_BREAKOUT RSI exhaustion gates (FORGE v2.6.7+)
+
+Applied **before** the breakout SL/TP calculation and retest state machine — blocked setups never reach order placement:
+
+| `scalper_config.json` → **`bb_breakout`** key | Default | Effect |
+|------------------------------------------------|---------|--------|
+| **`rsi_buy_ceil`** | `70` | Block BUY breakout when M5 RSI **≥** this — move already overbought/exhausted. Journals **`entry_quality_rsi_buy_ceil`**. |
+| **`rsi_sell_floor`** | `30` | Block SELL breakout when M5 RSI **≤** this — move already oversold/exhausted. Journals **`entry_quality_rsi_sell_floor`**. |
+
+Env overrides: **`FORGE_BREAKOUT_RSI_BUY_CEIL`** (range 50–100), **`FORGE_BREAKOUT_RSI_SELL_FLOOR`** (range 0–50).
+
+### BB_BOUNCE ADX cap — tester enforcement (FORGE v2.6.7+)
+
+`bb_bounce.bounce_respect_adx_max_in_tester` is now **`1`** (was `0`). Previously the Strategy Tester relaxed `adx_max` to 99, allowing bounce entries at any ADX. With this flag enabled the tester honours `bb_bounce.adx_max` (now **`50`**, raised from `38`) identically to live. Env override: **`FORGE_BOUNCE_RESPECT_ADX_MAX_IN_TESTER`**.
+
 ## 5) Active scalper profile and baseline
 Active FAST profile (apply in **`config/scalper_config.defaults.json`**, then `make scalper-env-sync`; FORGE still reads emitted **`scalper_config.json`**):
 - `safety.max_spread_points=30`

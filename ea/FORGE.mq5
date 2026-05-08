@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.66"
+#property version "2.67"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.6.6";
+const string FORGE_VERSION = "2.6.7";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -151,6 +151,8 @@ struct ScalperConfig {
    double breakout_adx_min;
    double breakout_rsi_buy_min;
    double breakout_rsi_sell_max;
+   double breakout_rsi_buy_ceil;    // block BUY breakout when RSI >= this (default 70.0)
+   double breakout_rsi_sell_floor;  // block SELL breakout when RSI <= this (default 30.0)
    double breakout_sl_atr_mult;
    double breakout_tp1_atr_mult;
    double breakout_tp2_atr_mult;
@@ -1993,6 +1995,8 @@ void InitScalperConfig() {
    g_sc.breakout_adx_min = 25;
    g_sc.breakout_rsi_buy_min = 55;
    g_sc.breakout_rsi_sell_max = 45;
+   g_sc.breakout_rsi_buy_ceil   = 70.0;
+   g_sc.breakout_rsi_sell_floor = 30.0;
    g_sc.breakout_sl_atr_mult = 2.0;
    g_sc.breakout_tp1_atr_mult = 1.0;
    g_sc.breakout_tp2_atr_mult = 1.5;
@@ -2231,6 +2235,14 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sl_atr_mult")) {
          v = JsonGetDouble(breakout_json, "sl_atr_mult");
          if(v >= 0.5 && v <= 5.0) g_sc.breakout_sl_atr_mult = v;
+      }
+      if(JsonHasKey(breakout_json, "rsi_buy_ceil")) {
+         v = JsonGetDouble(breakout_json, "rsi_buy_ceil");
+         if(v > 0 && v <= 100) g_sc.breakout_rsi_buy_ceil = v;
+      }
+      if(JsonHasKey(breakout_json, "rsi_sell_floor")) {
+         v = JsonGetDouble(breakout_json, "rsi_sell_floor");
+         if(v >= 0 && v < 100) g_sc.breakout_rsi_sell_floor = v;
       }
    }
    v = JsonGetDouble(content, "fast_lock_min_hold_sec_bounce"); if(v >= 0) g_sc.fast_lock_min_hold_sec_bounce = (int)v;
@@ -4271,55 +4283,65 @@ void CheckNativeScalperSetups() {
       // BUY breakout: close above upper BB + RSI strong + aligned
       if(prev_close > (m5_bb_u + breakout_buffer) && m5_rsi > g_sc.breakout_rsi_buy_min
          && m5_bull && m15_ok_buy && h1_ok_buy && h4_ok_buy && strict_breakout_buy_ok) {
-         // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
-         double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
-         double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
-         if(bo_sl > bo_sl_floor) bo_sl = bo_sl_floor;
-         double bo_tp1 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
-         double bo_tp2 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
-         if(g_sc.breakout_use_retest && !in_tester && !g_retest.active) {
-            g_retest.active = true;
-            g_retest.direction = "BUY";
-            g_retest.breakout_level = m5_bb_u;
-            g_retest.sl = bo_sl;
-            g_retest.tp1 = bo_tp1;
-            g_retest.tp2 = bo_tp2;
-            g_retest.setup_type = "BB_BREAKOUT_RETEST";
-            g_retest.trigger_time = TimeCurrent();
-            g_retest.max_wait_bars = g_sc.breakout_retest_max_bars;
-            g_retest.bars_waited = 0;
-            PrintFormat("FORGE SCALPER: breakout BUY — waiting for retest at %.2f", m5_bb_u);
+         if(m5_rsi >= g_sc.breakout_rsi_buy_ceil) {
+            JournalRecordSignal("SKIP","entry_quality_rsi_buy_ceil","BB_BREAKOUT","BUY",
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
          } else {
-            direction = "BUY";
-            sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
-            setup_type = "BB_BREAKOUT";
+            // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
+            double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
+            double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
+            if(bo_sl > bo_sl_floor) bo_sl = bo_sl_floor;
+            double bo_tp1 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
+            double bo_tp2 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
+            if(g_sc.breakout_use_retest && !in_tester && !g_retest.active) {
+               g_retest.active = true;
+               g_retest.direction = "BUY";
+               g_retest.breakout_level = m5_bb_u;
+               g_retest.sl = bo_sl;
+               g_retest.tp1 = bo_tp1;
+               g_retest.tp2 = bo_tp2;
+               g_retest.setup_type = "BB_BREAKOUT_RETEST";
+               g_retest.trigger_time = TimeCurrent();
+               g_retest.max_wait_bars = g_sc.breakout_retest_max_bars;
+               g_retest.bars_waited = 0;
+               PrintFormat("FORGE SCALPER: breakout BUY — waiting for retest at %.2f", m5_bb_u);
+            } else {
+               direction = "BUY";
+               sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
+               setup_type = "BB_BREAKOUT";
+            }
          }
       }
       // SELL breakout
       else if(prev_close < (m5_bb_l - breakout_buffer) && m5_rsi < g_sc.breakout_rsi_sell_max
               && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok) {
-         // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
-         double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
-         double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
-         if(bo_sl < bo_sl_ceil) bo_sl = bo_sl_ceil;
-         double bo_tp1 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
-         double bo_tp2 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
-         if(g_sc.breakout_use_retest && !in_tester && !g_retest.active) {
-            g_retest.active = true;
-            g_retest.direction = "SELL";
-            g_retest.breakout_level = m5_bb_l;
-            g_retest.sl = bo_sl;
-            g_retest.tp1 = bo_tp1;
-            g_retest.tp2 = bo_tp2;
-            g_retest.setup_type = "BB_BREAKOUT_RETEST";
-            g_retest.trigger_time = TimeCurrent();
-            g_retest.max_wait_bars = g_sc.breakout_retest_max_bars;
-            g_retest.bars_waited = 0;
-            PrintFormat("FORGE SCALPER: breakout SELL — waiting for retest at %.2f", m5_bb_l);
+         if(m5_rsi <= g_sc.breakout_rsi_sell_floor) {
+            JournalRecordSignal("SKIP","entry_quality_rsi_sell_floor","BB_BREAKOUT","SELL",
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
          } else {
-            direction = "SELL";
-            sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
-            setup_type = "BB_BREAKOUT";
+            // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
+            double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
+            double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
+            if(bo_sl < bo_sl_ceil) bo_sl = bo_sl_ceil;
+            double bo_tp1 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
+            double bo_tp2 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
+            if(g_sc.breakout_use_retest && !in_tester && !g_retest.active) {
+               g_retest.active = true;
+               g_retest.direction = "SELL";
+               g_retest.breakout_level = m5_bb_l;
+               g_retest.sl = bo_sl;
+               g_retest.tp1 = bo_tp1;
+               g_retest.tp2 = bo_tp2;
+               g_retest.setup_type = "BB_BREAKOUT_RETEST";
+               g_retest.trigger_time = TimeCurrent();
+               g_retest.max_wait_bars = g_sc.breakout_retest_max_bars;
+               g_retest.bars_waited = 0;
+               PrintFormat("FORGE SCALPER: breakout SELL — waiting for retest at %.2f", m5_bb_l);
+            } else {
+               direction = "SELL";
+               sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
+               setup_type = "BB_BREAKOUT";
+            }
          }
       }
    }
