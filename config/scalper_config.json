@@ -1,5 +1,5 @@
 {
-  "version": "2.6.5",
+  "version": "2.6.6",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -118,6 +118,7 @@
     "min_rr_floor": 1.5,
     "native_sl_extra_buffer_points": 5,
     "min_entry_atr": 3.5,
+    "max_open_same_direction": 1,
     "entry_quality_bars": 3,
     "min_body_ratio": 0.4,
     "min_directional_bars": 2,

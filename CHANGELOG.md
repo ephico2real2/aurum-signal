@@ -1,5 +1,23 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.8.3] — 2026-05-08 (FORGE 2.6.6 — same-direction group cap)
+
+### Added (ea/FORGE.mq5)
+
+- **`safety.max_open_same_direction`** (default **1**, **`0`** = no cap) — before other entry-quality checks, skip when **`g_groups`** already has at least that many open groups in the proposed direction; journal **`SKIP`** **`entry_quality_direction_cap`**. **`ScalperOpenGroupCountByDirection`** uses the in-memory group ledger (no extra MT5 API scan).
+- **Version** **2.6.6** (`FORGE_VERSION`, `#property version`).
+
+### Changed (config + tooling)
+
+- **`config/scalper_config.defaults.json`**, generated **`config/scalper_config.json`** — **`safety.max_open_same_direction`**.
+- **`scripts/sync_scalper_config_from_env.py`** — **`FORGE_MAX_OPEN_SAME_DIRECTION`**.
+
+### Documentation
+
+- **`docs/FORGE_TRADING_RULES.md`**, **`docs/FORGE_JOURNAL_SQL.md`**, **`docs/DATA_CONTRACT.md`**, **`SKILL.md`**, **`SOUL.md`**, **`.env.example`** — cap and **`entry_quality_direction_cap`**.
+
+---
+
 ## [System 1.8.2] — 2026-05-07 (FORGE 2.6.5 — native entry quality gate)
 
 ### Added (ea/FORGE.mq5)

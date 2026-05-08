@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.65"
+#property version "2.66"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.6.5";
+const string FORGE_VERSION = "2.6.6";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -215,6 +215,7 @@ struct ScalperConfig {
    double native_sl_extra_buffer_points;
    // Entry Quality Gate — M5 bar-based pre-entry validation
    double min_entry_atr;           // reject entries when ATR < this (default 3.5)
+   int    max_open_same_direction; // max concurrent open groups per direction (default 1)
    int    entry_quality_bars;      // look-back bars for body/direction checks (default 3)
    double min_body_ratio;          // min avg body/candle ratio — filters doji/wick bars (default 0.40)
    int    min_directional_bars;    // min bars agreeing with trade direction out of entry_quality_bars (default 2)
@@ -2042,6 +2043,7 @@ void InitScalperConfig() {
    g_sc.min_rr_floor = 1.5;
    g_sc.native_sl_extra_buffer_points = 5.0;
    g_sc.min_entry_atr = 3.5;
+   g_sc.max_open_same_direction = 1;
    g_sc.entry_quality_bars = 3;
    g_sc.min_body_ratio = 0.40;
    g_sc.min_directional_bars = 2;
@@ -2501,6 +2503,10 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "min_entry_atr")) {
       v = JsonGetDouble(content, "min_entry_atr");
       if(v >= 0.0 && v <= 50.0) g_sc.min_entry_atr = v;
+   }
+   if(JsonHasKey(content, "max_open_same_direction")) {
+      v = JsonGetDouble(content, "max_open_same_direction");
+      if(v >= 0 && v <= 10) g_sc.max_open_same_direction = (int)v;
    }
    if(JsonHasKey(content, "entry_quality_bars")) {
       v = JsonGetDouble(content, "entry_quality_bars");
@@ -3803,10 +3809,29 @@ bool ForgeNativeScalperWarmupOk(string &reason_out) {
    return true;
 }
 
+// Count currently open (live positions or active staging) groups for a specific direction.
+// Uses g_groups[] which the lifecycle fix keeps accurate — no MT5 API query needed.
+int ScalperOpenGroupCountByDirection(const string direction) {
+   int count = 0;
+   for(int i = 0; i < ArraySize(g_groups); i++) {
+      if(g_groups[i].direction == direction) count++;
+   }
+   return count;
+}
+
 // M5 bar quality gate — checks ATR floor, bar body consistency, directional alignment, BB expansion.
 // Returns false (and logs reason) if the proposed entry does not meet quality thresholds.
 bool CheckEntryQuality(const string direction, const double atr,
                        const double bb_upper_now, const double bb_lower_now) {
+   // 0. Per-direction open group cap — prevent stacking same-direction exposure
+   if(g_sc.max_open_same_direction > 0) {
+      int dir_open = ScalperOpenGroupCountByDirection(direction);
+      if(dir_open >= g_sc.max_open_same_direction) {
+         JournalRecordSignal("SKIP","entry_quality_direction_cap","",direction,
+            SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,0,0,bb_upper_now,bb_lower_now,0,0,0,0);
+         return false;
+      }
+   }
    // 1. Minimum ATR floor — no entries in compressed/noise markets
    if(g_sc.min_entry_atr > 0.0 && atr < g_sc.min_entry_atr) {
       JournalRecordSignal("SKIP","entry_quality_atr","",direction,

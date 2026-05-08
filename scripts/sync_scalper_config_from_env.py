@@ -78,6 +78,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_MIN_BODY_RATIO": ("safety", "min_body_ratio", "float", 0.0, 1.0),
     "FORGE_MIN_DIRECTIONAL_BARS": ("safety", "min_directional_bars", "int", 0.0, 20.0),
     "FORGE_REQUIRE_BB_EXPANSION": ("safety", "require_bb_expansion", "bool01", None, None),
+    "FORGE_MAX_OPEN_SAME_DIRECTION": ("safety", "max_open_same_direction", "int", 0.0, 10.0),
     "FORGE_BOUNCE_SL_ATR_MULT": ("bb_bounce", "sl_atr_mult", "float", 0.5, 5.0),
     "FORGE_BREAKOUT_SL_ATR_MULT": ("bb_breakout", "sl_atr_mult", "float", 0.5, 5.0),
     "FORGE_PSAR_ENABLED": ("indicators", "psar_enabled", "bool01", None, None),
