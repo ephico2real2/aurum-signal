@@ -241,13 +241,13 @@ def build_autoscalper_condition_report(
         ]
     )
 
-    g47_g48_sell_pattern_match = all(
-        [
-            prefilter_pass,
-            h1_bias == "BEAR",
-            near_upper_bb is True,
-        ]
-    )
+    # G47/G48 SELL pattern: H1 BEAR bias + price near upper BB (overbought → short opportunity)
+    g47_g48_sell_pattern_match = all([prefilter_pass, h1_bias == "BEAR", near_upper_bb is True])
+    # Symmetric BUY pattern: H1 BULL bias + price near lower BB (oversold → long opportunity)
+    buy_setup_match = all([prefilter_pass, h1_bias == "BULL", near_lower_bb is True])
+    # Combined: either direction is ready
+    pattern_ready = g47_g48_sell_pattern_match or buy_setup_match
+    direction_ready = "SELL" if g47_g48_sell_pattern_match else ("BUY" if buy_setup_match else None)
 
     # TradingView LENS indicators — what AURUM sees when it makes the AUTO_SCALPER decision
     tv_rsi        = _safe_float(lens_raw.get("rsi"))
@@ -279,14 +279,20 @@ def build_autoscalper_condition_report(
         failed_checks.append("h1_bias_not_tradeable")
     if lower_tf_not_all_neutral is not True:
         failed_checks.append("lower_tf_rsis_neutral_or_missing")
-    if near_upper_bb is not True:
+    # BB proximity check is direction-dependent:
+    # SELL setup needs price near UPPER BB; BUY setup needs price near LOWER BB
+    if h1_bias == "BEAR" and near_upper_bb is not True:
         failed_checks.append("m15_not_near_upper_bb")
+    elif h1_bias == "BULL" and near_lower_bb is not True:
+        failed_checks.append("m15_not_near_lower_bb")
 
-    summary = (
-        "AUTO_SCALPER trigger conditions are aligned with the G47/G48-style SELL pattern."
-        if g47_g48_sell_pattern_match
-        else "AUTO_SCALPER trigger conditions are not fully aligned with the G47/G48-style SELL pattern."
-    )
+    if pattern_ready:
+        summary = (
+            f"AUTO_SCALPER ready — {direction_ready} setup confirmed "
+            f"({'G47/G48 SELL: H1 BEAR + upper BB' if direction_ready == 'SELL' else 'BUY: H1 BULL + lower BB'})."
+        )
+    else:
+        summary = "AUTO_SCALPER not ready — no directional BB setup confirmed (need H1 BEAR+upperBB or H1 BULL+lowerBB)."
 
     return {
         "timestamp": _now_iso(),
@@ -353,6 +359,9 @@ def build_autoscalper_condition_report(
         "latest_autoscalper_responses": recent_reasoning,
         "overall": {
             "g47_g48_sell_pattern_match": g47_g48_sell_pattern_match,
+            "buy_setup_match": buy_setup_match,
+            "pattern_ready": pattern_ready,
+            "direction_ready": direction_ready,
             "summary": summary,
             "failed_checks": failed_checks,
         },

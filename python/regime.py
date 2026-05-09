@@ -311,13 +311,23 @@ class RegimeEngine:
             rets = [float(arr[i, 0]) for i in idx]
             adxs = [float(arr[i, 3]) for i in idx]
             vols = [abs(float(arr[i, 1])) for i in idx]
+            ema_spreads = [float(arr[i, 2]) for i in idx]  # index 2 = ema_spread (EMA20-EMA50)
             mean_ret = statistics.mean(rets) if rets else 0.0
             mean_adx = statistics.mean(adxs) if adxs else 0.0
             mean_vol = statistics.mean(vols) if vols else 0.0
-            if mean_adx >= 22.0 and mean_ret > 0:
+            mean_ema_spread = statistics.mean(ema_spreads) if ema_spreads else 0.0
+            # Use ema_spread for direction (more stable than 1-bar return at 5s intervals).
+            # Require both ema_spread AND ret_1 to agree — reduces noise at state boundaries.
+            # Wilder's ADX trend threshold is 25 (not 22).
+            is_bull = mean_ema_spread > 0 and mean_ret >= 0
+            is_bear = mean_ema_spread < 0 and mean_ret <= 0
+            if mean_adx >= 25.0 and is_bull:
                 labels[s] = "TREND_BULL"
-            elif mean_adx >= 22.0 and mean_ret < 0:
+            elif mean_adx >= 25.0 and is_bear:
                 labels[s] = "TREND_BEAR"
+            elif mean_adx >= 25.0:
+                # Strong trend but direction ambiguous across samples → classify as VOLATILE
+                labels[s] = "VOLATILE"
             elif mean_vol > max(0.001, vol_med * 1.25):
                 labels[s] = "VOLATILE"
             else:
@@ -384,10 +394,11 @@ class RegimeEngine:
             conf = float(np.max(probs))
             label = self._hmm_state_labels.get(state, "RANGE")
             posterior = {
-                self._hmm_state_labels.get(int(i), f"STATE_{int(i)}"): round(float(p), 4)
+                # Unlabeled states fall back to RANGE (not shown as "STATE_N" in UI)
+                self._hmm_state_labels.get(int(i), "RANGE"): round(float(p), 4)
                 for i, p in enumerate(probs)
             }
-            # Merge duplicate labels by summing probabilities.
+            # Merge duplicate labels by summing probabilities (e.g. two RANGE states merge).
             merged: dict[str, float] = {}
             for k, v in posterior.items():
                 merged[k] = round(merged.get(k, 0.0) + float(v), 4)

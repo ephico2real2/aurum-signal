@@ -699,8 +699,10 @@ function ATHENA(){
   const asrLatest=(Array.isArray(asr.latest_autoscalper_responses)&&asr.latest_autoscalper_responses.length>0)
     ?asr.latest_autoscalper_responses[0]:null;
   const asrFailed=Array.isArray(asrOverall.failed_checks)?asrOverall.failed_checks:[];
-  const asrReady=asrOverall.g47_g48_sell_pattern_match===true;
+  // pattern_ready = true when either SELL (H1 BEAR+upperBB) or BUY (H1 BULL+lowerBB) is confirmed
+  const asrReady=asrOverall.pattern_ready===true||asrOverall.g47_g48_sell_pattern_match===true;
   const asrReadyColor=asrReady?T.green:T.red;
+  const asrDirection=asrOverall.direction_ready||null;
   const asrPrefilterPass=asrPref.prefilter_pass===true;
   const asrTesterMode=asr.strategy_tester===true||asrPref.mt5_tester_mode===true;
 
@@ -1461,7 +1463,7 @@ function ATHENA(){
             {autoscalperConditions?(
               <>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-                  <Tag lbl={asrReady?'READY':'BLOCKED'} color={asrReadyColor}/>
+                  <Tag lbl={asrReady?(asrDirection?`READY·${asrDirection}`:'READY'):'BLOCKED'} color={asrReadyColor}/>
                   <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
                     {fmtDateTime(asr.timestamp)}
                   </span>
