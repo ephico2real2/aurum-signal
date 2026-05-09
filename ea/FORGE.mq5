@@ -4221,8 +4221,11 @@ int ScalperNewsCheck() {
       return 2;
 
    if(proximity >= g_sc.news_filter_tighten_pct) {
-      g_nf_eff_rsi_buy_ceil = g_sc.news_filter_tighten_rsi_buy;
-      g_nf_eff_rsi_sell_min = g_sc.news_filter_tighten_rsi_sell;
+      double slide = (proximity - g_sc.news_filter_tighten_pct)
+                     / MathMax(0.001, g_sc.news_filter_block_pct - g_sc.news_filter_tighten_pct);
+      slide = MathMin(1.0, slide);
+      g_nf_eff_rsi_buy_ceil = 70.0 - (70.0 - g_sc.news_filter_tighten_rsi_buy)  * slide;
+      g_nf_eff_rsi_sell_min = 33.0 + (g_sc.news_filter_tighten_rsi_sell - 33.0) * slide;
       return 1;
    }
 
