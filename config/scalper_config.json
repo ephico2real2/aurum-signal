@@ -57,7 +57,11 @@
     "require_macd_sell": 1,
     "macd_fast": 3,
     "macd_slow": 10,
-    "macd_signal": 16
+    "macd_signal": 16,
+    "sell_limit_enabled": 1,
+    "sell_limit_atr_mult": 0.4,
+    "sell_limit_lot_factor": 0.125,
+    "sell_limit_expiry_bars": 6
   },
   "indicators": {
     "bb_period": 20,
