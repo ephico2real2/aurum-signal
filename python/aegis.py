@@ -860,11 +860,13 @@ class Aegis:
             session_start -= timedelta(days=1)
 
         try:
+            # trade_closures.timestamp is always populated at close; trade_positions.close_time
+            # is only updated when close_trade_position() is called which can be skipped for
+            # some close paths. trade_closures is the canonical record of all closed trades.
             rows = self.scribe.query(
                 """SELECT COALESCE(SUM(pnl), 0) as total
-                   FROM trade_positions
-                   WHERE status = 'CLOSED'
-                   AND close_time >= ?""",
+                   FROM trade_closures
+                   WHERE timestamp >= ?""",
                 (session_start.isoformat(),)
             )
             return float(rows[0]["total"]) if rows else 0.0

@@ -962,7 +962,7 @@ class Bridge:
         # Seed from SCRIBE OPEN positions
         try:
             open_pos = self.scribe.query(
-                "SELECT ticket, trade_group_id, magic_number, direction, entry_price, sl, tp "
+                "SELECT ticket, trade_group_id, magic_number, direction, entry_price, lot_size, sl, tp, timestamp "
                 "FROM trade_positions WHERE status='OPEN' AND ticket IS NOT NULL"
             )
             for r in open_pos:
@@ -980,7 +980,8 @@ class Bridge:
                     "open_price": r["entry_price"],
                     "last_profit": 0,
                     "current_price": r["entry_price"],
-                    "lot_size": 0,
+                    "lot_size": float(r.get("lot_size") or 0),
+                    "open_time": r.get("timestamp"),   # for duration_seconds at close
                     "symbol": None,
                     "sl": r.get("sl"), "tp": r.get("tp"),
                 }
@@ -1011,6 +1012,7 @@ class Bridge:
                         "last_profit": p.get("profit", 0),
                         "current_price": p.get("current_price"),
                         "lot_size": p.get("lots", 0),
+                        "open_time": datetime.now(timezone.utc).isoformat(),
                         "sl": p.get("sl"), "tp": p.get("tp"),
                     }
             else:
@@ -1241,6 +1243,8 @@ class Bridge:
                     "open_price": p.get("open_price"),
                     "last_profit": p.get("profit", 0),
                     "current_price": p.get("current_price"),
+                    "lot_size": p.get("lots", 0),
+                    "open_time": datetime.now(timezone.utc).isoformat(),
                     "symbol": p.get("symbol"),
                     "sl": p.get("sl"), "tp": p.get("tp"),
                 }
@@ -1268,6 +1272,7 @@ class Bridge:
                 "current_price": p.get("current_price"),
                 "symbol": p.get("symbol"),
                 "lot_size": p.get("lots", 0),
+                "open_time": datetime.now(timezone.utc).isoformat(),
                 "sl": p.get("sl"), "tp": p.get("tp"),
             }
             _tlog("TRACKER", "FILL", f"{direction} {p.get('lots',0):.2f}lot @ {p.get('open_price')} SL={p.get('sl')} TP={p.get('tp')}",
@@ -1566,6 +1571,15 @@ class Bridge:
                 close_time=close_time,
             )
 
+            # Compute duration from cached open_time + broker close_time
+            _dur = None
+            try:
+                _ot = snap.get("open_time")
+                if _ot and close_time:
+                    _dur = int((datetime.fromisoformat(close_time) - datetime.fromisoformat(_ot)).total_seconds())
+            except Exception:
+                pass
+
             # Log to trade_closures table
             self.scribe.log_trade_closure(
                 ticket=ticket,
@@ -1577,6 +1591,7 @@ class Bridge:
                 sl=sl, tp=tp,
                 close_reason=close_reason,
                 pnl=pnl, pips=pips,
+                duration_seconds=_dur,
                 session=_session(),
                 mode=mode,
             )
@@ -1699,6 +1714,13 @@ class Bridge:
                 tp_stage=tp_stage,
                 close_time=close_time,
             )
+            _dur2 = None
+            try:
+                _ot2 = snap.get("open_time")
+                if _ot2 and close_time:
+                    _dur2 = int((datetime.fromisoformat(close_time) - datetime.fromisoformat(_ot2)).total_seconds())
+            except Exception:
+                pass
             self.scribe.log_trade_closure(
                 ticket=ticket,
                 trade_group_id=gid or 0,
@@ -1711,6 +1733,7 @@ class Bridge:
                 close_reason=close_reason,
                 pnl=pnl,
                 pips=pips,
+                duration_seconds=_dur2,
                 session=_session(),
                 mode=mode,
             )
