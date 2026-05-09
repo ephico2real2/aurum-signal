@@ -161,10 +161,9 @@
     "breakout_adx_lot_use_m15": 1,
     "breakout_adx_lot_mid_threshold": 35,
     "breakout_adx_lot_high_threshold": 45,
-    "breakout_adx_lot_ext_threshold": 55,
     "breakout_adx_lot_factor_mid": 0.25,
     "breakout_adx_lot_factor_high": 0.125,
-    "breakout_adx_lot_factor_ext": 0.0625
+    "breakout_adx_sell_block_threshold": 55
   },
   "journal": {
     "journal_enabled": 1,

@@ -214,15 +214,29 @@ known problem. The M5 ADX reading at signal time may lag actual trend strength b
 M15 ADX reflects a 75-min trend window — less susceptible to tick noise. Use existing
 `g_mtf[1].h_adx` (M15 ADX handle already initialized) for the threshold comparison.
 
+**Broker minimum lot constraint (why 1/16th was removed):**
+At base lot 0.08: `0.08 × 0.125 = 0.01` (broker min) and `0.08 × 0.0625 = 0.005` → rounds to 0.01.
+Both 1/8th and 1/16th produce the same 0.01 lot — the 1/16th tier was meaningless. Replaced with
+a hard BLOCK at ADX ≥ 55: G5004 (ADX 59.2) and G5003 (ADX 48.2) both lost; these entries have
+no edge. Blocking is cleaner than taking a minimum-lot trade with no real size advantage.
+
+**Tier summary:**
+
+| M15 ADX | Action | Lot at 0.08 base |
+|---------|--------|-----------------|
+| < 35 | Normal sizing | 0.08 |
+| 35–44 | Mid factor 0.25× | 0.02 |
+| 45–54 | High factor 0.125× | **0.01 (broker min)** |
+| ≥ 55 | **BLOCK** `entry_quality_adx_extreme_sell` | — |
+
 **Config keys:**
 ```
 FORGE_BREAKOUT_ADX_LOT_MID_THRESHOLD=35
 FORGE_BREAKOUT_ADX_LOT_HIGH_THRESHOLD=45
-FORGE_BREAKOUT_ADX_LOT_EXT_THRESHOLD=55
 FORGE_BREAKOUT_ADX_LOT_FACTOR_MID=0.25
 FORGE_BREAKOUT_ADX_LOT_FACTOR_HIGH=0.125
-FORGE_BREAKOUT_ADX_LOT_FACTOR_EXT=0.0625
-FORGE_BREAKOUT_ADX_LOT_USE_M15=1        # 1=use M15 ADX for tier; 0=M5
+FORGE_BREAKOUT_ADX_SELL_BLOCK_THRESHOLD=55    # block instead of 1/16th (rounds to same as 1/8th)
+FORGE_BREAKOUT_ADX_LOT_USE_M15=1              # use M15 ADX to avoid M5 lag
 ```
 
 ---
@@ -350,7 +364,7 @@ feature and uses Cardwell's framework consistently.
 | 0 | Spread filter (verify wired) | Trivial | ACY, TMGM (spread data) | Prevents high-spread entries | **Now** |
 | 1 | Session sell cutoff | Low | NordFX, ACY, TMGM | +$321 (G5011+G5013) | **Now** |
 | 1.5 | MACD(3,10,16) histogram gate | Low | arXiv:2206.12282, QuantifiedStrategies | Blocks G5011-class exhaustion | **Now** |
-| 2 | Tiered ADX lot factors (M15 ADX) | Low | OpoFinance, Trade2Win (ADX lag) | +$50–80 damage control | **Now** |
+| 2 | Tiered ADX lot factors (M15 ADX) + BLOCK ≥55 | Low | OpoFinance, Trade2Win; broker min lot constraint | +$50–80 damage control; no phantom 1/16th | **Now** |
 | 3 | M30 bearish confirmation | Medium | ForexTester, RoboForex | Prevents stale-H1 entries | 2.7.7a |
 | 4 | SELL LIMIT cascade | High | Kinlay (math), MQL5 code 27379 | Cardwell re-short, recovery BUY | 2.7.7b |
 | 5 | Recovery BUY capture | Medium | Cardwell Bull Support research | Depends on #4 pending infra | 2.7.7b |

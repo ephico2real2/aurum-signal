@@ -124,6 +124,7 @@ datetime g_scalper_last_nosetup_log_bar  = 0;   // throttle noisy "no setup" (on
 datetime g_scalper_last_rrtoolow_log_bar = 0;   // throttle journal rr_too_low (once per M5 bar)
 datetime g_scalper_last_sesscut_log_bar  = 0;   // throttle entry_quality_session_sell_cutoff (2.7.7)
 datetime g_scalper_last_macd_log_bar     = 0;   // throttle entry_quality_macd_* gates (2.7.7)
+datetime g_scalper_last_adxblk_log_bar   = 0;   // throttle entry_quality_adx_extreme_sell (2.7.7)
 datetime g_scalper_last_sesswarn_log_bar = 0; // throttle session_off log (once per M5 bar)
 datetime g_scalper_last_cooldown_log_bar = 0; // throttle cooldown log (once per M5 bar)
 datetime g_scalper_last_atr_ext_log_bar = 0;  // throttle entry_quality_atr_ext log (once per M5 bar)
@@ -225,12 +226,11 @@ struct ScalperConfig {
    // ADX-tiered lot factors (2.7.7) — more extended move = smaller bet
    // Research: OpoFinance/Trade2Win: ADX lags on M5 — use M15 ADX for tier decision
    bool   breakout_adx_lot_use_m15;        // use M15 ADX for tier (less lag than M5)
-   double breakout_adx_lot_mid_threshold;  // ADX >= this → mid factor (default 35)
-   double breakout_adx_lot_high_threshold; // ADX >= this → high factor (default 45)
-   double breakout_adx_lot_ext_threshold;  // ADX >= this → extreme factor (default 55)
-   double breakout_adx_lot_factor_mid;     // lot factor at mid-threshold (default 0.25)
-   double breakout_adx_lot_factor_high;    // lot factor at high-threshold — 1/8th (default 0.125)
-   double breakout_adx_lot_factor_ext;     // lot factor at extreme-threshold — 1/16th (default 0.0625)
+   double breakout_adx_lot_mid_threshold;   // ADX >= this → mid factor (default 35)
+   double breakout_adx_lot_high_threshold;  // ADX >= this → 1/8th lot / broker min (default 45)
+   double breakout_adx_lot_factor_mid;      // lot factor at mid-threshold (default 0.25)
+   double breakout_adx_lot_factor_high;     // lot factor at high-threshold — 1/8th = 0.01 lot at base 0.08 (default 0.125)
+   double breakout_adx_sell_block_threshold;// ADX >= this → BLOCK SELL entirely (default 55); at min lot 1/16th = same as 1/8th
    // Safety
    double max_spread_points;
    int    max_open_groups;
@@ -2124,12 +2124,11 @@ void InitScalperConfig() {
    g_sc.breakout_macd_slow              = 10;
    g_sc.breakout_macd_signal            = 16;
    g_sc.breakout_adx_lot_use_m15        = true;
-   g_sc.breakout_adx_lot_mid_threshold  = 35.0;
-   g_sc.breakout_adx_lot_high_threshold = 45.0;
-   g_sc.breakout_adx_lot_ext_threshold  = 55.0;
-   g_sc.breakout_adx_lot_factor_mid     = 0.25;
-   g_sc.breakout_adx_lot_factor_high    = 0.125;
-   g_sc.breakout_adx_lot_factor_ext     = 0.0625;
+   g_sc.breakout_adx_lot_mid_threshold      = 35.0;
+   g_sc.breakout_adx_lot_high_threshold     = 45.0;
+   g_sc.breakout_adx_lot_factor_mid         = 0.25;
+   g_sc.breakout_adx_lot_factor_high        = 0.125;
+   g_sc.breakout_adx_sell_block_threshold   = 55.0;
    g_sc.post_sl_cooldown_sec          = 3600;
    g_sc.breakout_near_floor_lot_factor = 0.25;
    g_sc.same_direction_stack_lot_factor = 0.25;
@@ -2470,12 +2469,11 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"breakout_near_floor_lot_factor")) { v = JsonGetDouble(content,"breakout_near_floor_lot_factor"); if(v > 0 && v <= 1.0) g_sc.breakout_near_floor_lot_factor = v; }
    if(JsonHasKey(content,"same_direction_stack_lot_factor")) { v = JsonGetDouble(content,"same_direction_stack_lot_factor"); if(v > 0 && v <= 1.0) g_sc.same_direction_stack_lot_factor = v; }
    if(JsonHasKey(content,"breakout_adx_lot_use_m15")) { v = JsonGetDouble(content,"breakout_adx_lot_use_m15"); g_sc.breakout_adx_lot_use_m15 = (v >= 0.5); }
-   if(JsonHasKey(content,"breakout_adx_lot_mid_threshold"))  { v = JsonGetDouble(content,"breakout_adx_lot_mid_threshold");  if(v > 0 && v <= 100) g_sc.breakout_adx_lot_mid_threshold  = v; }
-   if(JsonHasKey(content,"breakout_adx_lot_high_threshold")) { v = JsonGetDouble(content,"breakout_adx_lot_high_threshold"); if(v > 0 && v <= 100) g_sc.breakout_adx_lot_high_threshold = v; }
-   if(JsonHasKey(content,"breakout_adx_lot_ext_threshold"))  { v = JsonGetDouble(content,"breakout_adx_lot_ext_threshold");  if(v > 0 && v <= 100) g_sc.breakout_adx_lot_ext_threshold  = v; }
-   if(JsonHasKey(content,"breakout_adx_lot_factor_mid"))     { v = JsonGetDouble(content,"breakout_adx_lot_factor_mid");     if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_mid     = v; }
-   if(JsonHasKey(content,"breakout_adx_lot_factor_high"))    { v = JsonGetDouble(content,"breakout_adx_lot_factor_high");    if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_high    = v; }
-   if(JsonHasKey(content,"breakout_adx_lot_factor_ext"))     { v = JsonGetDouble(content,"breakout_adx_lot_factor_ext");     if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_ext     = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_mid_threshold"))    { v = JsonGetDouble(content,"breakout_adx_lot_mid_threshold");    if(v > 0 && v <= 100) g_sc.breakout_adx_lot_mid_threshold    = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_high_threshold"))   { v = JsonGetDouble(content,"breakout_adx_lot_high_threshold");   if(v > 0 && v <= 100) g_sc.breakout_adx_lot_high_threshold   = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_factor_mid"))       { v = JsonGetDouble(content,"breakout_adx_lot_factor_mid");       if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_mid       = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_factor_high"))      { v = JsonGetDouble(content,"breakout_adx_lot_factor_high");      if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_high      = v; }
+   if(JsonHasKey(content,"breakout_adx_sell_block_threshold")) { v = JsonGetDouble(content,"breakout_adx_sell_block_threshold"); if(v > 0 && v <= 100) g_sc.breakout_adx_sell_block_threshold = v; }
    v = JsonGetDouble(content, "post_sl_cooldown_sec"); if(v >= 0) g_sc.post_sl_cooldown_sec = (int)v;
    if(JsonHasKey(content, "breakout_near_floor_lot_factor")) {
       v = JsonGetDouble(content, "breakout_near_floor_lot_factor");
@@ -4971,14 +4969,27 @@ void CheckNativeScalperSetups() {
                JournalRecordSignal("SKIP","entry_quality_session_sell_cutoff","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
-         } else if(m5_adx < breakout_adx_min_sell_eff) {
-            datetime _adxsell_bar = iTime(_Symbol, PERIOD_M5, 0);
-            if(_adxsell_bar != g_scalper_last_adxsell_log_bar) {
-               g_scalper_last_adxsell_log_bar = _adxsell_bar;
-               JournalRecordSignal("SKIP","entry_quality_adx_min_sell","BB_BREAKOUT","SELL",
-                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-            }
          } else {
+            // Extreme ADX block (2.7.7): at ADX(M15) >= threshold, move is exhausted; block outright.
+            // 1/16th lot rounds to same as 1/8th (broker min 0.01) — block is cleaner. G5004(ADX 59) validated.
+            double _adx_blk_ref = m5_adx;
+            { double _m15a[1]; if(CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _m15a) == 1) _adx_blk_ref = _m15a[0]; }
+            bool _adx_extreme = (g_sc.breakout_adx_sell_block_threshold > 0 && _adx_blk_ref >= g_sc.breakout_adx_sell_block_threshold);
+            if(_adx_extreme) {
+               datetime _ab_bar = iTime(_Symbol, PERIOD_M5, 0);
+               if(_ab_bar != g_scalper_last_adxblk_log_bar) {
+                  g_scalper_last_adxblk_log_bar = _ab_bar;
+                  JournalRecordSignal("SKIP","entry_quality_adx_extreme_sell","BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+            } else if(m5_adx < breakout_adx_min_sell_eff) {
+               datetime _adxsell_bar = iTime(_Symbol, PERIOD_M5, 0);
+               if(_adxsell_bar != g_scalper_last_adxsell_log_bar) {
+                  g_scalper_last_adxsell_log_bar = _adxsell_bar;
+                  JournalRecordSignal("SKIP","entry_quality_adx_min_sell","BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+            } else {
          // H1+H4 crash bypass: confirmed multi-TF bear trend overrides RSI floor and ADX spike gate.
          // ADX minimum, RSI declining, and news tighten all still apply.
          // Cardwell: RSI 20–60 is the downtrend range; RSI 20 is the extreme floor (crash_sell_rsi_min).
@@ -5099,7 +5110,8 @@ void CheckNativeScalperSetups() {
             }
             } // end adx_dur_ok && rsi_decl_ok
          }
-         } // end ADX-sell-min else block
+         } // end ADX-sell-min else block (inner: if/else-if/else within session-OK else)
+         } // end session-OK else block
       }
    }
 
@@ -5329,18 +5341,17 @@ void CheckNativeScalperSetups() {
          double _m15adx[1];
          if(CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _m15adx) == 1) _adx_ref = _m15adx[0];
       }
-      if(_adx_ref >= g_sc.breakout_adx_lot_ext_threshold && g_sc.breakout_adx_lot_factor_ext > 0)
-         adx_lot_factor = g_sc.breakout_adx_lot_factor_ext;   // 1/16th
-      else if(_adx_ref >= g_sc.breakout_adx_lot_high_threshold && g_sc.breakout_adx_lot_factor_high > 0)
-         adx_lot_factor = g_sc.breakout_adx_lot_factor_high;  // 1/8th
+      if(_adx_ref >= g_sc.breakout_adx_lot_high_threshold && g_sc.breakout_adx_lot_factor_high > 0)
+         adx_lot_factor = g_sc.breakout_adx_lot_factor_high;  // 1/8th = 0.01 lot at base 0.08 (broker min)
       else if(_adx_ref >= g_sc.breakout_adx_lot_mid_threshold && g_sc.breakout_adx_lot_factor_mid > 0)
-         adx_lot_factor = g_sc.breakout_adx_lot_factor_mid;   // 0.25×
+         adx_lot_factor = g_sc.breakout_adx_lot_factor_mid;   // 0.25× = 0.02 lot
       if(adx_lot_factor < 1.0)
          PrintFormat("FORGE SCALPER: SELL ADX(M15)=%.1f → ADX lot tier=%.4f", _adx_ref, adx_lot_factor);
    }
-   // Compound factor floor: dropped from 0.25 to 0.0625 to allow 1/16th sizing on extreme ADX entries.
-   // Floor prevents combined reduction below 6.25% of base lot regardless of how many factors stack.
-   double combined_lot_factor = MathMax(0.0625, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor);
+   // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
+   // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
+   // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
+   double combined_lot_factor = MathMax(0.125, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor);
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
    double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);
    double tp2_price = (tp2 > 0) ? tp2 : tp1;
