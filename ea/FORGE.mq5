@@ -120,8 +120,10 @@ string   g_scalper_last_direction = "";          // last entry direction for ant
 datetime g_scalper_last_direction_time = 0;      // when last direction was entered
 datetime g_scalper_last_reset_day = 0;  // UTC day marker for session counter reset
 string   g_scalper_last_session_label = "";      // UTC session label used to reset first-entry anchors
-datetime g_scalper_last_nosetup_log_bar = 0;   // throttle noisy "no setup" (once per M5 bar)
-datetime g_scalper_last_rrtoolow_log_bar = 0;  // throttle journal rr_too_low (once per M5 bar)
+datetime g_scalper_last_nosetup_log_bar  = 0;   // throttle noisy "no setup" (once per M5 bar)
+datetime g_scalper_last_rrtoolow_log_bar = 0;   // throttle journal rr_too_low (once per M5 bar)
+datetime g_scalper_last_sesscut_log_bar  = 0;   // throttle entry_quality_session_sell_cutoff (2.7.7)
+datetime g_scalper_last_macd_log_bar     = 0;   // throttle entry_quality_macd_* gates (2.7.7)
 datetime g_scalper_last_sesswarn_log_bar = 0; // throttle session_off log (once per M5 bar)
 datetime g_scalper_last_cooldown_log_bar = 0; // throttle cooldown log (once per M5 bar)
 datetime g_scalper_last_atr_ext_log_bar = 0;  // throttle entry_quality_atr_ext log (once per M5 bar)
@@ -211,6 +213,24 @@ struct ScalperConfig {
    bool   breakout_move_be;
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
+   // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
+   // Research: post-17:00 UTC = lower liquidity, wider spreads, adverse for XAUUSD scalps (TMGM, ACY, NordFX)
+   int    session_ny_sell_cutoff_utc;      // block SELL when UTC hour >= this in NY session (0=disabled, default 17)
+   int    session_london_sell_cutoff_utc;  // block SELL in London session (0=disabled, default 0)
+   // MACD(3,10,16) histogram gate (2.7.7) — arXiv:2206.12282: RSI+MACD dual gate 84-86% WR
+   bool   breakout_require_macd_sell;      // block SELL when MACD histogram positive or contracting
+   int    breakout_macd_fast;              // MACD fast period (default 3 for scalping)
+   int    breakout_macd_slow;              // MACD slow period (default 10)
+   int    breakout_macd_signal;            // MACD signal period (default 16)
+   // ADX-tiered lot factors (2.7.7) — more extended move = smaller bet
+   // Research: OpoFinance/Trade2Win: ADX lags on M5 — use M15 ADX for tier decision
+   bool   breakout_adx_lot_use_m15;        // use M15 ADX for tier (less lag than M5)
+   double breakout_adx_lot_mid_threshold;  // ADX >= this → mid factor (default 35)
+   double breakout_adx_lot_high_threshold; // ADX >= this → high factor (default 45)
+   double breakout_adx_lot_ext_threshold;  // ADX >= this → extreme factor (default 55)
+   double breakout_adx_lot_factor_mid;     // lot factor at mid-threshold (default 0.25)
+   double breakout_adx_lot_factor_high;    // lot factor at high-threshold — 1/8th (default 0.125)
+   double breakout_adx_lot_factor_ext;     // lot factor at extreme-threshold — 1/16th (default 0.0625)
    // Safety
    double max_spread_points;
    int    max_open_groups;
@@ -370,8 +390,9 @@ int g_h_ma20 = INVALID_HANDLE;
 int g_h_ma50 = INVALID_HANDLE;
 int g_h_atr  = INVALID_HANDLE;
 int g_h_bb   = INVALID_HANDLE;
-int g_h_macd = INVALID_HANDLE;
-int g_h_adx  = INVALID_HANDLE;
+int g_h_macd      = INVALID_HANDLE;
+int g_h_macd_scalp = INVALID_HANDLE;  // M5 MACD(3,10,16) — scalping histogram gate (2.7.7)
+int g_h_adx        = INVALID_HANDLE;
 
 // H4 — native scalper higher-TF structure (EMA20/50 + ATR; same trend_strength formula as H1)
 int g_h4_ma20 = INVALID_HANDLE;
@@ -658,8 +679,9 @@ void EnsureIndicators() {
    IndicatorRelease(g_h_ma50); g_h_ma50 = INVALID_HANDLE;
    IndicatorRelease(g_h_atr);  g_h_atr = INVALID_HANDLE;
    IndicatorRelease(g_h_bb);   g_h_bb = INVALID_HANDLE;
-   IndicatorRelease(g_h_macd); g_h_macd = INVALID_HANDLE;
-   IndicatorRelease(g_h_adx);  g_h_adx = INVALID_HANDLE;
+   IndicatorRelease(g_h_macd);       g_h_macd = INVALID_HANDLE;
+   IndicatorRelease(g_h_macd_scalp); g_h_macd_scalp = INVALID_HANDLE;
+   IndicatorRelease(g_h_adx);        g_h_adx = INVALID_HANDLE;
    IndicatorRelease(g_h4_ma20); g_h4_ma20 = INVALID_HANDLE;
    IndicatorRelease(g_h4_ma50); g_h4_ma50 = INVALID_HANDLE;
    IndicatorRelease(g_h4_atr);  g_h4_atr = INVALID_HANDLE;
@@ -671,8 +693,9 @@ void EnsureIndicators() {
    g_h_ma50 = iMA(_Symbol, PERIOD_H1, 50, 0, MODE_EMA, PRICE_CLOSE);
    g_h_atr  = iATR(_Symbol, PERIOD_H1, 14);
    g_h_bb   = iBands(_Symbol, PERIOD_H1, 20, 0, 2.0, PRICE_CLOSE);
-   g_h_macd = iMACD(_Symbol, PERIOD_H1, 12, 26, 9, PRICE_CLOSE);
-   g_h_adx  = iADX(_Symbol, PERIOD_H1, 14);
+   g_h_macd       = iMACD(_Symbol, PERIOD_H1, 12, 26, 9, PRICE_CLOSE);
+   g_h_macd_scalp = iMACD(_Symbol, PERIOD_M5, g_sc.breakout_macd_fast, g_sc.breakout_macd_slow, g_sc.breakout_macd_signal, PRICE_CLOSE);
+   g_h_adx        = iADX(_Symbol, PERIOD_H1, 14);
    g_h4_ma20 = iMA(_Symbol, PERIOD_H4, 20, 0, MODE_EMA, PRICE_CLOSE);
    g_h4_ma50 = iMA(_Symbol, PERIOD_H4, 50, 0, MODE_EMA, PRICE_CLOSE);
    g_h4_atr  = iATR(_Symbol, PERIOD_H4, 14);
@@ -2093,6 +2116,20 @@ void InitScalperConfig() {
    g_sc.max_open_groups = 2;
    g_sc.max_trades_per_session = 3;
    g_sc.loss_cooldown_sec = 300;
+   // 2.7.7 defaults
+   g_sc.session_ny_sell_cutoff_utc      = 17;
+   g_sc.session_london_sell_cutoff_utc  = 0;
+   g_sc.breakout_require_macd_sell      = true;
+   g_sc.breakout_macd_fast              = 3;
+   g_sc.breakout_macd_slow              = 10;
+   g_sc.breakout_macd_signal            = 16;
+   g_sc.breakout_adx_lot_use_m15        = true;
+   g_sc.breakout_adx_lot_mid_threshold  = 35.0;
+   g_sc.breakout_adx_lot_high_threshold = 45.0;
+   g_sc.breakout_adx_lot_ext_threshold  = 55.0;
+   g_sc.breakout_adx_lot_factor_mid     = 0.25;
+   g_sc.breakout_adx_lot_factor_high    = 0.125;
+   g_sc.breakout_adx_lot_factor_ext     = 0.0625;
    g_sc.post_sl_cooldown_sec          = 3600;
    g_sc.breakout_near_floor_lot_factor = 0.25;
    g_sc.same_direction_stack_lot_factor = 0.25;
@@ -2389,6 +2426,10 @@ void ReadScalperConfig() {
          v = JsonGetDouble(breakout_json, "min_h1_bear_strength");
          if(v >= 0 && v <= 5.0) g_sc.breakout_min_h1_bear_strength = v;
       }
+      if(JsonHasKey(breakout_json, "require_macd_sell")) { v = JsonGetDouble(breakout_json,"require_macd_sell"); g_sc.breakout_require_macd_sell = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "macd_fast"))         { v = JsonGetDouble(breakout_json,"macd_fast");   if(v >= 1 && v <= 50) g_sc.breakout_macd_fast   = (int)v; }
+      if(JsonHasKey(breakout_json, "macd_slow"))         { v = JsonGetDouble(breakout_json,"macd_slow");   if(v >= 1 && v <= 100) g_sc.breakout_macd_slow  = (int)v; }
+      if(JsonHasKey(breakout_json, "macd_signal"))       { v = JsonGetDouble(breakout_json,"macd_signal"); if(v >= 1 && v <= 50) g_sc.breakout_macd_signal = (int)v; }
       if(JsonHasKey(breakout_json, "sell_inside_band_lot_factor")) {
          v = JsonGetDouble(breakout_json, "sell_inside_band_lot_factor");
          if(v > 0 && v <= 1.0) g_sc.breakout_sell_inside_band_lot_factor = v;
@@ -2424,6 +2465,17 @@ void ReadScalperConfig() {
    v = JsonGetDouble(content, "max_open_groups"); if(v > 0) g_sc.max_open_groups = (int)v;
    v = JsonGetDouble(content, "max_trades_per_session"); if(v > 0) g_sc.max_trades_per_session = (int)v;
    v = JsonGetDouble(content, "loss_cooldown_sec"); if(v > 0) g_sc.loss_cooldown_sec = (int)v;
+   if(JsonHasKey(content,"session_ny_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_ny_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_ny_sell_cutoff_utc = (int)v; }
+   if(JsonHasKey(content,"session_london_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_london_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_london_sell_cutoff_utc = (int)v; }
+   if(JsonHasKey(content,"breakout_near_floor_lot_factor")) { v = JsonGetDouble(content,"breakout_near_floor_lot_factor"); if(v > 0 && v <= 1.0) g_sc.breakout_near_floor_lot_factor = v; }
+   if(JsonHasKey(content,"same_direction_stack_lot_factor")) { v = JsonGetDouble(content,"same_direction_stack_lot_factor"); if(v > 0 && v <= 1.0) g_sc.same_direction_stack_lot_factor = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_use_m15")) { v = JsonGetDouble(content,"breakout_adx_lot_use_m15"); g_sc.breakout_adx_lot_use_m15 = (v >= 0.5); }
+   if(JsonHasKey(content,"breakout_adx_lot_mid_threshold"))  { v = JsonGetDouble(content,"breakout_adx_lot_mid_threshold");  if(v > 0 && v <= 100) g_sc.breakout_adx_lot_mid_threshold  = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_high_threshold")) { v = JsonGetDouble(content,"breakout_adx_lot_high_threshold"); if(v > 0 && v <= 100) g_sc.breakout_adx_lot_high_threshold = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_ext_threshold"))  { v = JsonGetDouble(content,"breakout_adx_lot_ext_threshold");  if(v > 0 && v <= 100) g_sc.breakout_adx_lot_ext_threshold  = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_factor_mid"))     { v = JsonGetDouble(content,"breakout_adx_lot_factor_mid");     if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_mid     = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_factor_high"))    { v = JsonGetDouble(content,"breakout_adx_lot_factor_high");    if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_high    = v; }
+   if(JsonHasKey(content,"breakout_adx_lot_factor_ext"))     { v = JsonGetDouble(content,"breakout_adx_lot_factor_ext");     if(v > 0 && v <= 1.0) g_sc.breakout_adx_lot_factor_ext     = v; }
    v = JsonGetDouble(content, "post_sl_cooldown_sec"); if(v >= 0) g_sc.post_sl_cooldown_sec = (int)v;
    if(JsonHasKey(content, "breakout_near_floor_lot_factor")) {
       v = JsonGetDouble(content, "breakout_near_floor_lot_factor");
@@ -4907,7 +4959,19 @@ void CheckNativeScalperSetups() {
               && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok
               && (g_sc.breakout_min_h1_bear_strength <= 0.0
                   || h1_trend_strength <= -g_sc.breakout_min_h1_bear_strength)) {
-         if(m5_adx < breakout_adx_min_sell_eff) {
+         // Session SELL cutoff (2.7.7): post-17:00 UTC = lower liquidity, wider spread, adverse for XAUUSD scalps
+         // Research: TMGM, ACY, NordFX — ~70% of daily range occurs in London+NY overlap only (08:00-17:00 UTC)
+         MqlDateTime _sdt; TimeToStruct(TimeTradeServer(), _sdt);
+         bool _sell_session_ok = !((g_sc.session_ny_sell_cutoff_utc > 0 && _sdt.hour >= g_sc.session_ny_sell_cutoff_utc)
+                                || (g_sc.session_london_sell_cutoff_utc > 0 && _sdt.hour >= g_sc.session_london_sell_cutoff_utc && _sdt.hour < 13));
+         if(!_sell_session_ok) {
+            datetime _sc_bar = iTime(_Symbol, PERIOD_M5, 0);
+            if(_sc_bar != g_scalper_last_sesscut_log_bar) {
+               g_scalper_last_sesscut_log_bar = _sc_bar;
+               JournalRecordSignal("SKIP","entry_quality_session_sell_cutoff","BB_BREAKOUT","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(m5_adx < breakout_adx_min_sell_eff) {
             datetime _adxsell_bar = iTime(_Symbol, PERIOD_M5, 0);
             if(_adxsell_bar != g_scalper_last_adxsell_log_bar) {
                g_scalper_last_adxsell_log_bar = _adxsell_bar;
@@ -4976,16 +5040,40 @@ void CheckNativeScalperSetups() {
                   rsi_decl_ok = false;
                }
             }
+            // MACD(3,10,16) histogram gate (2.7.7): dual confirmation — arXiv:2206.12282 84-86% WR
+            // Block SELL when histogram positive (no bearish momentum) or contracting (momentum weakening)
+            bool macd_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && g_sc.breakout_require_macd_sell && g_h_macd_scalp != INVALID_HANDLE) {
+               double _mhist[2];
+               if(CopyBuffer(g_h_macd_scalp, 2, 0, 2, _mhist) == 2) {
+                  datetime _macd_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_mhist[0] >= 0.0) {  // histogram positive = no bearish MACD momentum
+                     if(_macd_bar != g_scalper_last_macd_log_bar) {
+                        g_scalper_last_macd_log_bar = _macd_bar;
+                        JournalRecordSignal("SKIP","entry_quality_macd_direction","BB_BREAKOUT","SELL",
+                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                     }
+                     macd_sell_ok = false;
+                  } else if(_mhist[0] > _mhist[1]) {  // histogram contracting = momentum shifting bullish
+                     if(_macd_bar != g_scalper_last_macd_log_bar) {
+                        g_scalper_last_macd_log_bar = _macd_bar;
+                        JournalRecordSignal("SKIP","entry_quality_macd_histogram","BB_BREAKOUT","SELL",
+                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                     }
+                     macd_sell_ok = false;
+                  }
+               }
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok
                && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
                && m5_rsi <= g_nf_eff_rsi_sell_min) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_sell_ok = false;
             }
-            if(adx_dur_ok && rsi_decl_ok && nf_sell_ok) {
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && nf_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -5231,10 +5319,28 @@ void CheckNativeScalperSetups() {
       stack_factor = g_sc.same_direction_stack_lot_factor;
       PrintFormat("FORGE SCALPER: %s stack entry — lot factor=%.2f", direction, stack_factor);
    }
-   // Compound factor floor: if multiple lot reducers apply simultaneously, cap the combined
-   // reduction at 0.25x so no entry falls below 25% of base lot regardless of how many
-   // factors stack (e.g., inside-band + near-floor + stack = 0.25^3 would be too small).
-   double combined_lot_factor = MathMax(0.25, inside_band_factor * near_floor_factor * stack_factor);
+   // ADX-tiered lot factor (2.7.7): the more extended the trend, the smaller the bet
+   // Research: OpoFinance/Trade2Win — ADX lags on M5; use M15 ADX for tier decision
+   // ADX 35-44 → 0.25×  |  ADX 45-54 → 1/8th  |  ADX ≥55 → 1/16th
+   double adx_lot_factor = 1.0;
+   if(direction == "SELL" && is_breakout_setup) {
+      double _adx_ref = m5_adx;
+      if(g_sc.breakout_adx_lot_use_m15) {
+         double _m15adx[1];
+         if(CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _m15adx) == 1) _adx_ref = _m15adx[0];
+      }
+      if(_adx_ref >= g_sc.breakout_adx_lot_ext_threshold && g_sc.breakout_adx_lot_factor_ext > 0)
+         adx_lot_factor = g_sc.breakout_adx_lot_factor_ext;   // 1/16th
+      else if(_adx_ref >= g_sc.breakout_adx_lot_high_threshold && g_sc.breakout_adx_lot_factor_high > 0)
+         adx_lot_factor = g_sc.breakout_adx_lot_factor_high;  // 1/8th
+      else if(_adx_ref >= g_sc.breakout_adx_lot_mid_threshold && g_sc.breakout_adx_lot_factor_mid > 0)
+         adx_lot_factor = g_sc.breakout_adx_lot_factor_mid;   // 0.25×
+      if(adx_lot_factor < 1.0)
+         PrintFormat("FORGE SCALPER: SELL ADX(M15)=%.1f → ADX lot tier=%.4f", _adx_ref, adx_lot_factor);
+   }
+   // Compound factor floor: dropped from 0.25 to 0.0625 to allow 1/16th sizing on extreme ADX entries.
+   // Floor prevents combined reduction below 6.25% of base lot regardless of how many factors stack.
+   double combined_lot_factor = MathMax(0.0625, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor);
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
    double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);
    double tp2_price = (tp2 > 0) ? tp2 : tp1;

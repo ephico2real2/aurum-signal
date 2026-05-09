@@ -53,7 +53,11 @@
     "h1h4_crash_sell_rsi_min": 20,
     "rsi_decl_sell_adx_threshold": 40,
     "h1h4_crash_sell_adx_max": 40,
-    "min_h1_bear_strength": 0.2
+    "min_h1_bear_strength": 0.2,
+    "require_macd_sell": 1,
+    "macd_fast": 3,
+    "macd_slow": 10,
+    "macd_signal": 16
   },
   "indicators": {
     "bb_period": 20,
@@ -151,7 +155,16 @@
     "news_filter_apply_in_tester": 1,
     "post_sl_cooldown_sec": 3600,
     "breakout_near_floor_lot_factor": 0.25,
-    "same_direction_stack_lot_factor": 0.25
+    "same_direction_stack_lot_factor": 0.25,
+    "session_ny_sell_cutoff_utc": 17,
+    "session_london_sell_cutoff_utc": 0,
+    "breakout_adx_lot_use_m15": 1,
+    "breakout_adx_lot_mid_threshold": 35,
+    "breakout_adx_lot_high_threshold": 45,
+    "breakout_adx_lot_ext_threshold": 55,
+    "breakout_adx_lot_factor_mid": 0.25,
+    "breakout_adx_lot_factor_high": 0.125,
+    "breakout_adx_lot_factor_ext": 0.0625
   },
   "journal": {
     "journal_enabled": 1,
