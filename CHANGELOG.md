@@ -1,5 +1,15 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.9.6] — 2026-05-09 (FORGE 2.7.8 — OsMA BUY gate enabled)
+
+### Changed
+
+- **`FORGE_BREAKOUT_REQUIRE_MACD_BUY`: 0 → 1** — Activates the OsMA Q0 BUY gate. BUY breakout entries now require the OsMA histogram to be positive AND rising (Q0: strong bull momentum confirmed) at entry time. Passes only when fast EMA > slow EMA AND the MACD−Signal gap is widening — double confirmation that bullish momentum is accelerating. Previously off (experimental); enabled for Run 28+ validation alongside the SELL Q2 gate.
+
+- **FORGE version: 2.7.7 → 2.7.8**
+
+---
+
 ## [System 1.9.5] — 2026-05-09 (FORGE 2.7.7 — Session cutoff · OsMA 4-quadrant gate · ADX tiers · SELL LIMIT cascade)
 
 ### Strategy basis — OsMA (Oscillator of a Moving Average) — MACD Histogram
