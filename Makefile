@@ -51,7 +51,12 @@ help:
 	@echo "  make scribe-watch-log  Same as scribe-watch + append logs/scribe_watch.log"
 	@echo "  make monitor-forge-skips  SCRIBE forge_signals: SKIP rollup + tail (last 24h)"
 	@echo "  make monitor-forge-skips-watch  Same, poll every 60s (Ctrl-C to stop)"
-	@echo "  make journal-diagnose  JSON summary: FORGE journal DBs + SCRIBE forge_* mirror"
+	@echo "  make journal-diagnose             JSON summary: FORGE journal DBs + SCRIBE forge_* mirror"
+	@echo "  make journal-list                 Show all run_ids in tester DB with signals/deals/P&L"
+	@echo "  make journal-reset-run  RUN=N     Purge run_id=N only — all other runs preserved"
+	@echo "  make journal-keep-runs  RUNS=N,M  Keep run_ids N and M — purge everything else"
+	@echo "  make journal-nuke                 LAST RESORT: delete entire tester DB (prompts confirm)"
+	@echo "  NOTE: never wipe the DB between runs — run_id increments automatically each backtest"
 	@echo "  (env) BRIDGE_SYNC_TESTER_JOURNAL=1  re-enable syncing *_tester.db → SCRIBE (default 0)"
 	@echo ""
 	@echo "  SERVICES (install_services.py — macOS: launchd; Linux: sudo systemctl)"
@@ -267,31 +272,113 @@ monitor-forge-skips-watch:
 journal-diagnose:
 	@$(PYTHON) $(SCRIPTS)/diagnose_forge_journal.py
 
-journal-reset-tester:
-	@echo "[journal] Purging tester journal DB(s)..."
-	@find "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5" \
-		-name "FORGE_journal_*_tester.db" -delete 2>/dev/null && \
-		echo "[journal] Tester journal DB(s) deleted." || \
-		echo "[journal] No tester journal DBs found (already clean)."
+# ── Shared helpers ──────────────────────────────────────────────────
+# _TESTER_DB   resolves the first matching tester journal DB path
+# _JOURNAL_NEXT_STEPS  printed after any reset so the user knows what to do next
+define _TESTER_DB
+$(shell find "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5" \
+	-name "FORGE_journal_*_tester.db" 2>/dev/null | head -1)
+endef
+
+define _JOURNAL_NEXT_STEPS
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "  NEXT STEPS:"
 	@echo "  1. make forge-recompile  (compile new .ex5 + sync scalper_config.json)"
-	@echo "     Then in MT5: remove FORGE from chart → Navigator → drag FORGE back"
-	@echo "     (loads new .ex5 and triggers fresh JournalInit)"
-	@echo "  2. Set inputs: InputMode=SCALPER  ScalperMode=DUAL  WarmupM5Bars=2"
+	@echo "  2. Set inputs: InputMode=SCALPER  ScalperLot=0.08  (ScalperMode=DUAL by default)"
 	@echo "  3. Run the backtest in Strategy Tester"
-	@echo "  4. After the run verify with:"
-	@echo ""
+	@echo "  4. Verify:"
 	@echo "  DB=\$$(find \"\$$HOME/Library/Application Support/net.metaquotes.wine.metatrader5\" -name \"FORGE_journal_*_tester.db\" 2>/dev/null | head -1)"
-	@echo "  sqlite3 \"\$$DB\" \"SELECT id, wall_time, sim_start_time, scalper_mode FROM TESTER_RUNS;\""
-	@echo "  sqlite3 \"\$$DB\" \"SELECT id, run_id, datetime(time,'unixepoch') as ts, outcome, gate_reason, setup_type, direction, price, rsi, adx FROM SIGNALS ORDER BY id DESC LIMIT 10;\""
+	@echo "  sqlite3 \"\$$DB\" \"SELECT id, wall_time, datetime(sim_start_time,'unixepoch'), scalper_mode FROM TESTER_RUNS;\""
 	@echo "  sqlite3 \"\$$DB\" \"SELECT run_id, outcome, COUNT(*) FROM SIGNALS GROUP BY run_id, outcome;\""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+endef
+
+# journal-list — show all runs in the tester DB (use this before any cleanup)
+journal-list:
+	@DB="$(call _TESTER_DB)"; \
+	if [ -z "$$DB" ]; then echo "[journal] No tester journal DB found."; exit 1; fi; \
+	echo "[journal] Runs in $$DB:"; \
+	echo ""; \
+	sqlite3 "$$DB" \
+		"SELECT id as run_id, \
+		        datetime(sim_start_time,'unixepoch') as sim_start, \
+		        scalper_mode, \
+		        warmup_m5_bars, \
+		        (SELECT COUNT(*) FROM SIGNALS WHERE run_id=r.id) as signals, \
+		        (SELECT COUNT(*) FROM SIGNALS WHERE run_id=r.id AND outcome='TAKEN') as taken, \
+		        (SELECT COUNT(*) FROM TRADES WHERE run_id=r.id AND direction IN (1,2,3)) as deals, \
+		        (SELECT ROUND(SUM(profit),2) FROM TRADES WHERE run_id=r.id AND direction IN (1,2,3)) as pnl \
+		 FROM TESTER_RUNS r ORDER BY id;"
+
+# journal-reset-run RUN=<id> — purge one specific run_id, keep all others
+# Use this to remove a bad/flooded run without losing any history.
+journal-reset-run:
+	@if [ -z "$(RUN)" ]; then \
+		echo "[journal] ERROR: RUN not set. Usage: make journal-reset-run RUN=3"; \
+		exit 1; \
+	fi
+	@DB="$(call _TESTER_DB)"; \
+	if [ -z "$$DB" ]; then \
+		echo "[journal] ERROR: No tester journal DB found."; exit 1; \
+	fi; \
+	echo "[journal] Purging run_id=$(RUN) from $$DB ..."; \
+	sqlite3 "$$DB" \
+		"DELETE FROM SIGNALS WHERE run_id=$(RUN); \
+		 DELETE FROM TRADES WHERE run_id=$(RUN); \
+		 DELETE FROM TESTER_RUNS WHERE id=$(RUN); \
+		 DELETE FROM STATS_CACHE; \
+		 VACUUM;"; \
+	echo "[journal] Done. Remaining runs:"; \
+	sqlite3 "$$DB" \
+		"SELECT id, datetime(sim_start_time,'unixepoch') as sim_start, scalper_mode, \
+		        (SELECT COUNT(*) FROM SIGNALS WHERE run_id=r.id) as signals, \
+		        (SELECT COUNT(*) FROM TRADES WHERE run_id=r.id AND direction IN (1,2,3)) as deals \
+		 FROM TESTER_RUNS r ORDER BY id;"
+
+# journal-keep-runs RUNS=<id,id,...> — keep listed run_ids, purge everything else
+# Accepts a comma-separated list: make journal-keep-runs RUNS=10,11
+journal-keep-runs:
+	@if [ -z "$(RUNS)" ]; then \
+		echo "[journal] ERROR: RUNS not set. Usage: make journal-keep-runs RUNS=10,11"; \
+		exit 1; \
+	fi
+	@DB="$(call _TESTER_DB)"; \
+	if [ -z "$$DB" ]; then \
+		echo "[journal] ERROR: No tester journal DB found."; exit 1; \
+	fi; \
+	echo "[journal] Keeping run_ids ($(RUNS)) — purging all others from $$DB ..."; \
+	sqlite3 "$$DB" \
+		"DELETE FROM SIGNALS WHERE run_id NOT IN ($(RUNS)); \
+		 DELETE FROM TRADES WHERE run_id NOT IN ($(RUNS)); \
+		 DELETE FROM TESTER_RUNS WHERE id NOT IN ($(RUNS)); \
+		 DELETE FROM STATS_CACHE; \
+		 VACUUM;"; \
+	echo "[journal] Done. DB now contains:"; \
+	sqlite3 "$$DB" \
+		"SELECT id, datetime(sim_start_time,'unixepoch') as sim_start, scalper_mode, \
+		        (SELECT COUNT(*) FROM SIGNALS WHERE run_id=r.id) as signals, \
+		        (SELECT COUNT(*) FROM TRADES WHERE run_id=r.id AND direction IN (1,2,3)) as deals \
+		 FROM TESTER_RUNS r ORDER BY id;"
+
+# journal-nuke — LAST RESORT ONLY: delete entire tester DB file and lose all history.
+# Prefer journal-reset-run or journal-keep-runs for surgical cleanup.
+journal-nuke:
+	@echo "[journal] ⚠  WARNING: This destroys ALL run history in the tester journal."
+	@echo "[journal]    Prefer: make journal-reset-run RUN=N  or  make journal-keep-runs RUNS=N,M"
+	@echo "[journal]    Type 'yes' to confirm: "; \
+	read confirm; \
+	if [ "$$confirm" != "yes" ]; then \
+		echo "[journal] Aborted."; exit 1; \
+	fi
+	@find "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5" \
+		-name "FORGE_journal_*_tester.db" -delete 2>/dev/null && \
+		echo "[journal] Tester journal DB(s) deleted." || \
+		echo "[journal] No tester journal DBs found (already clean)."
 
 # ── Services ──────────────────────────────────────────────────────
 # install_services.py is chmod +x before each run so ./services/install_services.py works.
-.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-athena reload-all journal-diagnose journal-reset-tester
+.PHONY: start stop restart services-install services-stop services-restart reload reload-bridge reload-athena reload-all journal-diagnose journal-list journal-reset-run journal-keep-runs journal-nuke
 
 services-install:
 	@chmod +x $(INSTALL_SVC)

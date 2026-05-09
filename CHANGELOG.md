@@ -1,5 +1,166 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.9.3] — 2026-05-08 (FORGE 2.7.6 — Native MT5 Calendar news filter)
+
+### Added
+
+- **Native news filter** — queries MT5 Economic Calendar (`CalendarValueHistory` + `CalendarEventById`) natively inside FORGE. No SENTINEL dependency, no WebRequest. Works in Strategy Tester and on VPS.
+- **Per-impact windows**: separate before/after minutes for LOW (5/5), MEDIUM (10/15), HIGH (20/30).
+- **Keyword overrides** (`news_filter_special`): `"KEYWORD:before,after+KW2:b2,a2"` substring match. Example: `"Non-Farm:30,60+FOMC:40,45+CPI:50,55"`.
+- **Multi-currency**: `"ALL"` expands to all 9 MT5 calendar currencies; any comma/space combo accepted. Default `"USD,EUR,GBP"` for XAUUSD — no dedicated XAU calendar symbol exists.
+- **Sliding proximity rule**: 3 zones — ALLOW / TIGHTEN (RSI slides 70→65 BUY, 33→38 SELL) / BLOCK. Symmetric pre and post event. Tighten journals as `entry_quality_news_rsi_tighten`.
+- **Post-news hard floor** (`news_filter_hard_floor_min=5`): absolute block for first 5 min post-event (chaos zone).
+- **Input override**: `input bool NewsFilterInputsOverride = false` + `input bool NewsFilterEnabled = true`. Active input wins over config JSON on every reload. Enabled by default.
+- **23 tests** in `tests/api/test_forge_news_filter.py` — config structure, env mappings, source checks, logic invariants.
+
+### Fixed (Codex review)
+
+- **CRITICAL**: Proximity used midpoint approximation for event_time — wrong with asymmetric windows (e.g. FOMC 40/45). Fixed: store exact `g_nf_event_time` in refresh.
+- **HIGH**: Keyword `before` values excluded from query horizon — 40-min keyword override could be missed. Fixed: horizon uses max of all keyword and impact before values.
+- **HIGH**: Effective RSI globals could be stale across tick boundaries. Fixed: `ScalperNewsUpdateEffectiveThresholds()` helper called at gate -1 and before BB setup selection.
+- **MEDIUM**: Back-to-back events missed after cached window expired. Fixed: force refresh on expiry.
+- **MEDIUM**: Silent failure when calendar data unavailable in tester. Fixed: `PrintFormat` warning.
+
+---
+
+## [System 1.9.2] — 2026-05-08 (FORGE 2.7.5 — H1 DI+/DI- BUY quality gate)
+
+### Added
+
+- **H1 DI directional gate** (`bb_breakout.require_h1_di_buy: 1`) — blocks BUY breakout when H1 DI- > DI+ at weak M5 ADX. Implements Wilder's original directional confirmation: ADX strength (buffer 0) confirms trend intensity, but DI+/DI- (buffers 1 and 2) confirms direction. A BUY entry is counter-directional by definition when H1 DI- dominates, regardless of M5 price action. Targets G8-class losses: Monday Apr 20 BUY at ADX 26.4 into a H1-bearish environment (-$269.36). At strong M5 ADX ≥ 28 (`counter_buy_adx_threshold`), gate is inactive — strong momentum self-confirms direction.
+- **Zero new indicator handles**: reads DI+ (buffer 1) and DI- (buffer 2) from the existing `g_h_adx = iADX(_Symbol, PERIOD_H1, 14)` handle. Uses `h1_bias_shift` (0 in tester, 1 in live) consistent with all other H1 reads in `CheckNativeScalperSetups()`.
+- **New journal gate reason**: `entry_quality_h1_di_buy`
+- **New throttle global**: `g_scalper_last_h1dibuy_log_bar`
+- **Config**: `bb_breakout.require_h1_di_buy: 1`, `bb_breakout.counter_buy_adx_threshold: 28`
+- **Env**: `FORGE_BREAKOUT_REQUIRE_H1_DI_BUY=1`, `FORGE_BREAKOUT_COUNTER_BUY_ADX_THRESHOLD=28`
+
+### Industry context
+
+MQL5 community consensus: using ADX without DI+/DI- is the most common EA design flaw. ADX above 25 confirms a trend exists — DI+/DI- confirms which direction. The `iADX` indicator in MQL5 exposes all three via separate buffers on the same handle. The gate auto-offs at strong ADX (≥ 28) where momentum is self-evident, matching the calibrated threshold from the h1_counter_buy analysis.
+
+---
+
+## [System 1.9.1] — 2026-05-08 (FORGE 2.7.4 — RSI-declining + ADX-duration gates + bounce_adx_max=40)
+
+### Fixed
+
+- **`bounce_adx_max`: 50 → 40** — blocks BB_BOUNCE SELL when ADX > 40. Targets G5009-class losses (BB_BOUNCE SELL at ADX 43.1, -$59.28 in Run 17). High-ADX counter-trend bounces fail at elevated momentum — strong directional moves resist mean-reversion. Config-only change, no code. Env key: `FORGE_BOUNCE_ADX_MAX`.
+
+### Added
+
+- **ADX duration gate** (`bb_breakout.adx_min_sell_lookback_bars: 6`) — blocks SELL breakout when ADX was below `adx_min_sell` (25) exactly N M5 bars ago (default N=6 = 30 min lookback). Targets G5024-class losses: ADX spiked 13→37 in 45 min, creating a valid-looking breakout with no momentum history; price reversed +15pts in 8 min. The gate reads `CopyBuffer(g_mtf[0].h_adx, 0, 6, 1, buf)` against the existing M5 ADX handle — zero new handles. Journal gate reason: `entry_quality_adx_spike_sell`. Config: `bb_breakout.adx_min_sell_lookback_bars`, env: `FORGE_BREAKOUT_ADX_MIN_SELL_LOOKBACK_BARS`. Set `0` to disable.
+- **RSI-declining gate** (`bb_breakout.require_rsi_declining_sell: 1`) — blocks SELL breakout when RSI is rising bar-over-bar (current bar RSI > prior bar RSI). Auto-disabled when ADX ≥ `adx_sell_floor_threshold` (35) — strong-trend SELL entries don't require RSI momentum confirmation. Targets G5007-class losses (SELL at RSI 39.5 rising from 35.2, -$38.14; RSI bouncing off the floor signals fading SELL momentum at entry). Reads `CopyBuffer(g_mtf[0].h_rsi, 0, 1, 1, buf)` — one buffer call against existing M5 RSI handle. Journal gate reason: `entry_quality_rsi_rising_sell`. Config: `bb_breakout.require_rsi_declining_sell` (bool01), env: `FORGE_BREAKOUT_REQUIRE_RSI_DECLINING_SELL`. Set `0` to disable.
+- **Session-start visibility log** — fires once each time the EA transitions from session_off to active. Logs: current ADX, ADX 30 min ago (6 bars via `CopyBuffer(..., 0, 6, 1, buf)`), RSI, and BB expansion state. Enables "armed context" entries — the same market structure pre-read that RSI divergence analysis recommends doing manually before the session opens. Example: `FORGE SESSION START: hour=7UTC adx=28.4 adx_30min_ago=19.1 rsi=44.2 bb=EXPANDING (width 12.40→14.83)`. Global `g_scalper_prev_session_blocked` tracks the previous tick's session state.
+- **New globals**: `g_scalper_last_adxdur_log_bar`, `g_scalper_last_rsidecl_log_bar`, `g_scalper_prev_session_blocked` — M5-bar throttles for new gate journals and session-state tracking.
+- **`rsi_decl_sell_adx_threshold: 28`** — separate ADX threshold for `rsi_rising_sell` auto-off, independent of `adx_sell_floor_threshold` (35, used for RSI two-tier floor). At 28, the gate blocks G7-class (ADX 26.8 < 28) while passing G17/G18/G19-class wins (ADX 28-35). Previous implementation incorrectly shared the 35 threshold, which blocked all three of those winning entries. Field: `breakout_rsi_decl_sell_adx_threshold`, env: `FORGE_BREAKOUT_RSI_DECL_SELL_ADX_THRESHOLD`. Default: `28.0`.
+
+### Gate execution order (SELL breakout path)
+1. ADX min SELL (≥ 25) ← 2.7.3
+2. Two-tier RSI floor (absolute + weak-ADX stricter floor) ← 2.6.8
+3. **ADX duration gate** (30min lookback, spike-from-flat) ← **2.7.4**
+4. **RSI-declining gate** (rising RSI, auto-off ADX ≥ 35) ← **2.7.4**
+5. Direction = SELL
+
+### How to use
+
+- ADX duration gate: `FORGE_BREAKOUT_ADX_MIN_SELL_LOOKBACK_BARS=6` (active). Set `0` to disable. Increase to 12 (60min) if spike-from-flat patterns persist across longer timeframes.
+- RSI-declining gate: `FORGE_BREAKOUT_REQUIRE_RSI_DECLINING_SELL=1` (active). Auto-switches off when ADX ≥ 35 — no separate config toggle needed for strong-trend SELLs.
+- bounce_adx_max: `FORGE_BOUNCE_ADX_MAX=40`. Previous default was 50 (effectively permissive). 40 blocks ADX 40-50 bounces while allowing ADX 20-40 mean-reversion which has better historical success.
+
+---
+
+## [System 1.9.0] — 2026-05-08 (FORGE 2.7.3 — Split BUY/SELL ADX floors + tester parity + diagnostic log)
+
+### Fixed
+
+- **Tester ADX floor removed**: `breakout_adx_min_eff = MathMin(g_sc.breakout_adx_min, 15.0)` → `= g_sc.breakout_adx_min`. Tester now enforces same ADX threshold as live for both BUY and SELL — eliminates G5018-class artifacts where entries at ADX 15-20 fired in tester but were blocked in live.
+
+### Added
+
+- **`bb_breakout.adx_min_sell: 25`** — separate, stricter ADX floor for SELL-only breakouts. BUY remains at `adx_min=20`. Run 16 data showed BUY entries in the ADX 20-25 zone were highly profitable (+$267: G5005 +$164, G5022 +$103) while SELL entries in the same zone were marginal (+$26 across 3 trades). SELL breakouts in weak ADX are more error-prone (RSI floor bounces, fading moves). New fields: `ScalperConfig.breakout_adx_min_sell`, config key `bb_breakout.adx_min_sell`, env key `FORGE_BREAKOUT_ADX_MIN_SELL`.
+- **ADX gate diagnostic log** — once per M5 bar: `FORGE ADX gate: adx=X buy_min=Y sell_min=Z buy=PASS|BLOCKED sell=PASS|BLOCKED | rsi=... price=... atr=...`. Throttled by `g_scalper_last_adxgate_log_bar`. Zero DB overhead.
+- **New global**: `g_scalper_last_adxgate_log_bar` — M5-bar throttle for ADX gate diagnostic.
+
+### How to use
+
+- BUY breakouts: blocked when ADX < `adx_min` (default 20). Set `FORGE_BREAKOUT_ADX_MIN` to adjust.
+- SELL breakouts: blocked when ADX < `adx_min_sell` (default 25). Set `FORGE_BREAKOUT_ADX_MIN_SELL` to adjust.
+- Experts log shows both thresholds every M5 bar — check `sell=BLOCKED` to confirm SELL gate active.
+- G5018-class tester artifacts (ADX 15-20 SELL entries) are now impossible in both environments.
+
+---
+
+## [System 1.8.9] — 2026-05-08 (FORGE 2.7.1 — Fix 7C: ATR price extension re-entry gate)
+
+### Added
+
+- **Fix 7C — ATR price extension gate** (`ea/FORGE.mq5`): Blocks same-direction BUY/SELL re-entry when price has moved more than `max_reentry_atr_ext × ATR` from the first group's entry price in the current session. Targets Category F losses (late-stage extended-move re-entry). Gate reason: `entry_quality_atr_ext`. Default `0.0` (disabled); set to `1.5` for Run 15 test.
+- **New globals**: `g_first_buy_entry_price`, `g_first_sell_entry_price` — session-scoped anchors, reset on UTC day change and session change.
+- **New config key**: `bb_breakout.max_reentry_atr_ext` (float, 0.0–10.0). Wired to `.env` via `FORGE_BREAKOUT_MAX_REENTRY_ATR_EXT`.
+- **Tests**: `tests/api/test_forge_7c_atr_ext.py` — 12 tests covering gate disabled, anchor set/no-update, within/at/over limit (BUY + SELL), session reset, zero-ATR guard, wiring checks. All passing.
+
+---
+
+## [System 1.8.8] — 2026-05-08 (FORGE 2.6.10 — correct default inputs: InputMode + ScalperMode)
+
+### Fixed
+
+- **`InputMode` default retained as `"WATCH"`**: Master trading gate. When `g_mode == "WATCH"`, line 739 `WriteTickData(); return;` exits the entire OnTick/OnTimer handler before any scalper code is reached. Prevents accidental live trading on attach — must be set to "SCALPER" explicitly.
+- **`ScalperMode` default `"NONE" → "DUAL"`**: Safe to default DUAL because `InputMode=WATCH` is the master gate with two independent checks: (1) `if(g_mode == "WATCH") return;` at line 739 exits before scalper; (2) `if(g_scalper_mode != "NONE" && g_mode != "WATCH" && ...)` at line 744 has explicit WATCH exclusion. EA itself logs: *"native entries need ScalperMode≠NONE and InputMode≠WATCH"*. Setting DUAL by default eliminates one manual step after every recompile with no safety risk.
+- **`lot_inputs_override_eff = false` retained by design**: With `NativeScalperInputsOverrideLotSizing=false` and `lot_sizing_source="AUTO"`, config.json remains the authority for all lot engine settings (leg count, staged intervals, etc.). `ScalperLot` input only overrides `fixed_lot` via `ApplyScalperLotInputOverrides()` — this is the intended architecture (retain config.json).
+
+---
+
+## [System 1.8.7] — 2026-05-08 (FORGE 2.6.9 — lot input override + VP POC warmup gate)
+
+### Fixed
+
+- **`ScalperLot` input ignored after JSON load**: `ApplyScalperLotInputOverrides()` never wrote `ScalperLot` back to `g_sc.lot_fixed`, so the config JSON value (0.02) always won even when the input was set to 0.08. Fix: added `if(ScalperLot > 0.0) g_sc.lot_fixed = ScalperLot;` in `ApplyScalperLotInputOverrides()` — same override-or-pass-through pattern used by `SellInsideBandLotFactor`. Changed `ScalperLot` default from `0.01` → `0.0` (sentinel: 0 = use JSON `fixed_lot`; >0 = override JSON). Updated `InitScalperConfig` to seed `lot_fixed` from `ScalperLot` when set, otherwise from the JSON fallback (0.02).
+- **VP POC uninit warmup gap**: No check existed that `g_poc_price > 0` before allowing first entry. If `ComputeVolumeProfile()` silently failed at `OnInit` (e.g. `CopyHigh` returned fewer than `vp_lookback` bars), the EA could compute TP targets against a zero POC. Added explicit check `if(g_poc_price <= 0.0) { reason_out = "vp_poc_uninit"; return false; }` in `ForgeNativeScalperWarmupOk()` after the PSAR probe, before the M5 rollover count.
+
+### How to use
+- Set `ScalperLot = 0.08` in MT5 Inputs → applies as base lot per leg, overrides `fixed_lot` in JSON
+- Leave `ScalperLot = 0.0` → EA uses `scalper_config.json` `lot_sizing.fixed_lot` (unchanged behavior for existing configs)
+- `SellInsideBandLotFactor = 0.25` in MT5 Inputs → already worked; now consistent with `ScalperLot` semantics
+
+---
+
+## [System 1.8.6] — 2026-05-08 (FORGE 2.6.8 — hotfix: session_off per-tick journal flood)
+
+### Fixed
+
+- **`session_off` per-tick DB flood (ea/FORGE.mq5 line 3943)**: `JournalRecordSignal("SKIP","session_off",...)` was called on every `OnTick()` during off-hours (Asian session + post-NY), bypassing the existing M5-bar throttle on the adjacent `PrintFormat`. Moved the journal write inside the `if(m5bar != g_scalper_last_sesswarn_log_bar)` guard so it fires at most once per M5 bar. Impact: in Run 12 initial 1.5-day window, 272,238 useless zero-indicator records were written and DB hit 60MB — projects to ~1.5GB for a full 24-day run, causing tester slowdown. Fix reduces off-hours journal output to ≤96 records/day (one per M5 bar during off-hours).
+
+---
+
+## [System 1.8.5] — 2026-05-08 (FORGE 2.6.8 — loss reduction: ADX floor, RSI sell floor, STRICT bounce, inside-band half-lot)
+
+### Phase A — Config changes only
+
+- **`bb_breakout.adx_min`: `14 → 20`** — blocks false breakouts in ranging tape; ADX<20 = no directional trend by Wilder's definition; caused 3 Category-A losses in Run 11 (~$100).
+- **`bb_breakout.rsi_sell_floor`: `30 → 33`** — closes 5× float-boundary violation at RSI=30.0 and blocks oversold-exhaustion SELL entries (RSI 30–33 = move near-spent, bounce risk elevated). Journals `entry_quality_rsi_sell_floor`.
+- **`bb_bounce.bounce_htf_bias`: `BALANCED → STRICT`** — blocks BB_BOUNCE SELL when H1 OR M15 is bullish; blocks BB_BOUNCE BUY when H1 OR M15 is bearish. Safe during sell-offs: H1 bearish → NOT bullish → SELL bounce still fires. Saves ~$45 from Run 11 Category-C losses.
+
+### Phase B — EA changes (ea/FORGE.mq5)
+
+- **ADX-conditioned RSI sell floor (Fix 5)**: two-tier floor — absolute `rsi_sell_floor=33` always applies; when `ADX < adx_sell_floor_threshold (35)` the stricter `rsi_sell_floor_weak_adx=36` applies. Weak-trend SELL entries with low RSI are the highest-risk exhaustion trades. New gate reason: **`entry_quality_rsi_sell_adx_floor`**. Config: `bb_breakout.adx_sell_floor_threshold`, `bb_breakout.rsi_sell_floor_weak_adx`.
+- **Half-lot inside-band SELL (Fix 7)**: after a BB_BREAKOUT SELL fires, if current mid > BB_LOWER (price has bounced back inside the band), lot size is multiplied by `bb_breakout.sell_inside_band_lot_factor (0.5)`. Confirmed breakout (mid ≤ BB_LOWER) uses full lot. Reduces exposure on fading breakouts. Logs "FORGE SCALPER: SELL inside band — lot factor=…".
+- **Struct `ScalperConfig`** — 3 new fields: `breakout_adx_sell_floor_threshold`, `breakout_rsi_sell_floor_weak_adx`, `breakout_sell_inside_band_lot_factor`.
+- **`InitScalperConfig`** — updated defaults: `rsi_sell_floor=33`, plus new Phase B field defaults.
+- **`ReadScalperConfig`** — parses all 3 new fields from `bb_breakout` JSON.
+- **Version 2.6.8** (`FORGE_VERSION`, `#property version`).
+
+### Changed (config + tooling)
+
+- **`config/scalper_config.defaults.json`**, **`config/scalper_config.json`** — all Phase A+B keys.
+- **`scripts/sync_scalper_config_from_env.py`** — `FORGE_BREAKOUT_ADX_SELL_FLOOR_THRESHOLD`, `FORGE_BREAKOUT_RSI_SELL_FLOOR_WEAK_ADX`, `FORGE_BREAKOUT_SELL_INSIDE_BAND_LOT_FACTOR`.
+
+### Tests
+
+- **`tests/api/test_forge_268_gates.py`** — 52 unit tests covering: config value assertions, Phase B key presence/ranges, gate boundary logic (adx_min, rsi floor, ADX-conditioned floor, inside-band lot factor, STRICT bounce modes), sell-off scenario pass/block, sync script env coverage.
+
+---
+
 ## [System 1.8.4] — 2026-05-08 (FORGE 2.6.7 — RSI exhaustion gates + bounce ADX tester fix)
 
 ### Added (ea/FORGE.mq5)

@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.67"
+#property version "2.76"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.6.7";
+const string FORGE_VERSION = "2.7.6";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -71,8 +71,8 @@ input bool    LogTicks       = true;         // Log ticks in WATCH mode
 input string  InputMode      = "WATCH";      // Startup mode: OFF|WATCH|SIGNAL|SCALPER|HYBRID
 input int     BrokerInfoEveryCycles = 20;    // Re-write broker_info.json every N timer cycles (0=OnInit only)
 // ── NATIVE SCALPER — Inputs (see also config/scalper_config.json lot_sizing) ──
-input string  ScalperMode    = "NONE";       // Native scalper: NONE|BB_BOUNCE|BB_BREAKOUT|DUAL
-input double  ScalperLot     = 0.01;         // Lot per leg when lot source = MT5 Inputs (see NativeScalperInputsOverrideLotSizing)
+input string  ScalperMode    = "DUAL";       // Native scalper: NONE|BB_BOUNCE|BB_BREAKOUT|DUAL
+input double  ScalperLot     = 0.0;          // Lot per leg (0=use scalper_config.json fixed_lot; >0 overrides JSON — same semantics as SellInsideBandLotFactor)
 input int     ScalperTrades  = 4;            // Default leg count when lot source = Inputs only (ignored when using JSON min/max envelope)
 input int     ScalperMinTrades = 0;          // Min legs 1..30 for native group; 0 = use scalper_config.json min_num_trades only
 input int     ScalperMaxTrades = 0;          // Max legs 1..30 for native group; 0 = use scalper_config.json max_num_trades only
@@ -87,6 +87,9 @@ input bool    NativeScalperAutoLotBreakoutOnly = true; // When true, trend auto-
 input double  NativeScalperAutoLotMaxMultiplier = 2.0; // Hard cap multiplier (1.0..5.0)
 input double  NativeScalperAutoLotTrendRef = 1.0;   // Trend strength that reaches max multiplier
 input bool    NativeScalperInputsOverrideLotSizing = false; // true = force ScalperLot + ScalperTrades from Inputs; false = prefer scalper_config.json (fixed_lot, min/max legs, resolver)
+input bool    NewsFilterInputsOverride = false; // true = use NewsFilterEnabled input over config
+input bool    NewsFilterEnabled        = true;  // Enable native news filter (when NewsFilterInputsOverride=true)
+input double  SellInsideBandLotFactor = 0.0;               // Lot fraction for BB_BREAKOUT SELL when price inside BB band (0=use scalper_config.json sell_inside_band_lot_factor; 0.1–1.0 overrides)
 input int     ScalperWarmupSeconds = 0;       // Extra delay after other warmup gates (live + Tester), wall/sim seconds. 0 = off. Live: prefer LiveWarmupM15Bars.
 input int     ScalperLiveWarmupM15Bars = 1;   // Live only: min M15 bar rollovers after attach (~1 = wait past one M15 open). 0 = off.
 input int     ScalperTesterWarmupM5Bars = 2;       // Strategy Tester: M5 bar rollovers after init (each ~5 min simulated time); 0=off.
@@ -114,10 +117,12 @@ datetime g_scalper_last_entry_bar = 0;  // prevent multiple entries on same bar
 string   g_scalper_last_direction = "";          // last entry direction for anti-whipsaw
 datetime g_scalper_last_direction_time = 0;      // when last direction was entered
 datetime g_scalper_last_reset_day = 0;  // UTC day marker for session counter reset
+string   g_scalper_last_session_label = "";      // UTC session label used to reset first-entry anchors
 datetime g_scalper_last_nosetup_log_bar = 0;   // throttle noisy "no setup" (once per M5 bar)
 datetime g_scalper_last_rrtoolow_log_bar = 0;  // throttle journal rr_too_low (once per M5 bar)
 datetime g_scalper_last_sesswarn_log_bar = 0; // throttle session_off log (once per M5 bar)
 datetime g_scalper_last_cooldown_log_bar = 0; // throttle cooldown log (once per M5 bar)
+datetime g_scalper_last_atr_ext_log_bar = 0;  // throttle entry_quality_atr_ext log (once per M5 bar)
 datetime g_scalper_last_attempt_time = 0;     // rate-limit order retries (one attempt per second)
 datetime g_forge_init_gmt = 0;                 // TimeGMT() at OnInit — warmup delay anchor (Tester + live)
 datetime g_scalper_last_warmup_log_bar = 0;   // throttle warmup skip log (once per M5 bar)
@@ -132,6 +137,25 @@ bool     g_adx_trend_regime = false;           // persistent ADX hysteresis regi
 string   g_warmup_last_reason = "";            // last warmup sub-reason for mode_status.json / journal
 bool     g_warmup_last_ok = false;              // true once warmup has passed (sticky after first success)
 int      g_tester_run_id = 0;                  // TESTER_RUNS.id for the current run (0 = live/unset)
+double g_first_buy_entry_price = 0.0;   // price of first BUY group opened this session; 0 = none
+double g_first_sell_entry_price = 0.0;  // price of first SELL group opened this session; 0 = none
+datetime g_scalper_last_adxgate_log_bar = 0;   // throttle ADX gate diagnostic (once per M5 bar)
+datetime g_scalper_last_adxsell_log_bar = 0;   // throttle entry_quality_adx_min_sell journal (once per M5 bar)
+datetime g_scalper_last_adxdur_log_bar  = 0;   // throttle entry_quality_adx_spike_sell journal (once per M5 bar)
+datetime g_scalper_last_rsidecl_log_bar = 0;   // throttle entry_quality_rsi_rising_sell journal (once per M5 bar)
+datetime g_scalper_last_h1dibuy_log_bar = 0;   // throttle entry_quality_h1_di_buy journal (once per M5 bar)
+bool     g_scalper_prev_session_blocked = true; // session-start log: true = previous tick was session_off
+
+// Native news filter state
+datetime g_nf_next_refresh             = 0;
+datetime g_nf_block_start              = 0;
+datetime g_nf_block_end                = 0;
+datetime g_nf_event_time               = 0;
+string   g_nf_block_reason             = "";
+bool     g_nf_have_window              = false;
+datetime g_scalper_last_newsfilter_log_bar = 0;
+double   g_nf_eff_rsi_buy_ceil         = 70.0;
+double   g_nf_eff_rsi_sell_min         = 33.0;
 
 // Scalper config (from scalper_config.json or defaults)
 struct ScalperConfig {
@@ -148,11 +172,21 @@ struct ScalperConfig {
    double bounce_tp2_close_pct;
    // BB Breakout
    bool   breakout_enabled;
-   double breakout_adx_min;
+   double breakout_adx_min;       // BUY breakout ADX floor (default 20)
+   double breakout_adx_min_sell;  // SELL breakout ADX floor — stricter (default 25)
+   bool   breakout_require_rsi_declining_sell;       // block SELL if RSI rising bar-over-bar (default false)
+   double breakout_rsi_decl_sell_adx_threshold;     // rsi_rising_sell auto-off: gate inactive when ADX ≥ this (default 28; independent of two-tier RSI floor)
+   bool   breakout_require_h1_di_buy;               // block BUY when H1 DI- > DI+ at weak ADX (default false; DI+/DI- Wilder directional gate)
+   double breakout_counter_buy_adx_threshold;       // h1_di_buy gate active only when m5_adx < this (default 28; auto-off in strong trend)
+   int    breakout_adx_min_sell_lookback_bars;       // ADX spike-from-flat gate: bars back to check (default 6 = 30min; 0=disabled)
    double breakout_rsi_buy_min;
    double breakout_rsi_sell_max;
-   double breakout_rsi_buy_ceil;    // block BUY breakout when RSI >= this (default 70.0)
-   double breakout_rsi_sell_floor;  // block SELL breakout when RSI <= this (default 30.0)
+   double breakout_rsi_buy_ceil;              // block BUY breakout when RSI >= this (default 70.0)
+   double breakout_rsi_sell_floor;            // block SELL breakout when RSI <= this (default 33.0)
+   double breakout_adx_sell_floor_threshold;  // ADX below this uses rsi_sell_floor_weak_adx (default 35.0)
+   double breakout_rsi_sell_floor_weak_adx;   // stricter floor when ADX < threshold (default 36.0)
+   double breakout_sell_inside_band_lot_factor; // lot multiplier when SELL entry is above BB lower (default 0.5)
+   double breakout_max_reentry_atr_ext;  // 0 = disabled; >0 = max ATR multiples price can be from first entry for re-entry
    double breakout_sl_atr_mult;
    double breakout_tp1_atr_mult;
    double breakout_tp2_atr_mult;
@@ -186,6 +220,22 @@ struct ScalperConfig {
    // DD event
    double dd_tight_tp_atr;
    int    sentinel_min_threshold;
+   bool   news_filter_enabled;
+   string news_filter_currencies;
+   int    news_filter_low_before;
+   int    news_filter_low_after;
+   int    news_filter_medium_before;
+   int    news_filter_medium_after;
+   int    news_filter_high_before;
+   int    news_filter_high_after;
+   string news_filter_special;
+   int    news_filter_hard_floor_min;
+   double news_filter_tighten_pct;
+   double news_filter_block_pct;
+   double news_filter_tighten_rsi_buy;
+   double news_filter_tighten_rsi_sell;
+   int    news_filter_refresh_sec;
+   bool   news_filter_apply_in_tester;
    double pending_entry_threshold_points;
    double trend_strength_atr_threshold;
    double breakout_buffer_points;
@@ -1992,11 +2042,21 @@ void InitScalperConfig() {
    g_sc.bounce_tp1_close_pct = 40;
    g_sc.bounce_tp2_close_pct = 30;
    g_sc.breakout_enabled = true;
-   g_sc.breakout_adx_min = 25;
+   g_sc.breakout_adx_min = 20;
+   g_sc.breakout_adx_min_sell = 25;
+   g_sc.breakout_require_rsi_declining_sell   = false;
+   g_sc.breakout_rsi_decl_sell_adx_threshold = 28.0;
+   g_sc.breakout_require_h1_di_buy            = false;
+   g_sc.breakout_counter_buy_adx_threshold    = 28.0;
+   g_sc.breakout_adx_min_sell_lookback_bars   = 6;
    g_sc.breakout_rsi_buy_min = 55;
    g_sc.breakout_rsi_sell_max = 45;
-   g_sc.breakout_rsi_buy_ceil   = 70.0;
-   g_sc.breakout_rsi_sell_floor = 30.0;
+   g_sc.breakout_rsi_buy_ceil                = 70.0;
+   g_sc.breakout_rsi_sell_floor              = 33.0;
+   g_sc.breakout_adx_sell_floor_threshold    = 35.0;
+   g_sc.breakout_rsi_sell_floor_weak_adx     = 36.0;
+   g_sc.breakout_sell_inside_band_lot_factor = 0.25;
+   g_sc.breakout_max_reentry_atr_ext = 0.0;
    g_sc.breakout_sl_atr_mult = 2.0;
    g_sc.breakout_tp1_atr_mult = 1.0;
    g_sc.breakout_tp2_atr_mult = 1.5;
@@ -2020,6 +2080,22 @@ void InitScalperConfig() {
    g_sc.skip_ny     = false;
    g_sc.dd_tight_tp_atr = 0.8;
    g_sc.sentinel_min_threshold = 30;
+   g_sc.news_filter_enabled         = true;
+   g_sc.news_filter_currencies      = "USD,EUR,GBP";
+   g_sc.news_filter_low_before      = 5;
+   g_sc.news_filter_low_after       = 5;
+   g_sc.news_filter_medium_before   = 10;
+   g_sc.news_filter_medium_after    = 15;
+   g_sc.news_filter_high_before     = 20;
+   g_sc.news_filter_high_after      = 30;
+   g_sc.news_filter_special         = "Non-Farm:30,60+FOMC:40,45+CPI:50,55";
+   g_sc.news_filter_hard_floor_min  = 5;
+   g_sc.news_filter_tighten_pct     = 0.50;
+   g_sc.news_filter_block_pct       = 0.85;
+   g_sc.news_filter_tighten_rsi_buy = 65.0;
+   g_sc.news_filter_tighten_rsi_sell= 38.0;
+   g_sc.news_filter_refresh_sec     = 900;
+   g_sc.news_filter_apply_in_tester = true;
    g_sc.pending_entry_threshold_points = PendingEntryThresholdPoints;
    g_sc.trend_strength_atr_threshold = TrendStrengthAtrThreshold;
    g_sc.breakout_buffer_points = BreakoutBufferPoints;
@@ -2054,7 +2130,7 @@ void InitScalperConfig() {
    g_sc.require_bb_expansion = true;
    g_sc.lot_sizing_source = "AUTO";
    g_sc.lot_inputs_override = false;
-   g_sc.lot_fixed = ScalperLot;
+   g_sc.lot_fixed = (ScalperLot > 0.0) ? ScalperLot : 0.02;
    g_sc.lot_num_trades = MathMax(1, ScalperTrades);
    g_sc.lot_min_trades = 0;
    g_sc.lot_max_trades = 0;
@@ -2155,6 +2231,18 @@ void ApplyScalperLotInputOverrides() {
       if(tlo2 > thi2) { int sw2 = tlo2; tlo2 = thi2; thi2 = sw2; }
       g_sc.lot_num_trades = MathMax(1, MathMin(30, (tlo2 + thi2) / 2));
    }
+   // ScalperLot > 0 overrides scalper_config.json fixed_lot (0 = keep JSON value)
+   if(ScalperLot > 0.0) g_sc.lot_fixed = ScalperLot;
+   // SellInsideBandLotFactor input overrides scalper_config.json when in range (0, 1]
+   if(SellInsideBandLotFactor > 0.0 && SellInsideBandLotFactor <= 1.0)
+      g_sc.breakout_sell_inside_band_lot_factor = SellInsideBandLotFactor;
+}
+
+void ApplyNewsFilterInputOverrides() {
+   if(!NewsFilterInputsOverride) return;
+   g_sc.news_filter_enabled = NewsFilterEnabled;
+   PrintFormat("FORGE NEWS FILTER: input override active — enabled=%s",
+               g_sc.news_filter_enabled ? "true" : "false");
 }
 
 void ReadScalperConfig() {
@@ -2167,16 +2255,19 @@ void ReadScalperConfig() {
          g_scalper_config_missing_logged = true;
       }
       ApplyScalperLotInputOverrides();
+      ApplyNewsFilterInputOverrides();
       return;
    }
    g_scalper_config_missing_logged = false;
    if(content == "") {
       ApplyScalperLotInputOverrides();
+      ApplyNewsFilterInputOverrides();
       return;
    }
    bool json_changed = (content != g_scalper_config_snapshot);
    if(!json_changed) {
       ApplyScalperLotInputOverrides();
+      ApplyNewsFilterInputOverrides();
       return;
    }
    g_scalper_config_snapshot = content;
@@ -2200,6 +2291,7 @@ void ReadScalperConfig() {
       g_sc.bounce_require_rejection_candle = (v >= 0.5);
    }
    v = JsonGetDouble(content, "adx_min");        if(v > 0) g_sc.breakout_adx_min = v;
+   v = JsonGetDouble(content, "adx_min_sell");   if(v > 0) g_sc.breakout_adx_min_sell = v;
    v = JsonGetDouble(content, "rsi_buy_min");    if(v > 0) g_sc.breakout_rsi_buy_min = v;
    v = JsonGetDouble(content, "rsi_sell_max");   if(v > 0) g_sc.breakout_rsi_sell_max = v;
    string bounce_json = JsonExtractBracedObject(content, "bb_bounce");
@@ -2243,6 +2335,42 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "rsi_sell_floor")) {
          v = JsonGetDouble(breakout_json, "rsi_sell_floor");
          if(v >= 0 && v < 100) g_sc.breakout_rsi_sell_floor = v;
+      }
+      if(JsonHasKey(breakout_json, "adx_sell_floor_threshold")) {
+         v = JsonGetDouble(breakout_json, "adx_sell_floor_threshold");
+         if(v > 0 && v <= 80) g_sc.breakout_adx_sell_floor_threshold = v;
+      }
+      if(JsonHasKey(breakout_json, "rsi_sell_floor_weak_adx")) {
+         v = JsonGetDouble(breakout_json, "rsi_sell_floor_weak_adx");
+         if(v >= 0 && v < 100) g_sc.breakout_rsi_sell_floor_weak_adx = v;
+      }
+      if(JsonHasKey(breakout_json, "sell_inside_band_lot_factor")) {
+         v = JsonGetDouble(breakout_json, "sell_inside_band_lot_factor");
+         if(v > 0 && v <= 1.0) g_sc.breakout_sell_inside_band_lot_factor = v;
+      }
+      if(JsonHasKey(breakout_json, "max_reentry_atr_ext")) {
+         v = JsonGetDouble(breakout_json, "max_reentry_atr_ext");
+         if(v >= 0.0) g_sc.breakout_max_reentry_atr_ext = v;
+      }
+      if(JsonHasKey(breakout_json, "require_rsi_declining_sell")) {
+         v = JsonGetDouble(breakout_json, "require_rsi_declining_sell");
+         g_sc.breakout_require_rsi_declining_sell = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "rsi_decl_sell_adx_threshold")) {
+         v = JsonGetDouble(breakout_json, "rsi_decl_sell_adx_threshold");
+         if(v > 0 && v <= 80) g_sc.breakout_rsi_decl_sell_adx_threshold = v;
+      }
+      if(JsonHasKey(breakout_json, "require_h1_di_buy")) {
+         v = JsonGetDouble(breakout_json, "require_h1_di_buy");
+         g_sc.breakout_require_h1_di_buy = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "counter_buy_adx_threshold")) {
+         v = JsonGetDouble(breakout_json, "counter_buy_adx_threshold");
+         if(v > 0 && v <= 80) g_sc.breakout_counter_buy_adx_threshold = v;
+      }
+      if(JsonHasKey(breakout_json, "adx_min_sell_lookback_bars")) {
+         v = JsonGetDouble(breakout_json, "adx_min_sell_lookback_bars");
+         if(v >= 0 && v <= 20) g_sc.breakout_adx_min_sell_lookback_bars = (int)v;
       }
    }
    v = JsonGetDouble(content, "fast_lock_min_hold_sec_bounce"); if(v >= 0) g_sc.fast_lock_min_hold_sec_bounce = (int)v;
@@ -2618,7 +2746,72 @@ void ReadScalperConfig() {
       v = JsonGetDouble(content, "psar_maximum");
       if(v >= 0.01 && v <= 5.0) g_sc.psar_maximum = v;
    }
+   if(JsonHasKey(content, "news_filter_enabled")) {
+      v = JsonGetDouble(content, "news_filter_enabled");
+      g_sc.news_filter_enabled = (v >= 0.5);
+   }
+   if(JsonHasKey(content, "news_filter_currencies")) {
+      string nf_cur = JsonGetString(content, "news_filter_currencies");
+      if(StringLen(nf_cur) > 0) g_sc.news_filter_currencies = nf_cur;
+   }
+   if(JsonHasKey(content, "news_filter_low_before")) {
+      v = JsonGetDouble(content, "news_filter_low_before");
+      if(v >= 0) g_sc.news_filter_low_before = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_low_after")) {
+      v = JsonGetDouble(content, "news_filter_low_after");
+      if(v >= 0) g_sc.news_filter_low_after = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_medium_before")) {
+      v = JsonGetDouble(content, "news_filter_medium_before");
+      if(v >= 0) g_sc.news_filter_medium_before = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_medium_after")) {
+      v = JsonGetDouble(content, "news_filter_medium_after");
+      if(v >= 0) g_sc.news_filter_medium_after = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_high_before")) {
+      v = JsonGetDouble(content, "news_filter_high_before");
+      if(v >= 0) g_sc.news_filter_high_before = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_high_after")) {
+      v = JsonGetDouble(content, "news_filter_high_after");
+      if(v >= 0) g_sc.news_filter_high_after = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_special")) {
+      string nf_special = JsonGetString(content, "news_filter_special");
+      if(StringLen(nf_special) > 0) g_sc.news_filter_special = nf_special;
+   }
+   if(JsonHasKey(content, "news_filter_hard_floor_min")) {
+      v = JsonGetDouble(content, "news_filter_hard_floor_min");
+      if(v >= 0) g_sc.news_filter_hard_floor_min = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_tighten_pct")) {
+      v = JsonGetDouble(content, "news_filter_tighten_pct");
+      if(v >= 0.0 && v <= 1.0) g_sc.news_filter_tighten_pct = v;
+   }
+   if(JsonHasKey(content, "news_filter_block_pct")) {
+      v = JsonGetDouble(content, "news_filter_block_pct");
+      if(v >= 0.0 && v <= 1.0) g_sc.news_filter_block_pct = v;
+   }
+   if(JsonHasKey(content, "news_filter_tighten_rsi_buy")) {
+      v = JsonGetDouble(content, "news_filter_tighten_rsi_buy");
+      if(v >= 0.0 && v <= 100.0) g_sc.news_filter_tighten_rsi_buy = v;
+   }
+   if(JsonHasKey(content, "news_filter_tighten_rsi_sell")) {
+      v = JsonGetDouble(content, "news_filter_tighten_rsi_sell");
+      if(v >= 0.0 && v <= 100.0) g_sc.news_filter_tighten_rsi_sell = v;
+   }
+   if(JsonHasKey(content, "news_filter_refresh_sec")) {
+      v = JsonGetDouble(content, "news_filter_refresh_sec");
+      if(v > 0) g_sc.news_filter_refresh_sec = (int)v;
+   }
+   if(JsonHasKey(content, "news_filter_apply_in_tester")) {
+      v = JsonGetDouble(content, "news_filter_apply_in_tester");
+      g_sc.news_filter_apply_in_tester = (v >= 0.5);
+   }
    ApplyScalperLotInputOverrides();
+   ApplyNewsFilterInputOverrides();
    PrintFormat("FORGE config reloaded: pending_entry_threshold_points=%.2f trend_strength_atr_threshold=%.4f breakout_buffer_points=%.2f session=%d-%d/%d-%d",
                g_sc.pending_entry_threshold_points,
                g_sc.trend_strength_atr_threshold,
@@ -2735,17 +2928,39 @@ void ResetScalperSessionStateIfNeeded() {
    TimeGMT(dt);
    datetime today = StringToTime(StringFormat("%04d.%02d.%02d 00:00", dt.year, dt.mon, dt.day));
    if(today <= 0) return;
+   string current_session = "ASIAN";
+   if(dt.hour >= g_sc.london_start && dt.hour < g_sc.london_end)
+      current_session = "LONDON";
+   else if(dt.hour >= g_sc.ny_start && dt.hour < g_sc.ny_end)
+      current_session = "NY";
    if(g_scalper_last_reset_day == 0) {
       g_scalper_last_reset_day = today;
+      g_scalper_last_session_label = current_session;
       return;
    }
-   if(today != g_scalper_last_reset_day) {
+   bool midnight_utc = (dt.hour == 0 && today != g_scalper_last_reset_day);
+   if(today != g_scalper_last_reset_day || midnight_utc) {
       g_scalper_last_reset_day = today;
       g_scalper_session_trades = 0;
       g_scalper_last_entry_bar = 0;
       g_scalper_last_direction = "";
       g_scalper_last_direction_time = 0;
+      g_first_buy_entry_price = 0.0;
+      g_first_sell_entry_price = 0.0;
+      g_scalper_last_session_label = current_session;
       Print("FORGE SCALPER: session counters reset for new UTC day");
+      return;
+   }
+   if(g_scalper_last_session_label == "") {
+      g_scalper_last_session_label = current_session;
+      return;
+   }
+   if(current_session != g_scalper_last_session_label) {
+      g_scalper_last_session_label = current_session;
+      g_first_buy_entry_price = 0.0;
+      g_first_sell_entry_price = 0.0;
+      PrintFormat("FORGE SCALPER: first-entry anchors reset for session=%s hour=%d UTC",
+                  current_session, dt.hour);
    }
 }
 
@@ -3775,6 +3990,8 @@ bool ForgeNativeScalperWarmupOk(string &reason_out) {
       if(CopyBuffer(g_h_psar, 0, 0, 2, pb) != 2) { reason_out = "psar_buf"; return false; }
    }
 
+   if(g_poc_price <= 0.0) { reason_out = "vp_poc_uninit"; return false; }
+
    if(in_tester && ScalperTesterWarmupM5Bars > 0) {
       bool require_m5_rollovers = true;
       if(ScalperTesterWarmupSimCapMinutes > 0) {
@@ -3831,10 +4048,223 @@ int ScalperOpenGroupCountByDirection(const string direction) {
    return count;
 }
 
+bool IsTesting() {
+   return (MQLInfoInteger(MQL_TESTER) != 0);
+}
+
+void ScalperNewsFilterRefresh() {
+   datetime now = TimeTradeServer();
+   g_nf_next_refresh = now + g_sc.news_filter_refresh_sec;
+   g_nf_have_window = false;
+   g_nf_block_start = 0;
+   g_nf_block_end = 0;
+   g_nf_event_time = 0;
+   g_nf_block_reason = "";
+
+   int max_before = MathMax(g_sc.news_filter_high_before, MathMax(g_sc.news_filter_medium_before, g_sc.news_filter_low_before));
+   int max_after = MathMax(g_sc.news_filter_high_after, MathMax(g_sc.news_filter_medium_after, g_sc.news_filter_low_after));
+   string special_parts[];
+   int special_count = StringSplit(g_sc.news_filter_special, '+', special_parts);
+   for(int s = 0; s < special_count; s++) {
+      string part = special_parts[s];
+      StringTrimLeft(part);
+      StringTrimRight(part);
+      int colon = StringFind(part, ":");
+      int comma = StringFind(part, ",", colon + 1);
+      if(colon > 0 && comma > colon) {
+         int sp_before = (int)StringToInteger(StringSubstr(part, colon + 1, comma - colon - 1));
+         int sp_after = (int)StringToInteger(StringSubstr(part, comma + 1));
+         if(sp_before > max_before) max_before = sp_before;
+         if(sp_after > max_after) max_after = sp_after;
+      }
+   }
+
+   // Expand "ALL" to full 9-currency list; split by comma+space; deduplicate
+   string ALL_CURRENCIES[] = {"USD","EUR","GBP","JPY","AUD","CAD","CHF","NZD","CNY"};
+   string raw_cur = g_sc.news_filter_currencies;
+   StringReplace(raw_cur, " ", ",");
+   string tokens[];
+   int n_tok = StringSplit(raw_cur, ',', tokens);
+   string currencies[];
+   int ccount = 0;
+   for(int ti = 0; ti < n_tok; ti++) {
+      string t = tokens[ti];
+      StringTrimLeft(t); StringTrimRight(t); StringToUpper(t);
+      if(StringLen(t) == 0) continue;
+      if(t == "ALL") {
+         for(int ai = 0; ai < ArraySize(ALL_CURRENCIES); ai++) {
+            bool dup = false;
+            for(int bi = 0; bi < ccount; bi++)
+               if(currencies[bi] == ALL_CURRENCIES[ai]) { dup = true; break; }
+            if(!dup) { ArrayResize(currencies, ccount+1); currencies[ccount++] = ALL_CURRENCIES[ai]; }
+         }
+      } else {
+         bool dup = false;
+         for(int bi = 0; bi < ccount; bi++)
+            if(currencies[bi] == t) { dup = true; break; }
+         if(!dup) { ArrayResize(currencies, ccount+1); currencies[ccount++] = t; }
+      }
+   }
+
+   datetime from_time = now - max_after * 60;
+   datetime to_time = now + max_before * 60;
+   long best_distance = LONG_MAX;
+
+   for(int c = 0; c < ccount; c++) {
+      string cur = currencies[c];
+
+      MqlCalendarValue values[];
+      if(!CalendarValueHistory(values, from_time, to_time, NULL, cur)) {
+         if(IsTesting())
+            PrintFormat("FORGE NEWS FILTER: CalendarValueHistory returned false for currency=%s", cur);
+         continue;
+      }
+
+      for(int i = 0; i < ArraySize(values); i++) {
+         if(values[i].time <= 0) continue;   // guard: skip invalid event times
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(values[i].event_id, ev))
+            continue;
+
+         int before_min = g_sc.news_filter_low_before;
+         int after_min = g_sc.news_filter_low_after;
+         string impact = "LOW";
+         if(ev.importance == CALENDAR_IMPORTANCE_HIGH) {
+            before_min = g_sc.news_filter_high_before;
+            after_min = g_sc.news_filter_high_after;
+            impact = "HIGH";
+         } else if(ev.importance == CALENDAR_IMPORTANCE_MODERATE) {
+            before_min = g_sc.news_filter_medium_before;
+            after_min = g_sc.news_filter_medium_after;
+            impact = "MEDIUM";
+         }
+
+         string ev_name = ev.name;
+         string ev_name_uc = ev_name;
+         StringToUpper(ev_name_uc);
+         for(int sp = 0; sp < special_count; sp++) {
+            string spec = special_parts[sp];
+            StringTrimLeft(spec);
+            StringTrimRight(spec);
+            int sp_colon = StringFind(spec, ":");
+            int sp_comma = StringFind(spec, ",", sp_colon + 1);
+            if(sp_colon <= 0 || sp_comma <= sp_colon) continue;
+            string keyword = StringSubstr(spec, 0, sp_colon);
+            StringTrimLeft(keyword);
+            StringTrimRight(keyword);
+            string keyword_uc = keyword;
+            StringToUpper(keyword_uc);
+            if(StringLen(keyword_uc) > 0 && StringFind(ev_name_uc, keyword_uc) >= 0) {
+               before_min = (int)StringToInteger(StringSubstr(spec, sp_colon + 1, sp_comma - sp_colon - 1));
+               after_min = (int)StringToInteger(StringSubstr(spec, sp_comma + 1));
+               impact = "SPECIAL";
+            }
+         }
+
+         datetime ev_time = values[i].time;
+         datetime start = ev_time - before_min * 60;
+         datetime end = ev_time + after_min * 60;
+         if(now > end)
+            continue;
+
+         long dist = (now < start) ? (long)(start - now) : (long)MathAbs((double)(now - ev_time));
+         if(dist < best_distance) {
+            best_distance = dist;
+            g_nf_block_start = start;
+            g_nf_block_end = end;
+            g_nf_event_time = ev_time;
+            g_nf_block_reason = StringFormat("%s %s %s", cur, impact, ev_name);
+            g_nf_have_window = true;
+         }
+      }
+   }
+}
+
+double ScalperNewsProximity() {
+   datetime now = TimeTradeServer();
+   if(g_nf_have_window && now > g_nf_block_end) {
+      ScalperNewsFilterRefresh();
+      now = TimeTradeServer();
+   }
+   if(!g_nf_have_window || now < g_nf_block_start || now > g_nf_block_end)
+      return -1.0;
+
+   // Asymmetric proximity per design spec:
+   // Pre-news:  p = (now - window_start) / (event_time - window_start)  → 0.0 at window open, 1.0 at event
+   // Post-news: p = (window_end - now)   / (window_end - event_time)    → 1.0 at event, 0.0 at window close
+   if(now <= g_nf_event_time) {
+      double denom = (double)(g_nf_event_time - g_nf_block_start);
+      if(denom <= 0.0) return 1.0;
+      return MathMin(1.0, (double)(now - g_nf_block_start) / denom);
+   } else {
+      double denom = (double)(g_nf_block_end - g_nf_event_time);
+      if(denom <= 0.0) return 1.0;
+      return MathMin(1.0, (double)(g_nf_block_end - now) / denom);
+   }
+}
+
+int ScalperNewsCheck() {
+   double proximity = ScalperNewsProximity();
+   if(proximity < 0.0) {
+      g_nf_eff_rsi_buy_ceil = 70.0;
+      g_nf_eff_rsi_sell_min = 33.0;
+      return 0;
+   }
+
+   datetime now = TimeTradeServer();
+   if(g_sc.news_filter_hard_floor_min > 0
+      && now >= g_nf_event_time
+      && now <= g_nf_event_time + g_sc.news_filter_hard_floor_min * 60)
+      return 2;
+
+   if(proximity >= g_sc.news_filter_block_pct)
+      return 2;
+
+   if(proximity >= g_sc.news_filter_tighten_pct) {
+      g_nf_eff_rsi_buy_ceil = g_sc.news_filter_tighten_rsi_buy;
+      g_nf_eff_rsi_sell_min = g_sc.news_filter_tighten_rsi_sell;
+      return 1;
+   }
+
+   g_nf_eff_rsi_buy_ceil = 70.0;
+   g_nf_eff_rsi_sell_min = 33.0;
+   return 0;
+}
+
+int ScalperNewsUpdateEffectiveThresholds(string &ev_label) {
+   g_nf_eff_rsi_buy_ceil = 70.0;
+   g_nf_eff_rsi_sell_min = 33.0;
+   ev_label = "";
+   if(!g_sc.news_filter_enabled) return 0;
+   if(IsTesting() && !g_sc.news_filter_apply_in_tester) return 0;
+   datetime now = TimeTradeServer();
+   if(g_nf_next_refresh == 0 || now >= g_nf_next_refresh)
+      ScalperNewsFilterRefresh();
+   int state = ScalperNewsCheck();
+   ev_label = g_nf_block_reason;
+   return state;
+}
+
 // M5 bar quality gate — checks ATR floor, bar body consistency, directional alignment, BB expansion.
 // Returns false (and logs reason) if the proposed entry does not meet quality thresholds.
 bool CheckEntryQuality(const string direction, const double atr,
                        const double bb_upper_now, const double bb_lower_now) {
+   // -1. Native news filter — hard block only
+   {
+      string nf_ev = "";
+      int nf_state = ScalperNewsUpdateEffectiveThresholds(nf_ev);
+      if(nf_state == 2) {  // BLOCK
+         datetime cur_bar = iTime(_Symbol, PERIOD_M5, 0);
+         if(cur_bar != g_scalper_last_newsfilter_log_bar) {
+            g_scalper_last_newsfilter_log_bar = cur_bar;
+            JournalRecordSignal("SKIP","entry_quality_news_filter","",direction,
+               SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,0,0,bb_upper_now,bb_lower_now,0,0,0,0);
+            Print("FORGE SCALPER: skip gate=entry_quality_news_filter event=[", nf_ev, "]");
+         }
+         return false;
+      }
+      // state 1 (TIGHTEN) or 0 (ALLOW): g_nf_eff_rsi_buy_ceil/sell_min updated, passed to BB gates below
+   }
    // 0. Per-direction open group cap — prevent stacking same-direction exposure
    if(g_sc.max_open_same_direction > 0) {
       int dir_open = ScalperOpenGroupCountByDirection(direction);
@@ -3917,10 +4347,29 @@ void CheckNativeScalperSetups() {
          g_scalper_last_sesswarn_log_bar = m5bar;
          PrintFormat("FORGE SCALPER: skip gate=session_off hour=%d UTC — london=%d-%d ny=%d-%d (no trades this hour)",
                      hour, g_sc.london_start, g_sc.london_end, g_sc.ny_start, g_sc.ny_end);
+         JournalRecordSignal("SKIP","session_off","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
       }
-      JournalRecordSignal("SKIP","session_off","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      g_scalper_prev_session_blocked = true;
       return;
    }
+   // Session-start visibility log (2.7.4): fire once on session_off → active transition
+   if(g_scalper_prev_session_blocked) {
+      double _ss_buf[1];
+      double adx_now_ss = (CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, _ss_buf)==1) ? _ss_buf[0] : 0.0;
+      double adx_lb_ss  = (CopyBuffer(g_mtf[0].h_adx, 0, 6, 1, _ss_buf)==1) ? _ss_buf[0] : 0.0;
+      double rsi_ss     = (CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _ss_buf)==1) ? _ss_buf[0] : 0.0;
+      double bbu_now    = (CopyBuffer(g_mtf[0].h_bb,  1, 0, 1, _ss_buf)==1) ? _ss_buf[0] : 0.0;
+      double bbl_now    = (CopyBuffer(g_mtf[0].h_bb,  2, 0, 1, _ss_buf)==1) ? _ss_buf[0] : 0.0;
+      double bbu_prev   = (CopyBuffer(g_mtf[0].h_bb,  1, 1, 1, _ss_buf)==1) ? _ss_buf[0] : 0.0;
+      double bbl_prev   = (CopyBuffer(g_mtf[0].h_bb,  2, 1, 1, _ss_buf)==1) ? _ss_buf[0] : 0.0;
+      double w_now  = bbu_now  - bbl_now;
+      double w_prev = bbu_prev - bbl_prev;
+      bool bb_exp = (w_prev > 0.0 && w_now > w_prev);
+      PrintFormat("FORGE SESSION START: hour=%dUTC adx=%.1f adx_30min_ago=%.1f rsi=%.1f bb=%s (width %.2f→%.2f)",
+                  hour, adx_now_ss, adx_lb_ss, rsi_ss,
+                  bb_exp ? "EXPANDING" : "FLAT/CONTRACTING", w_prev, w_now);
+   }
+   g_scalper_prev_session_blocked = false;
    // Live: enforce max spread. Tester: skip — modeled XAU spread often sits above typical live caps and
    // would block nearly every tick (see Agent logs: spread 26–31 vs max 25), distorting backtest results.
    if(MQLInfoInteger(MQL_TESTER) == 0 && spread > g_sc.max_spread_points) {
@@ -3995,9 +4444,19 @@ void CheckNativeScalperSetups() {
    const int h1_bias_shift = in_tester ? 0 : 1;
 
    // Read H1 trend (for direction filter)
-   double h1_ema20 = (CopyBuffer(g_h_ma20,0,h1_bias_shift,1,buf)==1) ? buf[0] : 0;
-   double h1_ema50 = (CopyBuffer(g_h_ma50,0,h1_bias_shift,1,buf)==1) ? buf[0] : 0;
-   double h1_atr   = (CopyBuffer(g_h_atr, 0,h1_bias_shift,1,buf)==1) ? buf[0] : 0;
+   double h1_ema20    = (CopyBuffer(g_h_ma20,0,h1_bias_shift,1,buf)==1) ? buf[0] : 0;
+   double h1_ema50    = (CopyBuffer(g_h_ma50,0,h1_bias_shift,1,buf)==1) ? buf[0] : 0;
+   double h1_atr      = (CopyBuffer(g_h_atr, 0,h1_bias_shift,1,buf)==1) ? buf[0] : 0;
+   // H1 DI+/DI- from existing g_h_adx handle (iADX buffer 1=DI+, buffer 2=DI-)
+   // h1_di_read_ok: false during warmup/reconnect → gate defaults to pass (no false-block)
+   double h1_di_plus   = 0.0;
+   double h1_di_minus  = 0.0;
+   bool   h1_di_read_ok = (CopyBuffer(g_h_adx, 1, h1_bias_shift, 1, buf)==1);
+   if(h1_di_read_ok) {
+      h1_di_plus = buf[0];
+      h1_di_read_ok = (CopyBuffer(g_h_adx, 2, h1_bias_shift, 1, buf)==1);
+      if(h1_di_read_ok) h1_di_minus = buf[0];
+   }
 
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -4012,7 +4471,8 @@ void CheckNativeScalperSetups() {
 
    // Live: use scalper_config.json / defaults. Strategy Tester: relax so backtests produce trades (fills, R:R stats).
    double bounce_adx_max_eff = g_sc.bounce_adx_max;
-   double breakout_adx_min_eff = g_sc.breakout_adx_min;
+   double breakout_adx_min_eff = g_sc.breakout_adx_min;           // BUY floor
+   double breakout_adx_min_sell_eff = g_sc.breakout_adx_min_sell; // SELL floor (stricter)
    double trend_thr_eff = g_sc.trend_strength_atr_threshold;
    double bounce_bb_prox_eff = g_sc.bounce_bb_proximity_pct;
    double breakout_buf_eff_pts = g_sc.breakout_buffer_points;
@@ -4021,7 +4481,8 @@ void CheckNativeScalperSetups() {
    if(in_tester) {
       if(!g_sc.bounce_respect_adx_max_in_tester)
          bounce_adx_max_eff = 99.0;
-      breakout_adx_min_eff = MathMin(g_sc.breakout_adx_min, 15.0);
+      breakout_adx_min_eff = g_sc.breakout_adx_min;
+      breakout_adx_min_sell_eff = g_sc.breakout_adx_min_sell;
       trend_thr_eff = MathMax(0.08, g_sc.trend_strength_atr_threshold * 0.45);
       bounce_bb_prox_eff = MathMax(g_sc.bounce_bb_proximity_pct, 40.0);
       breakout_buf_eff_pts = MathMax(1.0, g_sc.breakout_buffer_points * 0.30);
@@ -4133,6 +4594,8 @@ void CheckNativeScalperSetups() {
    string setup_type = "";
    double m5_trend_strength = (m5_ema20 - m5_ema50) / MathMax(m5_atr, point);
    double m15_trend_strength = m15_trend_strength_htf;
+   string nf_ev_label_pre = "";
+   ScalperNewsUpdateEffectiveThresholds(nf_ev_label_pre);
 
    // ── V2 Task 7: Breakout retest state machine — check pending retest ──
    if(g_retest.active) {
@@ -4165,7 +4628,7 @@ void CheckNativeScalperSetups() {
    }
 
    // ── BB BOUNCE (Range Mode) ─────────────────────────────────
-   if((g_scalper_mode == "BB_BOUNCE" || g_scalper_mode == "DUAL")
+   if(direction == "" && (g_scalper_mode == "BB_BOUNCE" || g_scalper_mode == "DUAL")
       && g_sc.bounce_enabled && m5_adx < bounce_adx_max_eff) {
       if(adx_hyst_active && g_adx_trend_regime) {
          PrintFormat("FORGE SCALPER: skip gate=adx_trend_regime_bounce adx=%.1f enter=%.1f exit=%.1f",
@@ -4267,6 +4730,17 @@ void CheckNativeScalperSetups() {
    }
 
    // ── BB BREAKOUT (Trend Mode) ───────────────────────────────
+   {
+      datetime _adx_bar = iTime(_Symbol, PERIOD_M5, 0);
+      if(_adx_bar != g_scalper_last_adxgate_log_bar) {
+         g_scalper_last_adxgate_log_bar = _adx_bar;
+         PrintFormat("FORGE ADX gate: adx=%.1f buy_min=%.1f sell_min=%.1f buy=%s sell=%s | rsi=%.1f price=%.2f atr=%.2f",
+            m5_adx, breakout_adx_min_eff, breakout_adx_min_sell_eff,
+            (m5_adx >= breakout_adx_min_eff) ? "PASS" : "BLOCKED",
+            (m5_adx >= breakout_adx_min_sell_eff) ? "PASS" : "BLOCKED",
+            m5_rsi, mid, m5_atr);
+      }
+   }
    if(direction == "" && (g_scalper_mode == "BB_BREAKOUT" || g_scalper_mode == "DUAL")
       && g_sc.breakout_enabled && m5_adx >= breakout_adx_min_eff) {
       bool m5_bull  = m5_trend_strength > trend_thr_eff;
@@ -4287,7 +4761,28 @@ void CheckNativeScalperSetups() {
             JournalRecordSignal("SKIP","entry_quality_rsi_buy_ceil","BB_BREAKOUT","BUY",
                mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
          } else {
-            // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
+            // H1 DI directional gate (2.7.5): block weak-ADX BUY when H1 DI- dominates DI+ (Wilder's directional check)
+            bool h1_di_ok = true;
+            if(g_sc.breakout_require_h1_di_buy && m5_adx < g_sc.breakout_counter_buy_adx_threshold) {
+               if(h1_di_read_ok && h1_di_plus <= h1_di_minus) {
+                  datetime _h1di_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_h1di_bar != g_scalper_last_h1dibuy_log_bar) {
+                     g_scalper_last_h1dibuy_log_bar = _h1di_bar;
+                     JournalRecordSignal("SKIP","entry_quality_h1_di_buy","BB_BREAKOUT","BUY",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  h1_di_ok = false;
+               }
+            }
+            // News RSI tighten — independent additive check (last line of defense before entry)
+            bool nf_buy_ok = true;
+            if(h1_di_ok && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
+               JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               nf_buy_ok = false;
+            }
+            if(h1_di_ok && nf_buy_ok)
+            { // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
             if(bo_sl > bo_sl_floor) bo_sl = bo_sl_floor;
@@ -4310,15 +4805,71 @@ void CheckNativeScalperSetups() {
                sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
                setup_type = "BB_BREAKOUT";
             }
+            } // end h1_di_ok block
          }
       }
-      // SELL breakout
+      // SELL breakout — uses stricter ADX floor (breakout_adx_min_sell_eff)
       else if(prev_close < (m5_bb_l - breakout_buffer) && m5_rsi < g_sc.breakout_rsi_sell_max
               && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok) {
-         if(m5_rsi <= g_sc.breakout_rsi_sell_floor) {
-            JournalRecordSignal("SKIP","entry_quality_rsi_sell_floor","BB_BREAKOUT","SELL",
+         if(m5_adx < breakout_adx_min_sell_eff) {
+            datetime _adxsell_bar = iTime(_Symbol, PERIOD_M5, 0);
+            if(_adxsell_bar != g_scalper_last_adxsell_log_bar) {
+               g_scalper_last_adxsell_log_bar = _adxsell_bar;
+               JournalRecordSignal("SKIP","entry_quality_adx_min_sell","BB_BREAKOUT","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else {
+         // Fix 5 (2.6.8): two-tier RSI floor — absolute + ADX-conditioned stricter floor
+         double sell_floor_eff = g_sc.breakout_rsi_sell_floor;
+         bool weak_adx_floor = (m5_adx < g_sc.breakout_adx_sell_floor_threshold);
+         if(weak_adx_floor)
+            sell_floor_eff = MathMax(sell_floor_eff, g_sc.breakout_rsi_sell_floor_weak_adx);
+         if(m5_rsi <= sell_floor_eff) {
+            string floor_gate = (weak_adx_floor && sell_floor_eff >= g_sc.breakout_rsi_sell_floor_weak_adx)
+                                ? "entry_quality_rsi_sell_adx_floor" : "entry_quality_rsi_sell_floor";
+            JournalRecordSignal("SKIP",floor_gate,"BB_BREAKOUT","SELL",
                mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
          } else {
+            // ADX duration gate (2.7.4): block SELL if ADX spiked from flat base (spike-from-flat pattern)
+            bool adx_dur_ok = true;
+            if(g_sc.breakout_adx_min_sell_lookback_bars > 0) {
+               double adx_lb_buf[1];
+               if(CopyBuffer(g_mtf[0].h_adx, 0, g_sc.breakout_adx_min_sell_lookback_bars, 1, adx_lb_buf) == 1
+                  && adx_lb_buf[0] < breakout_adx_min_sell_eff) {
+                  datetime _adxdur_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_adxdur_bar != g_scalper_last_adxdur_log_bar) {
+                     g_scalper_last_adxdur_log_bar = _adxdur_bar;
+                     JournalRecordSignal("SKIP","entry_quality_adx_spike_sell","BB_BREAKOUT","SELL",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  adx_dur_ok = false;
+               }
+            }
+            // RSI-declining gate (2.7.4): block SELL if RSI rising bar-over-bar (auto-off at ADX≥threshold)
+            bool rsi_decl_ok = true;
+            if(adx_dur_ok && g_sc.breakout_require_rsi_declining_sell
+               && m5_adx < g_sc.breakout_rsi_decl_sell_adx_threshold) {
+               double rsi_prev_buf[1];
+               if(CopyBuffer(g_mtf[0].h_rsi, 0, 1, 1, rsi_prev_buf) == 1 && m5_rsi > rsi_prev_buf[0]) {
+                  datetime _rsidecl_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_rsidecl_bar != g_scalper_last_rsidecl_log_bar) {
+                     g_scalper_last_rsidecl_log_bar = _rsidecl_bar;
+                     JournalRecordSignal("SKIP","entry_quality_rsi_rising_sell","BB_BREAKOUT","SELL",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  rsi_decl_ok = false;
+               }
+            }
+            // News RSI tighten — independent additive check (last line of defense before entry)
+            bool nf_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok
+               && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
+               && m5_rsi <= g_nf_eff_rsi_sell_min) {
+               JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               nf_sell_ok = false;
+            }
+            if(adx_dur_ok && rsi_decl_ok && nf_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -4342,7 +4893,9 @@ void CheckNativeScalperSetups() {
                sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
                setup_type = "BB_BREAKOUT";
             }
+            } // end adx_dur_ok && rsi_decl_ok
          }
+         } // end ADX-sell-min else block
       }
    }
 
@@ -4391,6 +4944,28 @@ void CheckNativeScalperSetups() {
          JournalRecordSignal("SKIP","no_setup","","",mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       }
       return;
+   }
+
+   if(g_sc.breakout_max_reentry_atr_ext > 0.0 && m5_atr > 0.0) {
+      bool atr_ext_blocked = false;
+      if(direction == "BUY" && g_first_buy_entry_price > 0.0) {
+         double ext = (mid - g_first_buy_entry_price) / m5_atr;
+         if(ext > g_sc.breakout_max_reentry_atr_ext) atr_ext_blocked = true;
+      }
+      if(direction == "SELL" && g_first_sell_entry_price > 0.0) {
+         double ext = (g_first_sell_entry_price - mid) / m5_atr;
+         if(ext > g_sc.breakout_max_reentry_atr_ext) atr_ext_blocked = true;
+      }
+      if(atr_ext_blocked) {
+         datetime m5bar = iTime(_Symbol, PERIOD_M5, 0);
+         if(m5bar != g_scalper_last_atr_ext_log_bar) {
+            g_scalper_last_atr_ext_log_bar = m5bar;
+            JournalRecordSignal("SKIP", "entry_quality_atr_ext", setup_type, direction,
+               mid, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m,
+               0, h1_trend_strength, 0);
+         }
+         return;
+      }
    }
 
    // Entry Quality Gate — M5 bar body/direction/ATR/BB-expansion pre-filter
@@ -4510,8 +5085,16 @@ void CheckNativeScalperSetups() {
    int tr_min_log = 0, tr_max_log = 0;
    if(env_tr) { tr_min_log = env_lo; tr_max_log = env_hi; }
 
+   // Fix 7 (2.6.8): half lot when BB_BREAKOUT SELL price has pulled back inside the BB band
+   double inside_band_factor = 1.0;
+   if(direction == "SELL" && is_breakout_setup && mid > m5_bb_l
+      && g_sc.breakout_sell_inside_band_lot_factor > 0.0 && g_sc.breakout_sell_inside_band_lot_factor < 1.0) {
+      inside_band_factor = g_sc.breakout_sell_inside_band_lot_factor;
+      PrintFormat("FORGE SCALPER: SELL inside band — lot factor=%.2f (mid=%.2f > bb_l=%.2f)",
+                  inside_band_factor, mid, m5_bb_l);
+   }
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
-   double lot = NormalizeLot(base_lot * lot_mult);
+   double lot = NormalizeLot(base_lot * lot_mult * inside_band_factor);
    double tp2_price = (tp2 > 0) ? tp2 : tp1;
    double tp1_split_pct = is_breakout_setup ? g_sc.breakout_tp1_close_pct : g_sc.bounce_tp1_close_pct;
    int tp1_count = (int)MathCeil(n * tp1_split_pct / 100.0);
@@ -4724,6 +5307,11 @@ void CheckNativeScalperSetups() {
    JournalRecordSignal("TAKEN","",setup_type,direction,
       direction=="BUY" ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID),
       spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,entry_candle_score,h1_trend_strength,0);
+   double entry_price = (direction == "BUY") ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   if(direction == "BUY" && g_first_buy_entry_price <= 0.0)
+      g_first_buy_entry_price = entry_price;
+   if(direction == "SELL" && g_first_sell_entry_price <= 0.0)
+      g_first_sell_entry_price = entry_price;
 }
 
 //+------------------------------------------------------------------+

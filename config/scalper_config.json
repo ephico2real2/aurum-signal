@@ -1,5 +1,5 @@
 {
-  "version": "2.6.7",
+  "version": "2.7.6",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -30,7 +30,7 @@
   "bb_breakout": {
     "enabled": true,
     "description": "Trend-following: enter on BB breakout with momentum confirmation",
-    "adx_min": 14,
+    "adx_min": 20,
     "rsi_buy_min": 50,
     "rsi_sell_max": 50,
     "require_m15_agree": true,
@@ -126,7 +126,23 @@
     "min_directional_bars": 2,
     "require_bb_expansion": 1,
     "news_post_guard_skip_min": 15,
-    "dd_equity_close_all_pct": 3.0
+    "dd_equity_close_all_pct": 3.0,
+    "news_filter_enabled": 1,
+    "news_filter_currencies": "USD,EUR,GBP",
+    "news_filter_low_before": 5,
+    "news_filter_low_after": 5,
+    "news_filter_medium_before": 10,
+    "news_filter_medium_after": 15,
+    "news_filter_high_before": 20,
+    "news_filter_high_after": 30,
+    "news_filter_special": "Non-Farm:30,60+FOMC:40,45+CPI:50,55",
+    "news_filter_hard_floor_min": 5,
+    "news_filter_tighten_pct": 0.5,
+    "news_filter_block_pct": 0.85,
+    "news_filter_tighten_rsi_buy": 65.0,
+    "news_filter_tighten_rsi_sell": 38.0,
+    "news_filter_refresh_sec": 900,
+    "news_filter_apply_in_tester": 1
   },
   "journal": {
     "journal_enabled": 1,
@@ -145,7 +161,7 @@
   "lot_sizing": {
     "lot_sizing_source": "AUTO",
     "inputs_override_lot_sizing": 0,
-    "fixed_lot": 0.02,
+    "fixed_lot": 0.08,
     "min_num_trades": 1,
     "max_num_trades": 30,
     "staged_entry_enabled": 1,
