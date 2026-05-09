@@ -219,11 +219,13 @@ struct ScalperConfig {
    // Research: post-17:00 UTC = lower liquidity, wider spreads, adverse for XAUUSD scalps (TMGM, ACY, NordFX)
    int    session_ny_sell_cutoff_utc;      // block SELL when UTC hour >= this in NY session (0=disabled, default 17)
    int    session_london_sell_cutoff_utc;  // block SELL in London session (0=disabled, default 0)
-   // MACD(3,10,16) histogram gate (2.7.7) — arXiv:2206.12282: RSI+MACD dual gate 84-86% WR
-   bool   breakout_require_macd_sell;      // block SELL when MACD histogram positive or contracting
-   int    breakout_macd_fast;              // MACD fast period (default 3 for scalping)
-   int    breakout_macd_slow;              // MACD slow period (default 10)
-   int    breakout_macd_signal;            // MACD signal period (default 16)
+   // OsMA(3,10,16) histogram gate (2.7.7) — MACD Histogram MC 4-quadrant approach; arXiv:2206.12282 84-86% WR
+   // Q0(+↑)=strong bull, Q1(+↓)=bull fading, Q2(−↓)=strong bear ✓, Q3(−↑)=bear fading
+   bool   breakout_require_macd_sell;      // block SELL outside Q2 (histogram must be negative+falling)
+   bool   breakout_require_macd_buy;       // block BUY outside Q0 (histogram must be positive+rising); default off
+   int    breakout_macd_fast;              // OsMA fast EMA period (default 3 for scalping)
+   int    breakout_macd_slow;              // OsMA slow EMA period (default 10)
+   int    breakout_macd_signal;            // OsMA signal SMA period (default 16)
    // ADX-tiered lot factors (2.7.7) — more extended move = smaller bet
    // Research: OpoFinance/Trade2Win: ADX lags on M5 — use M15 ADX for tier decision
    bool   breakout_adx_lot_use_m15;        // use M15 ADX for tier (less lag than M5)
@@ -397,7 +399,7 @@ int g_h_ma50 = INVALID_HANDLE;
 int g_h_atr  = INVALID_HANDLE;
 int g_h_bb   = INVALID_HANDLE;
 int g_h_macd      = INVALID_HANDLE;
-int g_h_macd_scalp = INVALID_HANDLE;  // M5 MACD(3,10,16) — scalping histogram gate (2.7.7)
+int g_h_osma_scalp = INVALID_HANDLE;  // M5 OsMA(3,10,16) — iOsMA buffer 0 = MACD−Signal directly (2.7.7)
 int g_h_adx        = INVALID_HANDLE;
 
 // H4 — native scalper higher-TF structure (EMA20/50 + ATR; same trend_strength formula as H1)
@@ -697,7 +699,7 @@ void EnsureIndicators() {
    IndicatorRelease(g_h_atr);  g_h_atr = INVALID_HANDLE;
    IndicatorRelease(g_h_bb);   g_h_bb = INVALID_HANDLE;
    IndicatorRelease(g_h_macd);       g_h_macd = INVALID_HANDLE;
-   IndicatorRelease(g_h_macd_scalp); g_h_macd_scalp = INVALID_HANDLE;
+   IndicatorRelease(g_h_osma_scalp); g_h_osma_scalp = INVALID_HANDLE;
    IndicatorRelease(g_h_adx);        g_h_adx = INVALID_HANDLE;
    IndicatorRelease(g_h4_ma20); g_h4_ma20 = INVALID_HANDLE;
    IndicatorRelease(g_h4_ma50); g_h4_ma50 = INVALID_HANDLE;
@@ -711,7 +713,7 @@ void EnsureIndicators() {
    g_h_atr  = iATR(_Symbol, PERIOD_H1, 14);
    g_h_bb   = iBands(_Symbol, PERIOD_H1, 20, 0, 2.0, PRICE_CLOSE);
    g_h_macd       = iMACD(_Symbol, PERIOD_H1, 12, 26, 9, PRICE_CLOSE);
-   g_h_macd_scalp = iMACD(_Symbol, PERIOD_M5, g_sc.breakout_macd_fast, g_sc.breakout_macd_slow, g_sc.breakout_macd_signal, PRICE_CLOSE);
+   g_h_osma_scalp = iOsMA(_Symbol, PERIOD_M5, g_sc.breakout_macd_fast, g_sc.breakout_macd_slow, g_sc.breakout_macd_signal, PRICE_CLOSE);
    g_h_adx        = iADX(_Symbol, PERIOD_H1, 14);
    g_h4_ma20 = iMA(_Symbol, PERIOD_H4, 20, 0, MODE_EMA, PRICE_CLOSE);
    g_h4_ma50 = iMA(_Symbol, PERIOD_H4, 50, 0, MODE_EMA, PRICE_CLOSE);
@@ -2148,6 +2150,7 @@ void InitScalperConfig() {
    g_sc.session_ny_sell_cutoff_utc      = 17;
    g_sc.session_london_sell_cutoff_utc  = 0;
    g_sc.breakout_require_macd_sell      = true;
+   g_sc.breakout_require_macd_buy       = false;
    g_sc.breakout_macd_fast              = 3;
    g_sc.breakout_macd_slow              = 10;
    g_sc.breakout_macd_signal            = 16;
@@ -2466,6 +2469,7 @@ void ReadScalperConfig() {
          if(v >= 0 && v <= 5.0) g_sc.breakout_min_h1_bear_strength = v;
       }
       if(JsonHasKey(breakout_json, "require_macd_sell")) { v = JsonGetDouble(breakout_json,"require_macd_sell"); g_sc.breakout_require_macd_sell = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "require_macd_buy"))  { v = JsonGetDouble(breakout_json,"require_macd_buy");  g_sc.breakout_require_macd_buy  = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "macd_fast"))         { v = JsonGetDouble(breakout_json,"macd_fast");   if(v >= 1 && v <= 50) g_sc.breakout_macd_fast   = (int)v; }
       if(JsonHasKey(breakout_json, "macd_slow"))         { v = JsonGetDouble(breakout_json,"macd_slow");   if(v >= 1 && v <= 100) g_sc.breakout_macd_slow  = (int)v; }
       if(JsonHasKey(breakout_json, "macd_signal"))       { v = JsonGetDouble(breakout_json,"macd_signal"); if(v >= 1 && v <= 50) g_sc.breakout_macd_signal = (int)v; }
@@ -4967,14 +4971,36 @@ void CheckNativeScalperSetups() {
                   h1_di_ok = false;
                }
             }
+            // OsMA histogram gate for BUY (2.7.7, MACD Histogram MC Q0 pass only, default off)
+            // BUY passes only in Q0: histogram positive AND rising (strong bull momentum confirmed).
+            // Q0(+↑): PASS | Q1(+↓): bull fading | Q2(−↓): strong bear | Q3(−↑): bear fading → all block
+            bool macd_buy_ok = true;
+            if(h1_di_ok && g_sc.breakout_require_macd_buy && g_h_osma_scalp != INVALID_HANDLE) {
+               double _hist[2];
+               if(CopyBuffer(g_h_osma_scalp, 0, 0, 2, _hist) == 2) {
+                  double _h0 = _hist[0], _h1 = _hist[1];
+                  datetime _macd_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  string _qreason = "";
+                  if(_h0 <= 0.0)      _qreason = (_h0 < _h1) ? "entry_quality_macd_q2_bear_str"    : "entry_quality_macd_q3_bear_fading";
+                  else if(_h0 < _h1)  _qreason = "entry_quality_macd_q1_bull_fading";
+                  if(_qreason != "") {
+                     if(_macd_bar != g_scalper_last_macd_log_bar) {
+                        g_scalper_last_macd_log_bar = _macd_bar;
+                        JournalRecordSignal("SKIP",_qreason,"BB_BREAKOUT","BUY",
+                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0,_h0);
+                     }
+                     macd_buy_ok = false;
+                  }
+               }
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_buy_ok = true;
-            if(h1_di_ok && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
+            if(h1_di_ok && macd_buy_ok && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","BUY",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_buy_ok = false;
             }
-            if(h1_di_ok && nf_buy_ok)
+            if(h1_di_ok && macd_buy_ok && nf_buy_ok)
             { // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -5103,25 +5129,24 @@ void CheckNativeScalperSetups() {
                   rsi_decl_ok = false;
                }
             }
-            // MACD(3,10,16) histogram gate (2.7.7): dual confirmation — arXiv:2206.12282 84-86% WR
-            // Block SELL when histogram positive (no bearish momentum) or contracting (momentum weakening)
+            // OsMA(3,10,16) histogram gate (2.7.7): MACD Histogram MC 4-quadrant method (AK20/traderak20)
+            // arXiv:2206.12282: RSI+MACD dual gate 84-86% WR. iOsMA buffer 0 = MACD−Signal directly.
+            // SELL only passes Q2 (histogram negative AND falling = strong bear momentum confirmed).
+            // Q0(+↑): strong bull | Q1(+↓): bull fading | Q2(−↓): PASS | Q3(−↑): bear fading → block
             bool macd_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && g_sc.breakout_require_macd_sell && g_h_macd_scalp != INVALID_HANDLE) {
-               double _mhist[2];
-               if(CopyBuffer(g_h_macd_scalp, 2, 0, 2, _mhist) == 2) {
+            if(adx_dur_ok && rsi_decl_ok && g_sc.breakout_require_macd_sell && g_h_osma_scalp != INVALID_HANDLE) {
+               double _hist[2];
+               if(CopyBuffer(g_h_osma_scalp, 0, 0, 2, _hist) == 2) {
+                  double _h0 = _hist[0], _h1 = _hist[1];
                   datetime _macd_bar = iTime(_Symbol, PERIOD_M5, 0);
-                  if(_mhist[0] >= 0.0) {  // histogram positive = no bearish MACD momentum
+                  string _qreason = "";
+                  if(_h0 >= 0.0)      _qreason = (_h0 > _h1) ? "entry_quality_macd_q0_bull_rising" : "entry_quality_macd_q1_bull_fading";
+                  else if(_h0 > _h1)  _qreason = "entry_quality_macd_q3_bear_fading";
+                  if(_qreason != "") {
                      if(_macd_bar != g_scalper_last_macd_log_bar) {
                         g_scalper_last_macd_log_bar = _macd_bar;
-                        JournalRecordSignal("SKIP","entry_quality_macd_direction","BB_BREAKOUT","SELL",
-                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-                     }
-                     macd_sell_ok = false;
-                  } else if(_mhist[0] > _mhist[1]) {  // histogram contracting = momentum shifting bullish
-                     if(_macd_bar != g_scalper_last_macd_log_bar) {
-                        g_scalper_last_macd_log_bar = _macd_bar;
-                        JournalRecordSignal("SKIP","entry_quality_macd_histogram","BB_BREAKOUT","SELL",
-                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                        JournalRecordSignal("SKIP",_qreason,"BB_BREAKOUT","SELL",
+                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0,_h0);
                      }
                      macd_sell_ok = false;
                   }
@@ -5660,7 +5685,7 @@ void CheckNativeScalperSetups() {
    }  // end if(!in_tester)
 
    double _taken_macd = 0.0, _taken_m15adx = 0.0;
-   { double _tb[1]; if(g_h_macd_scalp != INVALID_HANDLE && CopyBuffer(g_h_macd_scalp, 2, 0, 1, _tb) == 1) _taken_macd = _tb[0]; }
+   { double _th[1]; if(g_h_osma_scalp != INVALID_HANDLE && CopyBuffer(g_h_osma_scalp, 0, 0, 1, _th) == 1) _taken_macd = _th[0]; }
    { double _tb[1]; if(CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _tb) == 1) _taken_m15adx = _tb[0]; }
    JournalRecordSignal("TAKEN","",setup_type,direction,
       direction=="BUY" ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID),

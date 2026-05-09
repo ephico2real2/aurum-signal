@@ -83,6 +83,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_RSI_SELL_FLOOR": ("bb_breakout", "rsi_sell_floor", "float", 0.0, 50.0),
     "FORGE_BREAKOUT_H1H4_CRASH_SELL": ("bb_breakout", "h1h4_crash_sell", "bool01", None, None),
     "FORGE_BREAKOUT_H1H4_CRASH_SELL_RSI_MIN": ("bb_breakout", "h1h4_crash_sell_rsi_min", "float", 10.0, 35.0),
+    # OsMA(fast,slow,signal) histogram gate — MACD Histogram MC 4-quadrant approach
+    "FORGE_BREAKOUT_REQUIRE_MACD_SELL": ("bb_breakout", "require_macd_sell", "bool01", None, None),
+    "FORGE_BREAKOUT_REQUIRE_MACD_BUY":  ("bb_breakout", "require_macd_buy",  "bool01", None, None),
+    "FORGE_BREAKOUT_MACD_FAST":         ("bb_breakout", "macd_fast",   "int", 1.0, 50.0),
+    "FORGE_BREAKOUT_MACD_SLOW":         ("bb_breakout", "macd_slow",   "int", 1.0, 100.0),
+    "FORGE_BREAKOUT_MACD_SIGNAL":       ("bb_breakout", "macd_signal", "int", 1.0, 50.0),
     "FORGE_FIB_BIAS_ENABLED": ("indicators", "fib_bias_enabled", "bool01", None, None),
     "FORGE_FIB_TP_ENABLED": ("indicators", "fib_tp_enabled", "bool01", None, None),
     "FORGE_FIB_LOOKBACK": ("indicators", "fib_lookback", "int", 0.0, 500.0),

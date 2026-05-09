@@ -55,6 +55,7 @@
     "h1h4_crash_sell_adx_max": 40,
     "min_h1_bear_strength": 0.2,
     "require_macd_sell": 1,
+    "require_macd_buy": 0,
     "macd_fast": 3,
     "macd_slow": 10,
     "macd_signal": 16,
