@@ -4206,8 +4206,8 @@ double ScalperNewsProximity() {
 int ScalperNewsCheck() {
    double proximity = ScalperNewsProximity();
    if(proximity < 0.0) {
-      g_nf_eff_rsi_buy_ceil = 70.0;
-      g_nf_eff_rsi_sell_min = 33.0;
+      g_nf_eff_rsi_buy_ceil = g_sc.breakout_rsi_buy_ceil;
+      g_nf_eff_rsi_sell_min = g_sc.breakout_rsi_sell_floor;
       return 0;
    }
 
@@ -4224,19 +4224,19 @@ int ScalperNewsCheck() {
       double slide = (proximity - g_sc.news_filter_tighten_pct)
                      / MathMax(0.001, g_sc.news_filter_block_pct - g_sc.news_filter_tighten_pct);
       slide = MathMin(1.0, slide);
-      g_nf_eff_rsi_buy_ceil = 70.0 - (70.0 - g_sc.news_filter_tighten_rsi_buy)  * slide;
-      g_nf_eff_rsi_sell_min = 33.0 + (g_sc.news_filter_tighten_rsi_sell - 33.0) * slide;
+      g_nf_eff_rsi_buy_ceil = g_sc.breakout_rsi_buy_ceil   - (g_sc.breakout_rsi_buy_ceil   - g_sc.news_filter_tighten_rsi_buy)  * slide;
+      g_nf_eff_rsi_sell_min = g_sc.breakout_rsi_sell_floor + (g_sc.news_filter_tighten_rsi_sell - g_sc.breakout_rsi_sell_floor) * slide;
       return 1;
    }
 
-   g_nf_eff_rsi_buy_ceil = 70.0;
-   g_nf_eff_rsi_sell_min = 33.0;
+   g_nf_eff_rsi_buy_ceil = g_sc.breakout_rsi_buy_ceil;
+   g_nf_eff_rsi_sell_min = g_sc.breakout_rsi_sell_floor;
    return 0;
 }
 
 int ScalperNewsUpdateEffectiveThresholds(string &ev_label) {
-   g_nf_eff_rsi_buy_ceil = 70.0;
-   g_nf_eff_rsi_sell_min = 33.0;
+   g_nf_eff_rsi_buy_ceil = g_sc.breakout_rsi_buy_ceil;
+   g_nf_eff_rsi_sell_min = g_sc.breakout_rsi_sell_floor;
    ev_label = "";
    if(!g_sc.news_filter_enabled) return 0;
    if(IsTesting() && !g_sc.news_filter_apply_in_tester) return 0;
