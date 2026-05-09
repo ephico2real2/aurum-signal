@@ -51,7 +51,9 @@
     "rsi_sell_floor": 30,
     "h1h4_crash_sell": 1,
     "h1h4_crash_sell_rsi_min": 20,
-    "rsi_decl_sell_adx_threshold": 40
+    "rsi_decl_sell_adx_threshold": 40,
+    "h1h4_crash_sell_adx_max": 40,
+    "min_h1_bear_strength": 0.2
   },
   "indicators": {
     "bb_period": 20,

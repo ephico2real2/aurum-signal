@@ -197,6 +197,8 @@ struct ScalperConfig {
    // Cardwell: RSI 20 is the extreme-oversold floor in a confirmed downtrend (RSI 20–60 range).
    // Below RSI 20 the move is exhausted — mean-reversion risk spikes even in genuine crashes.
    double breakout_h1h4_crash_sell_rsi_min;   // Cardwell downtrend floor — RSI must be above this in crash bypass (default 20)
+   double h1h4_crash_sell_adx_max;            // crash bypass blocked when ADX > this — high ADX = move already extended (default 40)
+   double breakout_min_h1_bear_strength;      // SELL blocked when |H1 trend| < this — filters barely-bearish H1 (default 0.2)
    double breakout_sell_inside_band_lot_factor; // lot multiplier when SELL entry is above BB lower (default 0.5)
    double breakout_max_reentry_atr_ext;  // 0 = disabled; >0 = max ATR multiples price can be from first entry for re-entry
    double breakout_sl_atr_mult;
@@ -2073,6 +2075,8 @@ void InitScalperConfig() {
    g_sc.breakout_rsi_sell_floor_weak_adx     = 36.0;
    g_sc.breakout_h1h4_crash_sell             = true;
    g_sc.breakout_h1h4_crash_sell_rsi_min    = 20.0;
+   g_sc.h1h4_crash_sell_adx_max             = 40.0;
+   g_sc.breakout_min_h1_bear_strength       = 0.2;
    g_sc.breakout_sell_inside_band_lot_factor = 0.25;
    g_sc.breakout_max_reentry_atr_ext = 0.0;
    g_sc.breakout_sl_atr_mult = 2.0;
@@ -2376,6 +2380,14 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "h1h4_crash_sell_rsi_min")) {
          v = JsonGetDouble(breakout_json, "h1h4_crash_sell_rsi_min");
          if(v >= 0 && v < 50) g_sc.breakout_h1h4_crash_sell_rsi_min = v;
+      }
+      if(JsonHasKey(breakout_json, "h1h4_crash_sell_adx_max")) {
+         v = JsonGetDouble(breakout_json, "h1h4_crash_sell_adx_max");
+         if(v > 0 && v <= 100) g_sc.h1h4_crash_sell_adx_max = v;
+      }
+      if(JsonHasKey(breakout_json, "min_h1_bear_strength")) {
+         v = JsonGetDouble(breakout_json, "min_h1_bear_strength");
+         if(v >= 0 && v <= 5.0) g_sc.breakout_min_h1_bear_strength = v;
       }
       if(JsonHasKey(breakout_json, "sell_inside_band_lot_factor")) {
          v = JsonGetDouble(breakout_json, "sell_inside_band_lot_factor");
@@ -4890,8 +4902,11 @@ void CheckNativeScalperSetups() {
       // SELL breakout — uses stricter ADX floor (breakout_adx_min_sell_eff)
       // rsi_sell_max=60: Cardwell Bear Resistance ceiling (RSI 20–60 in downtrend; 60 = bounce re-short ceiling)
       // Second SELL entry fires when RSI bounces from crash low back toward 50–60 and BB re-breaks lower.
+      // min_h1_bear_strength: blocks SELL when H1 barely bearish (e.g. -0.11) — requires genuine H1 conviction.
       else if(prev_close < (m5_bb_l - breakout_buffer) && m5_rsi < g_sc.breakout_rsi_sell_max
-              && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok) {
+              && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok
+              && (g_sc.breakout_min_h1_bear_strength <= 0.0
+                  || h1_trend_strength <= -g_sc.breakout_min_h1_bear_strength)) {
          if(m5_adx < breakout_adx_min_sell_eff) {
             datetime _adxsell_bar = iTime(_Symbol, PERIOD_M5, 0);
             if(_adxsell_bar != g_scalper_last_adxsell_log_bar) {
@@ -4906,8 +4921,11 @@ void CheckNativeScalperSetups() {
          // Below RSI 20 = exhaustion territory even in genuine crashes — mean-reversion risk too high.
          // Hard lower bound: even in crash mode, RSI must be above crash_sell_rsi_min (default 20)
          // — prevents late exhaustion entries at RSI 14-20 where mean-reversion risk is highest.
+         // crash_sell_adx_max: high ADX means the move is already very extended — reversal risk elevated.
+         // Mirrors bounce_adx_max logic: counter-trend bounces blocked when ADX > 40 for same reason.
          bool crash_sell_bypass = g_sc.breakout_h1h4_crash_sell && h1_bear && h4_bear
-                                  && m5_rsi > g_sc.breakout_h1h4_crash_sell_rsi_min;
+                                  && m5_rsi > g_sc.breakout_h1h4_crash_sell_rsi_min
+                                  && (g_sc.h1h4_crash_sell_adx_max <= 0 || m5_adx <= g_sc.h1h4_crash_sell_adx_max);
          // Two-tier RSI floor — absolute + ADX-conditioned stricter floor (skipped on crash bypass)
          bool rsi_floor_ok = true;
          if(!crash_sell_bypass) {
