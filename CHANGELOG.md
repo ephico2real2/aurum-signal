@@ -1,5 +1,44 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.9.9] — 2026-05-09 (ATHENA — Final UI/API review, 7 bugs fixed)
+
+### Changes table
+
+| # | Location | Bug | Fix | Status |
+|---|----------|-----|-----|--------|
+| 1 | `sentinel.py:191` | `"Nonemin"` — `next_in_min=None` rendered as `"Nonemin"` because `dict.get(key, default)` ignores default when key exists with null value | Explicit None check → `"—"` | ✅ fixed (takes effect on next bridge restart) |
+| 2 | `athena_api.py` TV_KEYS | `tradingview.mode = "HYBRID"` — trading system mode leaking into TradingView indicators block | Removed `"mode"` from TV_KEYS | ✅ fixed |
+| 3 | `athena_api.py` `/api/live` | `indicators_m5`, `indicators_m15`, `indicators_m30` in `market_data.json` but absent from API response | Added all three MTF blocks to response | ✅ fixed |
+| 4 | `athena_api.py` self-heartbeat | ATHENA component showed April 6 timestamp — never updated its own heartbeat | Added `scribe.heartbeat("ATHENA")` on every `/api/live` poll | ✅ fixed |
+| 5 | `dashboard/app.js` AUTO_SCALPER | `upperBB NO` always shown even when H1 BULL (wrong direction for BUY setup) | Direction-aware label: BULL → `lowerBB`, BEAR → `upperBB` | ✅ fixed |
+| 6 | `SYSTEM_VERSION` | File said `1.7.2`, CHANGELOG at `1.9.8` | Updated to `1.9.8` | ✅ fixed (bridge version self-corrects on next restart) |
+| 7 | `regime.py` / `autoscalper_condition_service.py` / `dashboard/app.js` | `STATE_N` posterior keys, SELL-only readiness, HMM ADX threshold 22, ret_1 direction noise | See [System 1.9.8] for full detail | ✅ fixed in prior commit |
+
+### Deferred (need deeper investigation)
+
+| Issue | Root cause | Notes |
+|-------|-----------|-------|
+| `lot_size: 0.0` in all closures | Bridge calls `log_position_closure(lot_size=0)` | Needs bridge.py close-path audit |
+| `duration_seconds: null` | Duration not computed at close time | Same code path as lot_size |
+| `session_pnl: +0.00` despite recent wins | AEGIS reads `trade_positions.close_time`; likely tester-session mapping mismatch | Needs session boundary + trade_positions audit |
+| `version: 1.7.2` in header | Bridge reads SYSTEM_VERSION at import — will show 1.7.2 until restart | Self-corrects on next `make services-restart` |
+
+### Fixed
+
+- **`sentinel.py` "Nonemin" bug** — `report_component_status` note used `status.get('next_in_min','?')` which returns `None` (not `'?'`) when the key exists but the value is `None`. Result: "Next: None scheduled in Nonemin" in System Health panel. Fixed with explicit `None` check: `str(val) + 'min' if val is not None else '—'`.
+
+- **`tradingview.mode` field removed** — `"mode"` was in `TV_KEYS`, causing `tradingview.mode = "HYBRID"` in every `/api/live` response. This is the trading system mode, unrelated to TradingView. Removed from TV_KEYS.
+
+- **`indicators_m5 / m15 / m30` added to `/api/live`** — All three multi-timeframe indicator blocks (RSI, EMA, ATR, BB, ADX, OsMA) were present in `market_data.json` but not passed through the API. Autoscalper condition service read them directly from file; API consumers had no access.
+
+- **ATHENA self-heartbeat** — `api/live` now calls `scribe.heartbeat("ATHENA")` on every request. ATHENA component in System Health was frozen at the April 6 startup swagger-verify timestamp.
+
+- **Direction-aware BB label in AUTO_SCALPER panel** — `upperBB YES/NO` was hardcoded. When H1 is BULL the relevant check is `lowerBB` (price near lower band for BUY entry), not `upperBB`. Label and value now switch based on `h1_bias`.
+
+- **`SYSTEM_VERSION` updated** — `1.7.2 → 1.9.8`. Bridge reads this at import so dashboard `version` field updates on next `make services-restart`.
+
+---
+
 ## [System 1.9.8] — 2026-05-09 (ATHENA — Regime Engine + AUTO_SCALPER readiness overhaul)
 
 ### Fixed
