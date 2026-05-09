@@ -180,14 +180,20 @@ struct ScalperConfig {
    bool   breakout_require_h1_di_buy;               // block BUY when H1 DI- > DI+ at weak ADX (default false; DI+/DI- Wilder directional gate)
    double breakout_counter_buy_adx_threshold;       // h1_di_buy gate active only when m5_adx < this (default 28; auto-off in strong trend)
    int    breakout_adx_min_sell_lookback_bars;       // ADX spike-from-flat gate: bars back to check (default 6 = 30min; 0=disabled)
-   double breakout_rsi_buy_min;
-   double breakout_rsi_sell_max;
+   // Cardwell RSI Zone Theory (Andrew Cardwell):
+   //   Uptrend range: RSI 40–80.  Bull Support floor = 40 (long re-entry on dip).
+   //   Downtrend range: RSI 20–60.  Bear Resistance ceiling = 60 (short re-entry on bounce).
+   // Sources: tradingview.com/script/v6JlR98g, alchemymarkets.com/education/indicators/relative-strength-index
+   double breakout_rsi_buy_min;   // Cardwell Bull Support floor — BUY only when RSI > this (default 40)
+   double breakout_rsi_sell_max;  // Cardwell Bear Resistance ceiling — SELL only when RSI < this (default 60)
    double breakout_rsi_buy_ceil;              // block BUY breakout when RSI >= this (default 70.0)
    double breakout_rsi_sell_floor;            // block SELL breakout when RSI <= this (default 33.0)
    double breakout_adx_sell_floor_threshold;  // ADX below this uses rsi_sell_floor_weak_adx (default 35.0)
    double breakout_rsi_sell_floor_weak_adx;   // stricter floor when ADX < threshold (default 36.0)
    bool   breakout_h1h4_crash_sell;           // bypass RSI floor + ADX spike on confirmed H1+H4 bear crash
-   double breakout_h1h4_crash_sell_rsi_min;   // hard RSI lower bound even in crash bypass (default 22.0)
+   // Cardwell: RSI 20 is the extreme-oversold floor in a confirmed downtrend (RSI 20–60 range).
+   // Below RSI 20 the move is exhausted — mean-reversion risk spikes even in genuine crashes.
+   double breakout_h1h4_crash_sell_rsi_min;   // Cardwell downtrend floor — RSI must be above this in crash bypass (default 20)
    double breakout_sell_inside_band_lot_factor; // lot multiplier when SELL entry is above BB lower (default 0.5)
    double breakout_max_reentry_atr_ext;  // 0 = disabled; >0 = max ATR multiples price can be from first entry for re-entry
    double breakout_sl_atr_mult;
@@ -4793,6 +4799,7 @@ void CheckNativeScalperSetups() {
       double breakout_sl_mult_eff = g_sc.breakout_sl_atr_mult * ((high_vol_trend) ? g_sc.high_vol_breakout_sl_boost : 1.0);
 
       // BUY breakout: close above upper BB + RSI strong + aligned
+      // rsi_buy_min=40: Cardwell Bull Support zone (RSI 40–80 in uptrend; 40 = dip re-entry floor)
       if(prev_close > (m5_bb_u + breakout_buffer) && m5_rsi > g_sc.breakout_rsi_buy_min
          && m5_bull && m15_ok_buy && h1_ok_buy && h4_ok_buy && strict_breakout_buy_ok) {
          if(m5_rsi >= g_sc.breakout_rsi_buy_ceil) {
@@ -4847,6 +4854,8 @@ void CheckNativeScalperSetups() {
          }
       }
       // SELL breakout — uses stricter ADX floor (breakout_adx_min_sell_eff)
+      // rsi_sell_max=60: Cardwell Bear Resistance ceiling (RSI 20–60 in downtrend; 60 = bounce re-short ceiling)
+      // Second SELL entry fires when RSI bounces from crash low back toward 50–60 and BB re-breaks lower.
       else if(prev_close < (m5_bb_l - breakout_buffer) && m5_rsi < g_sc.breakout_rsi_sell_max
               && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok) {
          if(m5_adx < breakout_adx_min_sell_eff) {
@@ -4859,7 +4868,9 @@ void CheckNativeScalperSetups() {
          } else {
          // H1+H4 crash bypass: confirmed multi-TF bear trend overrides RSI floor and ADX spike gate.
          // ADX minimum, RSI declining, and news tighten all still apply.
-         // Hard lower bound: even in crash mode, RSI must be above crash_sell_rsi_min (default 22)
+         // Cardwell: RSI 20–60 is the downtrend range; RSI 20 is the extreme floor (crash_sell_rsi_min).
+         // Below RSI 20 = exhaustion territory even in genuine crashes — mean-reversion risk too high.
+         // Hard lower bound: even in crash mode, RSI must be above crash_sell_rsi_min (default 20)
          // — prevents late exhaustion entries at RSI 14-20 where mean-reversion risk is highest.
          bool crash_sell_bypass = g_sc.breakout_h1h4_crash_sell && h1_bear && h4_bear
                                   && m5_rsi > g_sc.breakout_h1h4_crash_sell_rsi_min;

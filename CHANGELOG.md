@@ -1,5 +1,78 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.9.4] — 2026-05-09 (FORGE 2.7.6 — Cardwell RSI zones + H1+H4 crash SELL bypass)
+
+### Strategy basis — Andrew Cardwell RSI Zone Theory
+
+Andrew Cardwell (CMT curriculum, the most cited developer of Wilder's original RSI work) defines
+two distinct RSI trading ranges depending on market regime:
+
+| Regime | RSI Range | Entry zone | Entry signal |
+|--------|-----------|------------|--------------|
+| **Uptrend** | 40–80 | Bull Support: RSI **40** | Long re-entry on RSI dip to 40 |
+| **Downtrend** | 20–60 | Bear Resistance: RSI **60** | Short re-entry on RSI bounce to 60 |
+
+The standard 70/30 Wilder thresholds apply only in ranging markets. In trending markets, the range
+shifts and the midline roles invert. Below RSI 20 in a downtrend is exhaustion territory — not a
+sell signal. RSI 60 rejection in a downtrend is the ideal second short entry (sell-the-bounce).
+
+Sources:
+- [TradingView — Cardwell RSI Zones indicator (v6JlR98g)](https://www.tradingview.com/script/v6JlR98g/)
+- [Alchemy Markets — RSI Education](https://alchemymarkets.com/education/indicators/relative-strength-index/)
+- [Andrew Cardwell — Using the RSI (Scribd)](https://www.scribd.com/document/489489408/Andrew-Cardwell-Using-the-RSI)
+- [StockCharts ChartSchool — RSI](https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/relative-strength-index-rsi)
+
+### Added
+
+- **`rsi_sell_max`: 50 → 60 (Cardwell Bear Resistance ceiling)** — SELL breakout now fires when RSI is up to 60, not just below 50. In a confirmed downtrend (H1+H4 bear), RSI 50–60 is the Bear Resistance zone — the ideal re-short after price bounces from the initial crash low. The previous `rsi_sell_max=50` was blocking every Cardwell Bear Resistance entry. Config: `bb_breakout.rsi_sell_max`, env: (config-only). EA default updated to 60.
+
+- **`rsi_buy_min`: 50 → 40 (Cardwell Bull Support floor)** — BUY breakout now fires when RSI is as low as 40, not just above 50. In a confirmed uptrend (H1+H4 bull), RSI 40–50 is the Bull Support zone — the ideal re-buy after a dip within a rally. The previous `rsi_buy_min=50` was blocking every Cardwell Bull Support entry. Config: `bb_breakout.rsi_buy_min`, env: (config-only). EA default updated to 40.
+
+- **H1+H4 crash SELL bypass (`breakout_h1h4_crash_sell: true`)** — When H1 EMA20 < EMA50 AND H4 EMA20 < EMA50 (confirmed multi-TF bear), the `rsi_sell_floor` and `adx_spike_sell` gates are bypassed. Allows crash-day SELL entries at RSI 20–30 (early crash momentum) while standard gates remain active for non-crash conditions. `h1_bear && h4_bear` is the crash detector — no new indicator. Config: `bb_breakout.h1h4_crash_sell`, env: `FORGE_BREAKOUT_H1H4_CRASH_SELL`.
+
+- **Cardwell RSI 20 crash floor (`breakout_h1h4_crash_sell_rsi_min: 20`)** — Hard RSI lower bound applied even when crash bypass is active. Cardwell defines RSI 20 as the extreme-oversold floor in a downtrend (below this = exhaustion, not momentum). Prevents G5002-class losses (RSI 16, ADX 47, crash bypass active → SL hit). RSI 20–30 entries allowed; RSI < 20 blocked. Config: `bb_breakout.h1h4_crash_sell_rsi_min`, env: `FORGE_BREAKOUT_H1H4_CRASH_SELL_RSI_MIN`.
+
+- **`max_open_same_direction`: 1 → 2** — Allows two concurrent groups in the same direction. Enables the Cardwell two-entry pattern: initial crash SELL (RSI 20–30) + Bear Resistance re-short (RSI 50–60 on bounce), both open simultaneously. Config: `safety.max_open_same_direction`.
+
+- **`rsi_sell_adx_floor` per-bar throttle** (`g_scalper_last_rsisellfloor_log_bar`) — fixes tick-spam: previously fired on every tick within the same M5 bar (30+ rows at 15:55 in Run 21). Now logs once per bar, consistent with `adx_min_sell`, `adx_spike_sell`, `rsi_rising_sell`, `h1_di_buy`.
+
+- **News filter linear RSI slide** — TIGHTEN zone now slides proportionally from baseline (70/33) to max-tighten (65/38) as proximity increases, instead of jumping immediately to max at the tighten threshold. Formula: `slide = (p − tighten_pct) / (block_pct − tighten_pct)`.
+
+- **News filter config-robust baselines** — `ScalperNewsCheck()` resets now use `g_sc.breakout_rsi_buy_ceil` / `g_sc.breakout_rsi_sell_floor` instead of hardcoded 70.0/33.0. Prevents spurious news-tighten skips if RSI floors are changed in config.
+
+- **BB_BREAKOUT_RETEST news tighten coverage** — Confirmed retest entries now check `entry_quality_news_rsi_tighten` before committing `direction`. Previously bypassed because retest set `direction` before the BB_BREAKOUT block (which contains the tighten check). Fix: added BUY/SELL guard in the retest confirmation path with `g_nf_eff_rsi_*` already primed by the pre-BB call.
+
+- **`tighten_pct < block_pct` cross-validation** — After JSON parsing of both fields, enforces `tighten_pct < block_pct`. If inverted, silently resets `tighten_pct = block_pct * 0.5`. Prevents TIGHTEN zone collapse or unreachable BLOCK on bad config.
+
+### Gate execution order — SELL breakout path (full, as of 2.7.6)
+
+1. BB condition: `prev_close < BB_lower − buffer` + M5/M15/H1/H4 bear alignment
+2. **Cardwell Bear Resistance ceiling**: `m5_rsi < rsi_sell_max (60)` ← **2.7.6**
+3. ADX min SELL: `m5_adx ≥ 25`
+4. H1+H4 crash bypass check: `h1_bear && h4_bear && rsi > 20` ← **2.7.6**
+5. Two-tier RSI floor (base 30 + weak-ADX 36) — skipped on crash bypass
+6. ADX spike-from-flat (6-bar lookback) — skipped on crash bypass
+7. RSI-declining gate (rising RSI bar-over-bar) ← 2.7.4
+8. News RSI tighten — last line of defence ← 2.7.6
+9. Direction = SELL → `CheckEntryQuality()` → Gate −1 (news BLOCK)
+
+### Gate execution order — BUY breakout path (full, as of 2.7.6)
+
+1. BB condition: `prev_close > BB_upper + buffer` + M5/M15/H1/H4 bull alignment
+2. **Cardwell Bull Support floor**: `m5_rsi > rsi_buy_min (40)` ← **2.7.6**
+3. RSI buy ceiling: `m5_rsi < rsi_buy_ceil (70)` ← 2.6.7
+4. H1 DI directional gate (Wilder DI+/DI−) ← 2.7.5
+5. News RSI tighten ← 2.7.6
+6. Direction = BUY → `CheckEntryQuality()` → Gate −1 (news BLOCK)
+
+### Reference documentation
+
+- `docs/FORGE_NEWS_FILTER_GATE_FLOW.md` — complete signal gate flow ASCII diagram
+- `docs/FORGE_NEWS_FILTER_REVIEW.md` — Codex gate review + expert triage
+- `docs/FORGE_APR29_SELL_REJECTION_ANALYSIS.md` — crash SELL rejection root-cause + options
+
+---
+
 ## [System 1.9.3] — 2026-05-08 (FORGE 2.7.6 — Native MT5 Calendar news filter)
 
 ### Added
