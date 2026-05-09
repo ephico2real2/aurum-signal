@@ -103,6 +103,7 @@ def build_autoscalper_condition_report(
     sentinel_path: str,
     market_path: str,
     db_path: str,
+    lens_path: str = "",
     responses_limit: int = 3,
     h1_flat_threshold: float = 1.0,
     mt5_stale_sec: int | None = None,
@@ -120,12 +121,17 @@ def build_autoscalper_condition_report(
     status = _read_json(status_path)
     sentinel = _read_json(sentinel_path)
     mt5 = _read_json(market_path)
+    lens_raw = _read_json(lens_path) if lens_path else {}
+
+    # Strategy Tester uses simulated timestamps → mt5_fresh always false in tester; suppress false positive
+    strategy_tester = bool(status.get("strategy_tester") or (mt5 or {}).get("strategy_tester"))
 
     now = time.time()
     ts_unix = _safe_float(mt5.get("timestamp_unix")) if mt5 else None
     mt5_age_sec = (now - ts_unix) if ts_unix is not None else None
     mt5_available = bool(mt5)
-    mt5_fresh = bool(mt5_available and mt5_age_sec is not None and mt5_age_sec < mt5_stale_sec)
+    # In tester mode, treat as "fresh" regardless of timestamp (tester time ≠ wall clock)
+    mt5_fresh = strategy_tester or bool(mt5_available and mt5_age_sec is not None and mt5_age_sec < mt5_stale_sec)
 
     sentinel_block = bool(status.get("sentinel_active")) or bool(sentinel.get("block_trading"))
 
@@ -243,6 +249,21 @@ def build_autoscalper_condition_report(
         ]
     )
 
+    # TradingView LENS indicators — what AURUM sees when it makes the AUTO_SCALPER decision
+    tv_rsi        = _safe_float(lens_raw.get("rsi"))
+    tv_macd_hist  = _safe_float(lens_raw.get("macd_hist"))  # None when not on chart
+    tv_bb_rating  = _safe_float(lens_raw.get("bb_rating"))
+    tv_adx        = _safe_float(lens_raw.get("adx"))
+    tv_di_plus    = _safe_float(lens_raw.get("di_plus"))
+    tv_di_minus   = _safe_float(lens_raw.get("di_minus"))
+    tv_age_sec    = _safe_float(lens_raw.get("age_seconds"))
+    # Directional alignment: MACD and RSI combined bias
+    tv_macd_bear  = (tv_macd_hist is not None and tv_macd_hist < 0)
+    tv_macd_bull  = (tv_macd_hist is not None and tv_macd_hist > 0)
+    tv_rsi_bear   = (tv_rsi is not None and tv_rsi > 50)   # overbought → SELL setup
+    tv_rsi_bull   = (tv_rsi is not None and tv_rsi < 50)   # oversold → BUY setup
+    tv_di_bear    = (tv_di_plus is not None and tv_di_minus is not None and tv_di_minus > tv_di_plus)
+
     failed_checks = []
     if sentinel_block:
         failed_checks.append("sentinel_block")
@@ -269,6 +290,7 @@ def build_autoscalper_condition_report(
 
     return {
         "timestamp": _now_iso(),
+        "strategy_tester": strategy_tester,
         "config": {
             "mt5_stale_sec": mt5_stale_sec,
             "loss_cooldown_sec": loss_cooldown_sec,
@@ -294,6 +316,7 @@ def build_autoscalper_condition_report(
             "open_groups_below_max": open_groups_below_max,
             "mt5_available": mt5_available,
             "mt5_fresh": mt5_fresh,
+            "mt5_tester_mode": strategy_tester,
             "mt5_age_sec": None if mt5_age_sec is None else round(mt5_age_sec, 1),
             "h1_bias": h1_bias,
             "h1_bias_ok": h1_bias_ok,
@@ -303,6 +326,21 @@ def build_autoscalper_condition_report(
             "lower_tf_all_neutral": lower_tf_all_neutral,
             "lower_tf_not_all_neutral": lower_tf_not_all_neutral,
             "prefilter_pass": prefilter_pass,
+        },
+        # TradingView LENS — what AURUM reads when making the AUTO_SCALPER decision
+        "lens_indicators": {
+            "rsi":        tv_rsi,
+            "macd_hist":  tv_macd_hist,
+            "bb_rating":  tv_bb_rating,
+            "adx":        tv_adx,
+            "di_plus":    tv_di_plus,
+            "di_minus":   tv_di_minus,
+            "age_sec":    tv_age_sec,
+            "macd_bear":  tv_macd_bear,   # histogram < 0
+            "macd_bull":  tv_macd_bull,   # histogram > 0
+            "rsi_bear":   tv_rsi_bear,    # RSI > 50 → overbought, SELL setup
+            "rsi_bull":   tv_rsi_bull,    # RSI < 50 → oversold, BUY setup
+            "di_bear":    tv_di_bear,     # DI- > DI+ → bearish directional
         },
         "setup_snapshot": {
             "mid": mid,

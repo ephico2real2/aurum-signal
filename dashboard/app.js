@@ -693,12 +693,14 @@ function ATHENA(){
   const asrPref=asr.bridge_prefilters||{};
   const asrSetup=asr.setup_snapshot||{};
   const asrOverall=asr.overall||{};
+  const asrLens=asr.lens_indicators||{};
   const asrLatest=(Array.isArray(asr.latest_autoscalper_responses)&&asr.latest_autoscalper_responses.length>0)
     ?asr.latest_autoscalper_responses[0]:null;
   const asrFailed=Array.isArray(asrOverall.failed_checks)?asrOverall.failed_checks:[];
   const asrReady=asrOverall.g47_g48_sell_pattern_match===true;
   const asrReadyColor=asrReady?T.green:T.red;
   const asrPrefilterPass=asrPref.prefilter_pass===true;
+  const asrTesterMode=asr.strategy_tester===true||asrPref.mt5_tester_mode===true;
 
   return(<div style={{background:T.bg,height:'100vh',color:T.textB,
     fontFamily:'Georgia,serif',display:'flex',flexDirection:'column',overflow:'hidden'}}>
@@ -1462,6 +1464,12 @@ function ATHENA(){
                     {fmtDateTime(asr.timestamp)}
                   </span>
                 </div>
+                {asrTesterMode&&(
+                  <div style={{fontSize:7,color:T.cyan,fontFamily:T.mono,marginBottom:4,padding:'2px 5px',
+                    background:'rgba(6,182,212,0.08)',border:`1px solid ${T.cyan}`,borderRadius:3}}>
+                    STRATEGY TESTER — mt5 timestamps are simulated
+                  </div>
+                )}
                 <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
                   prefilters <span style={{color:asrPrefilterPass?T.green:T.red}}>{asrPrefilterPass?'PASS':'FAIL'}</span>
                   {' · '}h1 {asrPref.h1_bias||'UNKNOWN'}
@@ -1470,8 +1478,58 @@ function ATHENA(){
                 <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:3}}>
                   quality {asrSetup.indicator_data_quality||'—'}
                   {' · '}open {asrPref.open_groups!=null?asrPref.open_groups:'—'}/{asrPref.max_groups!=null?asrPref.max_groups:'—'}
-                  {' · '}mt5 {asrPref.mt5_fresh===true?'fresh':asrPref.mt5_fresh===false?'stale':'—'}
+                  {' · '}mt5 {asrTesterMode?'tester':asrPref.mt5_fresh===true?'fresh':asrPref.mt5_fresh===false?'stale':'—'}
                 </div>
+                {/* TradingView LENS — what AURUM reads to make the AUTO_SCALPER decision */}
+                {(asrLens.rsi!=null||asrLens.macd_hist!=null)&&(
+                  <div style={{marginTop:5,padding:'4px 6px',background:T.row,
+                    border:`1px solid ${T.border}`,borderRadius:3}}>
+                    <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:0.8}}>
+                      TV LENS · AURUM context
+                    </div>
+                    <div style={{fontSize:8,fontFamily:T.mono,lineHeight:1.5}}>
+                      {asrLens.rsi!=null&&(
+                        <span style={{marginRight:8}}>
+                          RSI <span style={{color:asrLens.rsi>60?T.red:asrLens.rsi<40?T.green:T.textBB,fontWeight:600}}>
+                            {asrLens.rsi.toFixed(1)}
+                          </span>
+                        </span>
+                      )}
+                      {asrLens.macd_hist!=null&&(
+                        <span style={{marginRight:8}}>
+                          MACD <span style={{color:asrLens.macd_hist<0?T.green:T.red,fontWeight:600}}>
+                            {asrLens.macd_hist>0?'+':''}{asrLens.macd_hist.toFixed(3)}
+                          </span>
+                        </span>
+                      )}
+                      {asrLens.adx!=null&&(
+                        <span style={{marginRight:8}}>
+                          ADX <span style={{color:T.amber,fontWeight:600}}>{asrLens.adx.toFixed(1)}</span>
+                        </span>
+                      )}
+                      {asrLens.bb_rating!=null&&(
+                        <span>
+                          BB <span style={{color:asrLens.bb_rating>0?T.green:asrLens.bb_rating<0?T.red:T.textD,fontWeight:600}}>
+                            {asrLens.bb_rating>0?'+':''}{asrLens.bb_rating}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                    {(asrLens.di_plus!=null&&asrLens.di_minus!=null)&&(
+                      <div style={{fontSize:7,color:T.textB,fontFamily:T.mono,marginTop:2}}>
+                        DI+ {asrLens.di_plus.toFixed(1)} · DI- {asrLens.di_minus.toFixed(1)}
+                        {' · '}<span style={{color:asrLens.di_bear?T.red:T.green}}>
+                          {asrLens.di_bear?'BEAR dir':'BULL dir'}
+                        </span>
+                      </div>
+                    )}
+                    {asrLens.age_sec!=null&&(
+                      <div style={{fontSize:6,color:T.textD,fontFamily:T.mono,marginTop:2}}>
+                        lens age {asrLens.age_sec.toFixed(0)}s
+                      </div>
+                    )}
+                  </div>
+                )}
                 {asrFailed.length>0&&(
                   <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
                     failed: {asrFailed.slice(0,4).join(', ')}

@@ -657,6 +657,7 @@ def api_autoscalper_conditions():
             sentinel_path=SENTINEL_FILE,
             market_path=MARKET_FILE,
             db_path=scribe.db_path,
+            lens_path=LENS_FILE,
             responses_limit=responses_limit,
             h1_flat_threshold=h1_flat_threshold,
             upper_bb_threshold_pct=upper_bb_threshold_pct,
