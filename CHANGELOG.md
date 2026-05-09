@@ -1,5 +1,154 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.9.5] — 2026-05-09 (FORGE 2.7.7 — Session cutoff · OsMA 4-quadrant gate · ADX tiers · SELL LIMIT cascade)
+
+### Strategy basis — OsMA (Oscillator of a Moving Average) — MACD Histogram
+
+OsMA is the difference between the MACD line and its signal line:
+
+```
+OsMA = MACD_line − Signal_line
+     = (EMA_fast − EMA_slow) − SMA(MACD_line, signal_period)
+```
+
+In MT5, `iOsMA()` returns this as buffer 0 directly. The `iMACD()` indicator has only buffers
+0 (MACD line) and 1 (signal line) — there is no buffer 2. The histogram you see drawn on the
+chart in MT5 is actually the MACD line itself (buffer 0), not OsMA. OsMA requires either manual
+subtraction or the dedicated `iOsMA()` handle.
+
+#### MACD Histogram MC 4-quadrant framework (AK20 / traderak20@gmail.com, MQL5 #65050)
+
+The MACD Histogram MC indicator classifies the histogram into four momentum states, each with a
+distinct color. FORGE 2.7.7 adopts this framework for gate logic and DB diagnostics:
+
+| Quadrant | Histogram | Direction | Color (MC) | SELL gate | BUY gate |
+|----------|-----------|-----------|------------|-----------|----------|
+| **Q0** | positive + rising | Strong bull momentum | LimeGreen | **BLOCK** | **PASS** |
+| **Q1** | positive + falling | Bull momentum fading | Dark red | **BLOCK** | BLOCK |
+| **Q2** | negative + falling | Strong bear momentum | Red | **PASS** ✓ | BLOCK |
+| **Q3** | negative + rising | Bear momentum fading | Dark green | **BLOCK** | BLOCK |
+
+**SELL entries are only allowed in Q2** — the histogram must be both negative (bearish bias) and
+falling (momentum is accelerating downward). This is the one quadrant where a short scalp has
+full MACD confirmation. Any weakening (Q3) or crossover (Q0/Q1) is a block.
+
+**BUY entries are only allowed in Q0** — histogram positive and rising (bullish momentum
+accelerating). Gate is `breakout_require_macd_buy`, **off by default** — experimental, enable
+only when a longer backtest validates it doesn't over-filter valid BUY breakouts.
+
+#### When to use OsMA in scalping
+
+OsMA is most useful during **active, fast momentum** — exactly the condition FORGE targets:
+
+- **Fast bull move (BUY gate):** OsMA positive and rising confirms EMA fast > EMA slow AND
+  MACD is above its own signal line — double layer of bullish confirmation. Absent in choppy
+  markets or fading rallies.
+
+- **Fast bear move (SELL gate):** OsMA negative and falling confirms EMA fast < EMA slow
+  (downtrend) AND momentum is accelerating lower (histogram expanding below zero). Stops
+  the EA from selling into a bear exhaustion (Q3) where the move has already peaked.
+
+**It is NOT a trend-entry indicator.** Do not use it to detect the start of a new trend — the
+MACD lags by construction. Use it exclusively as a momentum confirmation for an existing
+breakout signal already identified by BB + RSI + ADX.
+
+**Parameters used: OsMA(3, 10, 16)**
+- Fast EMA = 3: extremely responsive, designed for M5 scalp timing (not 12/26)
+- Slow EMA = 10: short-horizon trend reference
+- Signal SMA = 16: slightly longer smoothing to avoid tick noise on the histogram
+- Source: arXiv:2206.12282 — RSI + MACD(3,10,16) dual gate = 84-86% win rate
+
+#### MQL5 code — iOsMA single buffer read (the correct approach)
+
+```mql5
+// Single buffer, no subtraction needed — buffer 0 = MACD_line - Signal_line
+double _hist[2];
+if(CopyBuffer(g_h_osma_scalp, 0, 0, 2, _hist) == 2) {
+   double _h0 = _hist[0];  // current bar OsMA value
+   double _h1 = _hist[1];  // previous bar OsMA value
+
+   // 4-quadrant classification:
+   if(_h0 >= 0.0 && _h0 > _h1) // Q0: positive + rising → strong bull
+   if(_h0 >= 0.0 && _h0 < _h1) // Q1: positive + falling → bull fading
+   // _h0 < 0.0 && _h0 < _h1   // Q2: negative + falling → strong bear (SELL PASS)
+   if(_h0 < 0.0 && _h0 > _h1)  // Q3: negative + rising → bear fading
+}
+
+// Initialise handle (once, in indicator refresh):
+g_h_osma_scalp = iOsMA(_Symbol, PERIOD_M5, 3, 10, 16, PRICE_CLOSE);
+
+// Wrong (iMACD buffer 2 does not exist — always returns -1):
+// CopyBuffer(g_h_macd_scalp, 2, 0, 2, _hist);  ← DO NOT USE
+```
+
+#### Research sources
+
+- arXiv:2206.12282 — RSI + MACD dual gate: 84-86% WR backtest
+- MACD Histogram MC indicator by AK20 (MQL5 #65050, traderak20@gmail.com) — 4-quadrant logic
+- MT5 official docs — iMACD has 2 buffers only (0=main, 1=signal); iOsMA buffer 0 = OsMA
+- TradingView MACD MetaTrader Style (vrzDxjSE) — MT5 uses SMA signal, not EMA (OsMA result differs from TradingView standard MACD)
+
+---
+
+### Added
+
+- **Session SELL cutoff (`session_ny_sell_cutoff_utc: 17`)** — blocks new SELL entries at or after 17:00 UTC. Post-17:00 UTC XAUUSD is lower liquidity, wider spreads, and prone to Asia-transition reversals. BUY entries continue. Gate reason: `entry_quality_session_sell_cutoff`. Config: `safety.session_ny_sell_cutoff_utc`, `session_london_sell_cutoff_utc`. Env: `SESSION_NY_SELL_CUTOFF_UTC`.
+  - Run 25 validation: G5011 (17:10 UTC, -$238) + G5013 (18:25, -$83) both blocked. Net improvement: **+$321** vs Run 23.
+
+- **OsMA(3,10,16) SELL gate (`breakout_require_macd_sell: 1`)** — replaces the broken iMACD buffer-2 approach. Uses `iOsMA()` handle; buffer 0 = MACD−Signal directly. Applies 4-quadrant classification: SELL only passes in Q2 (histogram negative AND falling). Gate reasons in DB: `entry_quality_macd_q0_bull_rising`, `entry_quality_macd_q1_bull_fading`, `entry_quality_macd_q3_bear_fading`. The histogram value is logged in `SIGNALS.macd_histogram` for every gate-fire event for post-run diagnostics.
+
+- **Bug fix — iMACD buffer 2 (2.7.7c)** — Previous implementation read `CopyBuffer(g_h_macd_scalp, 2, ...)` which always returns -1 (buffer 2 does not exist in iMACD). The gate was silently fully disabled. Fixed by replacing iMACD with `iOsMA` and reading buffer 0. Also fixed the TAKEN signal log which had the same buffer-2 bug.
+
+- **OsMA BUY gate (`breakout_require_macd_buy: 0`, off by default)** — symmetric gate for BUY entries, passes only in Q0 (histogram positive AND rising). Enable with `FORGE_BREAKOUT_REQUIRE_MACD_BUY=1` to test on a longer backtest once SELL gate is validated. Journal reasons: `entry_quality_macd_q1_bull_fading`, `entry_quality_macd_q2_bear_str`, `entry_quality_macd_q3_bear_fading`.
+
+- **ADX-tiered lot factors + BLOCK** (`breakout_adx_lot_*`) — Protects SELL entries at extended ADX levels. Uses M15 ADX (less lag than M5 per OpoFinance/Trade2Win). Three outcomes:
+  | M15 ADX | Factor | Lot at 0.08 base |
+  |---------|--------|-----------------|
+  | < 35 | 1.0× (full) | 0.08 |
+  | 35–44 | 0.25× | 0.02 |
+  | 45–54 | 0.125× | **0.01 (broker min)** |
+  | ≥ 55 | **BLOCK** | — |
+  Gate reason: `entry_quality_adx_extreme_sell`. Config: `breakout_adx_lot_mid_threshold`, `breakout_adx_lot_high_threshold`, `breakout_adx_lot_factor_mid`, `breakout_adx_lot_factor_high`, `breakout_adx_sell_block_threshold`.
+
+- **Cardwell SELL LIMIT cascade (`breakout_sell_limit_enabled: 1`)** — After a crash SELL market order, places a pending SELL LIMIT at `bid + ATR × 0.4` to catch the Cardwell Bear Resistance bounce-and-fail re-short. Lot: `0.125× base` (1/8th, danger-zone sizing). Expiry: 6 M5 bars via `ORDER_TIME_SPECIFIED`. Cancelled automatically in `OnTradeTransaction` when the parent market SELL hits SL. State tracked in `g_sell_limit_stack[2]` (up to 2 slots). Config: `breakout_sell_limit_enabled`, `breakout_sell_limit_atr_mult`, `breakout_sell_limit_lot_factor`, `breakout_sell_limit_expiry_bars`. Env: `FORGE_BREAKOUT_SELL_LIMIT_*`.
+
+- **Three new SIGNALS columns** (`macd_histogram`, `m15_adx`, `lot_factor`) — `JournalRecordSignal()` extended with 3 default parameters (backwards-compatible). TAKEN records populate all three. MACD gate SKIP records populate `macd_histogram` with the actual OsMA value at gate-fire time. SCRIBE `aurum_intelligence.db` migrated with `ALTER TABLE ADD COLUMN`.
+
+### Gate execution order — SELL breakout path (full, as of 2.7.7)
+
+1. BB condition: `prev_close < BB_lower − buffer` + M5/M15/H1/H4 bear alignment
+2. **Cardwell Bear Resistance ceiling**: `m5_rsi < rsi_sell_max (60)` ← 2.7.6
+3. **Session SELL cutoff**: `hour < session_ny_sell_cutoff_utc (17)` ← **2.7.7**
+4. **ADX extreme block**: `m15_adx < 55` ← **2.7.7**
+5. ADX min SELL: `m5_adx ≥ 25` ← 2.7.3
+6. H1+H4 crash bypass check: `h1_bear && h4_bear && rsi > 20` ← 2.7.6
+7. Two-tier RSI floor (base 30 + weak-ADX 36) — skipped on crash bypass
+8. ADX spike-from-flat (6-bar lookback) — skipped on crash bypass
+9. RSI-declining gate (rising RSI, auto-off ADX ≥ 40) ← 2.7.4/2.7.5
+10. **OsMA Q2 gate**: histogram negative AND falling ← **2.7.7**
+11. News RSI tighten ← 2.7.6
+12. Direction = SELL → `CheckEntryQuality()` → Gate −1 (news BLOCK)
+
+### Gate execution order — BUY breakout path (full, as of 2.7.7)
+
+1. BB condition: `prev_close > BB_upper + buffer` + M5/M15/H1/H4 bull alignment
+2. **Cardwell Bull Support floor**: `m5_rsi > rsi_buy_min (40)` ← 2.7.6
+3. RSI buy ceiling: `m5_rsi < rsi_buy_ceil (70)` ← 2.6.7
+4. H1 DI directional gate (Wilder DI+/DI−) ← 2.7.5
+5. **OsMA Q0 gate (optional, off by default)**: histogram positive AND rising ← **2.7.7**
+6. News RSI tighten ← 2.7.6
+7. Direction = BUY → `CheckEntryQuality()` → Gate −1 (news BLOCK)
+
+### How to use
+
+- **OsMA SELL gate**: `FORGE_BREAKOUT_REQUIRE_MACD_SELL=1` (on). Set `0` to disable. DB column `macd_histogram` shows OsMA value at gate-fire; quadrant is visible in `gate_reason`. In a fast bear move, Q2 fires when momentum is accelerating — check `gate_reason LIKE 'macd_q%'` in SIGNALS to audit.
+- **OsMA BUY gate**: `FORGE_BREAKOUT_REQUIRE_MACD_BUY=0` (off). Enable with `=1` to require Q0 (strong bull) for BUY entries. Start with a 2-week tester run before enabling in live — BUY breakouts are already filtered by RSI+H1+DI and adding OsMA may over-filter in ranging conditions.
+- **OsMA params**: `FORGE_BREAKOUT_MACD_FAST=3`, `FORGE_BREAKOUT_MACD_SLOW=10`, `FORGE_BREAKOUT_MACD_SIGNAL=16`. These are now live in the sync pipeline (`make scalper-env-sync` picks them up).
+- **ADX tiers**: set `FORGE_BREAKOUT_ADX_SELL_BLOCK_THRESHOLD=55` (default). Lower to 50 to add protection at high ADX without needing the mid/high tiers. Mid/high thresholds can be tuned via `FORGE_BREAKOUT_ADX_LOT_MID_THRESHOLD` / `FORGE_BREAKOUT_ADX_LOT_HIGH_THRESHOLD`.
+- **SELL LIMIT**: `FORGE_BREAKOUT_SELL_LIMIT_ENABLED=1` (on). Disable with `=0` if the bounce pattern isn't active in the current regime. Monitor `SIGNALS.gate_reason = 'SELL_LIMIT_PLACED'` in the DB.
+
+---
+
 ## [System 1.9.4] — 2026-05-09 (FORGE 2.7.6 — Cardwell RSI zones + H1+H4 crash SELL bypass)
 
 ### Strategy basis — Andrew Cardwell RSI Zone Theory

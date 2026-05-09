@@ -12,7 +12,7 @@ Eight web searches across academic papers, practitioner blogs, and MQL5 communit
 
 | Feature | Research finding | Source |
 |---------|----------------|--------|
-| MACD(3,10,16) histogram gate | Detects signals 5-10 candles earlier than 12/26/9; BB+MACD backtest = 78% WR | OpoFinance, QuantifiedStrategies |
+| OsMA(3,10,16) histogram gate | Detects signals 5-10 candles earlier than 12/26/9; BB+MACD backtest = 78% WR; 4-quadrant MC approach | OpoFinance, QuantifiedStrategies, MQL5 #65050 |
 | RSI+MACD dual gate | arXiv paper: 84-86% win rate; SSRN paper: "dual confirmation reduced false signals significantly" | arXiv:2206.12282, SSRN:3697734 |
 | Session sell cutoff (17:00 UTC) | ~70% of XAUUSD daily range occurs in London + NY overlap. Post-17:00 = lower liquidity, wider spreads, choppier | TMGM, ACY, NordFX |
 | SELL LIMIT cascade over market orders | Kinlay (2018): limit orders have positive expected slippage; stacked limits absorb partial fills | jonathankinlay.com |
@@ -120,51 +120,141 @@ if(sell_cutoff > 0 && now_dt.hour >= sell_cutoff && NativeScalperInNYSession())
 
 ---
 
-### Feature 1.5 — MACD(3,10,16) histogram gate (LOW complexity, RESEARCH-VALIDATED)
+### Feature 1.5 — OsMA(3,10,16) histogram gate — MACD Histogram MC 4-quadrant approach
 
 **Research basis:**
 - BB + MACD backtest: **78% win rate**, avg 1.4% per trade (QuantifiedStrategies)
 - RSI + MACD dual gate: **84-86% win rate** in arXiv:2206.12282 — "dual confirmation reduced false signals significantly"
-- MACD(3,10,16) independently confirmed: detects signals 5-10 candles earlier than standard 12/26/9
+- MACD(3,10,16) detects signals 5-10 candles earlier than standard 12/26/9
 - Rule: MACD histogram negative + RSI in Cardwell 20-60 zone = confirmed SELL (Investing.com)
+- MACD Histogram MC indicator by AK20 (MQL5 #65050) — 4-quadrant color logic applied to gate design
 
-**Design:**
-New indicator handle: `iMACD(_Symbol, PERIOD_M5, 3, 10, 16, PRICE_CLOSE)`
-- Buffer 0: MACD line
-- Buffer 1: Signal line
-- Buffer 2: Histogram
+---
 
-**Gate — two checks:**
+#### What is OsMA?
 
-**Check A: Histogram direction for SELL** — block SELL when histogram is contracting
-(histogram[0] > histogram[1] = less negative = momentum shifting bullish):
+OsMA stands for **Oscillator of a Moving Average** — it is the difference between the MACD line
+and its signal line:
+
+```
+OsMA = MACD_line − Signal_line
+     = (EMA_fast − EMA_slow) − SMA(MACD_line, signal_period)
+```
+
+In MT5, `iOsMA()` returns this as **buffer 0 directly** — no manual subtraction needed.
+
+**Critical MT5 distinction:** `iMACD()` has only 2 buffers:
+- Buffer 0 = MACD main line (EMA_fast − EMA_slow)
+- Buffer 1 = Signal line (SMA of MACD line)
+- **Buffer 2 does not exist** — reading it always returns -1 (silent failure)
+
+The histogram bars you see drawn in the MT5 chart ARE buffer 0 (the MACD line itself), not OsMA.
+The OsMA value (MACD − Signal) requires `iOsMA()` or manual subtraction. Attempting
+`CopyBuffer(imacd_handle, 2, ...)` is a common bug — it silently disables the gate.
+
+Also note: MT5 MACD uses **SMA** for the signal line (not EMA). This differs from the standard
+MACD on TradingView (which uses EMA signal). The OsMA result will differ between platforms.
+
+---
+
+#### When do you use OsMA?
+
+OsMA is useful during **active, fast momentum moves** — exactly what FORGE targets with BB breakout signals.
+
+**For SELL entries (gate active, `require_macd_sell=1`):**
+Use OsMA to confirm that a fast bearish move is real and accelerating downward, not fading.
+A SELL scalp has edge only when:
+- The MACD line is already below the signal line (OsMA < 0) = bearish momentum exists
+- AND the gap is growing (OsMA falling bar-over-bar) = momentum is accelerating, not exhausting
+
+**Do NOT** use it to enter a new trend from scratch. By the time OsMA turns negative, the BB
+breakout trigger and RSI floor are the entry signal — OsMA is just the final momentum check.
+
+**For BUY entries (gate optional, `require_macd_buy=0` by default):**
+Symmetric: OsMA positive and rising confirms fast bull momentum. Off by default because BUY
+breakouts are already well-filtered (RSI 40–70, H1 bull, DI+ > DI−). Enable only after
+validating that Q0-only BUY filtering doesn't block valid entries in ranging markets.
+
+---
+
+#### 4-quadrant framework (MACD Histogram MC by AK20)
+
+The MACD Histogram MC indicator (MQL5 #65050) displays the histogram in 4 colors based on the
+relationship between the current and previous bar value. FORGE adopts this as gate logic:
+
+| Quadrant | OsMA sign | Direction | Meaning | SELL gate | BUY gate |
+|----------|-----------|-----------|---------|-----------|----------|
+| **Q0** | positive + rising | Strong bull | MACD accelerating up | BLOCK | **PASS** |
+| **Q1** | positive + falling | Bull fading | MACD losing upward momentum | BLOCK | BLOCK |
+| **Q2** | negative + falling | **Strong bear** | MACD accelerating down | **PASS ✓** | BLOCK |
+| **Q3** | negative + rising | Bear fading | MACD losing downward momentum | BLOCK | BLOCK |
+
+**SELL only passes Q2.** Any weakening of the bearish momentum (Q3) blocks entry — you would be
+selling into a move that's running out of steam. Q0/Q1 block because the MACD bias is bullish.
+
+**BUY only passes Q0 (when enabled).** The market must show actively accelerating bullish momentum.
+Q3 (bear fading) is not enough — we need confirmation that bulls are taking control, not just that
+bears are losing momentum.
+
+Gate reasons stored in `SIGNALS.gate_reason`:
+- `entry_quality_macd_q0_bull_rising` — Q0 fires (blocks SELL)
+- `entry_quality_macd_q1_bull_fading` — Q1 fires (blocks SELL or BUY)
+- `entry_quality_macd_q2_bear_str` — Q2 fires (blocks BUY)
+- `entry_quality_macd_q3_bear_fading` — Q3 fires (blocks SELL or BUY)
+
+---
+
+#### Correct MQL5 implementation (iOsMA)
+
 ```mql5
-if(g_sc.breakout_require_macd_sell && direction_is_sell) {
-   double hist[2];
-   CopyBuffer(g_h_macd, 2, 0, 2, hist);
-   if(hist[0] > hist[1])  // contracting = momentum weakening SELL
-      → SKIP: entry_quality_macd_histogram
+// Initialise handle (once, in indicator refresh):
+g_h_osma_scalp = iOsMA(_Symbol, PERIOD_M5,
+   g_sc.breakout_macd_fast,    // 3
+   g_sc.breakout_macd_slow,    // 10
+   g_sc.breakout_macd_signal,  // 16
+   PRICE_CLOSE);
+
+// Gate check — single buffer, no subtraction:
+double _hist[2];
+if(CopyBuffer(g_h_osma_scalp, 0, 0, 2, _hist) == 2) {
+   double _h0 = _hist[0];  // current bar OsMA
+   double _h1 = _hist[1];  // previous bar OsMA
+
+   // Classify quadrant:
+   string _qreason = "";
+   if(_h0 >= 0.0)      _qreason = (_h0 > _h1) ? "entry_quality_macd_q0_bull_rising"
+                                                 : "entry_quality_macd_q1_bull_fading";
+   else if(_h0 > _h1)  _qreason = "entry_quality_macd_q3_bear_fading";
+   // _h0 < 0 AND _h0 <= _h1 → Q2 → PASS (no qreason set)
+
+   if(_qreason != "") {
+      JournalRecordSignal("SKIP", _qreason, ...);
+      macd_sell_ok = false;
+   }
 }
+
+// WRONG — iMACD buffer 2 does not exist. Always returns -1. Gate silently disabled.
+// double _hist[2];
+// CopyBuffer(g_h_macd_scalp, 2, 0, 2, _hist);  ← DO NOT USE
 ```
 
-**Check B: Histogram below zero for SELL** — block SELL when histogram is positive
-(market has bullish MACD momentum, not confirmed for SELL):
-```mql5
-if(hist[0] >= 0) → SKIP: entry_quality_macd_direction
-```
-
-G5011 impact: at 17:10, market was recovering → histogram likely contracting or positive → BLOCKED.
+G5011 impact (17:10 UTC): session cutoff fires first (hour=17 ≥ 17). If session cutoff were
+disabled, OsMA gate would catch it: at 17:10 the market was recovering → OsMA rising from
+negative territory → Q3 → BLOCKED.
 
 **Config keys:**
 ```
-FORGE_BREAKOUT_REQUIRE_MACD_SELL=1
-FORGE_BREAKOUT_REQUIRE_MACD_BUY=0        # optional BUY filter
-FORGE_BREAKOUT_MACD_FAST=3
-FORGE_BREAKOUT_MACD_SLOW=10
-FORGE_BREAKOUT_MACD_SIGNAL=16
+FORGE_BREAKOUT_REQUIRE_MACD_SELL=1       # gate active for SELL (Q2 pass only)
+FORGE_BREAKOUT_REQUIRE_MACD_BUY=0        # gate off for BUY (enable to test Q0 pass only)
+FORGE_BREAKOUT_MACD_FAST=3               # EMA fast period
+FORGE_BREAKOUT_MACD_SLOW=10              # EMA slow period
+FORGE_BREAKOUT_MACD_SIGNAL=16            # SMA signal period
 ```
 
-**Journal reasons:** `entry_quality_macd_histogram`, `entry_quality_macd_direction`
+**Journal reasons:** `entry_quality_macd_q0_bull_rising`, `entry_quality_macd_q1_bull_fading`,
+`entry_quality_macd_q2_bear_str`, `entry_quality_macd_q3_bear_fading`
+
+**Reference:** MQL5 #65050 MACD Histogram MC — https://www.mql5.com/en/code/65050
 
 ---
 
@@ -418,7 +508,7 @@ FORGE_BREAKOUT_SELL_LIMIT_EXPIRY_BARS=6
 
 ---
 
-*Plan status: Features 0–2 implemented (session cutoff, MACD gate, ADX tiers + block). Features 3–5 design approved, pending implementation sprint.*
+*Plan status: Features 0–2 implemented (session cutoff, OsMA 4-quadrant gate, ADX tiers + block, SELL LIMIT cascade). Feature 1.5 upgraded from iMACD buffer-2 (broken) to iOsMA 4-quadrant (2.7.7c). Feature 3 (M30 confirmation) design approved, pending implementation sprint.*
 
 ---
 
@@ -443,7 +533,7 @@ Three columns needed on `SIGNALS` / `forge_signals`:
 
 | Column | Type | Source in EA | Why it matters |
 |--------|------|-------------|----------------|
-| `macd_histogram` | REAL | `CopyBuffer(g_h_macd_scalp, 2, 0, 1)` | MACD gate fires/passes but actual histogram value not stored — can't post-analyze "was histogram -0.05 or -5.0?" |
+| `macd_histogram` | REAL | `CopyBuffer(g_h_osma_scalp, 0, 0, 1)` (iOsMA) | OsMA gate fires/passes but actual histogram value not stored — can't post-analyze "was histogram -0.05 or -5.0?" |
 | `m15_adx` | REAL | `CopyBuffer(g_mtf[1].h_adx, 0, 0, 1)` | ADX tier decisions use M15 ADX, only M5 `adx` stored — can't validate which tier was applied |
 | `lot_factor` | REAL | `combined_lot_factor` in lot computation | For TAKEN signals, can't tell if 0.02 vs 0.08 lot was used without reading trade `volume` |
 
