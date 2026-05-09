@@ -144,6 +144,7 @@ datetime g_scalper_last_adxsell_log_bar = 0;   // throttle entry_quality_adx_min
 datetime g_scalper_last_adxdur_log_bar  = 0;   // throttle entry_quality_adx_spike_sell journal (once per M5 bar)
 datetime g_scalper_last_rsidecl_log_bar = 0;   // throttle entry_quality_rsi_rising_sell journal (once per M5 bar)
 datetime g_scalper_last_h1dibuy_log_bar = 0;   // throttle entry_quality_h1_di_buy journal (once per M5 bar)
+datetime g_scalper_last_rsisellfloor_log_bar = 0; // throttle entry_quality_rsi_sell_floor/adx_floor (once per M5 bar)
 bool     g_scalper_prev_session_blocked = true; // session-start log: true = previous tick was session_off
 
 // Native news filter state
@@ -185,6 +186,7 @@ struct ScalperConfig {
    double breakout_rsi_sell_floor;            // block SELL breakout when RSI <= this (default 33.0)
    double breakout_adx_sell_floor_threshold;  // ADX below this uses rsi_sell_floor_weak_adx (default 35.0)
    double breakout_rsi_sell_floor_weak_adx;   // stricter floor when ADX < threshold (default 36.0)
+   bool   breakout_h1h4_crash_sell;           // bypass RSI floor + ADX spike on confirmed H1+H4 bear crash
    double breakout_sell_inside_band_lot_factor; // lot multiplier when SELL entry is above BB lower (default 0.5)
    double breakout_max_reentry_atr_ext;  // 0 = disabled; >0 = max ATR multiples price can be from first entry for re-entry
    double breakout_sl_atr_mult;
@@ -2055,6 +2057,7 @@ void InitScalperConfig() {
    g_sc.breakout_rsi_sell_floor              = 33.0;
    g_sc.breakout_adx_sell_floor_threshold    = 35.0;
    g_sc.breakout_rsi_sell_floor_weak_adx     = 36.0;
+   g_sc.breakout_h1h4_crash_sell             = true;
    g_sc.breakout_sell_inside_band_lot_factor = 0.25;
    g_sc.breakout_max_reentry_atr_ext = 0.0;
    g_sc.breakout_sl_atr_mult = 2.0;
@@ -2343,6 +2346,10 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "rsi_sell_floor_weak_adx")) {
          v = JsonGetDouble(breakout_json, "rsi_sell_floor_weak_adx");
          if(v >= 0 && v < 100) g_sc.breakout_rsi_sell_floor_weak_adx = v;
+      }
+      if(JsonHasKey(breakout_json, "h1h4_crash_sell")) {
+         v = JsonGetDouble(breakout_json, "h1h4_crash_sell");
+         g_sc.breakout_h1h4_crash_sell = (v >= 0.5);
       }
       if(JsonHasKey(breakout_json, "sell_inside_band_lot_factor")) {
          v = JsonGetDouble(breakout_json, "sell_inside_band_lot_factor");
@@ -4844,20 +4851,32 @@ void CheckNativeScalperSetups() {
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
          } else {
-         // Fix 5 (2.6.8): two-tier RSI floor — absolute + ADX-conditioned stricter floor
-         double sell_floor_eff = g_sc.breakout_rsi_sell_floor;
-         bool weak_adx_floor = (m5_adx < g_sc.breakout_adx_sell_floor_threshold);
-         if(weak_adx_floor)
-            sell_floor_eff = MathMax(sell_floor_eff, g_sc.breakout_rsi_sell_floor_weak_adx);
-         if(m5_rsi <= sell_floor_eff) {
-            string floor_gate = (weak_adx_floor && sell_floor_eff >= g_sc.breakout_rsi_sell_floor_weak_adx)
-                                ? "entry_quality_rsi_sell_adx_floor" : "entry_quality_rsi_sell_floor";
-            JournalRecordSignal("SKIP",floor_gate,"BB_BREAKOUT","SELL",
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
-            // ADX duration gate (2.7.4): block SELL if ADX spiked from flat base (spike-from-flat pattern)
+         // H1+H4 crash bypass: confirmed multi-TF bear trend overrides RSI floor and ADX spike gate.
+         // ADX minimum, RSI declining, and news tighten all still apply.
+         bool crash_sell_bypass = g_sc.breakout_h1h4_crash_sell && h1_bear && h4_bear;
+         // Two-tier RSI floor — absolute + ADX-conditioned stricter floor (skipped on crash bypass)
+         bool rsi_floor_ok = true;
+         if(!crash_sell_bypass) {
+            double sell_floor_eff = g_sc.breakout_rsi_sell_floor;
+            bool weak_adx_floor = (m5_adx < g_sc.breakout_adx_sell_floor_threshold);
+            if(weak_adx_floor)
+               sell_floor_eff = MathMax(sell_floor_eff, g_sc.breakout_rsi_sell_floor_weak_adx);
+            if(m5_rsi <= sell_floor_eff) {
+               datetime _rsif_bar = iTime(_Symbol, PERIOD_M5, 0);
+               if(_rsif_bar != g_scalper_last_rsisellfloor_log_bar) {
+                  g_scalper_last_rsisellfloor_log_bar = _rsif_bar;
+                  string floor_gate = (weak_adx_floor && sell_floor_eff >= g_sc.breakout_rsi_sell_floor_weak_adx)
+                                      ? "entry_quality_rsi_sell_adx_floor" : "entry_quality_rsi_sell_floor";
+                  JournalRecordSignal("SKIP",floor_gate,"BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+               rsi_floor_ok = false;
+            }
+         }
+         if(rsi_floor_ok) {
+            // ADX duration gate: block SELL if ADX spiked from flat base (skipped on crash bypass)
             bool adx_dur_ok = true;
-            if(g_sc.breakout_adx_min_sell_lookback_bars > 0) {
+            if(!crash_sell_bypass && g_sc.breakout_adx_min_sell_lookback_bars > 0) {
                double adx_lb_buf[1];
                if(CopyBuffer(g_mtf[0].h_adx, 0, g_sc.breakout_adx_min_sell_lookback_bars, 1, adx_lb_buf) == 1
                   && adx_lb_buf[0] < breakout_adx_min_sell_eff) {

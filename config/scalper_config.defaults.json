@@ -47,7 +47,8 @@
     "breakout_use_retest": 1,
     "breakout_retest_max_bars": 6,
     "rsi_buy_ceil": 70,
-    "rsi_sell_floor": 30
+    "rsi_sell_floor": 30,
+    "h1h4_crash_sell": 1
   },
   "indicators": {
     "bb_period": 20,
