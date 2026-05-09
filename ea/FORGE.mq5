@@ -112,7 +112,9 @@ double g_session_start_balance = 0;
 string g_scalper_mode = "NONE";  // NONE | BB_BOUNCE | BB_BREAKOUT | DUAL
 int    g_scalper_group_counter = 5000;  // native groups start at 5000+ to avoid BRIDGE collision
 int    g_scalper_session_trades = 0;
-datetime g_scalper_last_loss_time = 0;
+datetime g_scalper_last_loss_time   = 0;
+datetime g_last_sl_time_buy         = 0;  // last SL hit on a BUY group — for post-SL direction cooldown
+datetime g_last_sl_time_sell        = 0;  // last SL hit on a SELL group
 datetime g_scalper_last_entry_bar = 0;  // prevent multiple entries on same bar
 string   g_scalper_last_direction = "";          // last entry direction for anti-whipsaw
 datetime g_scalper_last_direction_time = 0;      // when last direction was entered
@@ -164,6 +166,7 @@ struct ScalperConfig {
    bool   bounce_enabled;
    double bounce_adx_max;
    double bounce_rsi_buy_max;
+   double bounce_min_h1_trend;         // Cardwell: min H1 trend strength for BB_BOUNCE BUY (default 0.3)
    double bounce_rsi_sell_min;
    double bounce_bb_proximity_pct;
    double bounce_reclaim_pct;
@@ -211,6 +214,9 @@ struct ScalperConfig {
    int    max_open_groups;
    int    max_trades_per_session;
    int    loss_cooldown_sec;
+   int    post_sl_cooldown_sec;         // extended cooldown per-direction after SL hit (default 3600s = 60min)
+   double breakout_near_floor_lot_factor;  // Cardwell RSI 20-25 zone: lot factor when crash bypass + RSI near floor (default 0.25)
+   double same_direction_stack_lot_factor; // lot factor for 2nd concurrent group in same direction (default 0.25)
    bool   tester_cooldown_enabled;
    // Directional anti-whipsaw
    bool   direction_cooldown_enabled;
@@ -2043,6 +2049,7 @@ void InitScalperConfig() {
    g_sc.bounce_enabled = true;
    g_sc.bounce_adx_max = 20;
    g_sc.bounce_rsi_buy_max = 35;
+   g_sc.bounce_min_h1_trend = 0.3;
    g_sc.bounce_rsi_sell_min = 65;
    g_sc.bounce_bb_proximity_pct = 20;
    g_sc.bounce_reclaim_pct = 20;
@@ -2054,7 +2061,7 @@ void InitScalperConfig() {
    g_sc.breakout_adx_min = 20;
    g_sc.breakout_adx_min_sell = 25;
    g_sc.breakout_require_rsi_declining_sell   = false;
-   g_sc.breakout_rsi_decl_sell_adx_threshold = 28.0;
+   g_sc.breakout_rsi_decl_sell_adx_threshold = 40.0;
    g_sc.breakout_require_h1_di_buy            = false;
    g_sc.breakout_counter_buy_adx_threshold    = 28.0;
    g_sc.breakout_adx_min_sell_lookback_bars   = 6;
@@ -2082,6 +2089,9 @@ void InitScalperConfig() {
    g_sc.max_open_groups = 2;
    g_sc.max_trades_per_session = 3;
    g_sc.loss_cooldown_sec = 300;
+   g_sc.post_sl_cooldown_sec          = 3600;
+   g_sc.breakout_near_floor_lot_factor = 0.25;
+   g_sc.same_direction_stack_lot_factor = 0.25;
    g_sc.london_start = 0;
    g_sc.london_end = 24;
    g_sc.ny_start = 0;
@@ -2292,6 +2302,10 @@ void ReadScalperConfig() {
    v = JsonGetDouble(content, "adx_max");       if(v > 0) g_sc.bounce_adx_max = v;
    v = JsonGetDouble(content, "rsi_buy_max");    if(v > 0) g_sc.bounce_rsi_buy_max = v;
    v = JsonGetDouble(content, "rsi_sell_min");   if(v > 0) g_sc.bounce_rsi_sell_min = v;
+   if(JsonHasKey(content, "bounce_min_h1_trend")) {
+      v = JsonGetDouble(content, "bounce_min_h1_trend");
+      if(v >= 0 && v <= 5.0) g_sc.bounce_min_h1_trend = v;
+   }
    v = JsonGetDouble(content, "bb_proximity_pct");if(v > 0) g_sc.bounce_bb_proximity_pct = v;
    if(JsonHasKey(content, "bounce_reclaim_pct")) {
       v = JsonGetDouble(content, "bounce_reclaim_pct");
@@ -2398,6 +2412,15 @@ void ReadScalperConfig() {
    v = JsonGetDouble(content, "max_open_groups"); if(v > 0) g_sc.max_open_groups = (int)v;
    v = JsonGetDouble(content, "max_trades_per_session"); if(v > 0) g_sc.max_trades_per_session = (int)v;
    v = JsonGetDouble(content, "loss_cooldown_sec"); if(v > 0) g_sc.loss_cooldown_sec = (int)v;
+   v = JsonGetDouble(content, "post_sl_cooldown_sec"); if(v >= 0) g_sc.post_sl_cooldown_sec = (int)v;
+   if(JsonHasKey(content, "breakout_near_floor_lot_factor")) {
+      v = JsonGetDouble(content, "breakout_near_floor_lot_factor");
+      if(v > 0 && v <= 1.0) g_sc.breakout_near_floor_lot_factor = v;
+   }
+   if(JsonHasKey(content, "same_direction_stack_lot_factor")) {
+      v = JsonGetDouble(content, "same_direction_stack_lot_factor");
+      if(v > 0 && v <= 1.0) g_sc.same_direction_stack_lot_factor = v;
+   }
    v = JsonGetDouble(content, "tight_tp_atr_mult"); if(v > 0) g_sc.dd_tight_tp_atr = v;
    v = JsonGetDouble(content, "pending_entry_threshold_points"); if(v > 0) g_sc.pending_entry_threshold_points = v;
    v = JsonGetDouble(content, "trend_strength_atr_threshold"); if(v > 0) g_sc.trend_strength_atr_threshold = v;
@@ -3072,6 +3095,15 @@ int ScalperOpenGroupCount() {
 bool ScalperCooldownOK() {
    if(g_scalper_last_loss_time == 0) return true;
    return (TimeGMT() - g_scalper_last_loss_time) >= g_sc.loss_cooldown_sec;
+}
+
+// Direction-specific post-SL cooldown: after SL hit on a direction, block re-entry for post_sl_cooldown_sec.
+// Prevents rapid same-direction re-entry after a loss (gold reversal protection).
+bool ScalperPostSLCooldownOK(const string direction) {
+   if(g_sc.post_sl_cooldown_sec <= 0) return true;
+   datetime last_sl = (direction == "SELL") ? g_last_sl_time_sell : g_last_sl_time_buy;
+   if(last_sl == 0) return true;
+   return (TimeGMT() - last_sl) >= g_sc.post_sl_cooldown_sec;
 }
 
 bool ScalperOnePerBar() {
@@ -4719,9 +4751,11 @@ void CheckNativeScalperSetups() {
       bool bounce_htf_blocks_buy  = (!use_htf_bias) && g_sc.bounce_block_htf_trend_align && h1_bear && m15_bear_htf;
 
       // BUY: price near BB lower + RSI oversold + H1 not bearish + optional H4 alignment
+      // bounce_min_h1_trend: Cardwell Bull Support requires confirmed uptrend — H1 barely positive is insufficient.
       if(mid <= m5_bb_l + proximity && m5_rsi < g_sc.bounce_rsi_buy_max
          && bounce_tf_buy_ok && h4_ok_buy && fib_ok_buy && rsi_div_buy_bounce && buy_reject && buy_bar0_ok && liquidity_ok
-         && !bounce_htf_blocks_buy) {
+         && !bounce_htf_blocks_buy
+         && h1_trend_strength >= g_sc.bounce_min_h1_trend) {
          direction = "BUY";
          double atr_sl_buy = NormalizeDouble(bid - m5_atr * g_sc.bounce_sl_atr_mult, _Digits);
          sl  = FindStructuralSL(true, bid, atr_sl_buy, point);
@@ -4967,6 +5001,10 @@ void CheckNativeScalperSetups() {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
    }
+   if(direction != "" && !ScalperPostSLCooldownOK(direction)) {
+      JournalRecordSignal("SKIP","post_sl_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+      return;
+   }
 
    if(direction != "" && !in_tester && !NativeScalperM1GateOk(direction, m1_bull, m1_bear, m1_flat)) {
          PrintFormat("FORGE SCALPER: skip gate=m1 mode=%s dir=%s m1_ts=%.4f (CONFIRM=EMA/ATR vs threshold; TRIGGER=+prior M1 bar)",
@@ -5157,8 +5195,26 @@ void CheckNativeScalperSetups() {
       PrintFormat("FORGE SCALPER: SELL inside band — lot factor=%.2f (mid=%.2f > bb_l=%.2f)",
                   inside_band_factor, mid, m5_bb_l);
    }
+   // Cardwell near-floor lot factor (0.25x): RSI 20-25 in crash bypass = uncertain reversal zone
+   // Allows participation in crash continuation without full exposure at extreme RSI.
+   double near_floor_factor = 1.0;
+   if(direction == "SELL" && is_breakout_setup
+      && g_sc.breakout_h1h4_crash_sell && h1_bear && h4_bear
+      && m5_rsi > g_sc.breakout_h1h4_crash_sell_rsi_min && m5_rsi <= 25.0
+      && g_sc.breakout_near_floor_lot_factor > 0.0 && g_sc.breakout_near_floor_lot_factor < 1.0) {
+      near_floor_factor = g_sc.breakout_near_floor_lot_factor;
+      PrintFormat("FORGE SCALPER: SELL near Cardwell floor RSI=%.1f — lot factor=%.2f", m5_rsi, near_floor_factor);
+   }
+   // Stack lot factor (0.25x): 2nd concurrent group in same direction = reduced exposure
+   // Scalper stacking: 1st entry full size, additional concurrent entries at fractional lot.
+   double stack_factor = 1.0;
+   if(g_sc.same_direction_stack_lot_factor > 0.0 && g_sc.same_direction_stack_lot_factor < 1.0
+      && ScalperOpenGroupCountByDirection(direction) >= 1) {
+      stack_factor = g_sc.same_direction_stack_lot_factor;
+      PrintFormat("FORGE SCALPER: %s stack entry — lot factor=%.2f", direction, stack_factor);
+   }
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
-   double lot = NormalizeLot(base_lot * lot_mult * inside_band_factor);
+   double lot = NormalizeLot(base_lot * lot_mult * inside_band_factor * near_floor_factor * stack_factor);
    double tp2_price = (tp2 > 0) ? tp2 : tp1;
    double tp1_split_pct = is_breakout_setup ? g_sc.breakout_tp1_close_pct : g_sc.bounce_tp1_close_pct;
    int tp1_count = (int)MathCeil(n * tp1_split_pct / 100.0);
@@ -5480,6 +5536,15 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(profit < 0) {
       g_scalper_last_loss_time = TimeGMT();
       Print("FORGE: cooldown triggered after loss deal ", (long)deal, " profit=", DoubleToString(profit, 2));
+      // Direction-specific post-SL cooldown: OUT deal type is opposite of the position direction
+      string cmt = HistoryDealGetString(deal, DEAL_COMMENT);
+      if(StringFind(cmt, "sl") >= 0) {
+         long dtype = HistoryDealGetInteger(deal, DEAL_TYPE);
+         // DEAL_TYPE_BUY closes a SELL position (SL on SELL group)
+         if(dtype == DEAL_TYPE_BUY)  g_last_sl_time_sell = TimeGMT();
+         // DEAL_TYPE_SELL closes a BUY position (SL on BUY group)
+         else if(dtype == DEAL_TYPE_SELL) g_last_sl_time_buy = TimeGMT();
+      }
    }
 }
 
