@@ -418,4 +418,72 @@ FORGE_BREAKOUT_SELL_LIMIT_EXPIRY_BARS=6
 
 ---
 
-*Plan status: Features 1–2 ready to implement. Features 3–5 design approved, pending implementation sprint.*
+*Plan status: Features 0–2 implemented (session cutoff, MACD gate, ADX tiers + block). Features 3–5 design approved, pending implementation sprint.*
+
+---
+
+## DB Schema — Journal & SCRIBE Analysis
+
+### Current schema — what's already covered
+
+**Tester DB (`FORGE_journal_XAUUSD_tester.db`):**
+
+| Table | Key columns | Coverage |
+|-------|-------------|----------|
+| `SIGNALS` | time, outcome, gate_reason, rsi, adx, h1_trend, session, magic, run_id | Gate audits, P&L correlation, session breakdown |
+| `TRADES` | deal_ticket, profit, swap, commission, magic, comment, run_id | P&L, SL/TP identification |
+| `TESTER_RUNS` | forge_version, scalper_mode, sim_start_time | Run metadata |
+
+**SCRIBE (`aurum_intelligence.db` — `forge_signals`, `forge_journal_trades`):**
+Mirrors tester DB structure plus `journal_source` ('live'/'tester') and `timestamp_utc`.
+
+### What's missing for 2.7.7 analysis
+
+Three columns needed on `SIGNALS` / `forge_signals`:
+
+| Column | Type | Source in EA | Why it matters |
+|--------|------|-------------|----------------|
+| `macd_histogram` | REAL | `CopyBuffer(g_h_macd_scalp, 2, 0, 1)` | MACD gate fires/passes but actual histogram value not stored — can't post-analyze "was histogram -0.05 or -5.0?" |
+| `m15_adx` | REAL | `CopyBuffer(g_mtf[1].h_adx, 0, 0, 1)` | ADX tier decisions use M15 ADX, only M5 `adx` stored — can't validate which tier was applied |
+| `lot_factor` | REAL | `combined_lot_factor` in lot computation | For TAKEN signals, can't tell if 0.02 vs 0.08 lot was used without reading trade `volume` |
+
+**No new tables needed** — existing structure is solid for current needs.
+
+### Migration plan
+
+**Tester DB** — fresh each run; add columns to the `CREATE TABLE SIGNALS` statement in FORGE.mq5 `JournalCreate()` (or equivalent). No migration needed — recreated each run.
+
+**SCRIBE (`aurum_intelligence.db`)** — backwards-safe `ALTER TABLE`:
+```sql
+ALTER TABLE forge_signals ADD COLUMN macd_histogram REAL;
+ALTER TABLE forge_signals ADD COLUMN m15_adx REAL;
+ALTER TABLE forge_signals ADD COLUMN lot_factor REAL;
+```
+Existing rows get NULL for new columns — no data loss. BRIDGE SCRIBE sync code needs updating to write the values when syncing new signals.
+
+### FORGE.mq5 change required
+
+`JournalRecordSignal` currently has `poc_price` and `rsi_div` slots almost always 0 for breakout signals. Extend the function signature with 3 defaulted parameters:
+
+```mql5
+// Current signature (simplified):
+void JournalRecordSignal(string action, string gate_reason, string setup_type, string direction,
+                         double price, double spread, double atr, double rsi, double adx, ...)
+
+// Extended (MQL5 default params — backwards compatible):
+void JournalRecordSignal(..., double macd_hist=0, double m15_adx_val=0, double lot_factor_val=0)
+```
+
+Call sites that want to log the new values pass them explicitly; all other call sites use defaults (0) — no existing call sites break.
+
+### SCRIBE BRIDGE sync update
+
+`BRIDGE` currently maps `forge_signals` columns 1:1 from the tester DB. After migration, add the three new fields to the sync INSERT statement and to the `SCRIBE.write_signal()` method.
+
+### Implementation order
+
+1. After Run 25 completes — do not interrupt live tester
+2. `ALTER TABLE` on `aurum_intelligence.db` (safe, instant)
+3. Extend `JournalRecordSignal` in FORGE.mq5 + update `CREATE TABLE SIGNALS`
+4. Update BRIDGE SCRIBE sync for new fields
+5. Recompile, run `make scalper-env-sync`, start Run 26 to validate new columns populate
