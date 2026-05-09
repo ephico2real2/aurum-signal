@@ -39,6 +39,25 @@
 
 ---
 
+## [System 2.0.2] — 2026-05-09 (Comprehensive Python audit — 10 bugs across 6 files)
+
+### Changes table
+
+| # | File | Line | Sev | Bug | Fix | Status |
+|---|------|------|-----|-----|-----|--------|
+| 1 | `aegis.py` | 886 | HIGH | `_get_scale_factor` queried `trade_positions ORDER BY close_time DESC` — NULL close_times sort incorrectly, returning stale rows; wrong streak count → wrong lot sizing | Switch to `trade_closures ORDER BY timestamp DESC` | ✅ scale_factor now reads real recent closes; 3-win streak detected correctly |
+| 2 | `aegis.py` | 625 | MEDIUM | `_get_session_pnl()` called twice (line 557 + 625) — second call can see a different DB state if a trade closes between calls | Annotated; session_pnl from line 557 reused at 625 | ✅ |
+| 3 | `scribe.py` | 1693 | HIGH | `get_today_pnl` queried `trade_positions.close_time` (often NULL) → always returned $0 | Switch to `trade_closures WHERE timestamp LIKE '{today}%'` | ✅ |
+| 4 | `autoscalper_condition_service.py` | 147 | HIGH | Loss cooldown queried `trade_positions.close_time` (NULL) → `last_loss_close_time` always None → cooldown gate permanently disabled after losses | Switch to `trade_closures WHERE pnl < 0 ORDER BY timestamp DESC` | ✅ |
+| 5 | `bridge.py` | 1033 | HIGH | Indentation bug: `_known_pendings[t]` dict assignment was OUTSIDE the `if t not in self._known_pendings` guard — ran unconditionally, using stale `magic` from previous loop iteration for known tickets | Indented dict assignment inside the `if` block | ✅ |
+| 6 | `bridge.py` | 2775 | LOW | `_now = time.time()` inside `_tick()` shadowed module-level `_now()` function — any future call to `_now()` within `_tick()` would get float not string | Renamed to `_journal_now` | ✅ |
+| 7 | `bridge.py` | 3482 | MEDIUM | `_scalper_logic`: `adx > 20` raised `TypeError` when `lens_snap.adx` is `None` (MCP timeout) | Added `adx is not None and price is not None` guard | ✅ |
+| 8 | `reconciler.py` | 176 | MEDIUM | PNL_MISMATCH check compared MT5 floating P&L against `trade_groups.total_pnl` — always 0 for open groups → mismatch fire on every live trading cycle | Removed the check (logically broken; position-count checks are sufficient) | ✅ |
+| 9 | `reconciler.py` | 192 | MEDIUM | `forge_version >= FORGE_MIN_PENDING_VERSION` used string comparison — `"1.2.10" < "1.2.4"` lexicographically | Replaced with `_ver()` tuple comparison | ✅ |
+| 10 | `sentinel.py` | 320 | MEDIUM | Year rollover: ForexFactory dates parsed with `now.year` — January events in late December appear 365 days in the past, breaking upcoming-event detection | After parse, if date is >7 days in the past, add 1 year | ✅ |
+
+---
+
 ## [System 2.0.1] — 2026-05-09 (SCRIBE + ATHENA — Performance panel wired to trade_closures)
 
 ### Changes table
