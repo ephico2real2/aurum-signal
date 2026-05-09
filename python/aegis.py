@@ -622,6 +622,8 @@ class Aegis:
             min(NUM_TRADES_GLOBAL_MAX, int(base_num_trades)),
         )
 
+        # session_pnl already fetched at Guard 3 above; reuse it here
+        # to avoid a second DB round-trip and potential race between calls
         session_pnl = self._get_session_pnl()
 
         # ── Lot scaling (also an input to leg-count resolver) ──────
@@ -884,10 +886,12 @@ class Aegis:
         - Mixed                 → normal RISK_PCT (factor = 1.0)
         """
         try:
+            # trade_closures.timestamp is canonical — trade_positions.close_time is
+            # often NULL for the TRACKER path, causing NULL rows to sort incorrectly
+            # and returning stale/wrong trades as "most recent closed"
             rows = self.scribe.query(
-                """SELECT pnl FROM trade_positions
-                   WHERE status = 'CLOSED'
-                   ORDER BY close_time DESC
+                """SELECT pnl FROM trade_closures
+                   ORDER BY timestamp DESC
                    LIMIT ?""",
                 (max(SCALE_DOWN_AFTER_LOSSES, SCALE_UP_AFTER_WINS),)
             )

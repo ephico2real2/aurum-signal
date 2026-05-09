@@ -144,9 +144,12 @@ def build_autoscalper_condition_report(
         cur.execute("SELECT COUNT(*) FROM trade_groups WHERE status IN ('OPEN','PARTIAL')")
         open_groups = int(cur.fetchone()[0] or 0)
 
+        # trade_closures.timestamp is canonical — trade_positions.close_time is often
+        # NULL (TRACKER path skips close_trade_position), so this query would always
+        # return None, permanently disabling the loss cooldown gate after any loss.
         cur.execute(
-            "SELECT close_time, pnl FROM trade_positions "
-            "WHERE status='CLOSED' AND pnl < 0 ORDER BY close_time DESC LIMIT 1"
+            "SELECT timestamp FROM trade_closures "
+            "WHERE pnl < 0 ORDER BY timestamp DESC LIMIT 1"
         )
         row = cur.fetchone()
         last_loss_close_time = row[0] if row else None

@@ -317,9 +317,15 @@ class Sentinel:
             if date_cell and date_cell.get_text(strip=True):
                 try:
                     txt = date_cell.get_text(strip=True)
-                    current_date = datetime.strptime(
+                    _d = datetime.strptime(
                         f"{txt} {now.year}", "%a%b %d %Y"
                     ).replace(tzinfo=timezone.utc)
+                    # Year-rollover fix: ForexFactory shows ~7 days ahead. At year
+                    # boundary, January events are parsed with December's year →
+                    # appear 365 days in the past. Correct by adding 1 year.
+                    if (now - _d).days > 7:
+                        _d = _d.replace(year=_d.year + 1)
+                    current_date = _d
                 except (TypeError, ValueError) as e:
                     log.debug("SENTINEL date parse skipped: %s", e)
 

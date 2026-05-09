@@ -1691,10 +1691,13 @@ class Scribe:
 
     # ── Read API ───────────────────────────────────────────────────
     def get_today_pnl(self) -> float:
+        # trade_closures.timestamp is canonical — trade_positions.close_time is often
+        # NULL for positions closed via the TRACKER path (log_trade_closure called but
+        # close_trade_position skipped), causing this function to silently return $0.
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         with self._conn() as c:
-            row = c.execute("""SELECT COALESCE(SUM(pnl),0) FROM trade_positions
-                WHERE close_time LIKE ? AND status='CLOSED'""",
+            row = c.execute(
+                "SELECT COALESCE(SUM(pnl),0) FROM trade_closures WHERE timestamp LIKE ?",
                 (f"{today}%",)).fetchone()
             return float(row[0])
 

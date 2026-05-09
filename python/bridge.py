@@ -1036,12 +1036,12 @@ class Bridge:
             t = int(o["ticket"])
             if t not in self._known_pendings:
                 magic = o.get("magic", 0)
-            self._known_pendings[t] = {
+                self._known_pendings[t] = {
                     "group_id": self._resolve_group_for_magic(magic),
                     "magic": magic,
                     "order_type": o.get("order_type"),
                     "price": o.get("price"),
-                    "tracked_since": time.time(),  # start timeout from restart
+                    "tracked_since": time.time(),
                 }
 
         log.info(
@@ -2772,9 +2772,9 @@ class Bridge:
         # Only live journals sync to AURUM. Tester journals are ML training data
         # and must be read directly from the tester DB. Set
         # BRIDGE_SYNC_TESTER_JOURNAL=1 to override.
-        _now = time.time()
-        if _now - getattr(self, "_last_journal_sync", 0) >= 60:
-            self._last_journal_sync = _now
+        _journal_now = time.time()  # renamed: avoid shadowing module-level _now() function
+        if _journal_now - getattr(self, "_last_journal_sync", 0) >= 60:
+            self._last_journal_sync = _journal_now
             for journal_path in self._resolve_forge_journal_paths():
                 is_tester = "_tester" in Path(journal_path).name
                 if is_tester and not BRIDGE_SYNC_TESTER_JOURNAL:
@@ -3479,8 +3479,8 @@ class Bridge:
         bb   = lens_snap.bb_rating
         price = lens_snap.price
 
-        if not (adx > 20 and price > 0):
-            return  # No clear trend
+        if not (adx is not None and adx > 20 and price is not None and price > 0):
+            return  # No clear trend or LENS returned None (MCP timeout)
 
         direction = None
         if rsi < 40 and macd > 0 and bb >= 1:

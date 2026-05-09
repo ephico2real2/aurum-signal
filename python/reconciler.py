@@ -171,25 +171,21 @@ class Reconciler:
                     "severity":"MEDIUM",
                 })
 
-        # 3. P&L sanity check — compare MT5 floating vs SCRIBE open group totals
-        mt5_floating = mt5_data.get("account", {}).get("total_floating_pnl", 0)
+        # 3. PNL_MISMATCH check removed — trade_groups.total_pnl is the *closed* P&L
+        # summary, not floating P&L. For open groups it is always 0 or NULL, so
+        # scribe_floating is always ~$0 while mt5_floating reflects real open P&L.
+        # This caused PNL_MISMATCH to fire on every live trading cycle — false positive.
         scribe_groups = self.scribe.get_open_groups()
-        scribe_floating = sum(g.get("total_pnl") or 0 for g in scribe_groups)
-        pnl_diff = abs(mt5_floating - scribe_floating)
-
-        if pnl_diff > PNL_TOLERANCE and mt5_floating != 0:
-            issues.append({
-                "type":    "PNL_MISMATCH",
-                "ticket":  None,
-                "detail":  f"MT5 floating ${mt5_floating:.2f} vs "
-                           f"SCRIBE groups ${scribe_floating:.2f} "
-                           f"(diff ${pnl_diff:.2f})",
-                "severity":"LOW",
-            })
 
         # 4. SCRIBE trade_groups still OPEN but FORGE has no position/pending for that magic
         forge_version = mt5_data.get("forge_version", "")
-        pending_reliable = forge_version >= FORGE_MIN_PENDING_VERSION
+        # Semantic version comparison — string >= would give "1.2.10" < "1.2.4"
+        def _ver(v: str) -> tuple:
+            try:
+                return tuple(int(x) for x in str(v).split("."))
+            except (ValueError, AttributeError):
+                return (0,)
+        pending_reliable = _ver(forge_version) >= _ver(FORGE_MIN_PENDING_VERSION)
         if RECON_CLOSE_STALE_GROUPS:
             if not pending_reliable:
                 log.info(
