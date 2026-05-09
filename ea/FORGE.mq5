@@ -5213,8 +5213,12 @@ void CheckNativeScalperSetups() {
       stack_factor = g_sc.same_direction_stack_lot_factor;
       PrintFormat("FORGE SCALPER: %s stack entry — lot factor=%.2f", direction, stack_factor);
    }
+   // Compound factor floor: if multiple lot reducers apply simultaneously, cap the combined
+   // reduction at 0.25x so no entry falls below 25% of base lot regardless of how many
+   // factors stack (e.g., inside-band + near-floor + stack = 0.25^3 would be too small).
+   double combined_lot_factor = MathMax(0.25, inside_band_factor * near_floor_factor * stack_factor);
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
-   double lot = NormalizeLot(base_lot * lot_mult * inside_band_factor * near_floor_factor * stack_factor);
+   double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);
    double tp2_price = (tp2 > 0) ? tp2 : tp1;
    double tp1_split_pct = is_breakout_setup ? g_sc.breakout_tp1_close_pct : g_sc.bounce_tp1_close_pct;
    int tp1_count = (int)MathCeil(n * tp1_split_pct / 100.0);
