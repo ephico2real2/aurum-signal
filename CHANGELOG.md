@@ -39,6 +39,30 @@
 
 ---
 
+## [System 2.0.1] — 2026-05-09 (SCRIBE + ATHENA — Performance panel wired to trade_closures)
+
+### Changes table
+
+| # | Location | Bug | Root cause | Fix | Status |
+|---|----------|-----|-----------|-----|--------|
+| 1 | `scribe.py` `get_performance()` | Performance panel showed 164 trades, -$1,022 P&L — inconsistent with `closure_stats` (3,454 trades, -$2,427) | Queried `trade_positions WHERE close_time >= ? AND status='CLOSED'` — `close_time` only written when `close_trade_position()` is called, which some close paths skip | Changed to `FROM trade_closures WHERE timestamp >= ?` | ✅ total 164→3,454 · P&L -$1,022→-$2,427 (matches closure_stats) |
+| 2 | `athena_api.py` `api_pnl_curve()` | P&L sparkline was sparse/stale — wrong cumulative | Same root cause: `FROM trade_positions WHERE close_time >= ?` | Changed to `FROM trade_closures WHERE timestamp >= ?` with `timestamp AS close_time` alias | ✅ curve now shows 3,454 points across full 7-day window |
+
+### Wiring audit — Performance panel data sources
+
+| UI element | API field | Source | Table | Status |
+|------------|-----------|--------|-------|--------|
+| Win Rate / Trades / Wins / Losses / Total P&L / Avg Pips | `performance` | `scribe.get_performance(days=7)` | `trade_closures` | ✅ fixed |
+| SL Hits / TP Rate / Manual / Total P&L (7d) | `closure_stats` | `scribe.get_closure_stats(days=7)` | `trade_closures` | ✅ was already correct |
+| Cumulative P&L sparkline | `/api/pnl_curve?days=N` | `api_pnl_curve()` | `trade_closures` | ✅ fixed |
+| Recent closures list | `recent_closures` | `scribe.get_recent_closures()` | `trade_closures` | ✅ was already correct |
+| Session P&L | `aegis.session_pnl` | `aegis._get_session_pnl()` | `trade_closures` | ✅ fixed in [2.0.0] |
+| Regime performance (30d) | `regime.performance_30d` | `scribe.get_regime_performance(days=30)` | `trade_groups` JOIN `trade_positions` | Unchanged — regime labels on positions |
+
+All six performance data sources now consistently read from `trade_closures`. `trade_positions` is retained for regime label joins only.
+
+---
+
 ## [System 2.0.0] — 2026-05-09 (BRIDGE + AEGIS — lot_size, duration_seconds, session_pnl data fixes)
 
 ### Changes table
