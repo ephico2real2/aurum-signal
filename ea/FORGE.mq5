@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.78"
+#property version "2.79"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.8";
+const string FORGE_VERSION = "2.7.9";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -149,6 +149,7 @@ datetime g_scalper_last_adxgate_log_bar = 0;   // throttle ADX gate diagnostic (
 datetime g_scalper_last_adxsell_log_bar = 0;   // throttle entry_quality_adx_min_sell journal (once per M5 bar)
 datetime g_scalper_last_adxdur_log_bar  = 0;   // throttle entry_quality_adx_spike_sell journal (once per M5 bar)
 datetime g_scalper_last_rsidecl_log_bar = 0;   // throttle entry_quality_rsi_rising_sell journal (once per M5 bar)
+datetime g_scalper_last_m30bear_log_bar = 0;   // throttle entry_quality_m30_not_bearish journal (2.7.9)
 datetime g_scalper_last_h1dibuy_log_bar = 0;   // throttle entry_quality_h1_di_buy journal (once per M5 bar)
 datetime g_scalper_last_rsisellfloor_log_bar = 0; // throttle entry_quality_rsi_sell_floor/adx_floor (once per M5 bar)
 bool     g_scalper_prev_session_blocked = true; // session-start log: true = previous tick was session_off
@@ -184,6 +185,10 @@ struct ScalperConfig {
    double breakout_adx_min_sell;  // SELL breakout ADX floor — stricter (default 25)
    bool   breakout_require_rsi_declining_sell;       // block SELL if RSI rising bar-over-bar (default false)
    double breakout_rsi_decl_sell_adx_threshold;     // rsi_rising_sell auto-off: gate inactive when ADX ≥ this (default 28; independent of two-tier RSI floor)
+   // M30 intermediate-TF bearish confirmation (2.7.9 — Feature 3)
+   // Requires M30 EMA20 < EMA50 when ADX ≥ adx_min; blocks recovery entries where H1 is stale
+   bool   breakout_require_m30_bear_sell;           // require M30 EMA20 < EMA50 for SELL (default true)
+   double breakout_m30_bear_adx_min;                // M30 gate only activates when m5_adx ≥ this (default 25)
    bool   breakout_require_h1_di_buy;               // block BUY when H1 DI- > DI+ at weak ADX (default false; DI+/DI- Wilder directional gate)
    double breakout_counter_buy_adx_threshold;       // h1_di_buy gate active only when m5_adx < this (default 28; auto-off in strong trend)
    int    breakout_adx_min_sell_lookback_bars;       // ADX spike-from-flat gate: bars back to check (default 6 = 30min; 0=disabled)
@@ -2118,6 +2123,8 @@ void InitScalperConfig() {
    g_sc.breakout_adx_min_sell = 25;
    g_sc.breakout_require_rsi_declining_sell   = false;
    g_sc.breakout_rsi_decl_sell_adx_threshold = 40.0;
+   g_sc.breakout_require_m30_bear_sell        = true;
+   g_sc.breakout_m30_bear_adx_min             = 25.0;
    g_sc.breakout_require_h1_di_buy            = false;
    g_sc.breakout_counter_buy_adx_threshold    = 28.0;
    g_sc.breakout_adx_min_sell_lookback_bars   = 6;
@@ -2493,6 +2500,14 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "rsi_decl_sell_adx_threshold")) {
          v = JsonGetDouble(breakout_json, "rsi_decl_sell_adx_threshold");
          if(v > 0 && v <= 80) g_sc.breakout_rsi_decl_sell_adx_threshold = v;
+      }
+      if(JsonHasKey(breakout_json, "require_m30_bear_sell")) {
+         v = JsonGetDouble(breakout_json, "require_m30_bear_sell");
+         g_sc.breakout_require_m30_bear_sell = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "m30_bear_adx_min")) {
+         v = JsonGetDouble(breakout_json, "m30_bear_adx_min");
+         if(v >= 0 && v <= 80) g_sc.breakout_m30_bear_adx_min = v;
       }
       if(JsonHasKey(breakout_json, "require_h1_di_buy")) {
          v = JsonGetDouble(breakout_json, "require_h1_di_buy");
@@ -5153,16 +5168,37 @@ void CheckNativeScalperSetups() {
                   }
                }
             }
+            // M30 EMA bearish confirmation (2.7.9 Feature 3): block SELL when M30 is recovering
+            // Uses existing g_mtf[2] handles (M30 EMA20/EMA50) — no new indicator handles needed.
+            // Gate activates when ADX ≥ m30_bear_adx_min (trend confirmed) to avoid filtering
+            // valid ranging entries where M30 EMA gap is meaningless.
+            bool m30_bear_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok
+               && g_sc.breakout_require_m30_bear_sell
+               && m5_adx >= g_sc.breakout_m30_bear_adx_min) {
+               double _m30buf[1];
+               double m30_ema20 = (CopyBuffer(g_mtf[2].h_ma20, 0, 0, 1, _m30buf) == 1) ? _m30buf[0] : 0;
+               double m30_ema50 = (CopyBuffer(g_mtf[2].h_ma50, 0, 0, 1, _m30buf) == 1) ? _m30buf[0] : 0;
+               if(m30_ema20 > 0 && m30_ema50 > 0 && m30_ema20 >= m30_ema50) {
+                  datetime _m30_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_m30_bar != g_scalper_last_m30bear_log_bar) {
+                     g_scalper_last_m30bear_log_bar = _m30_bar;
+                     JournalRecordSignal("SKIP","entry_quality_m30_not_bearish","BB_BREAKOUT","SELL",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  m30_bear_ok = false;
+               }
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok
                && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
                && m5_rsi <= g_nf_eff_rsi_sell_min) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_sell_ok = false;
             }
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && nf_sell_ok) {
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && nf_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
