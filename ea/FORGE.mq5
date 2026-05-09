@@ -2794,6 +2794,8 @@ void ReadScalperConfig() {
       v = JsonGetDouble(content, "news_filter_block_pct");
       if(v >= 0.0 && v <= 1.0) g_sc.news_filter_block_pct = v;
    }
+   if(g_sc.news_filter_tighten_pct >= g_sc.news_filter_block_pct)
+      g_sc.news_filter_tighten_pct = g_sc.news_filter_block_pct * 0.5;
    if(JsonHasKey(content, "news_filter_tighten_rsi_buy")) {
       v = JsonGetDouble(content, "news_filter_tighten_rsi_buy");
       if(v >= 0.0 && v <= 100.0) g_sc.news_filter_tighten_rsi_buy = v;
@@ -4614,6 +4616,26 @@ void CheckNativeScalperSetups() {
          price_retested = (rt_price >= rt_level - m5_atr * 0.3) && (rt_price <= rt_level + m5_atr * 0.5);
 
       if(price_retested) {
+         // News RSI tighten — same additive guard as direct BB_BREAKOUT entries
+         // g_nf_eff_rsi_* already primed by ScalperNewsUpdateEffectiveThresholds() at line 4601
+         bool nf_retest_ok = true;
+         if(g_retest.direction == "BUY"
+            && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil
+            && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
+            JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT_RETEST","BUY",
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            nf_retest_ok = false;
+         } else if(g_retest.direction == "SELL"
+            && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
+            && m5_rsi <= g_nf_eff_rsi_sell_min) {
+            JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT_RETEST","SELL",
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            nf_retest_ok = false;
+         }
+         if(!nf_retest_ok) {
+            g_retest.active = false;
+            return;
+         }
          direction  = g_retest.direction;
          sl         = g_retest.sl;
          tp1        = g_retest.tp1;
