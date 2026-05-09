@@ -749,16 +749,26 @@ class Scribe:
             return 0
 
         try:
-            # Migrate AURUM forge_signals with run_id (safe no-op if column exists)
-            try:
-                with self._conn() as c:
-                    c.execute("ALTER TABLE forge_signals ADD COLUMN run_id INTEGER DEFAULT 0")
-            except Exception:
-                pass  # column already exists
+            # Migrate AURUM forge_signals — safe no-op if columns already exist
+            _migrations = [
+                "ALTER TABLE forge_signals ADD COLUMN run_id INTEGER DEFAULT 0",
+                "ALTER TABLE forge_signals ADD COLUMN macd_histogram REAL",
+                "ALTER TABLE forge_signals ADD COLUMN m15_adx REAL",
+                "ALTER TABLE forge_signals ADD COLUMN lot_factor REAL",
+            ]
+            for _mig in _migrations:
+                try:
+                    with self._conn() as c:
+                        c.execute(_mig)
+                except Exception:
+                    pass  # column already exists
 
-            # Check if source journal has run_id column (v2 journals only)
+            # Check which columns exist in source journal (version detection)
             src_cols = {r[1] for r in src.execute("PRAGMA table_info(SIGNALS)").fetchall()}
-            has_run_id = "run_id" in src_cols
+            has_run_id    = "run_id"         in src_cols
+            has_macd_hist = "macd_histogram" in src_cols
+            has_m15_adx   = "m15_adx"        in src_cols
+            has_lot_factor = "lot_factor"    in src_cols
 
             select_sql = (
                 "SELECT id, time, symbol, setup_type, direction, outcome, gate_reason, "
@@ -766,7 +776,10 @@ class Scribe:
                 "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
                 "pattern_score, h1_trend, regime_label, regime_confidence, "
                 f"adx_trend_regime, high_vol_trend, session, magic"
-                + (", run_id" if has_run_id else "")
+                + (", run_id"         if has_run_id    else ", 0")
+                + (", macd_histogram" if has_macd_hist else ", NULL")
+                + (", m15_adx"        if has_m15_adx   else ", NULL")
+                + (", lot_factor"     if has_lot_factor else ", NULL")
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -779,7 +792,10 @@ class Scribe:
             inserted = 0
             with self._conn() as c:
                 for r in rows:
-                    run_id = r[28] if has_run_id else 0
+                    run_id     = r[28]
+                    macd_hist  = r[29]
+                    m15_adx_v  = r[30]
+                    lot_factor = r[31]
                     existing = c.execute(
                         "SELECT 1 FROM forge_signals "
                         "WHERE forge_id=? AND time=? AND symbol=? AND journal_source=? LIMIT 1",
@@ -796,9 +812,10 @@ class Scribe:
                         "bb_upper, bb_lower, bb_mid, poc_price, vwap_price, fib_50, "
                         "rsi_divergence, psar_state, pattern_score, h1_trend, "
                         "regime_label, regime_confidence, adx_trend_regime, "
-                        "high_vol_trend, session, magic, journal_source, run_id) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (r[0], r[1], ts_utc, *r[2:28], source, run_id),
+                        "high_vol_trend, session, magic, journal_source, run_id, "
+                        "macd_histogram, m15_adx, lot_factor) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (r[0], r[1], ts_utc, *r[2:28], source, run_id, macd_hist, m15_adx_v, lot_factor),
                     )
                     synced_ids.append(r[0])
                     inserted += 1

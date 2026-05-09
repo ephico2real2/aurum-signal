@@ -125,6 +125,7 @@ datetime g_scalper_last_rrtoolow_log_bar = 0;   // throttle journal rr_too_low (
 datetime g_scalper_last_sesscut_log_bar  = 0;   // throttle entry_quality_session_sell_cutoff (2.7.7)
 datetime g_scalper_last_macd_log_bar     = 0;   // throttle entry_quality_macd_* gates (2.7.7)
 datetime g_scalper_last_adxblk_log_bar   = 0;   // throttle entry_quality_adx_extreme_sell (2.7.7)
+double   g_last_combined_lot_factor      = 1.0; // last computed combined lot factor — written to SIGNALS.lot_factor
 datetime g_scalper_last_sesswarn_log_bar = 0; // throttle session_off log (once per M5 bar)
 datetime g_scalper_last_cooldown_log_bar = 0; // throttle cooldown log (once per M5 bar)
 datetime g_scalper_last_atr_ext_log_bar = 0;  // throttle entry_quality_atr_ext log (once per M5 bar)
@@ -3625,7 +3626,10 @@ bool JournalInit() {
       "high_vol_trend INTEGER, "
       "session TEXT, "
       "magic INTEGER, "
-      "synced INTEGER DEFAULT 0"
+      "synced INTEGER DEFAULT 0, "
+      "macd_histogram REAL, "
+      "m15_adx REAL, "
+      "lot_factor REAL"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -3806,7 +3810,8 @@ void JournalRecordSignal(string outcome, string gate_reason,
                          double rsi, double adx,
                          double bb_u, double bb_l, double bb_m,
                          int pattern_score, double h1_trend,
-                         int high_vol_flag) {
+                         int high_vol_flag,
+                         double macd_hist=0.0, double m15_adx_val=0.0, double lot_factor_val=0.0) {
    if(g_journal_db == INVALID_HANDLE) return;
    if(outcome == "SKIP" && !g_sc.journal_record_skips) return;
 
@@ -3822,7 +3827,8 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "price, spread, atr, rsi, adx, bb_upper, bb_lower, bb_mid, "
       "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
       "pattern_score, h1_trend, regime_label, regime_confidence, "
-      "adx_trend_regime, high_vol_trend, session, magic, synced, run_id) VALUES ("
+      "adx_trend_regime, high_vol_trend, session, magic, synced, run_id, "
+      "macd_histogram, m15_adx, lot_factor) VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
       + "'" + setup_type + "', "
@@ -3850,7 +3856,10 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(high_vol_flag) + ", "
       + "'" + session + "', "
       + IntegerToString((long)MagicNumber) + ", 0, "
-      + IntegerToString(g_tester_run_id) + ")";
+      + IntegerToString(g_tester_run_id) + ", "
+      + DoubleToString(macd_hist, 6) + ", "
+      + DoubleToString(m15_adx_val, 2) + ", "
+      + DoubleToString(lot_factor_val, 4) + ")";
 
    if(!DatabaseExecute(g_journal_db, sql)) {
       if(g_journal_signals_count == 0)
@@ -5352,6 +5361,7 @@ void CheckNativeScalperSetups() {
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
    double combined_lot_factor = MathMax(0.125, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor);
+   g_last_combined_lot_factor = combined_lot_factor;
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
    double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);
    double tp2_price = (tp2 > 0) ? tp2 : tp1;
@@ -5563,9 +5573,13 @@ void CheckNativeScalperSetups() {
    WriteMarketData();
    }  // end if(!in_tester)
 
+   double _taken_macd = 0.0, _taken_m15adx = 0.0;
+   { double _tb[1]; if(g_h_macd_scalp != INVALID_HANDLE && CopyBuffer(g_h_macd_scalp, 2, 0, 1, _tb) == 1) _taken_macd = _tb[0]; }
+   { double _tb[1]; if(CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _tb) == 1) _taken_m15adx = _tb[0]; }
    JournalRecordSignal("TAKEN","",setup_type,direction,
       direction=="BUY" ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID),
-      spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,entry_candle_score,h1_trend_strength,0);
+      spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,entry_candle_score,h1_trend_strength,0,
+      _taken_macd, _taken_m15adx, g_last_combined_lot_factor);
    double entry_price = (direction == "BUY") ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID);
    if(direction == "BUY" && g_first_buy_entry_price <= 0.0)
       g_first_buy_entry_price = entry_price;
