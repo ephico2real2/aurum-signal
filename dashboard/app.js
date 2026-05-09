@@ -685,6 +685,8 @@ function ATHENA(){
   const regimeTransitions=Array.isArray(regime.transitions_24h)?regime.transitions_24h:[];
   const regimePerf=regime.performance_30d||{};
   const regimeRows=Array.isArray(regimePerf.by_regime)?regimePerf.by_regime:[];
+  const regimeFeatures=regimeCurrent.features||{};
+  const regimePosterior=regimeCurrent.posterior||{};
   const regimeMode=((regimeCfg.entry_mode||regimeCurrent.entry_mode||'off')+'').toUpperCase();
   const regimeModeColor=regimeMode==='ACTIVE'?T.green:regimeMode==='SHADOW'?T.amber:T.textD;
   const regimeConfPct=(regimeCurrent.confidence==null||Number.isNaN(Number(regimeCurrent.confidence)))
@@ -1562,10 +1564,32 @@ function ATHENA(){
               <br/>
               <span style={{color:T.textD}}>Model:</span> {regimeCurrent.model_name||'—'}
               <span style={{color:T.textD}}> · age </span>{fmtAgeSec(regimeCurrent.age_sec)}
-              {regimeCurrent.stale&&<span style={{color:T.amber}}> · stale</span>}
+              {!!regimeCurrent.stale&&<span style={{color:T.amber}}> · stale</span>}
             </div>
+            {/* Posterior probability distribution */}
+            {Object.keys(regimePosterior).length>0&&(
+              <div style={{display:'flex',gap:6,marginTop:5,flexWrap:'wrap'}}>
+                {Object.entries(regimePosterior).sort((a,b)=>b[1]-a[1]).map(([lbl,prob])=>(
+                  <span key={lbl} style={{fontSize:7,fontFamily:T.mono,
+                    color:lbl===regimeCurrent.label?T.gold:T.textD}}>
+                    {lbl} {Math.round(prob*100)}%
+                  </span>
+                ))}
+              </div>
+            )}
+            {/* LENS vs MT5 source indicator */}
+            {regimeFeatures.source&&(
+              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginTop:4,lineHeight:1.4}}>
+                src <span style={{color:regimeFeatures.lens_used?T.cyan:T.amber}}>
+                  {regimeFeatures.source}
+                </span>
+                {regimeFeatures.rsi!=null&&` · RSI ${Number(regimeFeatures.rsi).toFixed(1)}`}
+                {regimeFeatures.macd_hist!=null&&` · MACD ${Number(regimeFeatures.macd_hist).toFixed(3)}`}
+                {regimeFeatures.adx!=null&&` · ADX ${Number(regimeFeatures.adx).toFixed(1)}`}
+              </div>
+            )}
             {(regimeCurrent.entry_gate_reason||regimeCurrent.fallback_reason)&&(
-              <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,marginTop:5,lineHeight:1.35}}>
+              <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,marginTop:4,lineHeight:1.35}}>
                 gate: {regimeCurrent.entry_gate_reason||'—'}
                 {regimeCurrent.fallback_reason?` · fallback: ${regimeCurrent.fallback_reason}`:''}
               </div>
@@ -1580,6 +1604,7 @@ function ATHENA(){
               <div key={`${tr.timestamp||i}-${i}`} style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.35,marginBottom:3}}>
                 {tr.from||'?'} → <span style={{color:T.cyan}}>{tr.to||'?'}</span>
                 <span style={{color:T.textD}}> · {fmtDateTime(tr.timestamp)}</span>
+                {tr.stale&&<span style={{color:T.amber}}> stale</span>}
               </div>
             ))}
             {regimeTransitions.length===0&&(
@@ -1594,9 +1619,11 @@ function ATHENA(){
             <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.4,marginBottom:4}}>
               snapshots {regimePerf.snapshot_count||0} · fallback {regimePerf.fallback_rate||0}%
             </div>
-            {regimeRows.slice(0,3).map((row,i)=>(
+            {regimeRows.map((row,i)=>(
               <div key={`${row.regime_label||i}-${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:8,fontFamily:T.mono,lineHeight:1.45}}>
-                <span style={{color:T.textB}}>{row.regime_label||'UNKNOWN'} ({row.total||0})</span>
+                <span style={{color:row.regime_label===regimeCurrent.label?T.gold:T.textB}}>
+                  {row.regime_label||'UNKNOWN'} ({row.total||0})
+                </span>
                 <span style={{color:(row.total_pnl||0)>=0?T.green:T.red}}>
                   {(row.total_pnl||0)>=0?'+':''}{Number(row.total_pnl||0).toFixed(2)}
                 </span>
