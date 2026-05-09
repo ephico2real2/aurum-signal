@@ -122,7 +122,7 @@
     "min_rr_floor": 1.5,
     "native_sl_extra_buffer_points": 5,
     "min_entry_atr": 3.5,
-    "max_open_same_direction": 1,
+    "max_open_same_direction": 2,
     "entry_quality_bars": 3,
     "min_body_ratio": 0.4,
     "min_directional_bars": 2,
