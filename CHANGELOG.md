@@ -39,6 +39,31 @@
 
 ---
 
+## [System 2.0.0] — 2026-05-09 (BRIDGE + AEGIS — lot_size, duration_seconds, session_pnl data fixes)
+
+### Changes table
+
+| # | Location | Bug | Root cause | Fix | Status |
+|---|----------|-----|-----------|-----|--------|
+| 1 | `bridge.py` `_seed_tracker_from_scribe` | `lot_size: 0.0` for all closures after bridge restart | SELECT query omitted `lot_size` column; hardcoded `0` on seed | Added `lot_size, timestamp` to SELECT; use `float(r.get("lot_size") or 0)` from SCRIBE | ✅ fixed (new closures only) |
+| 2 | `bridge.py` dedup path (line ~1238) | `lot_size: 0.0` for existing-SCRIBE positions on restart | `lot_size` key missing entirely from `_known_positions` dict in dedup branch | Added `"lot_size": p.get("lots", 0)` to the dict | ✅ fixed |
+| 3 | `bridge.py` both `log_trade_closure` call sites | `duration_seconds: null` always | `open_time` never cached in `_known_positions`; never computed at close | Cache `"open_time"` at all 4 `_known_positions` write paths; compute `(close_time - open_time).total_seconds()` at close; pass `duration_seconds` to both `log_trade_closure` calls | ✅ fixed (new closures only) |
+| 4 | `aegis.py` `_get_session_pnl` | `session_pnl: +0.00` despite recent wins | Queried `trade_positions WHERE status='CLOSED' AND close_time >= ?` — `close_time` is only written when `close_trade_position()` is called, which some close paths skip; `trade_positions` had no rows since yesterday | Switch to `trade_closures WHERE timestamp >= ?` — always populated at close | ✅ verified: was $0.00, now $488.65 |
+
+### Note on historical records
+
+`lot_size` and `duration_seconds` remain `0.0` / `null` in closures recorded **before** this fix. New closures going forward will populate both fields. No migration needed — existing analytics that tolerate these nulls are unaffected.
+
+### Fixed
+
+- **`lot_size: 0.0` in all `trade_closures`** — Three-location fix in `bridge.py`. (1) `_seed_tracker_from_scribe`: the SELECT that re-hydrates `_known_positions` on restart omitted `lot_size`, so the field was hardcoded to `0` for all seeded positions. (2) Dedup path: when a position already has a SCRIBE row, the `_known_positions` dict was built without a `lot_size` key, so `snap.get("lot_size", 0)` returned `0` at close. (3) Normal new-position and fresh-position paths were already reading `p.get("lots", 0)` correctly. Also added `open_time: timestamp` from SCRIBE for seeded positions.
+
+- **`duration_seconds: null` in all `trade_closures`** — `open_time` was never stored in `_known_positions`, so there was nothing to subtract from `close_time` at close. Fix: cache `"open_time": datetime.now(UTC).isoformat()` at all 4 positions write paths (seeded positions use `r.get("timestamp")` from SCRIBE). At close, compute `int((close_time - open_time).total_seconds())` with a try/except guard and pass `duration_seconds` to both `log_trade_closure` call sites.
+
+- **`session_pnl: +0.00` despite recent wins** — `_get_session_pnl()` in `aegis.py` queried `trade_positions WHERE status='CLOSED' AND close_time >= session_start`. `close_time` on `trade_positions` is only updated by `close_trade_position()`, which some close paths bypass. `trade_positions` had no rows closed since yesterday. `trade_closures` is the correct canonical source — its `timestamp` is always set at insert time. Fix: `FROM trade_closures WHERE timestamp >= session_start`. Verified immediately: session P&L changed from $0.00 to $488.65.
+
+---
+
 ## [System 1.9.8] — 2026-05-09 (ATHENA — Regime Engine + AUTO_SCALPER readiness overhaul)
 
 ### Fixed
