@@ -533,10 +533,16 @@ class Lens:
                 tv_recommend = round(max(-1.0, min(1.0, score)), 2)
                 tv_recommend_source = "DERIVED_FROM_INDICATORS"
 
+            # MACD histogram: try both short name ("MACD") and full name ("Convergence Divergence").
+            # Value key varies by TV version: "Histogram", "Hist.", "hist" — "hist" matches all three.
+            _macd_study = (find_study_by_fragments(["MACD"]) or
+                           find_study_by_fragments(["convergence divergence"]))
+            _macd_hist = find_value_from_study(_macd_study, ["hist", "Histogram"]) if _macd_study else 0.0
+
             data = {
                 "close":         close,
                 "RSI":           find_study("Relative Strength", "RSI"),
-                "MACD.hist":     find_study("MACD", "Histogram"),
+                "MACD.hist":     _macd_hist,
                 "BB.upper":      find_study("Bollinger", "Upper"),
                 "BB.basis":      find_study("Bollinger", "Basis"),
                 "BB.lower":      find_study("Bollinger", "Lower"),

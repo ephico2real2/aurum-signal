@@ -295,6 +295,10 @@ def _build_tradingview_panel(lens_raw: dict) -> dict:
         return {"last": None, "timeframe": None, "age_seconds": None}
     out = {k: lens_raw.get(k) for k in TV_KEYS}
     out["last"] = safe_float(lens_raw.get("price"))
+    # macd_hist=0.0 is the lens fallback for "study not on TV chart" — surface as null so
+    # the dashboard shows "—" rather than a misleading 0.00000.
+    if out.get("macd_hist") == 0.0:
+        out["macd_hist"] = None
     ts_raw = out.get("timestamp")
     if ts_raw:
         try:

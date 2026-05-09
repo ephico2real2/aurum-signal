@@ -749,19 +749,21 @@ class Scribe:
             return 0
 
         try:
-            # Migrate AURUM forge_signals — safe no-op if columns already exist
+            # Migrate AURUM forge_signals — check existence first to avoid _conn() error spam
+            import sqlite3 as _sqlite3
+            _raw = _sqlite3.connect(self.db_path)
+            _existing_cols = {r[1] for r in _raw.execute("PRAGMA table_info(forge_signals)").fetchall()}
+            _raw.close()
             _migrations = [
-                "ALTER TABLE forge_signals ADD COLUMN run_id INTEGER DEFAULT 0",
-                "ALTER TABLE forge_signals ADD COLUMN macd_histogram REAL",
-                "ALTER TABLE forge_signals ADD COLUMN m15_adx REAL",
-                "ALTER TABLE forge_signals ADD COLUMN lot_factor REAL",
+                ("ALTER TABLE forge_signals ADD COLUMN run_id INTEGER DEFAULT 0", "run_id"),
+                ("ALTER TABLE forge_signals ADD COLUMN macd_histogram REAL",       "macd_histogram"),
+                ("ALTER TABLE forge_signals ADD COLUMN m15_adx REAL",              "m15_adx"),
+                ("ALTER TABLE forge_signals ADD COLUMN lot_factor REAL",           "lot_factor"),
             ]
-            for _mig in _migrations:
-                try:
+            for _mig_sql, _col in _migrations:
+                if _col not in _existing_cols:
                     with self._conn() as c:
-                        c.execute(_mig)
-                except Exception:
-                    pass  # column already exists
+                        c.execute(_mig_sql)
 
             # Check which columns exist in source journal (version detection)
             src_cols = {r[1] for r in src.execute("PRAGMA table_info(SIGNALS)").fetchall()}
