@@ -2052,8 +2052,8 @@ void InitScalperConfig() {
    g_sc.breakout_require_h1_di_buy            = false;
    g_sc.breakout_counter_buy_adx_threshold    = 28.0;
    g_sc.breakout_adx_min_sell_lookback_bars   = 6;
-   g_sc.breakout_rsi_buy_min = 55;
-   g_sc.breakout_rsi_sell_max = 45;
+   g_sc.breakout_rsi_buy_min = 40;
+   g_sc.breakout_rsi_sell_max = 60;
    g_sc.breakout_rsi_buy_ceil                = 70.0;
    g_sc.breakout_rsi_sell_floor              = 33.0;
    g_sc.breakout_adx_sell_floor_threshold    = 35.0;
