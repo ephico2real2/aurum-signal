@@ -85,7 +85,8 @@ GATE_DIAGNOSTICS_LAST_FILE = _py_path(
 AURUM_CMD_FILE = _py_path(os.environ.get("AURUM_CMD_FILE",       "config/aurum_cmd.json"))
 MGMT_FILE      = _py_path(os.environ.get("LISTENER_MGMT_FILE",   "config/management_cmd.json"))
 # reconciler writes to signal_system/config/ using __file__-relative path
-RECON_FILE     = os.path.join(_ROOT, "config", "reconciler_last.json")
+RECON_FILE          = os.path.join(_ROOT, "config", "reconciler_last.json")
+SCALPER_CONFIG_FILE = os.path.join(_ROOT, "config", "scalper_config.json")
 
 # ── Management command schema (best-effort validation) ───────────────
 # /api/management writes user-supplied payloads to config/management_cmd.json
@@ -389,6 +390,40 @@ def _build_regime_block(scribe, status: dict | None = None) -> dict:
 
 
 # ── Live data endpoint ─────────────────────────────────────────────
+def _build_scalper_gates(mt5: dict) -> dict:
+    """OsMA(fast,slow,signal) gate state — reads scalper_config.json + current M5 indicator block."""
+    cfg = _read_json(SCALPER_CONFIG_FILE)
+    bb  = cfg.get("bb_breakout", {}) if cfg else {}
+    saf = cfg.get("safety", {})       if cfg else {}
+
+    m5_block = (mt5.get("indicators_m5") or {}) if isinstance(mt5, dict) else {}
+    try:
+        osma = float(m5_block["macd_hist"]) if m5_block.get("macd_hist") is not None else None
+    except (TypeError, ValueError):
+        osma = None
+
+    bias = ("bull" if osma > 0 else "bear" if osma < 0 else "flat") if osma is not None else None
+    sell_on = bool(bb.get("require_macd_sell", 0))
+    buy_on  = bool(bb.get("require_macd_buy",  0))
+
+    return {
+        # Gate config
+        "require_macd_sell":        sell_on,
+        "require_macd_buy":         buy_on,
+        "macd_fast":                bb.get("macd_fast",   3),
+        "macd_slow":                bb.get("macd_slow",  10),
+        "macd_signal":              bb.get("macd_signal", 16),
+        "session_ny_sell_cutoff":   saf.get("session_ny_sell_cutoff_utc"),
+        "adx_sell_block":           saf.get("breakout_adx_sell_block_threshold"),
+        # Current M5 OsMA (single-bar sign; Q0/Q2 full quadrant needs prev bar in EA)
+        "osma_m5":                  round(osma, 6) if osma is not None else None,
+        "osma_bias":                bias,   # "bull" | "bear" | "flat" | null
+        # Sign-only gate pass: negative = SELL bias (Q2 territory), positive = BUY bias (Q0 territory)
+        "sell_osma_pass":           (osma < 0) if (sell_on and osma is not None) else None,
+        "buy_osma_pass":            (osma > 0) if (buy_on  and osma is not None) else None,
+    }
+
+
 @app.route("/api/live")
 def api_live():
     mt5 = _read_json(MARKET_FILE)
@@ -551,6 +586,9 @@ def api_live():
             "mt5_open":  recon.get("mt5_open_count", 0),
             "scribe_open": recon.get("scribe_open_count", 0),
         } if recon else None,
+
+        # OsMA gate state (FORGE 2.7.7+): current M5 OsMA value + which quadrant gates are active
+        "scalper_gates": _build_scalper_gates(mt5),
     })
 
 @app.route("/api/regime/current")

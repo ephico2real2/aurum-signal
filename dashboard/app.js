@@ -651,10 +651,15 @@ function ATHENA(){
     },
     reconciler:null,
     components:{},
+    scalper_gates:{require_macd_sell:null,require_macd_buy:null,
+      macd_fast:3,macd_slow:10,macd_signal:16,
+      osma_m5:null,osma_bias:null,sell_osma_pass:null,buy_osma_pass:null,
+      session_ny_sell_cutoff:null,adx_sell_block:null},
   };
 
   const acc=D.account||{},sent=D.sentinel||{};
   const ex=D.execution||{},tv=D.tradingview||{};
+  const sg=D.scalper_gates||{};
   const sym=ex.symbol||D.chart_symbol||'—';
   const tvSnapSec=tv.age_seconds!=null?Math.floor(Number(tv.age_seconds)):null;
   const tvSnapAge=tvSnapSec!=null?`${Math.floor(tvSnapSec/60)}m ${tvSnapSec%60}s ago`:'—';
@@ -1312,6 +1317,54 @@ function ATHENA(){
               </div>
             </div>
           )}
+
+          {/* ── OsMA GATE panel (FORGE 2.7.7+) ───────────────────────── */}
+          <div>
+            <PT ch={"◈ OsMA GATE · "+(D.forge_version||"FORGE")} color={T.amber}/>
+            <div style={{padding:'7px 9px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
+              {/* OsMA value + bias */}
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                <span style={{fontSize:8,color:T.textB,fontFamily:T.mono,fontWeight:600}}>
+                  {`OsMA(${sg.macd_fast||3},${sg.macd_slow||10},${sg.macd_signal||16}) M5`}
+                </span>
+                <span style={{fontFamily:T.mono,fontSize:12,fontWeight:700,
+                  color:sg.osma_m5==null?T.textD:sg.osma_m5>0?T.green:sg.osma_m5<0?T.red:T.textBB}}>
+                  {sg.osma_m5!=null?((sg.osma_m5>0?'+':'')+sg.osma_m5.toFixed(5)):'—'}
+                  {sg.osma_bias!=null&&(
+                    <span style={{marginLeft:5,fontSize:8,
+                      color:sg.osma_bias==='bull'?T.green:sg.osma_bias==='bear'?T.red:T.textD}}>
+                      {sg.osma_bias==='bull'?'BULL':sg.osma_bias==='bear'?'BEAR':'FLAT'}
+                    </span>
+                  )}
+                </span>
+              </div>
+              {/* Gate rows */}
+              {[
+                ['SELL gate','Q2 req (neg↓)',sg.require_macd_sell,sg.sell_osma_pass],
+                ['BUY  gate','Q0 req (pos↑)',sg.require_macd_buy, sg.buy_osma_pass],
+              ].map(([lbl,req,on,pass])=>(
+                <div key={lbl} style={{display:'flex',justifyContent:'space-between',
+                  alignItems:'center',padding:'3px 0',borderTop:`1px solid ${T.border}`}}>
+                  <span style={{fontSize:8,color:T.textB,fontFamily:T.mono,fontWeight:600,width:58}}>{lbl}</span>
+                  <span style={{fontSize:7,fontFamily:T.mono,color:on?T.amber:T.textD,width:28,textAlign:'center'}}>
+                    {on?'ON':'OFF'}
+                  </span>
+                  <span style={{fontSize:7,fontFamily:T.mono,color:T.textD,flex:1,textAlign:'center'}}>{req}</span>
+                  <span style={{fontSize:13,fontFamily:T.mono,fontWeight:700,width:16,textAlign:'right',
+                    color:pass==null?T.textD:pass?T.green:T.red}}>
+                    {pass==null?(on?'?':'—'):pass?'✓':'✗'}
+                  </span>
+                </div>
+              ))}
+              {/* Session / ADX block footnote */}
+              {(sg.session_ny_sell_cutoff||sg.adx_sell_block)&&(
+                <div style={{marginTop:5,fontSize:7,color:T.textD,fontFamily:T.mono,lineHeight:1.4}}>
+                  {sg.session_ny_sell_cutoff?`SELL cutoff ≥${sg.session_ny_sell_cutoff}:00 UTC  `:null}
+                  {sg.adx_sell_block?`ADX≥${sg.adx_sell_block} blocks SELL`:null}
+                </div>
+              )}
+            </div>
+          </div>
 
           <PT ch="🔭 TradingView · indicators" color={T.cyan}/>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
