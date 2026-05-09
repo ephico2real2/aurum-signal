@@ -1757,10 +1757,10 @@ class Scribe:
     def get_performance(self, mode: str = None, days: int = 7) -> dict:
         d = max(1, min(int(days), 366))
         with self._conn() as c:
-            base = (
-                "WHERE close_time >= datetime('now', '-' || ? || ' days') "
-                "AND status='CLOSED'"
-            )
+            # trade_closures.timestamp is canonical — always populated at close.
+            # trade_positions.close_time is only written by close_trade_position() which
+            # some close paths skip, causing performance stats to be permanently 0.
+            base = "WHERE timestamp >= datetime('now', '-' || ? || ' days')"
             params: list = [str(d)]
             if mode:
                 base += " AND mode=?"
@@ -1771,7 +1771,7 @@ class Scribe:
                     SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END) losses,
                     COALESCE(SUM(pnl),0) total_pnl,
                     COALESCE(AVG(pips),0) avg_pips
-                    FROM trade_positions {base}""",
+                    FROM trade_closures {base}""",
                 tuple(params),
             ).fetchone()
             total_n = int(rows[0] or 0)

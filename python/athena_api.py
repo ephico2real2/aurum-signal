@@ -1308,13 +1308,15 @@ def api_performance():
 def api_pnl_curve():
     days = max(1, min(int(request.args.get("days", 1)), 366))
     scribe = get_scribe()
+    # trade_closures.timestamp is canonical — trade_positions.close_time is stale/missing
+    # for some close paths, producing an empty or outdated P&L curve.
     rows = scribe.query(
         """
-        SELECT close_time, SUM(pnl) OVER (ORDER BY close_time) AS cumulative
-        FROM trade_positions
-        WHERE status='CLOSED'
-          AND close_time >= datetime('now', '-' || ? || ' days')
-        ORDER BY close_time
+        SELECT timestamp AS close_time,
+               SUM(pnl) OVER (ORDER BY timestamp) AS cumulative
+        FROM trade_closures
+        WHERE timestamp >= datetime('now', '-' || ? || ' days')
+        ORDER BY timestamp
         """,
         (str(days),),
     )
