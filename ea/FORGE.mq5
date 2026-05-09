@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.77"
+#property version "2.78"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.7";
+const string FORGE_VERSION = "2.7.8";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -742,7 +742,7 @@ void EnsureMTFIndicators() {
 }
 
 string WriteMTFBlock(int idx) {
-   double buf[1];
+   double buf[1], buf2[1];
    double rsi  = (CopyBuffer(g_mtf[idx].h_rsi, 0,0,1,buf)==1)  ? buf[0] : 0;
    double ma20 = (CopyBuffer(g_mtf[idx].h_ma20,0,0,1,buf)==1)  ? buf[0] : 0;
    double ma50 = (CopyBuffer(g_mtf[idx].h_ma50,0,0,1,buf)==1)  ? buf[0] : 0;
@@ -750,7 +750,8 @@ string WriteMTFBlock(int idx) {
    double bb_m = (CopyBuffer(g_mtf[idx].h_bb,  0,0,1,buf)==1)  ? buf[0] : 0;
    double bb_u = (CopyBuffer(g_mtf[idx].h_bb,  1,0,1,buf)==1)  ? buf[0] : 0;
    double bb_l = (CopyBuffer(g_mtf[idx].h_bb,  2,0,1,buf)==1)  ? buf[0] : 0;
-   double macd = (CopyBuffer(g_mtf[idx].h_macd,2,0,1,buf)==1)  ? buf[0] : 0;  // buffer 2 = histogram
+   // iMACD: buffer 0=main, 1=signal; no buffer 2. OsMA = main − signal.
+   double macd = (CopyBuffer(g_mtf[idx].h_macd,0,0,1,buf)==1 && CopyBuffer(g_mtf[idx].h_macd,1,0,1,buf2)==1) ? (buf[0]-buf2[0]) : 0;
    double adx  = (CopyBuffer(g_mtf[idx].h_adx, 0,0,1,buf)==1)  ? buf[0] : 0;  // buffer 0 = ADX main
    string j = "{";
    j += "\"rsi_14\":" + DoubleToString(rsi, 1) + ",";
@@ -1910,7 +1911,7 @@ void WriteMarketData() {
    double h1_bb_m  = (CopyBuffer(g_h_bb, 0,0,1,rsi_buf)==1)   ? rsi_buf[0]  : 0;
    double h1_bb_u  = (CopyBuffer(g_h_bb, 1,0,1,rsi_buf)==1)   ? rsi_buf[0]  : 0;
    double h1_bb_l  = (CopyBuffer(g_h_bb, 2,0,1,rsi_buf)==1)   ? rsi_buf[0]  : 0;
-   double h1_macd  = (CopyBuffer(g_h_macd,2,0,1,rsi_buf)==1)  ? rsi_buf[0]  : 0;
+   double _h1m[1]; double h1_macd = (CopyBuffer(g_h_macd,0,0,1,rsi_buf)==1 && CopyBuffer(g_h_macd,1,0,1,_h1m)==1) ? (rsi_buf[0]-_h1m[0]) : 0;
    double h1_adx   = (CopyBuffer(g_h_adx, 0,0,1,rsi_buf)==1)  ? rsi_buf[0]  : 0;
    j += "\"rsi_14\":" + DoubleToString(rsi_val,1)  + ",";
    j += "\"ema_20\":"  + DoubleToString(ma20_val,2) + ",";
