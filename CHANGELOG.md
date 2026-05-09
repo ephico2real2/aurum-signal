@@ -1,5 +1,61 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [System 1.9.8] — 2026-05-09 (ATHENA — Regime Engine + AUTO_SCALPER readiness overhaul)
+
+### Fixed
+
+- **AUTO_SCALPER `g47_g48_sell_pattern_match` SELL-only logic** — The readiness condition previously required `h1_bias == "BEAR"`, making AUTO_SCALPER permanently BLOCKED in any bull market regardless of how good BUY conditions were. Root cause: G47/G48 is a SELL-only pattern; no BUY counterpart existed. Fix: added symmetric BUY readiness (`h1_bias == "BULL"` + price near lower BB), unified under `pattern_ready`. Tag now shows `READY·SELL` or `READY·BUY` when triggered.
+
+- **BB proximity `failed_checks` direction-aware** — Previously always reported `m15_not_near_upper_bb` even when H1 was BULL (where you'd want price near the LOWER BB for a BUY). Now: BEAR bias → `m15_not_near_upper_bb`, BULL bias → `m15_not_near_lower_bb`. Actionable failure reason instead of misleading one.
+
+- **HMM ADX trend threshold 22 → 25** — `_build_hmm_state_labels` used `mean_adx >= 22.0` to classify HMM states as trending. Wilder's published threshold for confirmed trend is 25. States at ADX 22–25 are often still ranging — the old threshold was mislabeling RANGE states as TREND_BULL or TREND_BEAR, producing unreliable regime labels.
+
+- **HMM direction from `ema_spread` not `ret_1`** — State direction was determined by `mean_ret` (mean 5-second price return). At 5s intervals this is extremely noisy — a state with ADX=35 could have `mean_ret≈0` from oscillation and get labeled RANGE instead of TREND. Fix: use `ema_spread` (EMA20−EMA50) as the primary direction signal, confirmed by `ret_1` (both must agree: `is_bull = ema_spread > 0 AND ret ≥ 0`). EMA spread is structurally stable across a state's lifetime.
+
+- **Ambiguous strong-trend states → VOLATILE** — Previously, an HMM state with ADX≥25 but conflicting `ema_spread`/`ret_1` direction fell through to RANGE. It's more accurate to label these VOLATILE (strong momentum, unclear direction) than RANGE (calm market). Added explicit branch: `ADX≥25 and not (is_bull or is_bear) → VOLATILE`.
+
+- **`STATE_N` posterior keys in regime panel** — Unlabeled HMM states appeared as `STATE_2 0%` in the dashboard posterior display. Fix: unlabeled states default to `"RANGE"` in the posterior dict; probability sums merge with legitimate RANGE states. Clean posterior, no raw HMM state indices shown to user.
+
+- **TV MACD always `0.00000` in dashboard** — `lens.py` used `find_study("MACD", "Histogram")` which searched for `"macd"` as a substring in study names. TradingView returns the full name `"Moving Average Convergence Divergence"` — `"macd"` is not a substring of that string, so the lookup always returned 0. Fix: `find_study_by_fragments(["MACD", "convergence divergence"])` with `find_value_from_study(..., ["hist", "Histogram"])` covering both `"Histogram"` and `"Hist."` key variants.
+
+- **SCRIBE migration spam** — `ALTER TABLE forge_signals ADD COLUMN macd_histogram` ran every sync cycle via `_conn()` which logs before re-raising. Fix: check `PRAGMA table_info(forge_signals)` first and skip migrations for columns that already exist.
+
+- **`mt5_stale` false positive in Strategy Tester** — The condition service computed staleness from `timestamp_unix` in `market_data.json`. In tester mode the EA writes simulated timestamps (from the test period, e.g. May 4), making the file appear ~8 days old. Fix: detect `strategy_tester` from `status.json`, bypass staleness check in tester, show `mt5 tester` label instead of `mt5 stale`.
+
+- **`regimeCurrent.stale` rendering `0` as text** — `{regimeCurrent.stale && <span>stale</span>}` where `stale=0` (integer) renders `"0"` in React because `0 && anything = 0` and `{0}` renders as the character `0`. Fix: `{!!regimeCurrent.stale && ...}`.
+
+### Added
+
+- **`scalper_gates` block in `/api/live`** — New `_build_scalper_gates()` helper reads `scalper_config.json` and current M5 OsMA from `market_data.json`. Exposes: `require_macd_sell`, `require_macd_buy`, OsMA params, `osma_m5`, `osma_bias` (bull/bear/flat), `sell_osma_pass`, `buy_osma_pass`, `session_ny_sell_cutoff`, `adx_sell_block`.
+
+- **`◈ OsMA GATE` panel in Athena dashboard** — Shows between the FORGE execution quote and TradingView sections. Displays FORGE OsMA(3,10,16) M5 value with sign-coloring (green=bull, red=bear), BULL/BEAR/FLAT bias label, and per-gate rows: SELL (Q2 required: neg+falling) and BUY (Q0 required: pos+rising) with ✓/✗ pass indicators. Session cutoff and ADX sell block shown as footnotes.
+
+- **`TV LENS · AURUM context` sub-panel in AUTO_SCALPER readiness** — Shows live TradingView RSI, MACD, ADX, BB rating, DI+/DI- and directional label (BEAR dir / BULL dir) — exactly what AURUM reads when making AUTO_SCALPER decisions. Lens age shown in seconds.
+
+- **Strategy Tester banner in AUTO_SCALPER panel** — Cyan `STRATEGY TESTER — mt5 timestamps are simulated` notice when tester mode detected.
+
+- **Posterior distribution in Regime Engine panel** — Shows all regime probabilities sorted by confidence (e.g. `TREND_BEAR 77%  RANGE 23%`). Active regime highlighted in gold.
+
+- **LENS source indicator in Regime Engine panel** — Shows `src LENS` or `src MT5` with the key features driving the model: RSI, MACD, ADX from whichever source the regime used.
+
+- **Stale tag on regime transitions** — Transitions marked `stale: true` now show an amber `stale` suffix in the TRANSITIONS (24H) list.
+
+- **All regime performance rows shown** — Was `slice(0,3)`, cutting TREND_BEAR and TREND_BULL data. Now shows all regimes. Active regime label highlighted in gold.
+
+- **TradingView MACD surfaced as null when missing** — `_build_tradingview_panel` maps `macd_hist=0.0` (lens fallback for "study not on chart") to `null` so dashboard shows `—` instead of misleading `0.00000`.
+
+- **`lens_indicators` block in `/api/autoscalper/conditions`** — Full TV LENS snapshot (RSI, MACD, BB rating, ADX, DI+/DI-, directional booleans, age) now included in the readiness report alongside MT5 data.
+
+---
+
+## [System 1.9.7] — 2026-05-09 (ATHENA — iMACD buffer-2 fixes, market data reporting)
+
+### Fixed
+
+- **`WriteMTFBlock` and `WriteMarketData` H1 iMACD buffer 2** — Both used `CopyBuffer(imacd_handle, 2, ...)` which always returns -1 (buffer 2 does not exist in iMACD). The `macd_hist` field in `market_data.json` for all MTF blocks (M5/M15/M30/H1) was always 0. Fix: compute OsMA = `buffer_0 − buffer_1` (main − signal) in-place for market data reporting. This is separate from the gate fix (which uses `iOsMA` handle); this patch completes the cleanup for all three remaining call sites.
+
+---
+
 ## [System 1.9.6] — 2026-05-09 (FORGE 2.7.8 — OsMA BUY gate enabled)
 
 ### Changed
