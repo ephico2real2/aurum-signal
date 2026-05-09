@@ -1,6 +1,37 @@
 # FORGE 2.7.7 — Implementation Plan
 
-**Date:** 2026-05-09 | **Basis:** Run 23/24 loss analysis + scalping research
+**Date:** 2026-05-09 | **Basis:** Run 23/24 loss analysis + scalping research + multi-source validation
+
+---
+
+## Research Validation Summary
+
+Eight web searches across academic papers, practitioner blogs, and MQL5 community, 23 sources reviewed.
+
+### What the research confirms ✓
+
+| Feature | Research finding | Source |
+|---------|----------------|--------|
+| MACD(3,10,16) histogram gate | Detects signals 5-10 candles earlier than 12/26/9; BB+MACD backtest = 78% WR | OpoFinance, QuantifiedStrategies |
+| RSI+MACD dual gate | arXiv paper: 84-86% win rate; SSRN paper: "dual confirmation reduced false signals significantly" | arXiv:2206.12282, SSRN:3697734 |
+| Session sell cutoff (17:00 UTC) | ~70% of XAUUSD daily range occurs in London + NY overlap. Post-17:00 = lower liquidity, wider spreads, choppier | TMGM, ACY, NordFX |
+| SELL LIMIT cascade over market orders | Kinlay (2018): limit orders have positive expected slippage; stacked limits absorb partial fills | jonathankinlay.com |
+| ADX + MACD as combined filter | MACD histogram direction to pre-filter ADX entries = dominant practitioner convention | ForexTester, RoboForex |
+| MACD histogram negative = SELL zone | "MACD histogram below zero + RSI in 20-60 range = confirmed SELL" matches Cardwell practice | Investing.com, WunderTrading |
+
+### Adjustments to original plan ⚠
+
+| Issue | Evidence | Plan change |
+|-------|----------|-------------|
+| ADX lag on M1/M5 | OpoFinance, Trade2Win: "ADX reveals high lag on lower timeframes" | Tiered lot sizing should read ADX from M15/M30, not M5 bar |
+| RSI 65/35 for XAUUSD | TradingView XAUUSD 10-min community script uses 65/35, not 70/30 | Flag for 2.7.8 validation — test whether 65/35 improves WR on gold |
+| Wilder never prescribed MACD+ADX | FasterCapital: practitioner addition, not Wilder-native | No change — practitioner consensus is sufficient justification |
+
+### What was missing from original plan ✗
+
+| Gap | Evidence | Added to plan |
+|-----|----------|---------------|
+| Spread filter | Multiple sources: XAUUSD spreads 10-15 pips at rollover; scalping edge degrades at high spread | Added as Feature 0 (pre-entry gate) |
 
 ---
 
@@ -38,6 +69,20 @@
 
 ## Feature List — Priority Order
 
+### Feature 0 — Spread filter pre-entry gate (TRIVIAL, RESEARCH-SUPPORTED)
+
+**Research basis:** XAUUSD spreads documented at 1.5-2.5 pips during London session vs 10-15 pips
+at daily rollover (ACY). Scalping edge degrades when spread exceeds ~30% of expected TP distance.
+FORGE already has `max_spread_points` in ScalperConfig — but it is NOT currently applied in
+`CheckEntryQuality` as an active gate. It needs to be wired.
+
+**Existing config:** `safety.max_spread_points` (default 30). Already parsed in `ReadScalperConfig`.
+
+**Fix:** Confirm the gate is applied. `CheckNativeScalperSetups` should read spread = `(ask-bid)/point`
+and block entries when `spread > g_sc.max_spread_points`. Check if this is already wired.
+
+---
+
 ### Feature 1 — Session sell cutoff gate (LOW complexity, HIGH impact)
 
 **Problem:** G5011 at 17:10 and G5013 at 18:25 UTC are late NY session. XAUUSD
@@ -72,6 +117,54 @@ if(sell_cutoff > 0 && now_dt.hour >= sell_cutoff && NativeScalperInNYSession())
 - G5011 (17:10 UTC) → BLOCKED (NY cutoff = 17:00)
 - G5013 (18:25 UTC) → BLOCKED
 - Saves: $238 + $83 = **+$321** net improvement
+
+---
+
+### Feature 1.5 — MACD(3,10,16) histogram gate (LOW complexity, RESEARCH-VALIDATED)
+
+**Research basis:**
+- BB + MACD backtest: **78% win rate**, avg 1.4% per trade (QuantifiedStrategies)
+- RSI + MACD dual gate: **84-86% win rate** in arXiv:2206.12282 — "dual confirmation reduced false signals significantly"
+- MACD(3,10,16) independently confirmed: detects signals 5-10 candles earlier than standard 12/26/9
+- Rule: MACD histogram negative + RSI in Cardwell 20-60 zone = confirmed SELL (Investing.com)
+
+**Design:**
+New indicator handle: `iMACD(_Symbol, PERIOD_M5, 3, 10, 16, PRICE_CLOSE)`
+- Buffer 0: MACD line
+- Buffer 1: Signal line
+- Buffer 2: Histogram
+
+**Gate — two checks:**
+
+**Check A: Histogram direction for SELL** — block SELL when histogram is contracting
+(histogram[0] > histogram[1] = less negative = momentum shifting bullish):
+```mql5
+if(g_sc.breakout_require_macd_sell && direction_is_sell) {
+   double hist[2];
+   CopyBuffer(g_h_macd, 2, 0, 2, hist);
+   if(hist[0] > hist[1])  // contracting = momentum weakening SELL
+      → SKIP: entry_quality_macd_histogram
+}
+```
+
+**Check B: Histogram below zero for SELL** — block SELL when histogram is positive
+(market has bullish MACD momentum, not confirmed for SELL):
+```mql5
+if(hist[0] >= 0) → SKIP: entry_quality_macd_direction
+```
+
+G5011 impact: at 17:10, market was recovering → histogram likely contracting or positive → BLOCKED.
+
+**Config keys:**
+```
+FORGE_BREAKOUT_REQUIRE_MACD_SELL=1
+FORGE_BREAKOUT_REQUIRE_MACD_BUY=0        # optional BUY filter
+FORGE_BREAKOUT_MACD_FAST=3
+FORGE_BREAKOUT_MACD_SLOW=10
+FORGE_BREAKOUT_MACD_SIGNAL=16
+```
+
+**Journal reasons:** `entry_quality_macd_histogram`, `entry_quality_macd_direction`
 
 ---
 
@@ -115,6 +208,12 @@ if(direction == "SELL" && is_breakout_setup) {
 but at 1/16 = 0.0625, we want to allow it. Raise the compound floor to account for
 all three factors: `combined = MathMax(0.0625, all_factors_product)`.
 
+**ADX source — research finding:** OpoFinance and Trade2Win document ADX lag on M1/M5 as a
+known problem. The M5 ADX reading at signal time may lag actual trend strength by 3-5 bars.
+**Recommendation:** Read ADX at M15 for the lot sizing tier decision rather than M5.
+M15 ADX reflects a 75-min trend window — less susceptible to tick noise. Use existing
+`g_mtf[1].h_adx` (M15 ADX handle already initialized) for the threshold comparison.
+
 **Config keys:**
 ```
 FORGE_BREAKOUT_ADX_LOT_MID_THRESHOLD=35
@@ -123,6 +222,7 @@ FORGE_BREAKOUT_ADX_LOT_EXT_THRESHOLD=55
 FORGE_BREAKOUT_ADX_LOT_FACTOR_MID=0.25
 FORGE_BREAKOUT_ADX_LOT_FACTOR_HIGH=0.125
 FORGE_BREAKOUT_ADX_LOT_FACTOR_EXT=0.0625
+FORGE_BREAKOUT_ADX_LOT_USE_M15=1        # 1=use M15 ADX for tier; 0=M5
 ```
 
 ---
@@ -245,13 +345,16 @@ feature and uses Cardwell's framework consistently.
 
 ## Implementation Order
 
-| # | Feature | Complexity | Impact | Sprint |
-|---|---------|-----------|--------|--------|
-| 1 | Session sell cutoff | Low | +$321 (G5011+G5013) | **Now** |
-| 2 | Tiered ADX lot factors | Low | +$50–80 damage control | **Now** |
-| 3 | M30 bearish confirmation | Medium | Prevents stale-H1 entries | 2.7.7a |
-| 4 | SELL LIMIT cascade | High | Cardwell re-short, recovery BUY | 2.7.7b |
-| 5 | Recovery BUY capture | Medium | Depends on #4 pending infra | 2.7.7b |
+| # | Feature | Complexity | Research support | Impact | Sprint |
+|---|---------|-----------|-----------------|--------|--------|
+| 0 | Spread filter (verify wired) | Trivial | ACY, TMGM (spread data) | Prevents high-spread entries | **Now** |
+| 1 | Session sell cutoff | Low | NordFX, ACY, TMGM | +$321 (G5011+G5013) | **Now** |
+| 1.5 | MACD(3,10,16) histogram gate | Low | arXiv:2206.12282, QuantifiedStrategies | Blocks G5011-class exhaustion | **Now** |
+| 2 | Tiered ADX lot factors (M15 ADX) | Low | OpoFinance, Trade2Win (ADX lag) | +$50–80 damage control | **Now** |
+| 3 | M30 bearish confirmation | Medium | ForexTester, RoboForex | Prevents stale-H1 entries | 2.7.7a |
+| 4 | SELL LIMIT cascade | High | Kinlay (math), MQL5 code 27379 | Cardwell re-short, recovery BUY | 2.7.7b |
+| 5 | Recovery BUY capture | Medium | Cardwell Bull Support research | Depends on #4 pending infra | 2.7.7b |
+| 6 | RSI 65/35 threshold test | Config | TradingView XAUUSD script | XAUUSD-tuned overbought levels | 2.7.8 |
 
 Features 1 and 2 can be implemented and compiled today (code only, no new handles).
 Feature 3 requires a new M30 handle (OnInit change).
