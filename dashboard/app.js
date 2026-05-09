@@ -1477,7 +1477,10 @@ function ATHENA(){
                 <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
                   prefilters <span style={{color:asrPrefilterPass?T.green:T.red}}>{asrPrefilterPass?'PASS':'FAIL'}</span>
                   {' · '}h1 {asrPref.h1_bias||'UNKNOWN'}
-                  {' · '}upperBB {asrSetup.near_upper_bb===true?'YES':asrSetup.near_upper_bb===false?'NO':'—'}
+                  {' · '}{asrPref.h1_bias==='BULL'?'lowerBB':'upperBB'}{' '}
+                  {asrPref.h1_bias==='BULL'
+                    ?(asrSetup.near_lower_bb===true?'YES':asrSetup.near_lower_bb===false?'NO':'—')
+                    :(asrSetup.near_upper_bb===true?'YES':asrSetup.near_upper_bb===false?'NO':'—')}
                 </div>
                 <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:3}}>
                   quality {asrSetup.indicator_data_quality||'—'}

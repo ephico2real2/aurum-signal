@@ -188,7 +188,7 @@ class Sentinel:
             report_component_status(
                 "SENTINEL",
                 "WARN" if self.guard_active else "OK",
-                note=f"Next: {status.get('next_event','?')} in {status.get('next_in_min','?')}min",
+                note=f"Next: {status.get('next_event') or 'None scheduled'} in {str(status['next_in_min']) + 'min' if status.get('next_in_min') is not None else '—'}",
                 last_action="guard ACTIVE" if self.guard_active else "monitoring",
             )
         except Exception as e:

@@ -285,7 +285,9 @@ TV_KEYS = (
     "order_block_present", "order_block_study", "order_block_values",
     "ema_20", "ema_50", "tv_recommend", "tv_recommend_source",
     "tv_brief", "tv_brief_source", "tv_brief_timestamp",
-    "timeframe", "timestamp", "age_seconds", "mode",
+    "timeframe", "timestamp", "age_seconds",
+    # Note: "mode" intentionally excluded — lens snapshot carries the trading mode
+    # which is unrelated to TradingView indicators; it caused tradingview.mode="HYBRID"
 )
 
 
@@ -430,6 +432,14 @@ def _build_scalper_gates(mt5: dict) -> dict:
 
 @app.route("/api/live")
 def api_live():
+    # Self-heartbeat so ATHENA component stays current in System Health panel
+    try:
+        get_scribe().heartbeat(
+            "ATHENA", "OK", note="API serving",
+            last_action=f"live poll {datetime.now(timezone.utc).strftime('%H:%M')}UTC",
+        )
+    except Exception:
+        pass
     mt5 = _read_json(MARKET_FILE)
     if isinstance(mt5, dict):
         mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
@@ -537,7 +547,10 @@ def api_live():
         "account":  mt5.get("account", {}),
         "price":    mt5.get("price", {}),
         "chart_symbol": chart_symbol,
-        "indicators_h1": mt5.get("indicators_h1", {}),
+        "indicators_h1":  mt5.get("indicators_h1", {}),
+        "indicators_m5":  mt5.get("indicators_m5", {}),
+        "indicators_m15": mt5.get("indicators_m15", {}),
+        "indicators_m30": mt5.get("indicators_m30", {}),
         "open_positions": mt5.get("open_positions", []),
         "pending_orders": mt5.get("pending_orders", []),
         "pending_orders_forge_count": mt5.get("pending_orders_forge_count"),
