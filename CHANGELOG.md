@@ -39,6 +39,42 @@
 
 ---
 
+## [System 2.0.3] — 2026-05-09 (FORGE 2.7.9 — M30 EMA bearish confirmation gate)
+
+### Changes table
+
+| # | Location | Change | Config | Status |
+|---|----------|--------|--------|--------|
+| 1 | `ea/FORGE.mq5` SELL gate chain | Add M30 EMA20 < EMA50 confirmation gate between OsMA Q2 and news tighten | `FORGE_BREAKOUT_REQUIRE_M30_BEAR_SELL=1` | ✅ compiled 2.7.9 |
+| 2 | `ea/FORGE.mq5` config struct | New fields `breakout_require_m30_bear_sell`, `breakout_m30_bear_adx_min` | — | ✅ |
+| 3 | `ea/FORGE.mq5` global | New `g_scalper_last_m30bear_log_bar` throttle to log once per M5 bar | — | ✅ |
+| 4 | `config/scalper_config.defaults.json` | `require_m30_bear_sell: 1`, `m30_bear_adx_min: 25` | — | ✅ |
+| 5 | `scripts/sync_scalper_config_from_env.py` | M30 gate keys added to MAPPING | — | ✅ |
+
+### Gate execution order — SELL path (full, as of FORGE 2.7.9)
+
+1. BB condition: `prev_close < BB_lower − buffer` + M5/M15/H1/H4 bear alignment
+2. Cardwell Bear Resistance ceiling: `m5_rsi < rsi_sell_max (60)` ← 2.7.6
+3. Session SELL cutoff: `hour < 17:00 UTC` ← 2.7.7
+4. ADX extreme block: `m15_adx < 55` ← 2.7.7
+5. ADX min SELL: `m5_adx ≥ 25` ← 2.7.3
+6. H1+H4 crash bypass + RSI floor ← 2.7.6
+7. ADX spike-from-flat (6-bar lookback) ← 2.7.4
+8. RSI-declining gate (auto-off ADX ≥ 40) ← 2.7.4
+9. OsMA Q2 gate: histogram negative AND falling ← 2.7.7c
+10. **M30 EMA bearish confirmation: M30 EMA20 < EMA50 (when ADX ≥ 25)** ← **2.7.9**
+11. News RSI tighten ← 2.7.6
+
+### Design rationale
+
+H1 EMA trend label lags — at recovery inflections, H1 may still show BEAR while M30 EMA has already crossed bullish. The M30 intermediate TF check sits between H1 (strategic bias) and M5 (entry signal), catching early-recovery entries before the trend reversal is fully confirmed. Gate uses existing `g_mtf[2].h_ma20` / `g_mtf[2].h_ma50` handles (already initialized in `EnsureMTFIndicators`) — zero new indicator handles.
+
+Gate only activates when `m5_adx ≥ m30_bear_adx_min (25)` — in ranging conditions (ADX < 25), M30 EMA alignment is meaningless for short-term scalps and is bypassed.
+
+Journal reason: `entry_quality_m30_not_bearish`
+
+---
+
 ## [System 2.0.2] — 2026-05-09 (Comprehensive Python audit — 10 bugs across 6 files)
 
 ### Changes table
