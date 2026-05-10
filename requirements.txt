@@ -36,3 +36,14 @@ python-dotenv>=1.2.0
 schedule>=1.2.0
 beautifulsoup4>=4.14.0
 pytz>=2024.1                     # Timezone data — update yearly
+
+# ── Change log (2026-05-10) ───────────────────────────────────────
+# ┌─────────────────┬──────────────────┬─────────────────┬───────────────────────────────────────────────────┐
+# │ Package         │ Before           │ After           │ Reason                                            │
+# ├─────────────────┼──────────────────┼─────────────────┼───────────────────────────────────────────────────┤
+# │ anthropic       │ >=0.40.0,<0.50.0 │ >=0.100.0       │ <0.50.0 cap broke vision output_config (f3f2974) │
+# │ telethon        │ >=1.40.0,<2.0.0  │ >=1.43.0,<2.0.0 │ Bumped floor to installed version                 │
+# │ flask           │ >=3.0.0,<4.0.0   │ >=3.1.0,<4.0.0  │ Bumped floor to installed version                 │
+# │ numpy           │ >=1.26.0         │ >=2.0.0         │ 2.x confirmed working; hmmlearn 0.3.3 compatible  │
+# │ everything else │ old minimums     │ current version  │ Floors raised to reflect what is actually running │
+# └─────────────────┴──────────────────┴─────────────────┴───────────────────────────────────────────────────┘
