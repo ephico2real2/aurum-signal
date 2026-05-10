@@ -1369,34 +1369,59 @@ function ATHENA(){
                             </div>
                           ))}
                         </div>
-                        {/* P&L curve */}
-                        {sparkData.length>=2&&(
+                        {/* P&L curve with labeled axes */}
+                        {sparkData.length>=2&&(()=>{
+                          const total=btDetail.pnl_curve?.length||sparkData.length;
+                          const maxPnl=Math.max(...sparkData);
+                          const minPnl=Math.min(...sparkData,0);
+                          const rng=maxPnl-minPnl||1;
+                          const PL=52,PB=22,PT=10,PR=10;
+                          const CW=380,CH=96;
+                          const cw=CW-PL-PR,ch=CH-PT-PB;
+                          const pts=sparkData.map((v,i)=>
+                            `${PL+(i/(sparkData.length-1))*cw},${PT+ch-((v-minPnl)/rng)*ch}`
+                          ).join(' ');
+                          const zeroY=PT+ch-((0-minPnl)/rng)*ch;
+                          const showZero=minPnl<0&&maxPnl>0;
+                          return(
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
-                            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:6,letterSpacing:2}}>CUMULATIVE P&L</div>
-                            <Sparkline data={sparkData} w={380} h={60} color={sparkColor}/>
+                            <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,marginBottom:6,letterSpacing:1}}>CUMULATIVE P&amp;L</div>
+                            <svg width={CW} height={CH} style={{overflow:'visible',display:'block'}}>
+                              <defs><linearGradient id="btsg" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor={sparkColor} stopOpacity=".25"/>
+                                <stop offset="100%" stopColor={sparkColor} stopOpacity="0"/>
+                              </linearGradient></defs>
+                              {/* axes */}
+                              <line x1={PL} y1={PT} x2={PL} y2={PT+ch} stroke={T.border2} strokeWidth={1}/>
+                              <line x1={PL} y1={PT+ch} x2={PL+cw} y2={PT+ch} stroke={T.border2} strokeWidth={1}/>
+                              {/* zero line */}
+                              {showZero&&<line x1={PL} y1={zeroY} x2={PL+cw} y2={zeroY} stroke={T.border2} strokeWidth={1} strokeDasharray="4,3"/>}
+                              {/* Y tick labels */}
+                              <text x={PL-5} y={PT+5} textAnchor="end" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">${maxPnl.toFixed(0)}</text>
+                              {showZero&&<text x={PL-5} y={zeroY+3} textAnchor="end" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">$0</text>}
+                              <text x={PL-5} y={PT+ch} textAnchor="end" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">${minPnl.toFixed(0)}</text>
+                              {/* Y axis label — rotated */}
+                              <text x={10} y={PT+ch/2} textAnchor="middle" fill={T.text} fontSize={8} fontFamily="'Courier New',monospace"
+                                transform={`rotate(-90,10,${PT+ch/2})`}>Equity ($)</text>
+                              {/* X tick labels */}
+                              <text x={PL} y={PT+ch+14} textAnchor="middle" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">1</text>
+                              <text x={PL+cw} y={PT+ch+14} textAnchor="middle" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">{total}</text>
+                              {/* X axis label */}
+                              <text x={PL+cw/2} y={CH} textAnchor="middle" fill={T.text} fontSize={8} fontFamily="'Courier New',monospace">Trade #</text>
+                              {/* chart fill + line */}
+                              <polygon points={`${PL},${PT+ch} ${pts} ${PL+cw},${PT+ch}`} fill="url(#btsg)"/>
+                              <polyline points={pts} fill="none" stroke={sparkColor} strokeWidth="1.5" strokeLinejoin="round"/>
+                            </svg>
                           </div>
-                        )}
-                        {/* Gate breakdown */}
-                        {(btDetail.gates||[]).length>0&&(
-                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
-                            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:2}}>GATE BREAKDOWN (SKIP)</div>
-                            {(btDetail.gates||[]).map(g=>(
-                              <div key={g.gate_reason} style={{display:'flex',justifyContent:'space-between',
-                                borderBottom:`1px solid ${T.border}`,padding:'4px 0',fontSize:8,fontFamily:T.mono}}>
-                                <span style={{color:T.text}}>{g.gate_reason}</span>
-                                <span style={{color:T.textD}}>{g.cnt.toLocaleString()}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {/* TAKEN entries */}
+                        );})()}
+                        {/* TAKEN entries — shown before gate breakdown */}
                         {(btDetail.taken||[]).length>0&&(
-                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12}}>
-                            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:2}}>TAKEN ENTRIES</div>
-                            {/* header row */}
-                            <div style={{display:'grid',gridTemplateColumns:'90px 56px 70px 56px 80px 48px 48px 64px',
-                              gap:4,borderBottom:`1px solid ${T.border2}`,paddingBottom:4,marginBottom:2,
-                              fontSize:6,color:T.textD,fontFamily:T.mono,letterSpacing:1}}>
+                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
+                            <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,marginBottom:8,letterSpacing:1}}>TAKEN ENTRIES</div>
+                            {/* header row — Section 508: min 9px, color ≥4.5:1 contrast */}
+                            <div style={{display:'grid',gridTemplateColumns:'96px 52px 68px 76px 88px 52px 52px 64px',
+                              gap:4,borderBottom:`1px solid ${T.border2}`,paddingBottom:5,marginBottom:2,
+                              fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:.5}}>
                               <span>TIME (UTC)</span><span>DIR</span><span>SESSION</span>
                               <span>SETUP</span><span>OUTCOME</span>
                               <span>RSI</span><span>ADX</span><span style={{textAlign:'right'}}>P&amp;L</span>
@@ -1408,37 +1433,54 @@ function ATHENA(){
                               const isOpen=outcome==='OPEN';
                               const outcomeColor=isSL?T.red:isOpen?T.amber:isTP?T.gold:T.green;
                               const pnl=e.pnl||0;
-                              const pnlColor=pnl>0?T.green:pnl<0?T.red:T.textD;
-                              // session label + color
+                              const pnlColor=pnl>0?T.green:pnl<0?T.red:T.textB;
                               const sess=(e.session||'').toUpperCase();
-                              const sessColor=sess.includes('LONDON')?T.blue:sess.includes('NEW_YORK')||sess.includes('NY')?T.green:sess.includes('SYDNEY')?T.purple:sess.includes('ASIAN')||sess.includes('ASIA')?T.cyan:T.textD;
-                              const sessShort=sess.replace('NEW_YORK','NY').replace('LONDON','LON').replace('SYDNEY','SYD').replace('ASIAN','ASIA').slice(0,10);
+                              const sessColor=sess.includes('LONDON')&&sess.includes('NEW_YORK')?T.teal
+                                :sess.includes('LONDON')?T.blue
+                                :sess.includes('NEW_YORK')||sess.includes('NY')?T.green
+                                :sess.includes('SYDNEY')?T.purple
+                                :sess.includes('ASIAN')||sess.includes('ASIA')?T.cyan:T.textB;
+                              const sessShort=sess.replace('NEW_YORK','NY').replace('LONDON','LON')
+                                .replace('SYDNEY','SYD').replace('ASIAN','ASIA').slice(0,12);
                               return(
-                              <div key={i} style={{display:'grid',gridTemplateColumns:'90px 56px 70px 56px 80px 48px 48px 64px',
-                                gap:4,borderBottom:`1px solid ${T.border}`,padding:'5px 0',fontSize:8,fontFamily:T.mono,alignItems:'center'}}>
-                                <span style={{color:T.textD}}>{(e.timestamp_utc||'').slice(0,16).replace('T',' ')}</span>
+                              <div key={i} style={{display:'grid',gridTemplateColumns:'96px 52px 68px 76px 88px 52px 52px 64px',
+                                gap:4,borderBottom:`1px solid ${T.border}`,padding:'6px 0',fontSize:10,fontFamily:T.mono,alignItems:'center'}}>
+                                <span style={{color:T.textBB}}>{(e.timestamp_utc||'').slice(0,16).replace('T',' ')}</span>
                                 <span style={{color:e.direction==='BUY'?T.green:T.red,fontWeight:'bold'}}>{e.direction}</span>
-                                <span style={{color:sessColor,fontSize:7}}>{sessShort||'—'}</span>
-                                <span style={{color:T.textD,fontSize:7}}>{(e.setup_type||'').replace('BB_','')}</span>
-                                <span style={{display:'inline-flex',alignItems:'center',gap:3}}>
-                                  <span style={{background:outcomeColor+'22',color:outcomeColor,
-                                    border:`1px solid ${outcomeColor}44`,borderRadius:3,
-                                    padding:'1px 5px',fontSize:7,fontWeight:'bold',letterSpacing:1}}>
+                                <span style={{color:sessColor,fontWeight:600}}>{sessShort||'—'}</span>
+                                <span style={{color:T.textB}}>{(e.setup_type||'').replace('BB_','')}</span>
+                                <span style={{display:'inline-flex',alignItems:'center',gap:4}}>
+                                  <span style={{background:outcomeColor+'28',color:outcomeColor,
+                                    border:`1px solid ${outcomeColor}66`,borderRadius:3,
+                                    padding:'2px 6px',fontSize:9,fontWeight:'bold',letterSpacing:.5}}>
                                     {outcome}
                                   </span>
                                   {e.close_comment&&!isSL&&(
-                                    <span style={{color:T.textD,fontSize:6,opacity:.7}} title={e.close_comment}>
+                                    <span style={{color:T.textB,fontSize:9}} title={e.close_comment}>
                                       {e.close_comment.replace('tp ','@')}
                                     </span>
                                   )}
                                 </span>
-                                <span style={{color:T.textD}}>RSI {e.rsi}</span>
-                                <span style={{color:T.textD}}>ADX {e.adx}</span>
-                                <span style={{color:pnlColor,textAlign:'right',fontWeight:pnl!==0?'bold':'normal'}}>
+                                <span style={{color:T.textBB}}>RSI {e.rsi}</span>
+                                <span style={{color:T.textBB}}>ADX {e.adx}</span>
+                                <span style={{color:pnlColor,textAlign:'right',fontWeight:'bold'}}>
                                   {pnl>0?'+':''}{pnl!==0?`$${pnl.toFixed(2)}`:'—'}
                                 </span>
                               </div>
                             );})}
+                          </div>
+                        )}
+                        {/* Gate breakdown */}
+                        {(btDetail.gates||[]).length>0&&(
+                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
+                            <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,marginBottom:8,letterSpacing:1}}>GATE BREAKDOWN (SKIP)</div>
+                            {(btDetail.gates||[]).map(g=>(
+                              <div key={g.gate_reason} style={{display:'flex',justifyContent:'space-between',
+                                borderBottom:`1px solid ${T.border}`,padding:'5px 0',fontSize:10,fontFamily:T.mono}}>
+                                <span style={{color:T.textBB}}>{g.gate_reason}</span>
+                                <span style={{color:T.textB}}>{g.cnt.toLocaleString()}</span>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </>
