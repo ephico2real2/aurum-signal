@@ -661,3 +661,54 @@ git commit -m "feat/fix(athena): description — tests: N/N pass"
 ```
 
 **IMPORTANT:** The naive `window.getComputedStyle(el).backgroundColor` returns the element's own bg, NOT the blended result of alpha-transparent parents. Always use the `effectiveBg()` function above (walks up the DOM and alpha-blends all layers) for accurate results. The wrong approach produces hundreds of false positives.
+
+---
+
+## ATHENA API Design — Maintenance Protocol
+
+`docs/ATHENA_API_DESIGN.md` is the canonical reference for all Flask routes in `python/athena_api.py`.
+
+**Update it whenever:**
+- A new route (`@app.route`) is added to `athena_api.py`
+- A route's response schema changes (new fields, removed fields, renamed fields)
+- A new DB table is queried by a route
+- A config/legend JSON file is added to the system
+
+**What to update:**
+1. `docs/ATHENA_API_DESIGN.md` — endpoint section 3.x with method, path, parameters, response schema, DB tables
+2. `docs/CLI_API_CHEATSHEET.md` — add a curl+python one-liner for the new endpoint
+3. `schemas/openapi.yaml` — add/update the path stub and any new schema objects
+4. Section 5 (UI panel → endpoint mapping) if a UI panel is wired to the new endpoint
+5. Section 6 (DB table reference) if a new table is involved
+
+**Reference files:**
+- API implementation: `python/athena_api.py`
+- Gate legend source: `config/gate_legend.json` (add new gate codes here)
+- Indicator legend source: `config/indicator_legend.json` (add new indicators here)
+- Swagger spec: `schemas/openapi.yaml`
+- UI design: `docs/ATHENA_UI_DESIGN.md`
+
+---
+
+## Regime Engine — Maintenance Protocol
+
+`docs/REGIME_ENGINE_REVIEW.md` documents the FORGE HMM-based regime classification engine.
+
+**Key design facts to remember:**
+- **Entry point:** `python/regime.py` `RegimeEngine.infer()` — called every bridge tick (1s)
+- **Feature vector:** 11 dimensions; features 7–10 (RSI, MACD, TV recommend, price delta) collapse to 0 when LENS is stale
+- **States:** TREND_BULL, TREND_BEAR, VOLATILE, RANGE, UNKNOWN
+- **Fallback:** `_gaussian_fallback()` when HMM not trained (first ~2 min after restart)
+- **No persistence:** model lost on every bridge restart → 2-min cold-start each time
+
+**Critical gotchas (read before modifying regime code):**
+1. `model.fit()` runs synchronously in the bridge loop — can block 1–5s
+2. LENS staleness uses `max(stale_sec, 300)` floor — accepts 5-min-old data when `REGIME_STALE_SEC=45`
+3. Tester runs use `g_regime_confidence = 1.0` hardcoded — overstates gate effectiveness
+4. Duplicate HMM state labels (both `"RANGE"`) have their posteriors summed — UI shows inflated confidence
+
+**Update `docs/REGIME_ENGINE_REVIEW.md`** whenever:
+- A new regime state is added
+- Feature vector dimensions change
+- New gates using regime are added (AEGIS or FORGE EA)
+- HMM training parameters change (components, iterations, retrain interval)
