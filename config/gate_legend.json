@@ -1,177 +1,239 @@
 {
   "_meta": {
-    "description": "Human-readable explanations for FORGE gate_reason codes. Used by Athena UI (GET /api/gate_legend) and docs/ATHENA_UI_DESIGN.md. Add new codes here when FORGE introduces new gates.",
-    "categories": ["Entry Quality", "Market Conditions", "Position Limits", "Session / Time", "Risk Management", "Indicators", "System"]
+    "description": "Human-readable explanations for FORGE gate_reason codes written to SIGNALS.gate_reason in the tester journal DB. Keys MUST match the exact string FORGE writes — verified against ea/FORGE.mq5 JournalRecordSignal calls. Do NOT guess keys; always read the EA source first.",
+    "verified_against": "ea/FORGE.mq5",
+    "last_verified": "2026-05-10",
+    "categories": ["Entry Quality", "RSI / ADX Floors", "MACD Gates", "H4 Filters", "Position Limits", "Session / Time", "Risk Management", "Cooldowns", "Regime", "Warmup / System"]
   },
 
+  "_patterns": {
+    "warmup_*": "Wildcard: FORGE prepends 'warmup_' to an internal reason string. Any gate_reason starting with warmup_ means the EA's indicator buffers are not yet ready at the start of a backtest or live session.",
+    "open_group_*": "Wildcard: FORGE tried to open a group but the broker rejected the order. The suffix indicates the reason: invalid_stops, rr_below_floor, bad_stoplimit_price, etc."
+  },
+
+  "no_setup": {
+    "label": "No valid pattern on this bar",
+    "explanation": "Neither the BB Breakout nor the BB Bounce conditions were met. Price did not reach a Bollinger Band or show a qualifying breakout move — FORGE simply found nothing tradeable.",
+    "category": "Entry Quality"
+  },
   "entry_quality_direction": {
-    "label": "Direction — not enough aligned bars",
-    "explanation": "Too few M5 candles are moving in the trade direction. FORGE requires at least 2 consecutive bars confirming the direction before entry.",
+    "label": "Not enough bars moving in trade direction",
+    "explanation": "Too few consecutive M5 candles are moving in the intended trade direction. FORGE requires a minimum number of aligned bars before entry to avoid chasing a random spike.",
+    "category": "Entry Quality"
+  },
+  "entry_quality_direction_cap": {
+    "label": "Directional bias too strong — counter-move risk",
+    "explanation": "The last N bars have all moved in the same direction — price may be overextended. FORGE caps stacked directional bars to avoid entering at the end of a one-sided move.",
     "category": "Entry Quality"
   },
   "entry_quality_body": {
-    "label": "Candle body too small",
-    "explanation": "The entry candle's body (open-to-close) is too small relative to its full range (high-to-low). A tiny body means indecision — not a clean directional move.",
-    "category": "Entry Quality"
-  },
-  "entry_quality_rsi_buy_ceil": {
-    "label": "RSI too high for a buy",
-    "explanation": "RSI is above the buy ceiling (default 70). Buying when RSI is overbought risks entering at the top of a move. FORGE blocks buys in exhausted territory.",
-    "category": "Entry Quality"
-  },
-  "entry_quality_rsi_sell_floor": {
-    "label": "RSI too low for a sell",
-    "explanation": "RSI is below the sell floor (default 30). Selling when RSI is deeply oversold risks entering into exhaustion (Cardwell reversal zone). FORGE blocks sells here.",
-    "category": "Entry Quality"
-  },
-  "entry_quality_adx_min_sell": {
-    "label": "ADX too low for a breakout sell",
-    "explanation": "The Average Directional Index (ADX) measures trend strength. It is below the minimum required for a sell breakout (default 20). Not enough momentum to justify the trade.",
-    "category": "Entry Quality"
-  },
-  "entry_quality_adx_min_buy": {
-    "label": "ADX too low for a breakout buy",
-    "explanation": "ADX is below the minimum required for a buy breakout. Not enough trending momentum — the market is too range-bound for a breakout entry.",
+    "label": "Candle body too small (indecision)",
+    "explanation": "The entry candle's body (distance from open to close) is too small relative to its full range (high to low). A small body means the market is undecided — not a clean directional move FORGE wants to trade.",
     "category": "Entry Quality"
   },
   "entry_quality_atr": {
-    "label": "ATR (volatility) too low",
-    "explanation": "Average True Range (ATR) measures recent volatility. It is below the minimum threshold. Low ATR means the market is too quiet for a valid entry — spreads eat too much of the potential move.",
+    "label": "ATR (volatility) too low at this bar",
+    "explanation": "The Average True Range — a measure of how much price moves each bar — is below the required minimum. When ATR is too small, the spread takes up too large a share of the potential profit.",
+    "category": "Entry Quality"
+  },
+  "entry_quality_atr_ext": {
+    "label": "ATR extension too narrow for viable trade",
+    "explanation": "A secondary ATR check applied after the main setup is found. Even though a BB Breakout or Bounce was detected, the ATR at this specific bar is too small to reach the minimum TP1 target after spread costs.",
     "category": "Entry Quality"
   },
   "entry_quality_bb_contraction": {
-    "label": "Bollinger Bands contracting",
-    "explanation": "The Bollinger Bands are squeezing inward (range narrowing). A breakout setup requires expanding bands. Contracting bands mean no momentum is building.",
+    "label": "Bollinger Bands contracting — no momentum",
+    "explanation": "The Bollinger Bands are narrowing (squeezing together). A breakout setup requires the bands to be expanding, signalling increasing volatility. Contracting bands mean the market is coiling, not breaking out.",
     "category": "Entry Quality"
   },
-  "entry_quality_bb_expansion": {
-    "label": "Bollinger Bands not expanding enough",
-    "explanation": "BB width has not expanded sufficiently from its recent low. Required for breakout confirmation — expansion signals increasing volatility and directional move.",
-    "category": "Entry Quality"
+  "entry_quality_rsi_buy_ceil": {
+    "label": "RSI too high — overbought, do not buy",
+    "explanation": "The RSI is above the buy ceiling (default 70). Buying when RSI is overbought risks entering right at the top of a move, just as the market is most likely to reverse downward.",
+    "category": "RSI / ADX Floors"
   },
-  "entry_quality_m30_not_bearish": {
-    "label": "M30 chart not confirming bearish bias",
-    "explanation": "The 30-minute timeframe is not showing a bearish structure (lower highs, lower lows, or bearish EMA cross). FORGE requires the M30 to agree with the M5 sell signal.",
-    "category": "Entry Quality"
+  "entry_quality_rsi_sell_floor": {
+    "label": "RSI too low — oversold, do not sell",
+    "explanation": "The RSI is below the standard sell floor (default 33). Selling into an already oversold market risks triggering a Cardwell reversal — price snapping back sharply against the sell.",
+    "category": "RSI / ADX Floors"
   },
-  "entry_quality_macd_q0": {
-    "label": "MACD quadrant mismatch (Q0 — neutral rising)",
-    "explanation": "The MACD histogram is in Quadrant 0: positive and rising. Required for buy entries on some setups. For sells, this quadrant blocks entry because momentum is bullish.",
-    "category": "Indicators"
+  "entry_quality_rsi_sell_adx_floor": {
+    "label": "RSI too low for sell — stricter floor because ADX is weak",
+    "explanation": "Same as entry_quality_rsi_sell_floor, but a higher (stricter) RSI floor is applied because ADX is below the threshold that defines a strong trend. In weak-trend conditions, oversold bounces are more likely, so FORGE raises the bar for entering a sell.",
+    "category": "RSI / ADX Floors"
   },
-  "entry_quality_macd_q1": {
-    "label": "MACD quadrant mismatch (Q1 — neutral falling)",
-    "explanation": "MACD histogram is in Quadrant 1: positive but falling. Required for sell entries — confirms losing momentum on the upside. Blocks buy entries.",
-    "category": "Indicators"
+  "entry_quality_rsi_rising_sell": {
+    "label": "RSI rising into sell — losing bearish momentum",
+    "explanation": "RSI is increasing on the sell signal bar. This means bearish momentum is fading even as the breakout fires. FORGE blocks the sell because the indicator trend and price direction are diverging.",
+    "category": "RSI / ADX Floors"
   },
-  "entry_quality_macd_q2": {
-    "label": "MACD quadrant mismatch (Q2 — bearish falling)",
-    "explanation": "MACD histogram is in Quadrant 2: negative and falling. Required for strong sell entries. Blocks buy entries — price momentum is clearly bearish.",
-    "category": "Indicators"
+  "entry_quality_adx_min_sell": {
+    "label": "ADX too low — not enough trend for a sell breakout",
+    "explanation": "The Average Directional Index (ADX) measures trend strength, not direction. It is below the required minimum (default 20) for a sell breakout. Without enough trend, the breakout is more likely to fail and reverse.",
+    "category": "RSI / ADX Floors"
   },
-  "entry_quality_macd_q3": {
-    "label": "MACD quadrant mismatch (Q3 — bearish rising)",
-    "explanation": "MACD histogram is in Quadrant 3: negative but rising (recovering). Blocks both aggressive sells and buys — market is transitioning, not yet directional.",
-    "category": "Indicators"
+  "entry_quality_adx_extreme_sell": {
+    "label": "ADX too high — trend may be overextended",
+    "explanation": "ADX has surpassed the upper threshold. An extremely high ADX often signals the trend is near exhaustion and a reversal or consolidation is near. FORGE blocks new entries when the trend has been running too long.",
+    "category": "RSI / ADX Floors"
+  },
+  "entry_quality_adx_spike_sell": {
+    "label": "ADX spike on sell bar — momentum unreliable",
+    "explanation": "ADX jumped sharply on this specific bar. A sudden ADX spike can be caused by a news event, slippage, or a single large candle — not a genuine sustained trend. FORGE skips the entry until ADX stabilises.",
+    "category": "RSI / ADX Floors"
+  },
+  "entry_quality_macd_q0_bull_rising": {
+    "label": "MACD Q0 — bullish and rising (blocks sell)",
+    "explanation": "The MACD histogram is above zero and increasing (Quadrant 0: Bull Strong). This is a bullish signal. FORGE blocks a sell breakout when MACD is pushing upward — the indicator and the trade would be pointing in opposite directions.",
+    "category": "MACD Gates"
+  },
+  "entry_quality_macd_q1_bull_fading": {
+    "label": "MACD Q1 — bullish but fading (blocks buy)",
+    "explanation": "The MACD histogram is above zero but decreasing (Quadrant 1: Bull Fading). Upward momentum is waning. FORGE uses this to block buys that are chasing a move that may be ending.",
+    "category": "MACD Gates"
+  },
+  "entry_quality_macd_q2_bear_str": {
+    "label": "MACD Q2 — bearish and strengthening (blocks buy)",
+    "explanation": "The MACD histogram is below zero and falling (Quadrant 2: Bear Strong). Bearish momentum is accelerating. FORGE blocks a buy entry — buying into strengthening bearish momentum is high-risk.",
+    "category": "MACD Gates"
+  },
+  "entry_quality_macd_q3_bear_fading": {
+    "label": "MACD Q3 — bearish but recovering (ambiguous — blocks both)",
+    "explanation": "The MACD histogram is below zero but rising (Quadrant 3: Bear Fading). The market is in a bearish-to-neutral transition. Direction is unclear, so FORGE blocks both aggressive buys and sells until MACD picks a side.",
+    "category": "MACD Gates"
+  },
+  "entry_quality_h1_di_buy": {
+    "label": "H1 DI+ not above DI- for buy",
+    "explanation": "The 1-hour Directional Indicators show DI- (selling pressure) is still stronger than DI+ (buying pressure). A buy signal on M5 needs the hourly chart to confirm bullish direction before entry.",
+    "category": "H4 Filters"
   },
   "entry_quality_h4_rsi_sell_blocked": {
-    "label": "H4 RSI gate blocked sell",
-    "explanation": "The 4-hour RSI is too low (already oversold on H4). Selling here would be piling into an exhausted move on a higher timeframe — risky reversal territory.",
-    "category": "Indicators"
-  },
-  "entry_quality_h4_rsi_buy_blocked": {
-    "label": "H4 RSI gate blocked buy",
-    "explanation": "The 4-hour RSI is too high (already overbought on H4). Buying here would be chasing an extended move on the higher timeframe.",
-    "category": "Indicators"
+    "label": "H4 RSI already oversold — avoid new sell",
+    "explanation": "The 4-hour RSI is below its lower threshold. Selling here would be adding to a position on the 4-hour timeframe that is already deeply oversold. Higher-timeframe exhaustion increases reversal risk.",
+    "category": "H4 Filters"
   },
   "entry_quality_h4_adx_sell_blocked": {
-    "label": "H4 ADX gate blocked sell",
-    "explanation": "The 4-hour ADX is below the minimum for a sell. No strong trend is confirmed on the higher timeframe to support the M5 sell signal.",
-    "category": "Indicators"
+    "label": "H4 ADX too low — no H4 trend to support sell",
+    "explanation": "The 4-hour ADX is below the minimum required to confirm a sell on the higher timeframe. Without H4 trend alignment, an M5 breakout sell may be fighting against a ranging 4-hour market.",
+    "category": "H4 Filters"
+  },
+  "entry_quality_h4_rsi_buy_blocked": {
+    "label": "H4 RSI already overbought — avoid new buy",
+    "explanation": "The 4-hour RSI is above its upper threshold. Buying here risks chasing an extended 4-hour move that is already overbought — a correction or reversal is more likely than continuation.",
+    "category": "H4 Filters"
+  },
+  "entry_quality_h4_adx_buy_blocked": {
+    "label": "H4 ADX too low — no H4 trend to support buy",
+    "explanation": "The 4-hour ADX does not confirm a bullish trend. An M5 buy breakout without H4 trend support is more likely to be a false breakout in a choppy 4-hour range.",
+    "category": "H4 Filters"
+  },
+  "entry_quality_m30_not_bearish": {
+    "label": "M30 not confirming bearish structure",
+    "explanation": "The 30-minute chart is not showing a bearish structure (falling highs, falling lows, or bearish EMA alignment). FORGE requires the M30 to agree with the M5 sell signal to reduce false breakouts.",
+    "category": "H4 Filters"
   },
   "entry_quality_session_sell_cutoff": {
-    "label": "Sell cutoff time reached",
-    "explanation": "Sell entries are blocked after a configurable UTC hour (default 17:00 NY, 00:00 London). Avoids holding short positions through thin overnight markets.",
+    "label": "Sell cutoff time — no new sells after this hour",
+    "explanation": "New sell entries are blocked after a configurable hour (default NY 17:00 UTC, London 00:00 UTC). Holds avoid holding new short positions through thin overnight markets with unpredictable gaps.",
     "category": "Session / Time"
+  },
+  "entry_quality_news_filter": {
+    "label": "News blackout — high-impact event imminent or recent",
+    "explanation": "A high-impact economic event (e.g. Non-Farm Payrolls, CPI, FOMC) is within the blackout window. FORGE blocks new entries entirely around these events — volatility spikes make entries unpredictable and stops unreliable.",
+    "category": "Risk Management"
+  },
+  "entry_quality_news_rsi_tighten": {
+    "label": "Near news event — entry criteria tightened",
+    "explanation": "A medium-impact news event is approaching. Entries are not fully blocked but FORGE requires a tighter RSI range before allowing the trade. This signal failed the stricter criteria.",
+    "category": "Risk Management"
   },
   "open_groups": {
-    "label": "Maximum open positions reached",
-    "explanation": "FORGE has reached its limit on how many trade groups can be open at the same time (default 2). No new entries until an existing group closes.",
+    "label": "Maximum concurrent positions reached",
+    "explanation": "FORGE already has the maximum number of trade groups open at the same time (default 2). No new positions can be opened until at least one existing group closes fully.",
     "category": "Position Limits"
   },
-  "max_open_same_direction": {
-    "label": "Too many open positions in same direction",
-    "explanation": "Already at the maximum number of concurrent SELL (or BUY) groups. Prevents over-exposure in one direction even if total group count allows more.",
+  "session_trade_cap": {
+    "label": "Maximum trades for this session reached",
+    "explanation": "The configured cap on how many trades can be placed per session has been hit. This prevents over-trading within a single London or New York session regardless of how many signals appear.",
     "category": "Position Limits"
-  },
-  "no_setup": {
-    "label": "No valid pattern detected",
-    "explanation": "Neither the BB Breakout nor the BB Bounce conditions were met on this bar. The market did not reach a Bollinger Band or show a qualifying breakout move.",
-    "category": "Market Conditions"
   },
   "session_off": {
-    "label": "Outside trading session window",
-    "explanation": "The current bar falls outside the allowed trading sessions (London and/or New York). Asian session is typically excluded to avoid thin liquidity.",
+    "label": "Outside trading session",
+    "explanation": "The current bar is outside the allowed trading hours. By default FORGE trades London and New York sessions only — the Asian session is excluded due to thin liquidity and unpredictable price action.",
     "category": "Session / Time"
   },
-  "spread_too_wide": {
-    "label": "Spread exceeds maximum",
-    "explanation": "The bid-ask spread is wider than the configured maximum (default 30 points for XAUUSD). Wide spreads make entries uneconomical — cost too high relative to target profit.",
+  "spread": {
+    "label": "Spread too wide — entry too expensive",
+    "explanation": "The bid-ask spread at this moment exceeds the configured maximum (default 30 points for XAUUSD). A wide spread makes the entry uneconomical — the cost to enter is too large relative to the expected profit.",
     "category": "Market Conditions"
   },
-  "min_rr": {
-    "label": "Risk:Reward ratio too low",
-    "explanation": "The distance from entry to TP1 is not large enough relative to the stop-loss distance. FORGE requires a minimum R:R (default 1.5×) before placing a trade.",
+  "rr_too_low": {
+    "label": "Risk:Reward ratio below minimum",
+    "explanation": "The distance from the entry price to TP1 is not large enough compared to the stop-loss distance. FORGE requires a minimum R:R ratio (default 1.5×) to ensure the potential reward justifies the risk on every trade.",
     "category": "Risk Management"
   },
-  "min_entry_atr": {
-    "label": "ATR too small at entry",
-    "explanation": "The Average True Range at this specific entry bar is below the minimum. Complements the general ATR gate — checks the ATR at the moment of the signal, not just recent average.",
-    "category": "Risk Management"
+  "cooldown": {
+    "label": "Post-loss cooldown — waiting before re-entry",
+    "explanation": "A trade recently hit its stop-loss. FORGE enforces a cooldown period (default 90 seconds) before allowing any new entry. This prevents immediately re-entering a losing trade in the same adverse conditions.",
+    "category": "Cooldowns"
   },
-  "high_vol_trend_guard": {
-    "label": "High-volatility trend guard active",
-    "explanation": "ADX is very high AND the H1/H4 trend is not fully aligned. In explosive trending conditions, FORGE requires both timeframes to agree before entering — avoids getting caught in a spike reversal.",
-    "category": "Risk Management"
-  },
-  "adx_hysteresis": {
-    "label": "ADX hysteresis — cooling down from high trend",
-    "explanation": "ADX recently exceeded the 'enter trend' threshold and has not yet dropped below the 'exit trend' threshold. FORGE waits for ADX to cool before accepting new signals — prevents chasing a decelerating trend.",
-    "category": "Risk Management"
-  },
-  "sell_loss_grace": {
-    "label": "Post-loss cooldown (sell side)",
-    "explanation": "A sell trade recently hit its stop-loss. FORGE waits a configurable cooldown period (default 90 seconds) before allowing new sells. Prevents immediately re-entering a losing direction.",
-    "category": "Risk Management"
-  },
-  "loss_cooldown": {
-    "label": "Post-loss cooldown (any direction)",
-    "explanation": "Any trade recently hit its stop-loss. A brief cooldown period is enforced before any new entry. Prevents revenge-trading after a loss.",
-    "category": "Risk Management"
+  "post_sl_cooldown": {
+    "label": "Extended cooldown after stop-loss — sell side",
+    "explanation": "A sell group recently hit its stop-loss. An extended cooldown (default 3600 seconds = 1 hour) blocks new sells. This is a stricter version of the general cooldown applied specifically when a sell trade was stopped out.",
+    "category": "Cooldowns"
   },
   "direction_cooldown": {
-    "label": "Same-direction cooldown",
-    "explanation": "A trade in the same direction was recently opened. A short bar-count cooldown is enforced to avoid stacking entries too quickly in one direction.",
-    "category": "Risk Management"
+    "label": "Same-direction cooldown — too soon after last entry",
+    "explanation": "A trade in the same direction (SELL or BUY) was opened very recently. A short bar-count cooldown is enforced to prevent stacking entries in rapid succession before the first position has had time to develop.",
+    "category": "Cooldowns"
+  },
+  "m1": {
+    "label": "M1 microstructure gate — short-term noise",
+    "explanation": "A 1-minute timeframe filter rejected the entry. Even when the M5 setup looks clean, this gate can detect that price action on the 1-minute chart is too choppy or counter-trend to justify the entry at that exact moment.",
+    "category": "Entry Quality"
+  },
+  "regime_countertrend": {
+    "label": "Regime engine — trading against the macro trend",
+    "explanation": "The AURUM Regime Engine has classified the current market state (e.g. TREND_BEAR) and the proposed entry would trade against it. FORGE can be configured to block or reduce size on counter-trend signals when regime confidence is high.",
+    "category": "Regime"
+  },
+  "execution_failed": {
+    "label": "Broker rejected the order",
+    "explanation": "FORGE sent the entry order to the broker but the broker returned an error (e.g. invalid stops, requote, insufficient margin). The signal was valid but could not be executed. Check the EA Expert log for the specific broker error code.",
+    "category": "Warmup / System"
   },
   "warmup_tester_m5_rollovers": {
-    "label": "Tester warmup — indicators not ready",
-    "explanation": "At the very start of a backtest, the M5 indicator buffers (RSI, Bollinger Bands, ATR etc.) do not have enough bars of history. These signals are discarded as they would be based on incomplete data.",
-    "category": "System"
+    "label": "Backtest warmup — waiting for M5 bars to accumulate",
+    "explanation": "At the very start of a Strategy Tester backtest, the M5 indicator buffers (RSI, Bollinger Bands, ATR, ADX) do not have enough historical bars to produce reliable values. FORGE discards these early signals to avoid trades based on incomplete indicator data.",
+    "category": "Warmup / System"
   },
-  "news_filter_blocked": {
-    "label": "News event blackout window",
-    "explanation": "A high-impact economic news event is imminent or just released. FORGE blocks new entries within configured windows before/after events (e.g. NFP: 30 min before, 60 min after).",
-    "category": "Risk Management"
+  "warmup_m5_bars": {
+    "label": "Warmup — not enough M5 bar history",
+    "explanation": "The M5 timeframe does not yet have enough bars loaded for the indicators to calculate. Typically seen at the start of a session or after a terminal restart.",
+    "category": "Warmup / System"
   },
-  "news_filter_tighten": {
-    "label": "News event — tightened entry criteria",
-    "explanation": "Near a medium-impact news event. FORGE doesn't fully block entries but requires stricter RSI conditions. The signal failed the tightened criteria.",
-    "category": "Risk Management"
+  "warmup_m15_bars": {
+    "label": "Warmup — not enough M15 bar history",
+    "explanation": "The M15 (15-minute) timeframe does not yet have enough bars for the confirmation indicators. FORGE requires history across multiple timeframes before trading.",
+    "category": "Warmup / System"
   },
-  "dd_equity_close_all": {
-    "label": "Drawdown breaker — equity too low",
-    "explanation": "Account equity has dropped below the drawdown protection threshold (default 3% from session high). FORGE suspends new entries until equity recovers.",
-    "category": "Risk Management"
+  "warmup_h1_bars": {
+    "label": "Warmup — not enough H1 bar history",
+    "explanation": "The H1 (1-hour) trend timeframe does not yet have enough bars. H1 trend strength is required for entry decisions, so FORGE waits until enough hourly bars are available.",
+    "category": "Warmup / System"
+  },
+  "warmup_h4_bars": {
+    "label": "Warmup — not enough H4 bar history",
+    "explanation": "The H4 (4-hour) timeframe does not have enough bars. H4 RSI and ADX gates require H4 history to compute.",
+    "category": "Warmup / System"
+  },
+  "open_group_rr_below_floor": {
+    "label": "Order rejected — R:R below the hard floor",
+    "explanation": "After stop calculations, the actual risk:reward ratio of the order fell below the hard floor (a stricter minimum than the pre-check). Broker price or spread moved between the signal and the order placement, making the trade unviable.",
+    "category": "Warmup / System"
+  },
+  "open_group_invalid_stops": {
+    "label": "Order rejected — invalid stop levels",
+    "explanation": "The broker rejected the order because the stop-loss or take-profit price violated the broker's minimum stop distance rule. This can happen during fast markets when prices move between FORGE calculating the stops and sending the order.",
+    "category": "Warmup / System"
   }
 }
