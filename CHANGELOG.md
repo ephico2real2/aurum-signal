@@ -1,5 +1,38 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [FORGE 2.7.11-run10-prep] — 2026-05-10 (Run 9 post-mortem fixes)
+
+### Context
+Run 9 analysis revealed: cascade losses from SL-hunt pattern, TP too far on continuation legs,
+BB_BOUNCE in trending market, and 53% of SIGNALS had RSI=0/ADX=0 making gate precision
+analysis impossible. All fixes below derived from objective quant analysis of price movement
+around every loss (not indicator-only reasoning).
+
+### Changes table
+
+| # | File | Change | Why |
+|---|------|--------|-----|
+| 1 | `ea/FORGE.mq5` | `JournalImportTrades`: magic range `+9999 → +29999` | Cascade/limit orders (magic +20000–+20004) were silently dropped from TRADES. Run 7 had 0 losses recorded; actual losses were -$38.71. |
+| 2 | `ea/FORGE.mq5` | `bounce_lot_factor`: new struct field + default(1.0) + JSON parse + lot calc | BB_BOUNCE G5005 lost -$175 at full lot. With 0.25 factor → -$44. Mean-reversion needs smaller position than breakout. |
+| 3 | `ea/FORGE.mq5` | `CheckEntryQuality`: added `rsi`, `adx` to signature; replaced hardcoded `0,0` in all 5 `JournalRecordSignal` calls | All direction/body/ATR gate SKIPs logged RSI=0/ADX=0 — 53% of 20,924 signals unanalysable. Gate precision audit impossible. Fix: pipe m5_rsi/m5_adx through from call site. |
+| 4 | `ea/FORGE.mq5` | Added block comments + CHANGELOG refs to `CheckEntryQuality` | Code documentation standard: every function gets PURPOSE, EVALUATION ORDER, PARAMETERS, CHANGELOG. Extended detail in CHANGELOG.md. |
+| 5 | `scripts/sync_scalper_config_from_env.py` | Added 5 dead-variable mappings: `ADX_MIN_SELL`, `ADX_MIN_SELL_LOOKBACK_BARS`, `REQUIRE_H1_DI_BUY`, `COUNTER_BUY_ADX_THRESHOLD`, `MAX_REENTRY_ATR_EXT` | These vars existed in .env since v2.7.6 but were never wired — EA used hard-coded defaults. `REQUIRE_H1_DI_BUY=1` and `MAX_REENTRY_ATR_EXT=1.25` were silently ignored. |
+| 6 | `scripts/sync_scalper_config_from_env.py` | Added `FORGE_BOUNCE_LOT_FACTOR`, `FORGE_BOUNCE_ADX_MAX`, `FORGE_SESSION_NY_SELL_CUTOFF_UTC`, `FORGE_SESSION_LONDON_SELL_CUTOFF_UTC` mappings | `FORGE_BOUNCE_ADX_MAX=40` was wired but mapped to wrong default; session cutoff vars were unmapped entirely. |
+| 7 | `config/scalper_config.defaults.json` | Added `bounce_lot_factor: 1.0` and 5 new bb_breakout keys | Defaults must exist before sync overrides can be applied. |
+| 8 | `.env` | `FORGE_SELL_STOP_CONT_EXPIRY_BARS`: 8 → 2 | 8 bars = 40 min — not scalping. G5008 cascade held 14h and gave back +21 pts of profit. Scalpers close in minutes. |
+| 9 | `.env` | `FORGE_SESSION_NY_SELL_CUTOFF_UTC`: 17 → 20 → 18 | Extended to 20 caused G5007 loss at 17:10 UTC (-$259). 18 UTC (2PM EDT) is the correct balance. |
+| 10 | `.env` | `FORGE_BREAKOUT_MAX_REENTRY_ATR_EXT`: 1.25 → 2.0 | At 1.25, May 1 rally first candle (RSI 74.9) was blocked by `entry_quality_atr_ext`. 2.0 allows re-entry up to 2×ATR from first entry. |
+| 11 | `.env` | `FORGE_BOUNCE_ADX_MAX`: 40 → 35 | G5005 BB_BOUNCE had ADX=33.2 — passed at 40. Lowered to 35 (still passes 33.2, but closer). adx_max=30 needed to fully block G5005-class setups. |
+| 12 | `.env` | `FORGE_BOUNCE_LOT_FACTOR=0.25` | New parameter: BB_BOUNCE position at 25% of base lot. |
+
+### Known open items (EA code — needs recompile + next iteration)
+- `sell_stop_cont_tp=0` confirmed at line ~6122: SELL STOP CONT has no TP assigned. G5003 (+8pts) and G5008 (+21pts) were deeply profitable cascades that reversed because no TP was set. Fix needed: `sell_stop_cont_tp_atr_mult` config + EA logic.
+- TP3/TP4 (`tp3_atr_mult=2.5`, `tp4_atr_mult=4.0`) only used in R:R gate math — never assigned as live position targets. Runners after TP2 rely only on fast-lock SL ratchet.
+- `OpenGroup()` logs all `open_group_*` gates with RSI=0/ADX=0 — same pattern as CheckEntryQuality. Fix: pass rsi/adx into OpenGroup() signature.
+- Pre-indicator gates (session_off, spread, warmup) also log RSI=0 — these are genuinely pre-computation so zeros are correct, but should be flagged in monitoring as "indicator-unavailable" rather than "RSI=0".
+
+---
+
 ## [FORGE 2.7.10-day2] — 2026-05-09 (SELL STOP continuation ladder — TP1 arming)
 
 ### Changes table

@@ -10,6 +10,151 @@ patterns rather than reporting them as normal: atr=0, identical prices, P&L movi
 without trade count changing, unknown gate_reason values, all-skip runs, cascade
 magics firing unexpectedly.
 
+---
+
+## STRICT ANALYSIS PROTOCOL — Think Like an Expert Quant/Scalper
+
+**Never attribute a loss to a single indicator in isolation.** ADX, RSI, and ATR are context
+signals — they do not individually explain wins or losses. Always answer the 3-question
+framework before drawing any conclusion.
+
+### The 3-Question Loss Framework (run for every loss)
+
+**Q1 — Direction**: Was price moving in the right direction at entry, even briefly?
+- YES + stopped by wick → SL structure problem (too tight, not a bad setup)
+- YES + held too long → TP structure problem (capture the move, re-enter)
+- NO → Direction failure (setup fired into wrong momentum — gate or regime issue)
+
+**Q2 — SL proportionality**: Was the SL proportional to ATR?
+- Minimum viable SL for cascade/continuation orders: **1.5×ATR**
+- SL < 1×ATR = will be wicked out on normal noise. Not a losing setup — a structural flaw.
+
+**Q3 — TP reachability**: Did price actually reach TP territory before reversing?
+- Price past TP1 but no TP triggered → TP set too far — short scalp TP needed
+- Price never reached TP territory → Direction was wrong — fix the entry gate, not the TP
+
+### Loss pattern decision tree
+
+```
+Was price in favorable territory at any point?
+├── YES: How far?
+│   ├── Past TP1 (>100%): TP too far → add/shorten sell_stop_cont_tp_atr_mult
+│   ├── 50–99% of TP1:    TP nearly reached → SL may be too tight OR TP slightly too far
+│   └── <25% of TP1:      Trend failure → fix entry gate (adx_max, setup type, direction filter)
+└── NO (only intrabar):   Intrabar scalp missed → lower tp1_atr_mult to 0.4× to catch first push
+```
+
+### ADX interpretation rules (data-validated, Run 7–9)
+
+**ADX tells you momentum strength, NOT direction.** From actual run data:
+- G5003 WON at ADX=41.3 (highest ADX = biggest winner)
+- G5007 LOST at ADX=37.4 (similar range, price went wrong direction)
+- G5008 WON at ADX=34.3 (similar to G5007, price went right direction)
+- **Conclusion: ADX range 23–42 does not predict win/loss. Direction does.**
+
+Only use ADX to:
+- Block BB_BOUNCE when ADX > threshold (trending market, wrong setup type)
+- Tier lot sizes (high ADX = smaller lot per config)
+- Do NOT use ADX to block BB_BREAKOUT — a SELL at ADX=41 can be the best trade of the run
+
+### Scalping principles for XAUUSD (validated against runs)
+
+1. **Short TP, re-enter** — Take 0.4×ATR at TP1, exit, re-evaluate. Do not hold for 4×ATR.
+   The market will often give you 3-4 scalp entries in the same direction vs one big TP.
+
+2. **Cascade orders need their own TP** — `sell_stop_cont_tp_atr_mult` ~0.8×ATR.
+   G5003 and G5008 cascades had +8 and +21 pts of favorable movement with NO TP.
+   At 0.08 lots that was $64 and $170 of missed profit per cascade.
+
+3. **SL width for cascade legs** — minimum 1.5×ATR from entry. G5001/G5002 were stopped
+   on a 4.34 pt wick (0.8×ATR) then the market moved 23 pts in the right direction.
+
+4. **Scalp timeframe = seconds to minutes, not hours** — cascade/continuation orders must
+   expire within 2 bars (10 min). `sell_stop_cont_expiry_bars=2` (was 8 = 40 min, absurd
+   for scalping). If momentum hasn't continued within 10 min of TP1, the setup is dead.
+   G5008 held 14 hours overnight — a filled cascade position needs a EA-side max_hold_bars
+   enforcement (pending EA code addition: `sell_stop_cont_max_hold_bars`).
+
+   **Flag during monitoring**: any cascade position open >3 bars after fill = anomaly, report it.
+
+5. **Direction is the primary filter** — not ADX. A SELL that fires when the next 5 bars
+   go UP is a direction problem. ADX just tells you how strongly the current move is trending.
+
+### SKIP signal analysis — gate precision assessment
+
+**Run at stop condition** alongside Q6b loss analysis. For every major gate, check whether
+blocked signals had price move against the blocked direction (gate correct) or in the blocked
+direction (missed win). Use Q9 below.
+
+**Known EA processing order** (affects which signals have indicator values):
+```
+1. session_off          → logged with RSI=0, ADX=0  (no indicators computed yet)
+2. warmup check         → logged with RSI=0, ADX=0
+3. entry_quality_direction → logged with RSI=0, ADX=0  ← all direction gate signals
+4. entry_quality_body   → logged with RSI=0, ADX=0  ← all body gate signals
+5. [RSI, ADX, ATR computed here]
+6. rsi/adx/rr/setup gates → indicators populated
+```
+**Consequence**: gate precision can only be measured for gates that fire AFTER step 5.
+Do NOT attempt RSI/ADX analysis on direction/body gate blocks — those values are always 0.
+
+**Validated gate precision from Run 9:**
+
+| Gate | Precision | Action |
+|---|---|---|
+| `entry_quality_rsi_buy_ceil` | 0% on strong trends | Raise ceiling for momentum moves; wrong gate for trends |
+| `entry_quality_adx_min_sell` | 25% | Over-filtering; ADX 20–25 SELLs mostly move right |
+| `rr_too_low` | 60% | Best gate — keep, prevents genuinely bad R:R setups |
+| `entry_quality_direction` | Cannot assess (RSI=0) | Measure only via post-block price movement |
+| `entry_quality_body` | Cannot assess (RSI=0) | Same |
+
+### Q9 — SKIP gate precision query (run at stop condition)
+
+```python
+python3 << 'EOF'
+import sqlite3
+DB = "<active DB path>"
+conn = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+
+# Only analyse gates where indicators ARE computed (RSI>0, ADX>0)
+gates = ["entry_quality_rsi_buy_ceil","entry_quality_adx_min_sell","rr_too_low","no_setup"]
+for gate in gates:
+    rows = conn.execute(f'''
+        SELECT time, direction, ROUND(price,2), ROUND(rsi,1), ROUND(adx,1), ROUND(atr,2)
+        FROM SIGNALS WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+          AND outcome="SKIP" AND gate_reason="{gate}"
+          AND rsi>0 AND adx>0
+        ORDER BY time LIMIT 10
+    ''').fetchall()
+    correct=0; wrong=0
+    for sig_time, direction, price, rsi, adx, atr in rows:
+        nxt = conn.execute(f'''
+            SELECT ROUND(price,2) FROM SIGNALS
+            WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+              AND rsi>0 AND time > {sig_time} AND time <= {sig_time}+900
+            ORDER BY time LIMIT 1
+        ''').fetchone()
+        if nxt:
+            delta = nxt[0]-price
+            ok = (delta>0.5 if direction=="SELL" else delta<-0.5) if direction else None
+            if ok is True: correct+=1
+            elif ok is False: wrong+=1
+    total=correct+wrong
+    if total: print(f"{gate}: {correct}/{total} correct ({round(correct/total*100)}%) | {wrong} missed wins")
+conn.close()
+EOF
+```
+
+### When recommending parameter changes
+
+Always cross-check EVERY proposed change against wins AND losses:
+- Does tightening gate X block the losses WITHOUT blocking the wins?
+- Run the gate against the full TAKEN list — if a proposed filter would have blocked a winner,
+  it costs more than it saves.
+- Prefer structural fixes (TP/SL geometry) over gate changes — they work across regimes.
+- Use gate precision (Q9) to validate: a gate with <50% precision is blocking more good trades
+  than bad ones and should be loosened or removed.
+
 > **ALWAYS query the source tester DB for all monitoring.** aurum_tester.db is
 > synced by bridge every 60s and lags by 1–3 minutes during active runs — it is
 > stale and must NOT be used for live monitoring. Use aurum_tester.db only in
@@ -212,6 +357,58 @@ FROM TRADES WHERE profit<0
 ORDER BY profit ASC;"
 ```
 
+### Q6b — Price movement around each loss (run at stop condition)
+
+For every loss, pull the SIGNALS price trajectory in the 30-min window after entry to answer:
+- Did price move toward TP before reversing?
+- How close (%) did it get to TP1?
+- Was it stopped by a wick then the move resumed?
+
+```python
+python3 << 'EOF'
+import sqlite3
+DB = "<active DB path>"
+conn = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+
+# Adjust losses list from Q6 output: (label, entry_price, direction, tp1_price, entry_time)
+losses = [
+    # ("G5001 SELL STOP", 4537.72, "SELL", 4535.55, "2026-04-29 16:20:07"),
+]
+
+for label, entry_px, direction, tp1, entry_time in losses:
+    print(f"\n=== {label} | entry={entry_px} | TP1={tp1} | dir={direction} ===")
+    for r in conn.execute(f'''
+        SELECT datetime(time,"unixepoch"), ROUND(price,2),
+               ROUND({"price - "+str(tp1) if direction=="SELL" else str(tp1)+" - price"},2) as dist_to_tp
+        FROM SIGNALS
+        WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+          AND time >= strftime("%s","{entry_time}") - 60
+          AND time <= strftime("%s","{entry_time}") + 1800
+        ORDER BY time LIMIT 20
+    '''):
+        t, px, dist = r
+        favor = round(entry_px - px if direction=="SELL" else px - entry_px, 2)
+        tp_pct = round((1 - dist / abs(tp1 - entry_px)) * 100) if abs(tp1-entry_px) > 0 else 0
+        print(f"  {t}  price={px}  favor={favor:+.2f}  tp%={tp_pct}%")
+conn.close()
+EOF
+```
+
+**What to report per loss:**
+- Max favorable pts reached and % of TP1 achieved
+- Whether price reversed before or after TP1
+- Pattern classification (see below)
+
+**Loss pattern taxonomy** (from Run 9 analysis):
+
+| Pattern | Signature | Fix |
+|---|---|---|
+| **SL-hunt** | Stopped on brief spike, move resumed in favor | SL too tight — widen or disable cascade |
+| **Held-too-long** | Was past TP1 (>100%) but no TP triggered, slow reversal | TP too far — tighten TP on continuation legs |
+| **Intrabar-only** | Favorable intrabar but bar-close never crossed TP1 | `tp1_atr_mult` too large — lower to 0.4× |
+| **Trend-failure** | Peaked at <25% of TP1, reversed immediately | Wrong setup for regime — gate (e.g. adx_max, bounce_lot_factor) |
+| **Overnight-hold** | Massively in profit, held past expiry, reversed next day | Expiry_bars not enforced — investigate expiry logic |
+
 ### Q7 — STATS_CACHE (hourly P&L breakdown)
 ```bash
 sqlite3 -readonly "$DB" "
@@ -262,6 +459,165 @@ Stop after **3 consecutive ticks with no new signals** — run is complete. Befo
 2. Report: total TAKEN, total P&L, win rate, all cascade arm events observed
 3. Cross-check with Athena backtest tab: `http://localhost:7842/api/backtest/run/<aurum_run_id>`
 4. Append new gate_reason codes to `docs/FORGE_TESTER_JOURNAL_QUERIES.md`
+5. **Run Q6b price movement analysis on every loss** — classify each by loss pattern
+6. **Write Recommended Parameter Changes section** (see below) to the analysis doc
+
+---
+
+## RECOMMENDED PARAMETER CHANGES (write at end of every run)
+
+After stop condition is met, query the final gate breakdown and produce a parameter-loosening
+table in the analysis doc. This section is always written — even if TAKEN count was high,
+the gate breakdown reveals what was left on the table.
+
+### Query to run
+
+```python
+python3 << 'EOF'
+import sqlite3
+DB = "<active DB path>"
+conn = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+print("Gate | Count")
+for r in conn.execute('''
+    SELECT gate_reason, COUNT(*) as cnt
+    FROM SIGNALS
+    WHERE outcome="SKIP" AND gate_reason IS NOT NULL AND gate_reason!=""
+      AND run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+    GROUP BY gate_reason ORDER BY cnt DESC LIMIT 15
+'''):
+    print(r)
+conn.close()
+EOF
+```
+
+### Gate → config key mapping (FORGE 2.7.x)
+
+| Gate reason | Config key | Section |
+|-------------|-----------|---------|
+| `entry_quality_direction` | `min_directional_bars` | `safety` |
+| `entry_quality_body` | `min_body_ratio` | `safety` |
+| `entry_quality_rsi_buy_ceil` | `rsi_buy_ceil` | `bb_breakout` |
+| `entry_quality_rsi_sell_floor` | `rsi_sell_floor` | `bb_breakout` |
+| `entry_quality_rsi_sell_adx_floor` | `rsi_sell_floor` (ADX-gated variant) | `bb_breakout` |
+| `entry_quality_bb_contraction` | `require_bb_expansion` | `safety` |
+| `entry_quality_adx_min_sell` | `adx_min` | `bb_breakout` |
+| `entry_quality_session_sell_cutoff` | `session_ny_sell_cutoff_utc` | `safety` |
+| `rr_too_low` | `min_rr` / `min_rr_floor` | `safety` |
+| `no_setup` | downstream of all quality gates; also gated by `require_macd_buy/sell` | `bb_breakout` |
+
+### Standard output format for analysis doc
+
+```markdown
+## Recommended Parameter Changes — More Trades
+
+**Context**: N signals evaluated, N TAKEN (X% take rate). Top N gates account for N SKIPs (~X% of all filtered signals).
+
+### Current blocking gates → parameters
+
+| Gate | Hits | Config key | Current | Proposed |
+|------|------|------------|---------|---------|
+| `entry_quality_direction` | N | `safety.min_directional_bars` | `2` | `1` |
+| `entry_quality_body` | N | `safety.min_body_ratio` | `0.40` | `0.25` |
+| `entry_quality_rsi_buy_ceil` | N | `bb_breakout.rsi_buy_ceil` | `70` | `77` |
+| `entry_quality_bb_contraction` | N | `safety.require_bb_expansion` | `1` | `0` |
+
+### Change 1 — <key>: <current> → <proposed>
+**Impact**: ...  
+**Risk**: ...
+
+[repeat for each change]
+
+### Hidden filters to check
+`bb_breakout.require_macd_buy` — if set to `1` (non-default), MACD failures hide in `no_setup`
+rather than their own gate_reason. Check if BUY count is still low after loosening other gates.
+
+### Apply order
+1. Lowest-risk RSI ceiling/floor adjustments first
+2. `min_directional_bars` + `min_body_ratio` together (affects both directions equally)
+3. `require_bb_expansion` last
+4. `require_macd_buy/sell` only if frequency still insufficient after above
+
+> **Note**: `scalper_config.json` is generated — changes go via `.env` or config template,
+> then `make scalper-env-sync && make forge-compile`.
+```
+
+### Guidance for safe proposals
+
+| Gate | Conservative change | Aggressive change | Do not exceed |
+|------|-------------------|-------------------|--------------|
+| `rsi_buy_ceil` | 70 → 74 | 70 → 77 | 80 (RSI≥80 = genuine reversal risk) |
+| `rsi_sell_floor` | 30 → 26 | 30 → 22 | 18 (RSI≤18 = deep oversold, SL risk) |
+| `min_body_ratio` | 0.40 → 0.30 | 0.40 → 0.25 | 0.15 (too noisy below this) |
+| `min_directional_bars` | 2 → 1 | 2 → 1 | 0 (removing entirely defeats the filter) |
+| `require_bb_expansion` | leave 1 | set to 0 | — |
+
+---
+
+---
+
+## FORGE EA CODE STANDARDS (apply when modifying ea/FORGE.mq5)
+
+Every function block, gate, and structural change must follow this standard.
+
+### Function header comment block
+
+```mql5
+// ─────────────────────────────────────────────────────────────────────────────
+// FunctionName — short one-line description
+//
+// PURPOSE: What problem does this function solve?
+//
+// EVALUATION ORDER (if the function has sequential gates):
+//   1. First check  — why it comes first
+//   2. Second check — dependency or cost reason
+//   ...
+//
+// PARAMETERS:
+//   param1  — what it is, units, valid range
+//   param2  — ...
+//
+// RETURNS / SIDE EFFECTS: what the caller should expect
+//
+// CHANGELOG:
+//   YYYY-MM-DD  Author description of change (Run N context if applicable)
+// ─────────────────────────────────────────────────────────────────────────────
+```
+
+### Inline comment rules
+
+- **Every gate block gets a one-liner** explaining WHAT it checks and WHY it fires early
+- **Explain the config key** that controls it so it's findable from the code
+- **Explain the logging consequence** if the gate logs RSI=0 or other placeholder values
+- **No orphan numbers** — `0.95`, `4.34`, `25.0` must have comments explaining what they mean
+
+```mql5
+// 2+3. Body ratio & directional alignment
+//   Body: avg(bar_body/bar_range) over N bars — filters doji/wick candles (min_body_ratio)
+//   Direction: count bars where close agrees with trade dir — filters indecision (min_directional_bars)
+//   OHLC-only: safe to run before indicator computation
+```
+
+### Changelog entry format
+
+Every code change must add an entry to the relevant function's CHANGELOG block:
+```
+//   YYYY-MM-DD  Description of change.
+//               Why it was needed (data observation, run number, bug).
+//               What it affects (gate precision, P&L, signal logging).
+```
+
+Example:
+```
+//   2026-05-10  Pass rsi, adx into CheckEntryQuality signature.
+//               Previously logged RSI=0/ADX=0 for all direction/body SKIPs —
+//               53% of signals were unanalysable in gate precision audit (Run 9).
+```
+
+### When to add a CHANGELOG entry
+
+- Any change to gate logic, config key mapping, threshold, or function signature
+- Any bug fix where data was incorrect or incomplete
+- Any structural reorder of evaluation logic
 
 ---
 
@@ -288,27 +644,62 @@ If you discover a table/column not in `FORGE_TESTER_JOURNAL_QUERIES.md`:
 **wall_time**: NNNNNNNNNN  
 **source_run_id**: N (TESTER_RUNS.id)
 
-## Summary
+## Summary — FINAL
+- Sim period: YYYY-MM-DD → YYYY-MM-DD
 - Total signals: N
-- TAKEN: N  |  Skipped: N
+- TAKEN: N signals (N actual groups incl. limit fills)  |  Skipped: N
 - Total P&L: $N.NN
 - Win rate: N% (W wins / L losses)
+- Best win: $N.NN
+- Avg profit event: $N.NN
+- Athena cross-check: ✓/✗ gate counts match, performance.total_pnl=$N.NN confirmed
 
 ## TAKEN Groups
-| Sim Time (UTC) | Group | Direction | Session | RSI | ADX | TP reached | P&L |
-|----------------|-------|-----------|---------|-----|-----|-----------|-----|
+| Sim Time (UTC) | Group | Direction | Session | RSI | ADX | ATR | Price | TP reached | P&L |
+|----------------|-------|-----------|---------|-----|-----|-----|-------|-----------|-----|
 
-## Gate Breakdown (top 10 SKIP reasons)
+## Gate Breakdown (final, all SKIP reasons)
 | Gate Reason | Count | Human Label |
 |-------------|-------|-------------|
 
-## SELL STOP CONT / BUY LIMIT Events
-| Event | Group | Slot | RSI | Price | Expiry | Result |
-|-------|-------|------|-----|-------|--------|--------|
+## Recommended Parameter Changes — More Trades
+**Context**: N signals evaluated, N TAKEN (X% take rate).
 
-## Losses
-| Deal | Magic | Profit | Comment | Sim Time |
-|------|-------|--------|---------|----------|
+### Current blocking gates → parameters
+| Gate | Hits | Config key | Current | Proposed |
+|------|------|------------|---------|---------|
+
+### Change 1 — `<key>`: current → proposed
+**Impact**: ...
+**Risk**: ...
+
+### Apply order
+1. ...
+
+> Changes go via `.env` or config template → `make scalper-env-sync && make forge-compile`
+
+## SELL STOP CONT / BUY LIMIT Events
+| Event | Group | Slot | RSI | Price | Result |
+|-------|-------|------|-----|-------|--------|
+
+## Losses — Price Movement Analysis
+| Deal | Magic | Profit | Entry | TP1 | SL | Max favor pts | % TP1 | Pattern |
+|------|-------|--------|-------|-----|-----|---------------|-------|---------|
+
+### Per-loss narrative
+For each loss, document:
+- Price trajectory (key bar-close prices between entry and SL hit)
+- Max favorable pts reached and % of TP1 achieved
+- Pattern: SL-hunt / Held-too-long / Intrabar-only / Trend-failure / Overnight-hold
+
+**Loss pattern taxonomy:**
+| Pattern | Signature | Fix |
+|---|---|---|
+| SL-hunt | Stopped on brief spike, move resumed in favor | SL too tight — widen or disable cascade |
+| Held-too-long | Was past TP1 (>100%) but no TP triggered, slow reversal | TP too far — tighten continuation TP |
+| Intrabar-only | Favorable intrabar but bar-close never crossed TP1 | `tp1_atr_mult` too large — lower to 0.4× |
+| Trend-failure | Peaked at <25% of TP1, reversed immediately | Wrong regime — gate (adx_max, bounce_lot_factor) |
+| Overnight-hold | Massively in profit, held past expiry, reversed next day | Expiry_bars not enforced — investigate |
 
 ## Observations & Anomalies
 
