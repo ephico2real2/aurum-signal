@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.79"
+#property version "2.80"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.9";
+const string FORGE_VERSION = "2.7.10";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -241,9 +241,13 @@ struct ScalperConfig {
    double breakout_adx_sell_block_threshold;// ADX >= this → BLOCK SELL entirely (default 55); at min lot 1/16th = same as 1/8th
    // Cardwell SELL LIMIT cascade (2.7.7b) — pending orders catch RSI bounce toward Bear Resistance
    bool   breakout_sell_limit_enabled;      // place SELL LIMITs above crash entry (default true)
-   double breakout_sell_limit_atr_mult;     // SELL LIMIT at bid + ATR × this (default 0.4 = 1st bounce)
-   double breakout_sell_limit_lot_factor;   // lot factor for SELL LIMITs — 1/8th (default 0.125)
+   double breakout_sell_limit_atr_mult;     // L1 SELL LIMIT at bid + ATR × this (default 0.4 = 1st Cardwell bounce)
+   double breakout_sell_limit_lot_factor;   // L1 lot factor — 1/8th (default 0.125)
    int    breakout_sell_limit_expiry_bars;  // cancel if not filled within N M5 bars (default 6 = 30min)
+   // SELL LIMIT L2 — second cascade level at deeper Cardwell Bear Resistance zone (2.7.10)
+   bool   breakout_sell_limit_l2_enabled;   // place L2 SELL LIMIT at deeper bounce (default true)
+   double breakout_sell_limit_l2_atr_mult;  // L2 price: bid + ATR × this (default 0.65 = 50-62% retrace)
+   double breakout_sell_limit_l2_lot_factor;// L2 lot factor — 1/8th (default 0.125)
    // Safety
    double max_spread_points;
    int    max_open_groups;
@@ -482,7 +486,7 @@ struct SellLimitEntry {
    datetime expiry;       // cancel if not filled by this time
    bool     active;
 };
-SellLimitEntry g_sell_limit_stack[2];  // up to 2 stacked SELL LIMITs per crash entry
+SellLimitEntry g_sell_limit_stack[4];  // 4 slots: [0]=L1 SELL LIMIT, [1]=L2 SELL LIMIT, [2-3]=reserved for 2.7.10 SELL STOP + BUY LIMIT
 
 // MULTI-TIMEFRAME INDICATORS (M5, M15, M30) — for AURUM scalping context
 struct TFIndicators {
@@ -851,9 +855,9 @@ void OnTick() {
    ManageStagedNativeLegs();
    ManageOpenGroups();
    ManagePendingLadderAbort();
-   // SELL LIMIT expiry check (2.7.7b): cancel stale cascade limits
+   // SELL LIMIT expiry check (2.7.7b/2.7.10): cancel stale cascade limits (all 4 slots)
    { datetime _now = TimeTradeServer();
-     for(int _si = 0; _si < 2; _si++) {
+     for(int _si = 0; _si < 4; _si++) {
         if(g_sell_limit_stack[_si].active && _now >= g_sell_limit_stack[_si].expiry) {
            if(OrderSelect(g_sell_limit_stack[_si].ticket))
               g_trade.OrderDelete(g_sell_limit_stack[_si].ticket);
@@ -2172,8 +2176,11 @@ void InitScalperConfig() {
    g_sc.breakout_sell_limit_atr_mult        = 0.4;
    g_sc.breakout_sell_limit_lot_factor      = 0.125;
    g_sc.breakout_sell_limit_expiry_bars     = 6;
-   // Init SELL LIMIT stack
-   for(int _si = 0; _si < 2; _si++) {
+   g_sc.breakout_sell_limit_l2_enabled      = true;
+   g_sc.breakout_sell_limit_l2_atr_mult     = 0.65;
+   g_sc.breakout_sell_limit_l2_lot_factor   = 0.125;
+   // Init SELL LIMIT stack (all 4 slots — slots [2],[3] reserved for 2.7.10 SELL STOP + BUY LIMIT)
+   for(int _si = 0; _si < 4; _si++) {
       g_sell_limit_stack[_si].ticket   = 0;
       g_sell_limit_stack[_si].group_id = 0;
       g_sell_limit_stack[_si].mkt_magic = 0;
@@ -2485,6 +2492,9 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_limit_atr_mult"))     { v = JsonGetDouble(breakout_json,"sell_limit_atr_mult");     if(v > 0 && v <= 5.0) g_sc.breakout_sell_limit_atr_mult     = v; }
       if(JsonHasKey(breakout_json, "sell_limit_lot_factor"))   { v = JsonGetDouble(breakout_json,"sell_limit_lot_factor");   if(v > 0 && v <= 1.0) g_sc.breakout_sell_limit_lot_factor   = v; }
       if(JsonHasKey(breakout_json, "sell_limit_expiry_bars"))  { v = JsonGetDouble(breakout_json,"sell_limit_expiry_bars");  if(v >= 1 && v <= 50) g_sc.breakout_sell_limit_expiry_bars  = (int)v; }
+      if(JsonHasKey(breakout_json, "sell_limit_l2_enabled"))   { v = JsonGetDouble(breakout_json,"sell_limit_l2_enabled");   g_sc.breakout_sell_limit_l2_enabled   = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "sell_limit_l2_atr_mult"))  { v = JsonGetDouble(breakout_json,"sell_limit_l2_atr_mult");  if(v > 0 && v <= 5.0) g_sc.breakout_sell_limit_l2_atr_mult  = v; }
+      if(JsonHasKey(breakout_json, "sell_limit_l2_lot_factor")){ v = JsonGetDouble(breakout_json,"sell_limit_l2_lot_factor"); if(v > 0 && v <= 1.0) g_sc.breakout_sell_limit_l2_lot_factor = v; }
       if(JsonHasKey(breakout_json, "sell_inside_band_lot_factor")) {
          v = JsonGetDouble(breakout_json, "sell_inside_band_lot_factor");
          if(v > 0 && v <= 1.0) g_sc.breakout_sell_inside_band_lot_factor = v;
@@ -5625,6 +5635,38 @@ void CheckNativeScalperSetups() {
             }
          }
       }
+      // L2 SELL LIMIT — deeper Cardwell Bear Resistance zone (2.7.10 Day 1)
+      // Uses slot [1]. Only placed when L1 placed successfully (same crash conditions apply).
+      if(g_sc.breakout_sell_limit_l2_enabled) {
+         double l2_price = NormalizeDouble(bid + m5_atr * g_sc.breakout_sell_limit_l2_atr_mult, _Digits);
+         double l2_lot   = NormalizeLot(MathMax(_broker_min, g_sc.lot_fixed * g_sc.breakout_sell_limit_l2_lot_factor));
+         datetime l2_exp = limit_exp;  // same expiry as L1
+         MqlTradeRequest _l2req = {}; MqlTradeResult _l2res = {};
+         _l2req.action     = TRADE_ACTION_PENDING;
+         _l2req.type       = ORDER_TYPE_SELL_LIMIT;
+         _l2req.symbol     = _Symbol;
+         _l2req.volume     = l2_lot;
+         _l2req.price      = l2_price;
+         _l2req.sl         = NormalizeDouble(sl, _Digits);
+         _l2req.tp         = NormalizeDouble(tp1, _Digits);
+         _l2req.type_time  = ORDER_TIME_SPECIFIED;
+         _l2req.expiration = l2_exp;
+         _l2req.type_filling = ORDER_FILLING_RETURN;
+         _l2req.magic      = (ulong)group_magic + 20001;  // distinct from L1 (+20000)
+         _l2req.comment    = "SCALP_LIMIT_L2|" + setup_type + "|G" + IntegerToString(group_id);
+         g_trade.SetExpertMagicNumber((ulong)group_magic + 20001);
+         if(OrderSend(_l2req, _l2res) && _l2res.order > 0) {
+            if(!g_sell_limit_stack[1].active) {
+               g_sell_limit_stack[1].ticket    = _l2res.order;
+               g_sell_limit_stack[1].group_id  = group_id;
+               g_sell_limit_stack[1].mkt_magic = (ulong)group_magic;
+               g_sell_limit_stack[1].expiry    = l2_exp;
+               g_sell_limit_stack[1].active    = true;
+               PrintFormat("FORGE SCALPER: SELL LIMIT L2 placed ticket=%d price=%.2f (ATR×%.2f) lot=%.2f",
+                           _l2res.order, l2_price, g_sc.breakout_sell_limit_l2_atr_mult, l2_lot);
+            }
+         }
+      }
       g_trade.SetExpertMagicNumber(MagicNumber);
    }
 
@@ -5837,9 +5879,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(profit < 0) {
       g_scalper_last_loss_time = TimeGMT();
       Print("FORGE: cooldown triggered after loss deal ", (long)deal, " profit=", DoubleToString(profit, 2));
-      // Cancel associated SELL LIMIT cascade orders when market position hits SL
+      // Cancel all cascade pending orders when market position hits SL (all 4 slots)
       long _deal_magic = HistoryDealGetInteger(deal, DEAL_MAGIC);
-      for(int _si = 0; _si < 2; _si++) {
+      for(int _si = 0; _si < 4; _si++) {
          if(g_sell_limit_stack[_si].active && (long)g_sell_limit_stack[_si].mkt_magic == _deal_magic) {
             if(OrderSelect(g_sell_limit_stack[_si].ticket))
                g_trade.OrderDelete(g_sell_limit_stack[_si].ticket);
