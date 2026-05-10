@@ -803,3 +803,98 @@ git commit -m "feat(forge): add FORGE_NEW_GATE with .env.example docs"
 - Feature vector dimensions change
 - New gates using regime are added (AEGIS or FORGE EA)
 - HMM training parameters change (components, iterations, retrain interval)
+
+## Athena UI — Drag-to-Resize Design Protocol
+
+**MANDATORY: evaluate resizable panels for every significant Athena UI change.**
+
+### When to apply drag-to-resize
+
+Any panel that competes with another panel for screen space in the same axis is a candidate.
+
+| Pattern | Apply when |
+|---|---|
+| Vertical drag (↕ row-resize) | Two panels stacked top/bottom within the same column — one grows at the other's expense |
+| Horizontal drag (↔ col-resize) | Two columns side by side — one grows at the other's expense |
+
+**Evaluate these questions before shipping any new panel:**
+1. Is this panel sharing vertical space with another panel the user might want more of?
+2. Is this panel sharing horizontal space (column width) with another panel?
+3. Does the panel have a fixed min/max height/width that will feel cramped for some users?
+
+If yes to any: add a drag handle.
+
+### Standard implementation pattern
+
+```jsx
+// State (in parent component)
+const [panelH, setPanelH] = useState(DEFAULT_PX);  // vertical
+const [colW,   setColW]   = useState(DEFAULT_PX);   // horizontal
+
+// Drag handle (vertical ↕)
+<div
+  title="Drag to resize <panel name>"
+  onMouseDown={e => {
+    e.preventDefault();
+    const startY = e.clientY, startH = panelH;
+    const onMove = ev => setPanelH(Math.max(MIN, Math.min(MAX, startH + (ev.clientY - startY))));
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }}
+  style={{ height: 8, cursor: 'row-resize', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', borderTop: `1px solid ${T.border}`, background: T.bg }}>
+  <div style={{ width: 36, height: 3, borderRadius: 2, background: T.border2, opacity: .6 }}/>
+</div>
+
+// Drag handle (horizontal ↔) — positioned absolute on column edge
+<div
+  title="Drag to resize <panel name>"
+  onMouseDown={e => {
+    e.preventDefault();
+    const startX = e.clientX, startW = colW;
+    const onMove = ev => setColW(Math.max(MIN, Math.min(MAX, startW + (ev.clientX - startX))));
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }}
+  style={{ position: 'absolute', top: 0, right: -4, width: 8, height: '100%',
+    cursor: 'col-resize', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+  <div style={{ width: 3, height: 36, borderRadius: 2, background: T.border2, opacity: .5 }}/>
+</div>
+```
+
+### Rules
+
+- **Pill indicator is mandatory** — the 36×3px (vertical) or 3×36px (horizontal) pill is the visual affordance. Users won't discover drag without it.
+- **Always set min AND max** — prevent panels from becoming unusably small or pushing others off-screen.
+- **Title attribute required** — `title="Drag to resize <name>"` for tooltip and Playwright test discoverability.
+- **Cursor must match axis** — `cursor: 'row-resize'` for vertical, `cursor: 'col-resize'` for horizontal.
+- **Clean up listeners** — always remove `mousemove` and `mouseup` from `document` in the `mouseup` handler.
+- **State in parent, not child** — drag state must live where it controls the layout, not inside the resized component.
+
+### Existing drag handles in Athena (2026-05-10)
+
+| Handle title | Axis | Range | Default | Controls |
+|---|---|---|---|---|
+| "Drag to resize sidebar" | ↔ horizontal | 140–320px | 186px | Left column width |
+| "Drag to resize AURUM panel" | ↕ vertical | 140–600px | 280px | AURUM chat height vs main tabs |
+| "Drag to resize right panel" | ↔ horizontal | 180–420px | 258px | Right column width |
+| "Drag to resize FORGE vs analysis panels" | ↕ vertical | 120–520px | 280px | FORGE+OsMA vs TradingView+Regime within right column |
+
+**When adding a new column or panel to Athena:** check this table, verify no handle is missing for the new boundary, and add to the table above.
+
+### Playwright verification
+
+After adding a drag handle, always verify with:
+```js
+const handles = document.querySelectorAll('[title*="Drag"]');
+// Expect count to match the table above
+```
+Then simulate a drag and confirm the panel dimension changed.

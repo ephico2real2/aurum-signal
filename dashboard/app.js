@@ -539,6 +539,10 @@ function ATHENA(){
   const [mgmtNote,setMgmtNote]=useState('');
   const [aurumH,setAurumH]=useState(280);
   const aurumDragRef=useRef(null);
+  // Column + panel resize state
+  const [leftW,setLeftW]=useState(186);    // left sidebar width (px)
+  const [rightW,setRightW]=useState(258);  // right panel width (px)
+  const [rightTopH,setRightTopH]=useState(280); // right panel: FORGE+OsMA section height
   // Backtest tab state
   const [btRuns,setBtRuns]=useState([]);
   const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
@@ -801,12 +805,25 @@ function ATHENA(){
     </div>
 
     {/* BODY */}
-    <div style={{flex:1,display:'grid',gridTemplateColumns:'186px 1fr 258px',
+    <div style={{flex:1,display:'grid',gridTemplateColumns:`${leftW}px 1fr ${rightW}px`,
       overflow:'hidden',minHeight:0}}>
 
-      {/* LEFT */}
+      {/* LEFT — drag handle on right edge to resize width */}
       <div style={{borderRight:`1px solid ${T.border}`,padding:'12px 10px',
-        overflowY:'auto',display:'flex',flexDirection:'column',gap:14}}>
+        overflowY:'auto',display:'flex',flexDirection:'column',gap:14,position:'relative'}}>
+        {/* left column right-edge drag handle */}
+        <div title="Drag to resize sidebar"
+          onMouseDown={e=>{
+            e.preventDefault();
+            const startX=e.clientX,startW=leftW;
+            const onMove=ev=>setLeftW(Math.max(140,Math.min(320,startW+(ev.clientX-startX))));
+            const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);};
+            document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
+          }}
+          style={{position:'absolute',top:0,right:-4,width:8,height:'100%',cursor:'col-resize',zIndex:10,
+            display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <div style={{width:3,height:36,borderRadius:2,background:T.border2,opacity:.5}}/>
+        </div>
 
         <div>
           <PT ch="⬡ Account · MT5 Live"/>
@@ -1700,9 +1717,24 @@ function ATHENA(){
 
       {/* RIGHT — FORGE + LENS/TradingView data panel */}
       <div style={{borderLeft:`1px solid ${T.border}`,display:'flex',flexDirection:'column',
-        overflow:'hidden',minHeight:0}}>
-      <div style={{padding:'12px 10px',overflowY:'auto',overscrollBehavior:'contain',
-        display:'flex',flexDirection:'column',gap:14}}>
+        overflow:'hidden',minHeight:0,position:'relative'}}>
+        {/* right column left-edge drag handle */}
+        <div title="Drag to resize right panel"
+          onMouseDown={e=>{
+            e.preventDefault();
+            const startX=e.clientX,startW=rightW;
+            const onMove=ev=>setRightW(Math.max(180,Math.min(420,startW-(ev.clientX-startX))));
+            const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);};
+            document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
+          }}
+          style={{position:'absolute',top:0,left:-4,width:8,height:'100%',cursor:'col-resize',zIndex:10,
+            display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <div style={{width:3,height:36,borderRadius:2,background:T.border2,opacity:.5}}/>
+        </div>
+        {/* TOP section: FORGE execution + OsMA — draggable height */}
+        <div style={{height:rightTopH,flexShrink:0,overflowY:'auto',padding:'12px 10px',
+          display:'flex',flexDirection:'column',gap:14}}>
+      <div style={{padding:'0',display:'flex',flexDirection:'column',gap:14}}>
         <div>
           <PT ch="◆ FORGE · execution quote" color={T.amber}/>
           {ex.usable?(
@@ -1794,6 +1826,23 @@ function ATHENA(){
             </div>
           </div>
 
+        </div>{/* end top FORGE+OsMA section */}
+        </div>{/* end rightTopH container */}
+        {/* right panel vertical drag handle between FORGE/OsMA and TradingView/Regime */}
+        <div title="Drag to resize FORGE vs analysis panels"
+          onMouseDown={e=>{
+            e.preventDefault();
+            const startY=e.clientY,startH=rightTopH;
+            const onMove=ev=>setRightTopH(Math.max(120,Math.min(520,startH+(ev.clientY-startY))));
+            const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);};
+            document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
+          }}
+          style={{flexShrink:0,height:8,cursor:'row-resize',borderTop:`1px solid ${T.border}`,
+            display:'flex',alignItems:'center',justifyContent:'center',background:T.bg}}>
+          <div style={{width:36,height:3,borderRadius:2,background:T.border2,opacity:.6}}/>
+        </div>
+        {/* BOTTOM section: TradingView + AUTO_SCALPER + Regime */}
+        <div style={{flex:1,overflowY:'auto',padding:'12px 10px',display:'flex',flexDirection:'column',gap:14}}>
           <PT ch="🔭 TradingView · indicators" color={T.cyan}/>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
             <span style={{fontFamily:T.mono,fontSize:16,color:T.textBB,fontWeight:700,letterSpacing:0.5}}>
@@ -2060,8 +2109,8 @@ function ATHENA(){
               <div style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>No closed trades with regime labels yet</div>
             )}
           </div>
-        </div>
-      </div>
+        </div>{/* end bottom TV+Regime section */}
+      </div>{/* end right column */}
     </div>
     </div>
 
