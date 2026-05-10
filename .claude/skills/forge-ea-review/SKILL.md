@@ -1,6 +1,6 @@
 ---
 name: forge-ea-review
-description: Validate FORGE EA logic, workflow and intent against documentation and config using codex:rescue. Cross-checks ea/FORGE.mq5 against FORGE_ENTRY_CONDITIONS.md, scalper_config.json, scalper_config.defaults.json, sync_scalper_config_from_env.py, .env, .env.example, scribe.py and regime.py. Documents findings in docs/FORGE_ENTRY_CONDITIONS_CODEX_REVIEW.md. Invoke when the user types /forge-ea-review or asks to "review the forge EA", "validate forge logic", "codex review forge".
+description: Validate FORGE EA logic, workflow and intent against documentation and config using codex:rescue. Cross-checks ea/FORGE.mq5 against FORGE_ENTRY_CONDITIONS.md, scalper_config.json, scalper_config.defaults.json, sync_scalper_config_from_env.py, .env, .env.example, scribe.py and regime.py. Also audits schemas/, dashboard/, scripts/, tests/, and config/ for consistency. Documents findings in docs/FORGE_ENTRY_CONDITIONS_CODEX_REVIEW.md. Invoke when the user types /forge-ea-review or asks to "review the forge EA", "validate forge logic", "codex review forge". You can append or override findings. When you are done with any fix — document and update changelog.md for any solution.
 ---
 
 # /forge-ea-review — FORGE EA Validation Review
@@ -13,17 +13,23 @@ You are performing a rigorous technical validation of the FORGE EA entry logic a
 
 ## SOURCE FILES (read ALL before writing anything)
 
-| File | Role |
+| File / Folder | Role |
 |------|------|
 | `/Users/olasumbo/signal_system/ea/FORGE.mq5` | EA implementation — source of truth |
 | `/Users/olasumbo/signal_system/docs/FORGE_ENTRY_CONDITIONS.md` | Intent document — what the EA is supposed to do |
 | `/Users/olasumbo/signal_system/config/scalper_config.json` | **Active** runtime config (env overrides applied) |
 | `/Users/olasumbo/signal_system/config/scalper_config.defaults.json` | Default values before overrides |
+| `/Users/olasumbo/signal_system/config/` | All config files — gate_legend.json, lens_brief.json, etc. |
 | `/Users/olasumbo/signal_system/scripts/sync_scalper_config_from_env.py` | Maps FORGE_ env vars → JSON config keys |
+| `/Users/olasumbo/signal_system/scripts/` | All helper scripts — build, sync, analysis |
 | `/Users/olasumbo/signal_system/.env` | Active env overrides |
 | `/Users/olasumbo/signal_system/.env.example` | **Cheat sheet** — all documented FORGE_ variables with descriptions |
 | `/Users/olasumbo/signal_system/python/scribe.py` | Live trading SCRIBE — reads signals/trades from live EA |
 | `/Users/olasumbo/signal_system/python/regime.py` | Regime detection — market context used by EA for lot sizing |
+| `/Users/olasumbo/signal_system/python/*.py` | All Python services — bridge, athena_api, herald, sentinel, etc. |
+| `/Users/olasumbo/signal_system/schemas/` | DB schema definitions — cross-check against scribe.py CREATE TABLE and ALTER TABLE migrations |
+| `/Users/olasumbo/signal_system/dashboard/` | Athena UI — app.js, index.html — cross-check API field names used in UI against athena_api.py response shapes |
+| `/Users/olasumbo/signal_system/tests/` | Test specs — flag any tests that reference removed gates, stale config keys, or outdated field names |
 
 ---
 
@@ -33,10 +39,15 @@ You are performing a rigorous technical validation of the FORGE EA entry logic a
 
 Before writing any output, read:
 1. `docs/FORGE_ENTRY_CONDITIONS.md` — every claim to validate
-2. `scalper_config.json` (active config, not defaults)
+2. `config/scalper_config.json` (active config, not defaults)
 3. `ea/FORGE.mq5` lines relevant to each claim
-4. `sync_scalper_config_from_env.py` for variable mapping integrity
+4. `scripts/sync_scalper_config_from_env.py` for variable mapping integrity
 5. `.env.example` for variable documentation coverage
+6. `schemas/` — all schema files for DB column definitions
+7. `dashboard/app.js` — UI field names and API response usage
+8. `scripts/` — all helper scripts for build/sync consistency
+9. `tests/` — test specs for stale gate names, config keys, field references
+10. `config/` — gate_legend.json and other config files for key coverage
 
 ### Step 2 — Validate each section of FORGE_ENTRY_CONDITIONS.md
 
@@ -58,10 +69,26 @@ For every FORGE_ variable that differs between `scalper_config.json` and `scalpe
 
 Review `scribe.py` and `regime.py` for:
 - Any field names or column names read from the FORGE journal DB that may not exist (schema mismatch)
+- Cross-check `schemas/` SQL files against scribe.py CREATE TABLE and ALTER TABLE migrations — flag any column in schemas/ missing from scribe.py or vice versa
 - Regime labels used in `ForgeResolveNumTrades` that must match what `regime.py` produces
 - Any config keys read by scribe/regime that are not in `scalper_config.json`
 
-### Step 5 — Write output report
+### Step 5 — Dashboard / API consistency check
+
+Review `dashboard/app.js` and `python/athena_api.py` for:
+- Any field name used in the UI (e.g. `e.trade_outcome`, `e.pnl`, `btDetail.taken`) that is not returned by the API
+- Any API response field that the UI silently ignores but should display
+- Any gate_reason code referenced in `dashboard/app.js` or `config/gate_legend.json` that no longer exists in the EA
+
+### Step 6 — Scripts and tests consistency check
+
+Review `scripts/` for:
+- Any script that references a config key, env var, or gate name that has been renamed or removed
+
+Review `tests/` for:
+- Any test referencing a removed gate code, stale config key, or field name that no longer matches the current DB schema or API response shape
+
+### Step 7 — Write output report
 
 Write findings to `/Users/olasumbo/signal_system/docs/FORGE_ENTRY_CONDITIONS_CODEX_REVIEW.md`
 
@@ -111,7 +138,15 @@ For each factor in combined_lot_factor:
 | FORGE_ Variable | In sync script | In .env.example | Config value (active) | Default value | Status |
 |----------------|---------------|----------------|----------------------|--------------|--------|
 
-## Section 9 — scribe.py / regime.py Cross-Check
+## Section 9 — scribe.py / regime.py / schemas/ Cross-Check
+| Check | File:line | Status | Notes |
+|-------|-----------|--------|-------|
+
+## Section 10 — Dashboard / API Consistency
+| Check | dashboard:line | api:line | Status | Notes |
+|-------|---------------|----------|--------|-------|
+
+## Section 11 — Scripts / Tests Consistency
 | Check | File:line | Status | Notes |
 |-------|-----------|--------|-------|
 
@@ -145,7 +180,10 @@ CRITICAL RULES:
 2. Compare against scalper_config.json (active config), not defaults.
 3. If code is not found, mark UNVERIFIED — do not guess.
 4. Validate .env variable names against .env.example and sync_scalper_config_from_env.py.
-5. After writing the file, output a brief summary of PASS/WARNING/FAIL counts.
+5. Cross-check schemas/ SQL against scribe.py CREATE TABLE + ALTER TABLE migrations.
+6. Check dashboard/app.js field names against athena_api.py response shapes.
+7. Flag tests/ referencing stale gate codes or removed config keys.
+8. After writing the file, output a brief summary of PASS/WARNING/FAIL counts.
 ```
 
 ---
@@ -158,13 +196,33 @@ When the review completes, report:
 3. All WARNING items — potential issues and recommended investigation
 4. Whether the output file was written successfully
 5. Any dead variables (in `.env` but not in sync script)
-6. Any schema mismatches found in scribe.py or regime.py
+6. Any schema mismatches found in scribe.py, regime.py, or schemas/
+7. Any dashboard field mismatches (UI reads field not returned by API)
+8. Any stale references in scripts/ or tests/
+
+---
+
+## KNOWN ISSUES TO ALWAYS RE-CHECK (from session history)
+
+These patterns have caused real bugs — always validate:
+
+- **Dead .env vars**: `.env` vars with no mapping in `sync_scalper_config_from_env.py` are silently dropped. Previous run found 8 dead vars (SELL_LIMIT_*, ADX_SELL_BLOCK_THRESHOLD, etc.). Always sweep `.env` against sync script.
+- **OsMA logging bug**: `macd_histogram` was logging 0.0 for all TAKEN signals because CopyBuffer failed at the TAKEN record site. Fixed in 2.7.12 to log H1 MACD histogram. Check TAKEN record logs H1 MACD, not M5 OsMA.
+- **staged_initial_legs n-1 bug**: Was using `MathMin(init_cap, n-1)` — always held one leg back. Fixed to `n`. Re-check this line after any staged_add changes.
+- **RSI=0/ADX=0 logging**: CheckEntryQuality was logging hardcoded 0,0. Fixed by passing rsi/adx through. If any new SKIP logging calls are added, verify they pass real indicator values.
+- **adx_lot_factor_high silently reducing SELL lots**: Was 0.125 (0.01 lot at ADX>35). Fixed to 1.0. Verify adx_lot_factor_mid and adx_lot_factor_high are both 1.0 in active config.
+- **sell_stop_cont slot expansion**: Slot array expanded from 5 to 10. BUY LIMIT moved to slot[9] (magic +20009). Verify no code still references slot[4] for BUY LIMIT.
+- **scribe.py schema gap**: CREATE TABLE for forge_signals doesn't include macd_histogram/m15_adx/lot_factor — relies on ALTER TABLE migrations. Verify all 3 have explicit migrations.
+- **Version stamp**: VERSION file must be bumped with each 2.7.x release cycle. scalper_config.json version field is auto-stamped from VERSION on make forge-compile.
+- **H1 DI sell gate**: require_h1_di_sell=1 blocks SELL when H1 DI+>=DI-. No ADX bypass (unlike BUY gate which bypasses at counter_buy_adx_threshold=28). Verify this asymmetry is intentional and documented.
+- **Cascade slots [2..8] vs [4]**: BUY LIMIT previously at slot[4] now at slot[9]. Any slot loop must scan 0..9 (not 0..4). Verify all three slot loops use `< 10`.
 
 ---
 
 ## NOTES
 
 - The review doc path is always `docs/FORGE_ENTRY_CONDITIONS_CODEX_REVIEW.md` (overwrite on each run)
-- The Codex sandbox may block file writes — if that happens, the agent reports findings in output and you must write the file manually from those findings
-- Run this skill after any significant change to `ea/FORGE.mq5`, `scalper_config.json`, or `FORGE_ENTRY_CONDITIONS.md`
-- The previous review (Run 10 session) found 4 FAILs — all fixed. This skill re-runs the same validation after each EA change cycle.
+- The Codex sandbox may block file writes — if that happens, the agent reports findings in output and Claude Code writes the file manually from those findings
+- Run this skill after any significant change to `ea/FORGE.mq5`, `scalper_config.json`, `FORGE_ENTRY_CONDITIONS.md`, `scribe.py`, or `dashboard/app.js`
+- Current EA version: FORGE v2.7.12. Post-2.7.12 review found 0 FAILs (all prior FAILs fixed).
+- Run 11 is the next backtest — validate before starting Run 11 that H1 DI sell gate and cascade multi-leg are correctly wired.
