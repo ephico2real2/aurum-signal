@@ -1,5 +1,15 @@
 # SKILL.md — AURUM Capabilities
 
+## Slash Command → Skill Mapping
+
+| Command | Skill file | What it does |
+|---|---|---|
+| `/forge-monitor` | `.claude/skills/forge-monitor/SKILL.md` | Monitor an active FORGE MT5 tester backtest — polls source DB every 45s, reports signals, gates, trades, P&L, cascade arming |
+
+When the user types `/forge-monitor` or says "forge-monitor", "monitor the forge tester", "watch the backtest", or "tail the journal": read and execute `.claude/skills/forge-monitor/SKILL.md` in full.
+
+---
+
 ## What I Can Do
 
 ### 1. Answer Status Queries
@@ -563,6 +573,45 @@ These serve different audiences and different panels, so they are kept separate.
 
 These rules apply to **every** edit, addition, or new panel in `dashboard/app.js`.
 
+---
+
+### ⛔ HARD GATE — No UI commit without Playwright passing
+
+**This is non-negotiable. Every single UI/UX change — no matter how small — must:**
+
+1. **Run existing Playwright tests** before committing:
+   ```bash
+   make test-ui
+   # or
+   cd tests && npx playwright test test_athena_ui.spec.js --reporter=list
+   ```
+
+2. **Write or update tests** when adding new UI:
+   - New panel → add test for panel header visibility
+   - New tab → add it to `ALL_TABS` array in the spec
+   - New interactive element (button, input, drag handle) → add interaction test
+   - New API-backed section → add test for data rendering
+
+3. **Include the spec file in the commit** — never commit `dashboard/app.js` without also committing `tests/ui/test_athena_ui.spec.js` if tests were added or modified.
+
+4. **Commit message must state test count**:
+   ```
+   feat(athena): add RUN ANALYSIS panel — tests: 21/21 pass
+   fix(athena): fix pin toggle — tests: 21/21 pass
+   ```
+
+**If tests fail:** fix the code or fix the test — do not skip, do not use `--grep` to dodge failing tests, do not commit anyway. A UI change that breaks existing tests is a regression.
+
+**Minimum test that must exist for every new UI panel:**
+```js
+test('Panel Name panel renders', async ({page}) => {
+  await page.click('text=Tab Label');
+  await expect(page.locator('text=PANEL HEADER')).toBeVisible();
+});
+```
+
+---
+
 ### 1. Section 508 compliance — non-negotiable
 
 Every visible text element must meet WCAG AA contrast:
@@ -589,6 +638,8 @@ make test-ui
 ```
 
 **Do not commit dashboard changes if any test fails.** Fix the test or the code first.
+
+See the ⛔ HARD GATE above — this is not optional for any change, including one-line edits, colour tweaks, or layout adjustments. If you changed the UI, you ran the tests.
 
 ### 3. Keep `test_athena_ui.spec.js` up to date
 
@@ -664,14 +715,19 @@ The RUN ANALYSIS panel uses `backtest_compare.py`. Before shipping any changes t
 
 Every UI change commit must include:
 - `dashboard/app.js` — the change
-- `tests/ui/test_athena_ui.spec.js` — updated/new tests
+- `tests/ui/test_athena_ui.spec.js` — updated/new tests (even if unchanged, confirm count)
 - Any new config/legend files (`config/*.json`)
 - Any new API endpoint in `python/athena_api.py`
 
 ```bash
+# Run tests first — required before staging
+make test-ui
+
 git add dashboard/app.js tests/ui/test_athena_ui.spec.js python/athena_api.py config/*.json
 git commit -m "feat/fix(athena): description — tests: N/N pass"
 ```
+
+**Commit message must include `tests: N/N pass`** — the exact count confirms tests were run, not skipped.
 
 ### 508 Audit script (alpha-compositing, use in Playwright evaluate)
 

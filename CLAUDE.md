@@ -1,8 +1,10 @@
 ## FORGE backtest monitoring
 
-When the user asks to "monitor the forge tester", "watch the backtest", "tail the
-journal", or similar, invoke `/forge-monitor`. The full instruction is at
-`.claude/commands/forge-monitor.md`.
+When the user types `/forge-monitor` or says "forge-monitor", "monitor the forge tester",
+"watch the backtest", "tail the journal", or similar: read and execute the full skill at
+`.claude/skills/forge-monitor/SKILL.md`.
+
+The CLI command `.claude/commands/forge-monitor.md` delegates to the same skill file.
 
 Key paths:
 - Journal DB: `$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/.../FORGE_journal_*_tester.db`

@@ -1,0 +1,1 @@
+Read and follow all instructions in /Users/olasumbo/signal_system/.claude/skills/forge-monitor/SKILL.md exactly. Execute the full monitoring protocol defined there — find the active tester DB, capture the baseline snapshot, and begin the polling loop.
