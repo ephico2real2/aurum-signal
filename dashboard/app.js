@@ -545,7 +545,8 @@ function ATHENA(){
   const [btRuns,setBtRuns]=useState([]);
   const [btAllRuns,setBtAllRuns]=useState([]);    // full list (pre-display-limit slice)
   const [btSelRun,setBtSelRun]=useState(null);    // aurum_run_id currently viewed
-  const [btPinnedRun,setBtPinnedRun]=useState(null); // pinned run (always shown, outside display limit)
+  const [btPinnedRun,setBtPinnedRun]=useState(null); // pinned run — only cleared by explicit user action
+  const btPinnedRunRef=useRef(null); // ref so interval callbacks always read latest pin value
   const [btDetail,setBtDetail]=useState(null);    // /api/backtest/run/:id response
   const [btCompare,setBtCompare]=useState(null);  // /api/backtest/compare response
   const [gateLegend,setGateLegend]=useState({});         // gate_reason → {label, explanation}
@@ -553,6 +554,9 @@ function ATHENA(){
   const [mgmtBusy,setMgmtBusy]=useState(false);
   const [autoscalperConditions,setAutoscalperConditions]=useState(null);
   const [autoscalperConditionsError,setAutoscalperConditionsError]=useState(null);
+
+  // Keep btPinnedRunRef in sync — interval callbacks read ref, never stale state
+  useEffect(()=>{ btPinnedRunRef.current=btPinnedRun; },[btPinnedRun]);
 
   useEffect(()=>{
     const poll=async()=>{
@@ -621,10 +625,11 @@ function ATHENA(){
           const all=j.runs||[];
           const displayLimit=j.display_limit||10;
           setBtAllRuns(all);
-          // Apply display limit, but always include pinned run outside the slice
+          // Use ref for pinned run — closure captures stale state but ref always has latest
+          const pinned=btPinnedRunRef.current;
           const slice=all.slice(0,displayLimit);
-          const pinnedInSlice=btPinnedRun&&slice.some(r=>r.aurum_run_id===btPinnedRun);
-          const pinnedRow=btPinnedRun&&!pinnedInSlice?all.find(r=>r.aurum_run_id===btPinnedRun):null;
+          const pinnedInSlice=pinned&&slice.some(r=>r.aurum_run_id===pinned);
+          const pinnedRow=pinned&&!pinnedInSlice?all.find(r=>r.aurum_run_id===pinned):null;
           setBtRuns(pinnedRow?[...slice,pinnedRow]:slice);
           if(!btSelRun&&slice.length>0)setBtSelRun(slice[0].aurum_run_id);}}
       catch(e){}};
@@ -1417,7 +1422,7 @@ function ATHENA(){
                           </button>
                           {/* pin toggle */}
                           <button type="button" title={isPinned?'Unpin run':'Pin as comparison baseline'}
-                            onClick={e=>{e.stopPropagation();setBtPinnedRun(isPinned?null:r.aurum_run_id);}}
+                            onClick={e=>{e.stopPropagation();const next=isPinned?null:r.aurum_run_id;btPinnedRunRef.current=next;setBtPinnedRun(next);}}
                             style={{padding:'3px 5px',fontSize:9,cursor:'pointer',border:'none',
                               background:'transparent',color:isPinned?T.cyan:T.border,lineHeight:1}}>
                             📌
