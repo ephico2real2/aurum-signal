@@ -2863,6 +2863,52 @@ class Bridge:
                 # Short label for log: "live" or "tester[agent-3000]"
                 _agent = Path(journal_path).parent.parent.parent.name if is_tester else "live"
                 _label = f"tester[{_agent}]" if is_tester else "live"
+
+                # ── Sync recovery: detect source/destination count mismatch ──
+                # If source rows for any run_id are more than what's in aurum_tester.db,
+                # the synced=1 flags in source are stale (e.g. after SCRIBE re-init or
+                # bridge restart mid-sync). Reset synced=0 so the bridge re-syncs them.
+                if is_tester:
+                    try:
+                        import sqlite3 as _sq3
+                        src_con = _sq3.connect(f"file:{journal_path}?mode=ro", uri=True)
+                        src_runs = {r[0]: r[1] for r in src_con.execute(
+                            "SELECT id, wall_time FROM TESTER_RUNS"
+                        ).fetchall()}
+                        for src_run_id, wall_time in src_runs.items():
+                            src_count = src_con.execute(
+                                "SELECT COUNT(*) FROM SIGNALS WHERE run_id=?", (src_run_id,)
+                            ).fetchone()[0]
+                            dst_run = self._active_scribe(True).query(
+                                "SELECT aurum_run_id FROM aurum_tester_runs WHERE wall_time=? LIMIT 1",
+                                (wall_time,)
+                            )
+                            if not dst_run:
+                                continue
+                            aurum_run_id = dst_run[0]["aurum_run_id"]
+                            dst_count = (self._active_scribe(True).query(
+                                "SELECT COUNT(*) as c FROM forge_signals WHERE aurum_run_id=?",
+                                (aurum_run_id,)
+                            ) or [{"c": 0}])[0]["c"]
+                            if src_count > dst_count + 100:
+                                # Source has significantly more than destination — stale synced flags.
+                                gap = src_count - dst_count
+                                src_rw = _sq3.connect(journal_path)
+                                reset = src_rw.execute(
+                                    "UPDATE SIGNALS SET synced=0 WHERE run_id=? AND synced=1",
+                                    (src_run_id,)
+                                ).rowcount
+                                src_rw.commit()
+                                src_rw.close()
+                                log.warning(
+                                    "BRIDGE: sync-recovery %s run_id=%d — "
+                                    "src=%d dst=%d gap=%d; reset %d rows to synced=0",
+                                    _label, src_run_id, src_count, dst_count, gap, reset,
+                                )
+                        src_con.close()
+                    except Exception as _e:
+                        log.debug("BRIDGE: sync-recovery check error: %s", _e)
+
                 proc_sig, new_sig = self._active_scribe(is_tester).sync_forge_journal(journal_path, source=tag, batch_size=_batch)
                 proc_td, new_td   = self._active_scribe(is_tester).sync_forge_journal_trades(journal_path, source=tag, batch_size=_batch)
                 if proc_sig or proc_td:
