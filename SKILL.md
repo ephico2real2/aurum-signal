@@ -899,8 +899,6 @@ const [colW,   setColW]   = useState(DEFAULT_PX);   // horizontal
 |---|---|---|---|---|
 | "Drag to resize sidebar" | ↔ horizontal | 140–320px | 186px | Left column width |
 | "Drag to resize AURUM panel" | ↕ vertical | 140–600px | 280px | AURUM chat height vs main tabs |
-| "Drag to resize right panel" | ↔ horizontal | 180–420px | 258px | Right column width |
-| "Drag to resize FORGE vs analysis panels" | ↕ vertical | 120–520px | 280px | FORGE+OsMA vs TradingView+Regime within right column |
 
 **When adding a new column or panel to Athena:** check this table, verify no handle is missing for the new boundary, and add to the table above.
 

@@ -1849,23 +1849,6 @@ function ATHENA(){
             Source: MT5/market_data.json indicators_m5 (iOsMA) · FORGE EA writes every tick
           </div>
 
-        </div>{/* end top FORGE+OsMA section */}
-        </div>{/* end rightTopH container */}
-        {/* right panel vertical drag handle between FORGE/OsMA and TradingView/Regime */}
-        <div title="Drag to resize FORGE vs analysis panels"
-          onMouseDown={e=>{
-            e.preventDefault();
-            const startY=e.clientY,startH=rightTopH;
-            const onMove=ev=>setRightTopH(Math.max(120,Math.min(520,startH+(ev.clientY-startY))));
-            const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);};
-            document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
-          }}
-          style={{flexShrink:0,height:8,cursor:'row-resize',borderTop:`1px solid ${T.border}`,
-            display:'flex',alignItems:'center',justifyContent:'center',background:T.bg}}>
-          <div style={{width:36,height:3,borderRadius:2,background:T.border2,opacity:.6}}/>
-        </div>
-        {/* BOTTOM section: TradingView + AUTO_SCALPER + Regime */}
-        <div style={{flex:1,overflowY:'auto',padding:'12px 10px',display:'flex',flexDirection:'column',gap:14}}>
           <PT ch="🔭 TradingView · indicators" color={T.cyan}/>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
             <span style={{fontFamily:T.mono,fontSize:16,color:T.textBB,fontWeight:700,letterSpacing:0.5}}>
@@ -2141,8 +2124,8 @@ function ATHENA(){
           <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
             Source: config/status.json → python/regime.py (HMM inference) · /api/live
           </div>
-        </div>{/* end bottom TV+Regime section */}
-      </div>{/* end right column */}
+        </div>
+      </div>
     </div>
     </div>
 
