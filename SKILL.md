@@ -556,3 +556,79 @@ Never write indicator parameters from memory. Always check `ea/FORGE.mq5`:
 - Gate legend: maps signal filter codes to human-readable explanations (operational — which signals are blocked and why)
 - Indicator legend: explains the underlying math and usage (educational — what each tool does)
 These serve different audiences and different panels, so they are kept separate.
+
+---
+
+## ATHENA UI — Standing Rules (MANDATORY for every UI change)
+
+These rules apply to **every** edit, addition, or new panel in `dashboard/app.js`.
+
+### 1. Section 508 compliance — non-negotiable
+
+Every visible text element must meet WCAG AA contrast:
+- **Normal text (< 18px):** ≥ 4.5:1 contrast ratio
+- **Large text (≥ 18px or ≥ 14px bold):** ≥ 3:1 contrast ratio
+- **Minimum font size:** 9px for any user-visible label
+- **Never use** `T.textD` (`#96A6BA`) on dark backgrounds for small text — it fails at small sizes
+- **Use** `T.textBB` (`#D8E4F0`) for headers, `T.textB` (`#B4C2D4`) for secondary labels
+
+Quick contrast reference (on `T.card = #0F1119`):
+| Color token | Hex | Contrast | OK for |
+|-------------|-----|----------|--------|
+| `T.textBB` | `#D8E4F0` | 14.6:1 | All sizes |
+| `T.textB` | `#B4C2D4` | 9.3:1 | All sizes |
+| `T.text` | `#8E9EB2` | 5.9:1 | ≥ 9px |
+| `T.textD` | `#96A6BA` | 6.6:1 | ≥ 9px only |
+
+### 2. Run Playwright after EVERY dashboard change
+
+```bash
+cd tests && npx playwright test test_athena_backtest.spec.js --reporter=list
+# Or all UI tests:
+make test-ui
+```
+
+**Do not commit dashboard changes if any test fails.** Fix the test or the code first.
+
+### 3. Keep `test_athena_backtest.spec.js` up to date
+
+When you add a new tab, panel, or field:
+1. Add a test for tab existence (in `ALL_TABS` array)
+2. Add a test for the panel header text being visible
+3. Add a test for key field labels or API endpoint structure
+4. Add a 508 contrast test for any new header row
+5. If auto-refresh is implemented, add a `requestCount` test verifying it fires within 35s
+
+File location: `tests/ui/test_athena_backtest.spec.js`
+
+### 4. Layout rules — keep it simple
+
+- New tabs use `<div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>` — same as every other tab
+- Never use `flex:1` or `minHeight:0` on tab content divs — the parent `overflow:'hidden'` already handles it
+- `height:'100%'` fills the available space; `overflowY:'auto'` makes it scroll
+- Cards: `background:T.card, border, borderRadius:6, padding:12` — consistent with existing panels
+
+### 5. Test coverage checklist for new Athena panels
+
+Every new panel must have tests for:
+- [ ] Tab button is present and visible
+- [ ] Tab click renders content (no console errors)
+- [ ] Panel header text is visible
+- [ ] Key field labels are visible
+- [ ] API endpoint returns valid structure (if new endpoint added)
+- [ ] Section 508: header contrast ≥ 4.5:1, font ≥ 9px
+- [ ] Auto-refresh verified (if applicable)
+- [ ] All interactive buttons have `data-testid` attributes
+
+### 6. Git — always version control test + code together
+
+Every UI change commit must include:
+- `dashboard/app.js` — the change
+- `tests/ui/test_athena_backtest.spec.js` — updated/new tests
+- Any new config/legend files (`config/*.json`)
+- Any new API endpoint in `python/athena_api.py`
+
+```bash
+git add dashboard/app.js tests/ui/test_athena_backtest.spec.js python/athena_api.py config/*.json
+git commit -m "feat/fix(athena): description — tests: N/N pass"
+```

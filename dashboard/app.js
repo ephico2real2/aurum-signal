@@ -1520,7 +1520,7 @@ function ATHENA(){
             </div>
           )}
           {tab==='indicators'&&(
-            <div style={{padding:'12px 10px',overflowY:'auto',overscrollBehavior:'contain',flex:1,minHeight:0}}>
+            <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
               <div style={{fontSize:10,color:T.textBB,fontFamily:T.mono,fontWeight:600,marginBottom:12,letterSpacing:1}}>
                 📊 FORGE INDICATOR REFERENCE
               </div>
