@@ -1468,7 +1468,13 @@ function ATHENA(){
                       </button>
                     )}
                   </div>
-                  {/* Run detail */}
+                  {/* Loading indicator when selected run differs from loaded detail */}
+                  {btSelRun&&btDetail&&btDetail.meta&&btSelRun!==btDetail.meta.aurum_run_id&&(
+                    <div style={{fontSize:9,color:T.amber,fontFamily:T.mono,padding:'8px 0'}}>
+                      Loading run #{btSelRun}…
+                    </div>
+                  )}
+                  {/* Run detail — only rendered when loaded detail matches selected run */}
                   {btDetail&&btDetail.meta&&btSelRun===btDetail.meta.aurum_run_id&&(()=>{
                     const p=btDetail.performance||{};
                     const m=btDetail.meta||{};
@@ -1480,7 +1486,8 @@ function ATHENA(){
                         {/* Meta row + manual refresh */}
                         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
                         <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,lineHeight:1.6}}>
-                          {m.symbol} · v{m.forge_version} · {m.scalper_mode}
+                          <span style={{color:T.gold,fontWeight:700}}>Run #{m.aurum_run_id}</span>
+                          {' · '}{m.symbol} · v{m.forge_version} · {m.scalper_mode}
                           {m.sim_start&&<> · sim start {m.sim_start}</>}
                           {m.balance&&<> · balance ${Number(m.balance).toFixed(0)}</>}
                           {' · '}first seen {(m.first_seen_utc||'').slice(0,16)} UTC
@@ -1636,7 +1643,7 @@ function ATHENA(){
                         {/* TAKEN entries — paginated, 12 per page, unlimited total */}
                         {(btDetail.taken||[]).length>0&&(()=>{
                           const takenRows=btDetail.taken||[];
-                          const COL='96px 52px 68px 76px 88px 52px 52px 64px';
+                          const COL='96px 40px 60px 70px 56px 80px 44px 44px 72px';
                           const PAGE_SIZE=12;
                           const totalPages=Math.ceil(takenRows.length/PAGE_SIZE);
                           const page=Math.min(btTakenPage,totalPages);
@@ -1659,7 +1666,7 @@ function ATHENA(){
                               gap:4,borderBottom:`1px solid ${T.border2}`,paddingBottom:5,marginBottom:0,
                               fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:.5,overflowX:'auto'}}>
                               <span>TIME (UTC)</span><span>DIR</span><span>SESSION</span>
-                              <span>SETUP</span><span>OUTCOME</span>
+                              <span>SETUP</span><span>LEGS</span><span>OUTCOME</span>
                               <span>RSI</span><span>ADX</span><span style={{textAlign:'right'}}>P&amp;L</span>
                             </div>
                             {/* rows for current page — no maxHeight, expands to fit all 12 */}
@@ -1687,10 +1694,17 @@ function ATHENA(){
                                 <span style={{color:e.direction==='BUY'?T.green:T.red,fontWeight:'bold'}}>{e.direction}</span>
                                 <span style={{color:sessColor,fontWeight:600}}>{sessShort||'—'}</span>
                                 <span style={{color:T.textB}}>{(e.setup_type||'').replace('BB_','')}</span>
-                                <span style={{display:'inline-flex',alignItems:'center',gap:4}}>
+                                {/* LEGS × LOT — e.g. "5×0.08" */}
+                                <span style={{color:T.textBB,fontSize:9}}>
+                                  {e.legs!=null&&e.lot_per_leg!=null
+                                    ? `${e.legs}×${e.lot_per_leg}`
+                                    : e.legs!=null ? `${e.legs}L`
+                                    : '—'}
+                                </span>
+                                <span style={{display:'inline-flex',alignItems:'center',gap:3}}>
                                   <span style={{background:outcomeColor+'28',color:outcomeColor,
                                     border:`1px solid ${outcomeColor}66`,borderRadius:3,
-                                    padding:'2px 6px',fontSize:9,fontWeight:'bold',letterSpacing:.5}}>
+                                    padding:'2px 5px',fontSize:9,fontWeight:'bold',letterSpacing:.5}}>
                                     {outcome}
                                   </span>
                                   {e.close_comment&&!isSL&&(
@@ -1699,10 +1713,17 @@ function ATHENA(){
                                     </span>
                                   )}
                                 </span>
-                                <span style={{color:T.textBB}}>RSI {e.rsi}</span>
-                                <span style={{color:T.textBB}}>ADX {e.adx}</span>
-                                <span style={{color:pnlColor,textAlign:'right',fontWeight:'bold'}}>
+                                <span style={{color:T.textBB,fontSize:9}}>RSI {e.rsi}</span>
+                                <span style={{color:T.textBB,fontSize:9}}>ADX {e.adx}</span>
+                                {/* P&L: total including cascade legs; tooltip shows breakdown */}
+                                <span style={{color:pnlColor,textAlign:'right',fontWeight:'bold'}}
+                                  title={e.cascade_pnl&&e.cascade_pnl!==0
+                                    ? `primary ${pnl>=0?'+':''}$${(pnl-(e.cascade_pnl||0)).toFixed(2)} + cascade ${e.cascade_pnl>=0?'+':''}$${(e.cascade_pnl||0).toFixed(2)}`
+                                    : ''}>
                                   {pnl>0?'+':''}{pnl!==0?`$${pnl.toFixed(2)}`:'—'}
+                                  {e.cascade_pnl!=null&&e.cascade_pnl!==0&&(
+                                    <span style={{fontSize:8,opacity:.6,marginLeft:2}}>†</span>
+                                  )}
                                 </span>
                               </div>
                             );})}

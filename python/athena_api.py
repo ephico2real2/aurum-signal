@@ -1769,10 +1769,11 @@ def api_backtest_run(aurum_run_id):
             ORDER BY time
         """, (aurum_run_id,))
 
-        # All trades for this run, grouped by magic
+        # All trades for this run, grouped by magic — include volume for lot calculation
         from collections import defaultdict as _dd
         all_trades = ts.query(
-            "SELECT magic, profit, comment, time FROM forge_journal_trades "
+            "SELECT magic, profit, comment, time, ROUND(volume,3) as volume "
+            "FROM forge_journal_trades "
             "WHERE aurum_run_id=? ORDER BY time",
             (aurum_run_id,)
         )
@@ -1807,9 +1808,18 @@ def api_backtest_run(aurum_run_id):
             grp_magic = magic_base + 5000 + _rank
             grp_trades = _trades_by_magic.get(grp_magic, [])
 
+            # Cascade/limit magics for this group: L1(+20000), L2(+20001),
+            # SELL STOP slots (+20002..+20008), BUY LIMIT (+20009)
+            _cascade_offsets = range(20000, 20010)
+            cascade_trades = [
+                _td
+                for _off in _cascade_offsets
+                for _td in _trades_by_magic.get(grp_magic + _off, [])
+            ]
+
             # Highest TP from partial close comments (profit==0, comment like "|TP2")
             max_tp = 0
-            for _td in grp_trades:
+            for _td in grp_trades + cascade_trades:
                 _c = _td.get("comment") or ""
                 if "|TP" in _c and (_td.get("profit") or 0) == 0:
                     try:
@@ -1817,20 +1827,30 @@ def api_backtest_run(aurum_run_id):
                     except ValueError:
                         pass
 
-            # Realised P&L: group_magic deals + exclusively-attributed base_magic deals
+            # Realised P&L: group_magic + cascade magic deals + attributed base_magic deals
             base_attr = sum((_td.get("profit") or 0) for _td in _base_attr_by_rank.get(_rank, []))
-            grp_pnl = round(
-                sum((_td.get("profit") or 0) for _td in grp_trades if (_td.get("profit") or 0) != 0)
-                + base_attr, 2
-            )
-            has_sl = any((_td.get("profit") or 0) < 0 for _td in grp_trades)
+            primary_pnl = sum((_td.get("profit") or 0) for _td in grp_trades if (_td.get("profit") or 0) != 0)
+            cascade_pnl = sum((_td.get("profit") or 0) for _td in cascade_trades if (_td.get("profit") or 0) != 0)
+            grp_pnl = round(primary_pnl + base_attr + cascade_pnl, 2)
 
-            # Closing price/comment from highest-profit deal
+            has_sl = any((_td.get("profit") or 0) < 0 for _td in grp_trades + cascade_trades)
+
+            # Closing price/comment from highest-profit deal (primary legs only)
             _closing = max(
                 (_td for _td in grp_trades if (_td.get("profit") or 0) > 0),
                 key=lambda x: x.get("profit") or 0, default=None
             )
             close_comment = (_closing.get("comment") or "").strip() if _closing else ""
+
+            # Leg count: number of TP1 partial close markers = legs that hit TP1.
+            # Fall back to SL-hit count if all legs were stopped before TP1.
+            tp1_markers = [t for t in grp_trades if "|TP1" in (t.get("comment") or "")]
+            sl_hits     = [t for t in grp_trades if (t.get("profit") or 0) < 0]
+            legs = len(tp1_markers) or len(sl_hits) or len([t for t in grp_trades if (t.get("profit") or 0) != 0])
+
+            # Lot per leg: volume of first non-zero-volume deal for this group
+            _vol_deal = next((t for t in grp_trades if (t.get("volume") or 0) > 0), None)
+            lot_per_leg = round(_vol_deal["volume"], 3) if _vol_deal else None
 
             if has_sl:
                 trade_outcome = "SL"
@@ -1848,8 +1868,11 @@ def api_backtest_run(aurum_run_id):
                 "trade_outcome": trade_outcome,
                 "max_tp": max_tp or None,
                 "pnl": grp_pnl,
+                "cascade_pnl": round(cascade_pnl, 2),
                 "close_comment": close_comment,
-                "group_id": f"G{magic_base + _rank:04d}",
+                "group_id": f"G{grp_magic:d}",
+                "legs": legs,
+                "lot_per_leg": lot_per_leg,
             })
 
         # Cumulative P&L curve (closing deals ordered by time)

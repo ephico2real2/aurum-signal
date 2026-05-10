@@ -80,6 +80,15 @@ Review `dashboard/app.js` and `python/athena_api.py` for:
 - Any API response field that the UI silently ignores but should display
 - Any gate_reason code referenced in `dashboard/app.js` or `config/gate_legend.json` that no longer exists in the EA
 
+**TAKEN ENTRIES math accuracy (always validate these):**
+- `legs` field: verify count comes from `|TP1` SCALP markers per group_magic (not hardcoded or zero)
+- `lot_per_leg` field: verify `volume` is selected in the `all_trades` SQL query (was missing — caused lot=null)
+- `pnl` accuracy: verify cascade magic deals (+20000..+20009) are summed into each group's P&L (previously only group_magic was summed — missing SELL LIMIT L1/L2 and SELL STOP CONT losses)
+- `cascade_pnl` field: verify it is non-zero for groups with cascade fills, and equals sum of +20000..+20009 magic deals with profit≠0
+- Run isolation: verify the `WHERE aurum_run_id=?` filter is applied to all queries (SIGNALS, TRADES) — no cross-run data leakage
+- Run ID display: verify `btDetail.meta.aurum_run_id` is shown in the UI header and matches the selected run button (`btSelRun === btDetail.meta.aurum_run_id` guard)
+- Loading state: verify a "Loading run #N…" indicator appears when `btSelRun !== btDetail.meta.aurum_run_id` (stale detail guard)
+
 ### Step 6 — Scripts and tests consistency check
 
 Review `scripts/` for:
@@ -226,3 +235,6 @@ These patterns have caused real bugs — always validate:
 - Run this skill after any significant change to `ea/FORGE.mq5`, `scalper_config.json`, `FORGE_ENTRY_CONDITIONS.md`, `scribe.py`, or `dashboard/app.js`
 - Current EA version: FORGE v2.7.12. Post-2.7.12 review found 0 FAILs (all prior FAILs fixed).
 - Run 11 is the next backtest — validate before starting Run 11 that H1 DI sell gate and cascade multi-leg are correctly wired.
+- **TAKEN ENTRIES P&L missing cascade deals**: `all_trades` SQL was missing `volume`; cascade magics (+20000..+20009) excluded from P&L. Fixed in 2.7.12 session. Always re-verify `volume` is in SELECT and cascade offsets are summed.
+- **lot_per_leg was null**: `volume` not fetched in all_trades query. Fixed. Verify `lot_per_leg` is non-null for all TAKEN entries.
+- **Run ID guard**: `btSelRun===btDetail.meta.aurum_run_id` enforced before rendering detail. "Loading run #N…" shown when transitioning. Verify this guard is not removed.
