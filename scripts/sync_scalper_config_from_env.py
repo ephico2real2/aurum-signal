@@ -83,6 +83,17 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_RSI_SELL_FLOOR": ("bb_breakout", "rsi_sell_floor", "float", 0.0, 50.0),
     "FORGE_BREAKOUT_H1H4_CRASH_SELL": ("bb_breakout", "h1h4_crash_sell", "bool01", None, None),
     "FORGE_BREAKOUT_H1H4_CRASH_SELL_RSI_MIN": ("bb_breakout", "h1h4_crash_sell_rsi_min", "float", 10.0, 35.0),
+    # ── Fast-moving / rising-price scalping gates (v2.7.6) ────────────────
+    # Stricter ADX floor for SELL entries only (SELL breakouts fail more at weak ADX than BUYs)
+    "FORGE_BREAKOUT_ADX_MIN_SELL":               ("bb_breakout", "adx_min_sell",                "float", 10.0, 80.0),
+    # Bars back to check for ADX spike-from-flat before allowing a SELL (0=disabled; 6=30min window)
+    "FORGE_BREAKOUT_ADX_MIN_SELL_LOOKBACK_BARS": ("bb_breakout", "adx_min_sell_lookback_bars",  "int",   0.0,  20.0),
+    # H1 Wilder DI+/DI- gate: block BUY when H1 DI- > DI+ (bearish directional imbalance)
+    "FORGE_BREAKOUT_REQUIRE_H1_DI_BUY":          ("bb_breakout", "require_h1_di_buy",           "bool01", None, None),
+    # ADX ceiling above which the H1 DI gate auto-disables (strong trend overrides the DI check)
+    "FORGE_BREAKOUT_COUNTER_BUY_ADX_THRESHOLD":  ("bb_breakout", "counter_buy_adx_threshold",   "float", 0.0,  80.0),
+    # Max ATR multiples price can extend from first entry before re-entry is blocked (0=disabled)
+    "FORGE_BREAKOUT_MAX_REENTRY_ATR_EXT":        ("bb_breakout", "max_reentry_atr_ext",         "float", 0.0,  10.0),
     # M30 EMA bearish confirmation gate (2.7.9 Feature 3)
     "FORGE_BREAKOUT_REQUIRE_M30_BEAR_SELL": ("bb_breakout", "require_m30_bear_sell", "bool01", None, None),
     "FORGE_BREAKOUT_M30_BEAR_ADX_MIN":      ("bb_breakout", "m30_bear_adx_min",      "float", 0.0, 80.0),
@@ -135,7 +146,11 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_MIN_BODY_RATIO": ("safety", "min_body_ratio", "float", 0.0, 1.0),
     "FORGE_MIN_DIRECTIONAL_BARS": ("safety", "min_directional_bars", "int", 0.0, 20.0),
     "FORGE_REQUIRE_BB_EXPANSION": ("safety", "require_bb_expansion", "bool01", None, None),
+    "FORGE_SESSION_NY_SELL_CUTOFF_UTC": ("safety", "session_ny_sell_cutoff_utc", "int", 0.0, 23.0),
+    "FORGE_SESSION_LONDON_SELL_CUTOFF_UTC": ("safety", "session_london_sell_cutoff_utc", "int", 0.0, 23.0),
     "FORGE_MAX_OPEN_SAME_DIRECTION": ("safety", "max_open_same_direction", "int", 0.0, 10.0),
+    "FORGE_BOUNCE_ADX_MAX": ("bb_bounce", "adx_max", "int", 10.0, 100.0),
+    "FORGE_BOUNCE_LOT_FACTOR": ("bb_bounce", "bounce_lot_factor", "float", 0.01, 1.0),
     "FORGE_BOUNCE_SL_ATR_MULT": ("bb_bounce", "sl_atr_mult", "float", 0.5, 5.0),
     "FORGE_BREAKOUT_SL_ATR_MULT": ("bb_breakout", "sl_atr_mult", "float", 0.5, 5.0),
     "FORGE_PSAR_ENABLED": ("indicators", "psar_enabled", "bool01", None, None),
