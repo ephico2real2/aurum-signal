@@ -537,6 +537,8 @@ function ATHENA(){
   const [signalStats,setSignalStats]=useState(null);
   const [pnlCurve,setPnlCurve]=useState([]);
   const [mgmtNote,setMgmtNote]=useState('');
+  const [aurumH,setAurumH]=useState(280);
+  const aurumDragRef=useRef(null);
   // Backtest tab state
   const [btRuns,setBtRuns]=useState([]);
   const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
@@ -1666,8 +1668,33 @@ function ATHENA(){
             </div>
           )}
         </div>
-        <div style={{borderTop:`1px solid ${T.border}`,padding:'8px 10px',minHeight:240,maxHeight:340,display:'flex',flexDirection:'column'}}>
-          <AurumChat liveData={D}/>
+        {/* AURUM panel — drag the top border to resize */}
+        <div style={{borderTop:`2px solid ${T.border}`,flexShrink:0,height:aurumH,display:'flex',flexDirection:'column',position:'relative'}}>
+          {/* drag handle */}
+          <div
+            title="Drag to resize AURUM panel"
+            onMouseDown={e=>{
+              e.preventDefault();
+              const startY=e.clientY;
+              const startH=aurumH;
+              const onMove=ev=>{
+                const delta=startY-ev.clientY;
+                setAurumH(Math.max(140,Math.min(600,startH+delta)));
+              };
+              const onUp=()=>{
+                document.removeEventListener('mousemove',onMove);
+                document.removeEventListener('mouseup',onUp);
+              };
+              document.addEventListener('mousemove',onMove);
+              document.addEventListener('mouseup',onUp);
+            }}
+            style={{position:'absolute',top:-4,left:0,right:0,height:8,cursor:'row-resize',
+              zIndex:10,display:'flex',alignItems:'center',justifyContent:'center'}}>
+            <div style={{width:36,height:3,borderRadius:2,background:T.border2,opacity:.6}}/>
+          </div>
+          <div style={{flex:1,overflow:'hidden',padding:'8px 10px',minHeight:0}}>
+            <AurumChat liveData={D}/>
+          </div>
         </div>
       </div>
 
