@@ -1655,11 +1655,6 @@ function ATHENA(){
                               <span style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1}}>TAKEN ENTRIES</span>
                               <span style={{fontSize:8,fontFamily:T.mono,color:T.amber,background:T.amberBg,
                                 border:`1px solid ${T.amber}`,borderRadius:8,padding:'0 5px'}}>{takenRows.length}</span>
-                              {totalPages>1&&(
-                                <span style={{fontSize:8,color:T.textD,fontFamily:T.mono,marginLeft:4}}>
-                                  showing {(page-1)*PAGE_SIZE+1}–{Math.min(page*PAGE_SIZE,takenRows.length)} of {takenRows.length}
-                                </span>
-                              )}
                             </div>
                             {/* column headers */}
                             <div style={{display:'grid',gridTemplateColumns:COL,minWidth:556,
@@ -1728,28 +1723,31 @@ function ATHENA(){
                               </div>
                             );})}
                             </div>
-                            {/* pagination controls — only shown when >1 page */}
-                            {totalPages>1&&(
-                              <div style={{display:'flex',alignItems:'center',gap:4,marginTop:8,flexWrap:'wrap'}}>
-                                <button type="button" onClick={()=>setBtTakenPage(p=>Math.max(1,p-1))}
-                                  disabled={page<=1}
-                                  style={{padding:'2px 8px',fontFamily:T.mono,fontSize:9,cursor:page<=1?'default':'pointer',
-                                    border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
-                                    color:page<=1?T.textD:T.textBB,opacity:page<=1?0.4:1}}>‹ prev</button>
-                                {Array.from({length:totalPages},(_,idx)=>idx+1).map(pg=>(
-                                  <button key={pg} type="button" onClick={()=>setBtTakenPage(pg)}
-                                    style={{padding:'2px 7px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
-                                      border:`1px solid ${pg===page?T.gold:T.border}`,borderRadius:3,
-                                      background:pg===page?T.gold+'22':'transparent',
-                                      color:pg===page?T.gold:T.textBB,fontWeight:pg===page?700:400}}>{pg}</button>
-                                ))}
-                                <button type="button" onClick={()=>setBtTakenPage(p=>Math.min(totalPages,p+1))}
-                                  disabled={page>=totalPages}
-                                  style={{padding:'2px 8px',fontFamily:T.mono,fontSize:9,cursor:page>=totalPages?'default':'pointer',
-                                    border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
-                                    color:page>=totalPages?T.textD:T.textBB,opacity:page>=totalPages?0.4:1}}>next ›</button>
-                              </div>
-                            )}
+                            {/* pagination controls — always shown so user can see current page */}
+                            <div style={{display:'flex',alignItems:'center',gap:4,marginTop:8,flexWrap:'wrap'}}>
+                              <button type="button" onClick={()=>setBtTakenPage(p=>Math.max(1,p-1))}
+                                disabled={page<=1}
+                                style={{padding:'2px 8px',fontFamily:T.mono,fontSize:9,
+                                  cursor:page<=1?'default':'pointer',
+                                  border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
+                                  color:page<=1?T.textD:T.textBB,opacity:page<=1?0.4:1}}>‹ prev</button>
+                              {Array.from({length:totalPages},(_,idx)=>idx+1).map(pg=>(
+                                <button key={pg} type="button" onClick={()=>setBtTakenPage(pg)}
+                                  style={{padding:'2px 7px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
+                                    border:`1px solid ${pg===page?T.gold:T.border}`,borderRadius:3,
+                                    background:pg===page?T.gold+'22':'transparent',
+                                    color:pg===page?T.gold:T.textBB,fontWeight:pg===page?700:400}}>{pg}</button>
+                              ))}
+                              <button type="button" onClick={()=>setBtTakenPage(p=>Math.min(totalPages,p+1))}
+                                disabled={page>=totalPages}
+                                style={{padding:'2px 8px',fontFamily:T.mono,fontSize:9,
+                                  cursor:page>=totalPages?'default':'pointer',
+                                  border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
+                                  color:page>=totalPages?T.textD:T.textBB,opacity:page>=totalPages?0.4:1}}>next ›</button>
+                              <span style={{fontSize:8,color:T.textD,fontFamily:T.mono,marginLeft:4}}>
+                                pg {page}/{totalPages} · {takenRows.length} entr{takenRows.length===1?'y':'ies'}
+                              </span>
+                            </div>
                           </div>
                           );
                         })()}
