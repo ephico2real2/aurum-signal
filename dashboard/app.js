@@ -1633,18 +1633,34 @@ function ATHENA(){
                           </div>
                         );})()}
                         {/* TAKEN entries — shown before gate breakdown */}
-                        {(btDetail.taken||[]).length>0&&(
+                        {(btDetail.taken||[]).length>0&&(()=>{
+                          const takenRows=btDetail.taken||[];
+                          const COL='96px 52px 68px 76px 88px 52px 52px 64px';
+                          return(
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
-                            <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,marginBottom:8,letterSpacing:1}}>TAKEN ENTRIES</div>
-                            {/* header row — Section 508: min 9px, color ≥4.5:1 contrast */}
-                            <div style={{display:'grid',gridTemplateColumns:'96px 52px 68px 76px 88px 52px 52px 64px',
-                              gap:4,borderBottom:`1px solid ${T.border2}`,paddingBottom:5,marginBottom:2,
+                            {/* header: title + count badge */}
+                            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
+                              <span style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1}}>TAKEN ENTRIES</span>
+                              <span style={{fontSize:8,fontFamily:T.mono,color:T.amber,background:T.amberBg,
+                                border:`1px solid ${T.amber}`,borderRadius:8,padding:'0 5px'}}>{takenRows.length}</span>
+                            </div>
+                            {/* sticky column headers — outside scroll area so they stay visible */}
+                            <div style={{display:'grid',gridTemplateColumns:COL,minWidth:556,
+                              gap:4,borderBottom:`1px solid ${T.border2}`,paddingBottom:5,marginBottom:0,
                               fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:.5}}>
                               <span>TIME (UTC)</span><span>DIR</span><span>SESSION</span>
                               <span>SETUP</span><span>OUTCOME</span>
                               <span>RSI</span><span>ADX</span><span style={{textAlign:'right'}}>P&amp;L</span>
                             </div>
-                            {(btDetail.taken||[]).map((e,i)=>{
+                            {/* rows: dynamically sized — scrolls when > 8 entries, expands freely below that */}
+                            <div style={{
+                              maxHeight: takenRows.length>8 ? 288 : undefined,
+                              overflowY: takenRows.length>8 ? 'auto' : undefined,
+                              overflowX:'auto',
+                              overscrollBehavior:'contain',
+                              minWidth:0,
+                            }}>
+                            {takenRows.map((e,i)=>{
                               const outcome=e.trade_outcome||'—';
                               const isTP=outcome.startsWith('TP');
                               const isSL=outcome==='SL';
@@ -1661,7 +1677,7 @@ function ATHENA(){
                               const sessShort=sess.replace('NEW_YORK','NY').replace('LONDON','LON')
                                 .replace('SYDNEY','SYD').replace('ASIAN','ASIA').slice(0,12);
                               return(
-                              <div key={i} style={{display:'grid',gridTemplateColumns:'96px 52px 68px 76px 88px 52px 52px 64px',
+                              <div key={i} style={{display:'grid',gridTemplateColumns:COL,minWidth:556,
                                 gap:4,borderBottom:`1px solid ${T.border}`,padding:'6px 0',fontSize:10,fontFamily:T.mono,alignItems:'center'}}>
                                 <span style={{color:T.textBB}}>{(e.timestamp_utc||'').slice(0,16).replace('T',' ')}</span>
                                 <span style={{color:e.direction==='BUY'?T.green:T.red,fontWeight:'bold'}}>{e.direction}</span>
@@ -1686,8 +1702,10 @@ function ATHENA(){
                                 </span>
                               </div>
                             );})}
+                            </div>
                           </div>
-                        )}
+                          );
+                        })()}
                         {/* Gate breakdown with legend explanations */}
                         {(btDetail.gates||[]).length>0&&(
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
