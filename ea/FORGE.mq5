@@ -5642,6 +5642,19 @@ void CheckNativeScalperSetups() {
       env_hi = MathMax(1, MathMin(30, env_hi));
       if(env_lo > env_hi) { int sw = env_lo; env_lo = env_hi; env_hi = sw; }
    }
+   // ADX-based leg count — strong confirmed trend = more immediate exposure
+   // Complements ForgeResolveNumTrades H1/H4 strength adjustments.
+   // ADX < 25: direction weak/unconfirmed → trim base by 1 (htf-unclear cap handles the rest)
+   // ADX 35–block: strong confirmed trend, not yet extended → boost base by 2
+   // CHANGELOG: 2026-05-10 — conditional sizing (ADX tier → leg count). See CHANGELOG.md.
+   if(is_breakout_setup) {
+      if(m5_adx < 25.0)
+         base_n = MathMax(1, base_n - 1);
+      else if(m5_adx >= 35.0 && m5_adx < (double)g_sc.breakout_adx_sell_block_threshold)
+         base_n = MathMin(30, base_n + 2);
+      PrintFormat("FORGE SCALPER: ADX=%.1f → leg count base_n=%d (range %d–%d)",
+                  m5_adx, base_n, env_lo, env_hi);
+   }
    string trades_policy_out = "";
    int n = ForgeResolveNumTrades(base_n, env_lo, env_hi, env_tr, setup_type,
                                  g_regime_confidence, g_regime_label, lot_mult, trades_policy_out);
