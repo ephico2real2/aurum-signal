@@ -662,38 +662,49 @@ def _pip_size_for_symbol(symbol: str | None, open_price: float, close_price: flo
 
 
 def _calc_pips(symbol: str | None, direction: str, open_price: float, close_price: float) -> float:
-    if not open_price or not close_price:
+    """
+    Compute signed pips for a closed trade.
+
+    XAUUSD (Gold): broker standard — discard decimal, each whole-number move = 10 pips.
+      entry 2037.12 → exit 2038.50: int(2038) - int(2037) = 1 × 10 = 10 pips
+      entry 4700    → exit 4715.75: int(4715) - int(4700) = 15 × 10 = 150 pips
+      Formula: pips = (int(close) - int(entry)) × 10  [BUY]
+               pips = (int(entry) - int(close)) × 10  [SELL]
+    """
+    try:
+        ep = float(open_price or 0)
+        cp = float(close_price or 0)
+        if ep <= 0 or cp <= 0:
+            return 0.0
+        sym = (symbol or "").upper()
+        if "XAU" in sym:
+            raw = (int(cp) - int(ep)) * 10
+            return float(raw if direction == "BUY" else -raw)
+        # Forex fallback: 4-decimal pairs, 1 pip = 0.0001
+        raw = (cp - ep) / 0.0001
+        return round(raw if direction == "BUY" else -raw, 1)
+    except Exception:
         return 0.0
-    raw = float(close_price) - float(open_price)
-    if (direction or "").upper() == "SELL":
-        raw = -raw
-    pip_size = _pip_size_for_symbol(symbol, open_price, close_price)
-    if pip_size <= 0:
-        pip_size = 1.0
-    return round(raw / pip_size, 1)
 
 
 def _calc_pip_value_usd(symbol: str | None, lot_size: float, pips: float) -> float:
-    """USD value of pip move for the given symbol and lot size.
+    """USD value of the pip move for a closed trade.
 
-    For XAUUSD:
-      - Contract size = 100 oz per standard lot
-      - SYMBOL_POINT (pip_size) = 0.01 USD
-      - 1 pip on 1.0 lot = 100 oz × $0.01 = $1.00
-      - 1 pip on 0.01 lot = 1 oz × $0.01 = $0.01
-
-    Formula: pip_value_usd = lot_size × contract_size × pip_size × pips
-                           = lot_size × 100 × 0.01 × pips
-                           = lot_size × pips  (for XAUUSD)
-
-    This produces signed output: positive = profit, negative = loss.
+    XAUUSD: 1 pip = $0.10 price move per oz × 100 oz contract = $10/pip per standard lot.
+      pip_value_usd = pips × lot_size × 10
+      Example: 50 pips × 0.08 lot × 10 = $40.00
     """
-    sym = (symbol or "").upper()
-    if "XAU" in sym or "XAG" in sym:
-        # XAUUSD: contract_size=100oz, pip_size=0.01 → factor = 100 × 0.01 = 1.0
-        return round(float(lot_size) * 1.0 * float(pips), 2)
-    # Other symbols: return 0 (not yet implemented)
-    return 0.0
+    try:
+        lot = float(lot_size or 0)
+        p   = float(pips or 0)
+        if lot <= 0:
+            return 0.0
+        sym = (symbol or "").upper()
+        if "XAU" in sym:
+            return round(p * lot * 10, 2)
+        return 0.0  # forex pip values vary by pair; not implemented
+    except Exception:
+        return 0.0
 
 def _safe_float(value):
     try:
