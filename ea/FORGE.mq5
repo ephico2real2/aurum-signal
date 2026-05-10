@@ -4904,7 +4904,20 @@ void CheckNativeScalperSetups() {
    double prev_close = iClose(_Symbol, PERIOD_M5, 1);
 
    // Live: use scalper_config.json / defaults. Strategy Tester: relax so backtests produce trades (fills, R:R stats).
+   // HID_BULL divergence override (2.7.13): when RSI shows hidden bullish divergence, M5 ADX spike is
+   // misleading — congestion zone, not a real trend. If M15 ADX confirms ranging (< bounce_adx_max),
+   // override the M5 ADX spike so BB_BOUNCE BUY can evaluate at the same support level.
+   // Run11 May4 17:10: M5=37.4 would block bounce, M15=16.7 confirms ranging → override → BUY hits TP1+TP2.
+   double _m15adx_bounce[1];
+   double m15_adx_bounce = (g_mtf[1].h_adx != INVALID_HANDLE
+                             && CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _m15adx_bounce) == 1)
+                            ? _m15adx_bounce[0] : m5_adx;
+   bool hid_bull_active = (g_sc.rsi_div_enabled && g_rsi_div_type == "HID_BULL");
    double bounce_adx_max_eff = g_sc.bounce_adx_max;
+   if(hid_bull_active && m15_adx_bounce < g_sc.bounce_adx_max) {
+      // M15 confirms ranging → raise effective cap so M5 spike doesn't block the bounce
+      bounce_adx_max_eff = MathMax(g_sc.bounce_adx_max, m5_adx + 1.0);
+   }
    double breakout_adx_min_eff = g_sc.breakout_adx_min;           // BUY floor
    double breakout_adx_min_sell_eff = g_sc.breakout_adx_min_sell; // SELL floor (stricter)
    double trend_thr_eff = g_sc.trend_strength_atr_threshold;
