@@ -69,6 +69,8 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
 SCRIBE_QUERY_SECRET = (os.environ.get("ATHENA_SCRIBE_QUERY_SECRET") or "").strip()
 SCRIBE_QUERY_MAX_ROWS = _env_int("SCRIBE_QUERY_MAX_ROWS", 500, 1, 50_000)
 SCRIBE_QUERY_BUSY_MS = _env_int("SCRIBE_QUERY_BUSY_MS", 5000, 0, 120_000)
+# Max backtest runs shown in /api/backtest/runs and the Backtest tab. Raise for longer history.
+BACKTEST_RUNS_LIMIT = _env_int("ATHENA_BACKTEST_RUNS_LIMIT", 50, 1, 10_000)
 AURUM_EXEC_SECRET = (os.environ.get("ATHENA_AURUM_EXEC_SECRET") or "").strip()
 # MT5 files live at project root (root-level symlink)
 MARKET_FILE    = _root_path(os.environ.get("MT5_MARKET_FILE",  "MT5/market_data.json"))
@@ -1615,10 +1617,14 @@ def api_health():
 # ── Backtest (aurum_tester.db) ─────────────────────────────────────
 @app.route("/api/backtest/runs")
 def api_backtest_runs():
-    """All registered tester runs with per-run performance summary."""
+    """Recent tester runs with per-run performance summary. Controlled by ATHENA_BACKTEST_RUNS_LIMIT (default 50)."""
     ts = get_tester_scribe()
     try:
-        runs = ts.query("""
+        limit = min(
+            max(1, int(request.args.get("limit", BACKTEST_RUNS_LIMIT))),
+            10_000,
+        )
+        runs = ts.query(f"""
             SELECT r.aurum_run_id, r.wall_time, r.source_run_id,
                    r.symbol, r.forge_version, r.scalper_mode,
                    r.balance, r.magic_base,
@@ -1636,6 +1642,7 @@ def api_backtest_runs():
                     WHERE t.aurum_run_id=r.aurum_run_id AND t.profit IS NOT NULL AND t.profit!=0) as total_pnl
             FROM aurum_tester_runs r
             ORDER BY r.aurum_run_id DESC
+            LIMIT {limit}
         """)
         for r in runs:
             taken = r.get("taken") or 0
@@ -1643,9 +1650,36 @@ def api_backtest_runs():
             losses = r.get("losses") or 0
             r["win_rate"] = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else None
             r["total_pnl"] = round(r.get("total_pnl") or 0, 2)
-        return jsonify({"runs": runs, "count": len(runs)})
+        return jsonify({"runs": runs, "count": len(runs), "limit": limit})
     except Exception as e:
-        return jsonify({"runs": [], "count": 0, "error": str(e)})
+        return jsonify({"runs": [], "count": 0, "limit": BACKTEST_RUNS_LIMIT, "error": str(e)})
+
+
+@app.route("/api/backtest/compare")
+def api_backtest_compare():
+    """
+    Compare two backtest runs side-by-side. Returns delta metrics and a 0-100 composite score.
+    ?run_a=<id>&run_b=<id>  — explicit run IDs.
+    If omitted, defaults to the two most recent runs in aurum_tester_runs.
+    Score: 40% win rate + 30% risk/reward + 20% take rate + 10% loss avoidance.
+    All values derived from real DB rows only.
+    """
+    from backtest_compare import compare_runs
+    ts = get_tester_scribe()
+    try:
+        run_a_id = request.args.get("run_a", type=int)
+        run_b_id = request.args.get("run_b", type=int)
+        if run_a_id is None or run_b_id is None:
+            recent = ts.query(
+                "SELECT aurum_run_id FROM aurum_tester_runs ORDER BY aurum_run_id DESC LIMIT 2"
+            )
+            if len(recent) < 2:
+                return jsonify({"error": "Need at least 2 runs to compare"}), 404
+            run_a_id = run_a_id or recent[0]["aurum_run_id"]
+            run_b_id = run_b_id or recent[1]["aurum_run_id"]
+        return jsonify(compare_runs(ts, run_a_id, run_b_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/backtest/run/<int:aurum_run_id>")

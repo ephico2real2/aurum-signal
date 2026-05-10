@@ -888,8 +888,17 @@ paths:
   /api/backtest/runs:
     get:
       tags: [backtest]
-      summary: All tester runs with summary stats
+      summary: Recent tester runs with summary stats
+      description: |
+        Returns the N most recent aurum_tester_runs rows with per-run signal and trade stats.
+        Default N is controlled by `ATHENA_BACKTEST_RUNS_LIMIT` env var (default 50).
+        Override per-request with `?limit=N` (max 10000).
       operationId: getBacktestRuns
+      parameters:
+        - name: limit
+          in: query
+          description: Max runs to return. Defaults to ATHENA_BACKTEST_RUNS_LIMIT (50).
+          schema: { type: integer, default: 50, minimum: 1, maximum: 10000 }
       responses:
         '200':
           description: List of tester runs
@@ -898,8 +907,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  runs: { type: array, items: { type: object, additionalProperties: true } }
+                  runs:  { type: array, items: { type: object, additionalProperties: true } }
                   count: { type: integer }
+                  limit: { type: integer, description: "Effective limit applied to this response" }
 
   /api/backtest/run/{aurum_run_id}:
     get:
