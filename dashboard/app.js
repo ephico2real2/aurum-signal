@@ -537,7 +537,7 @@ function ATHENA(){
   const [signalStats,setSignalStats]=useState(null);
   const [pnlCurve,setPnlCurve]=useState([]);
   const [mgmtNote,setMgmtNote]=useState('');
-  const [aurumH,setAurumH]=useState(280);
+  const [aurumH,setAurumH]=useState(72); // collapsed by default — drag up to expand
   const aurumDragRef=useRef(null);
   // Column + panel resize state
   const [leftW,setLeftW]=useState(186);    // left sidebar width (px)
@@ -1537,9 +1537,9 @@ function ATHENA(){
                         {/* Stat grid */}
                         <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,
                           letterSpacing:2,marginBottom:8}}>RUN STATISTICS</div>
-                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+                        <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5,marginBottom:10}}>
                           {[
-                            ['Total P&L',`${p.total_pnl>=0?'+':''}$${(p.total_pnl||0).toFixed(2)}`,p.total_pnl>=0?T.green:T.red],
+                            ['P&L',`${p.total_pnl>=0?'+':''}$${(p.total_pnl||0).toFixed(2)}`,p.total_pnl>=0?T.green:T.red],
                             ['Win Rate',p.win_rate!=null?`${p.win_rate}%`:'—',T.green],
                             ['Trades',p.total||0,T.textBB],
                             ['Wins',wins,T.green],
@@ -1547,13 +1547,13 @@ function ATHENA(){
                             ['Best Win',`$${(p.best_win||0).toFixed(2)}`,T.green],
                             ['Worst Loss',`$${(p.worst_loss||0).toFixed(2)}`,T.red],
                             ['TAKEN',btDetail.signals?.taken||0,T.gold],
-                            ['Open at End',btDetail.signals?.open_at_end??'—',btDetail.signals?.open_at_end>0?T.amber:T.textD],
+                            ['Open',btDetail.signals?.open_at_end??'—',btDetail.signals?.open_at_end>0?T.amber:T.textD],
                             ['Skipped',btDetail.signals?.skipped||0,T.textD],
                           ].map(([l,v,c])=>(
                             <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
-                              borderRadius:5,padding:'8px 10px',textAlign:'center'}}>
-                              <div style={{fontSize:16,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
-                              <div style={{fontSize:9,color:T.text,marginTop:2,letterSpacing:1}}>{l}</div>
+                              borderRadius:4,padding:'5px 6px',textAlign:'center'}}>
+                              <div style={{fontSize:11,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
+                              <div style={{fontSize:8,color:T.textD,marginTop:1,letterSpacing:.5}}>{l}</div>
                             </div>
                           ))}
                         </div>
