@@ -130,14 +130,44 @@ Source journal DB (can be wiped):          aurum_tester.db (persists forever):
 
 ---
 
-## MT5 Tester Agents
+## MT5 Tester Agents — Multi-Run Isolation
 
-Two tester agents run in parallel. Both write to separate source DBs but feed into the same `aurum_tester.db`:
+MT5 Strategy Tester assigns agents in round-robin. Each run gets its own agent directory and source DB. The bridge monitors all agents in parallel every 60s via `glob("Agent-*/MQL5/Files")`.
 
-| Agent | Source DB | Size (approx) |
-|-------|-----------|---------------|
-| Agent-127.0.0.1-3000 | `FORGE_journal_XAUUSD_tester.db` | ~16M (primary) |
-| Agent-127.0.0.1-3001 | `FORGE_journal_XAUUSD_tester.db` | ~3.5M (secondary) |
+### Agent assignment per run
+
+```
+Run X → MT5 assigns Agent-3000
+         └─ FORGE_journal_XAUUSD_tester.db (wall_time=T1)
+              └─ Bridge syncs → aurum_run_id=X in aurum_tester.db
+
+Run Y → MT5 assigns Agent-3001
+         └─ FORGE_journal_XAUUSD_tester.db (wall_time=T2)
+              └─ Bridge syncs → aurum_run_id=Y in aurum_tester.db
+
+Both synced simultaneously — Agent-3000 data for Run X is
+preserved and queryable while Run Y is actively running on Agent-3001.
+```
+
+### Agent reuse (same agent, new wall_time)
+
+When MT5 reuses an agent (e.g., Run Z starts on Agent-3000 after Run X finishes):
+
+- **MT5 does NOT clear `SIGNALS` between runs** — old Run X rows persist with `synced=1`
+- Only the new Run Z rows have `synced=0`; `TESTER_RUNS` gets a new `wall_time`
+- Without mitigation the bridge would only sync the delta rows (e.g., 3,275 of 64,102)
+
+**How the bridge handles this (auto-recovery, no manual action needed):**
+
+1. **wall_time change detection** (`scribe.py`): When `TESTER_RUNS` gets a new `wall_time` for a known `run_id`, scribe resets `synced=0` for ALL signals in that `run_id`. The full run re-syncs under the new `aurum_run_id`.
+
+2. **ATTACH-based gap recovery** (`bridge.py`): Every 60s cycle, the bridge ATTACHes `aurum_tester.db` to the source and resets `synced=0` for any source rows marked `synced=1` that are missing from the destination. Fires within one cycle of a gap being detected.
+
+| Agent | Source DB | Notes |
+|-------|-----------|-------|
+| Agent-127.0.0.1-3000 | `FORGE_journal_XAUUSD_tester.db` | Primary agent (first run) |
+| Agent-127.0.0.1-3001 | `FORGE_journal_XAUUSD_tester.db` | Secondary agent (second run) |
+| Agent-127.0.0.1-300N | `FORGE_journal_XAUUSD_tester.db` | Additional agents auto-discovered |
 
 ---
 
