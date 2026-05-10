@@ -102,6 +102,13 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_SELL_STOP_CONT_LOT_FACTOR":   ("bb_breakout", "sell_stop_cont_lot_factor",   "float", 0.0, 1.0),
     "FORGE_SELL_STOP_CONT_EXPIRY_BARS":  ("bb_breakout", "sell_stop_cont_expiry_bars",  "int",   1.0, 50.0),
     "FORGE_SELL_STOP_CONT_MIN_RSI":      ("bb_breakout", "sell_stop_cont_min_rsi",      "float", 0.0, 50.0),
+    # BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry at crash low after SELL TP1
+    # Captures May-1-style parabolic reversals: RSI bounces from 20 back through 35 = recovery confirmed
+    "FORGE_BUY_LIMIT_RECOVERY_ENABLED":      ("bb_breakout", "buy_limit_recovery_enabled",      "bool01", None, None),
+    "FORGE_BUY_LIMIT_RECOVERY_MIN_RSI":      ("bb_breakout", "buy_limit_recovery_min_rsi",      "float", 20.0, 70.0),
+    "FORGE_BUY_LIMIT_RECOVERY_LOT_FACTOR":   ("bb_breakout", "buy_limit_recovery_lot_factor",   "float", 0.0, 1.0),
+    "FORGE_BUY_LIMIT_RECOVERY_EXPIRY_BARS":  ("bb_breakout", "buy_limit_recovery_expiry_bars",  "int",   1.0, 20.0),
+    "FORGE_BUY_LIMIT_RECOVERY_SL_ATR_MULT":  ("bb_breakout", "buy_limit_recovery_sl_atr_mult",  "float", 0.1, 5.0),
     # H4 supplemental gates (2.7.10) — disabled by default in .defaults.json; enable per run for testing
     # H4 RSI gate: block SELL when H4 RSI >= h4_rsi_sell_max (Cardwell Bear Resistance exhaustion on H4)
     #              block BUY  when H4 RSI <= h4_rsi_buy_min  (Cardwell Bull Support exhaustion on H4)

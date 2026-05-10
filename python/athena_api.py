@@ -1495,15 +1495,17 @@ def api_backtest_runs():
                    r.balance, r.magic_base,
                    datetime(r.sim_start_time, 'unixepoch') as sim_start,
                    r.first_seen_utc,
-                   COUNT(CASE WHEN s.outcome='TAKEN' THEN 1 END) as taken,
-                   COUNT(CASE WHEN s.outcome='SKIP'  THEN 1 END) as skipped,
-                   COUNT(CASE WHEN t.profit>0 AND t.profit IS NOT NULL THEN 1 END) as wins,
-                   COUNT(CASE WHEN t.profit<0 THEN 1 END) as losses,
-                   COALESCE(SUM(CASE WHEN t.profit!=0 THEN t.profit END), 0) as total_pnl
+                   (SELECT COUNT(*) FROM forge_signals s
+                    WHERE s.aurum_run_id=r.aurum_run_id AND s.outcome='TAKEN') as taken,
+                   (SELECT COUNT(*) FROM forge_signals s
+                    WHERE s.aurum_run_id=r.aurum_run_id AND s.outcome='SKIP')  as skipped,
+                   (SELECT COUNT(*) FROM forge_journal_trades t
+                    WHERE t.aurum_run_id=r.aurum_run_id AND t.profit>0 AND t.profit IS NOT NULL) as wins,
+                   (SELECT COUNT(*) FROM forge_journal_trades t
+                    WHERE t.aurum_run_id=r.aurum_run_id AND t.profit<0) as losses,
+                   (SELECT COALESCE(SUM(t.profit),0) FROM forge_journal_trades t
+                    WHERE t.aurum_run_id=r.aurum_run_id AND t.profit IS NOT NULL AND t.profit!=0) as total_pnl
             FROM aurum_tester_runs r
-            LEFT JOIN forge_signals s ON s.aurum_run_id = r.aurum_run_id
-            LEFT JOIN forge_journal_trades t ON t.aurum_run_id = r.aurum_run_id
-            GROUP BY r.aurum_run_id
             ORDER BY r.aurum_run_id DESC
         """)
         for r in runs:
@@ -1549,7 +1551,10 @@ def api_backtest_run(aurum_run_id):
         perf["win_rate"] = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else None
         perf["total_pnl"] = round(perf.get("total_pnl") or 0, 2)
 
-        # Signal stats
+        # Signal stats + open-at-end groups
+        # open_at_end = TAKEN groups whose magic has no closing deal (profit!=0) in the same run.
+        # Note: cascade/continuation positions (magic > MagicNumber+10000) are excluded from the
+        # journal by the EA's magic filter — so open_at_end only counts tracked market order groups.
         sig_row = ts.query("""
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN outcome='TAKEN' THEN 1 ELSE 0 END) as taken,
@@ -1557,6 +1562,19 @@ def api_backtest_run(aurum_run_id):
             FROM forge_signals WHERE aurum_run_id=?
         """, (aurum_run_id,))
         sig_stats = sig_row[0] if sig_row else {}
+
+        open_at_end_rows = ts.query("""
+            SELECT COUNT(*) as open_groups
+            FROM forge_signals s
+            WHERE s.aurum_run_id=? AND s.outcome='TAKEN'
+              AND NOT EXISTS (
+                  SELECT 1 FROM forge_journal_trades t
+                  WHERE t.aurum_run_id = s.aurum_run_id
+                    AND t.magic = s.magic
+                    AND t.profit IS NOT NULL AND t.profit != 0
+              )
+        """, (aurum_run_id,))
+        sig_stats["open_at_end"] = (open_at_end_rows[0].get("open_groups") or 0) if open_at_end_rows else 0
 
         # Gate breakdown (top 15 SKIP reasons)
         gates = ts.query("""

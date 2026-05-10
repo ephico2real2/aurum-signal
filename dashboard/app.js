@@ -603,14 +603,14 @@ function ATHENA(){
     load();const t=setInterval(load,30000);return()=>clearInterval(t);
   },[tab]);
 
-  // Backtest run detail — fetch when selected run changes
+  // Backtest run detail — fetch when selected run changes, refresh every 30s
   useEffect(()=>{
     if(!btSelRun)return;
     const load=async()=>{
       try{const r=await fetch(`${API}/api/backtest/run/${btSelRun}`);
         if(r.ok){const j=await r.json();setBtDetail(j);}}
       catch(e){}};
-    load();
+    load();const t=setInterval(load,30000);return()=>clearInterval(t);
   },[btSelRun]);
 
   const switchMode=async(m)=>{
@@ -1359,6 +1359,7 @@ function ATHENA(){
                             ['Best Win',`$${(p.best_win||0).toFixed(2)}`,T.green],
                             ['Worst Loss',`$${(p.worst_loss||0).toFixed(2)}`,T.red],
                             ['TAKEN',btDetail.signals?.taken||0,T.gold],
+                            ['Open at End',btDetail.signals?.open_at_end??'—',btDetail.signals?.open_at_end>0?T.amber:T.textD],
                             ['Skipped',btDetail.signals?.skipped||0,T.textD],
                           ].map(([l,v,c])=>(
                             <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,

@@ -2711,7 +2711,17 @@ class Bridge:
         # ── CIRCUIT BREAKER: MT5 staleness check ──────────────────
         # If market_data.json hasn't updated in MT5_STALE_SEC, FORGE
         # is disconnected. Force WATCH and alert — never trade blind.
-        if not mt5_fresh and self._effective_mode() not in ("OFF", "WATCH"):
+        # Exception: XAUUSD closes Fri ~21:00 UTC → Sun ~21:00 UTC.
+        # On weekends, stale ticks are expected — skip the breaker.
+        _now_utc = datetime.now(timezone.utc)
+        _dow = _now_utc.weekday()  # 0=Mon … 5=Sat, 6=Sun
+        _hr  = _now_utc.hour
+        _market_weekend = (
+            _dow == 5                        # Saturday (all day)
+            or (_dow == 6 and _hr < 21)      # Sunday before 21:00 UTC
+            or (_dow == 4 and _hr >= 21)     # Friday after 21:00 UTC
+        )
+        if not mt5_fresh and self._effective_mode() not in ("OFF", "WATCH") and not _market_weekend:
             if not self._mt5_blind_override:
                 self._mt5_blind_override = True
                 log.error(f"CIRCUIT BREAKER: MT5 data stale ({mt5_age:.0f}s) — forcing WATCH")

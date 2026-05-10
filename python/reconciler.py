@@ -231,8 +231,8 @@ class Reconciler:
             "scribe_open_count": len(scribe_tickets),
             "issues":          issues,
             "issue_count":     len(issues),
-            "mt5_floating":    mt5_floating,
-            "scribe_floating": scribe_floating,
+            "mt5_floating":    None,
+            "scribe_floating": None,
         }
 
         # ── Log to SCRIBE ──────────────────────────────────────────
@@ -264,7 +264,7 @@ class Reconciler:
         else:
             log.info(f"RECONCILER: CLEAN — "
                      f"MT5={len(mt5_positions)} SCRIBE={len(scribe_tickets)} "
-                     f"floating=${mt5_floating:.2f}")
+                     f"floating=n/a")
 
         try:
             report_component_status(

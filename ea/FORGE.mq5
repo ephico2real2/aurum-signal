@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.80"
+#property version "2.81"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.10";
+const string FORGE_VERSION = "2.7.11";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -256,6 +256,16 @@ struct ScalperConfig {
    double sell_stop_cont_lot_factor;   // lot factor for continuation leg (default 0.25 = 1/4 base)
    int    sell_stop_cont_expiry_bars;  // cancel if not triggered within N M5 bars (default 8 = 40 min)
    double sell_stop_cont_min_rsi;      // only arm when M5 RSI > this — blocks exhausted entries (default 25.0)
+   // BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry after crash RSI bounce
+   // Arms at SELL TP1 hit when RSI has recovered above min_rsi (> 35 = Cardwell Bull Support zone entered)
+   // Price: crash TP1 level — buy at the established swing low, not chasing the recovery
+   // Expiry: short (4 bars / 20 min) — stale recovery limits become losing longs
+   // Enable: FORGE_BUY_LIMIT_RECOVERY_ENABLED=1 in .env
+   bool   buy_limit_recovery_enabled;  // arm BUY LIMIT at TP1 crash low after TP1 hit (default false)
+   double buy_limit_recovery_min_rsi;  // only arm when M5 RSI > this — Cardwell Bull Support zone (default 35.0)
+   double buy_limit_recovery_lot_factor; // lot factor (default 0.25)
+   int    buy_limit_recovery_expiry_bars;// cancel if not filled within N M5 bars (default 4 = 20 min)
+   double buy_limit_recovery_sl_atr_mult;// SL = TP1 - ATR × this below the crash low (default 1.0)
    // H4 supplemental gates — disabled by default (2.7.10)
    // Enable via .env: FORGE_H4_RSI_GATE_ENABLED=1, FORGE_H4_ADX_GATE_ENABLED=1
    // Rationale: H4 RSI identifies structural HH/LL exhaustion zones (Cardwell Bear Resistance ≥60 / Bull Support ≤40)
@@ -510,7 +520,7 @@ struct SellLimitEntry {
    datetime expiry;       // cancel if not filled by this time
    bool     active;
 };
-SellLimitEntry g_sell_limit_stack[4];  // 4 slots: [0]=L1 SELL LIMIT, [1]=L2 SELL LIMIT, [2-3]=reserved for 2.7.10 SELL STOP + BUY LIMIT
+SellLimitEntry g_sell_limit_stack[5];  // 5 slots: [0]=L1 SELL LIMIT, [1]=L2 SELL LIMIT, [2-3]=SELL STOP continuation (true scaling — G5001+G5002), [4]=Day 3 BUY LIMIT recovery
 
 // MULTI-TIMEFRAME INDICATORS (M5, M15, M30) — for AURUM scalping context
 struct TFIndicators {
@@ -889,9 +899,9 @@ void OnTick() {
    ManageStagedNativeLegs();
    ManageOpenGroups();
    ManagePendingLadderAbort();
-   // Pending ladder expiry + fill-detection (2.7.7b/2.7.10): all 4 slots
+   // Pending ladder expiry + fill-detection (2.7.7b/2.7.10): all 5 slots
    { datetime _now = TimeTradeServer();
-     for(int _si = 0; _si < 4; _si++) {
+     for(int _si = 0; _si < 5; _si++) {
         if(!g_sell_limit_stack[_si].active) continue;
         bool _pending = OrderSelect(g_sell_limit_stack[_si].ticket);
         if(!_pending && _now < g_sell_limit_stack[_si].expiry) {
@@ -1515,7 +1525,13 @@ void ManageOpenGroups() {
       int positions[];
       GetGroupPositions(gm, positions);
       int total = ArraySize(positions);
-      if(total == 0) { g_groups[gi].tp1_hit = true; continue; }
+      if(total == 0) {
+         // Native TP/SL closed the position before ManageOpenGroups ran this tick.
+         // Still arm the post-TP1 ladder — SELL STOP CONT is a new independent order.
+         g_groups[gi].tp1_hit = true;
+         ArmPostTP1Ladder(gi);
+         continue;
+      }
       int to_close = (int)MathCeil(total * g_groups[gi].tp1_close_pct / 100.0);
       int closed   = 0;
       for(int j = 0; j < total && closed < to_close; j++) {
@@ -2239,6 +2255,12 @@ void InitScalperConfig() {
    g_sc.sell_stop_cont_lot_factor    = 0.25;
    g_sc.sell_stop_cont_expiry_bars   = 8;
    g_sc.sell_stop_cont_min_rsi       = 25.0;
+   // BUY LIMIT recovery — off by default; enable via FORGE_BUY_LIMIT_RECOVERY_ENABLED=1
+   g_sc.buy_limit_recovery_enabled      = false;
+   g_sc.buy_limit_recovery_min_rsi      = 35.0;  // Cardwell Bull Support zone threshold
+   g_sc.buy_limit_recovery_lot_factor   = 0.25;
+   g_sc.buy_limit_recovery_expiry_bars  = 4;     // 20 min — stale recovery limits become losing longs
+   g_sc.buy_limit_recovery_sl_atr_mult  = 1.0;   // SL below crash low by 1 ATR
    // H4 supplemental gates — off by default; enable via .env + scalper_config.json
    g_sc.h4_rsi_gate_enabled  = false;
    g_sc.h4_rsi_sell_max      = 60.0;  // Cardwell Bear Resistance ceiling
@@ -2246,8 +2268,8 @@ void InitScalperConfig() {
    g_sc.h4_adx_gate_enabled  = false;
    g_sc.h4_adx_min_sell      = 20.0;
    g_sc.h4_adx_min_buy       = 20.0;
-   // Init SELL LIMIT stack (all 4 slots — slots [2],[3] reserved for 2.7.10 SELL STOP + BUY LIMIT)
-   for(int _si = 0; _si < 4; _si++) {
+   // Init SELL LIMIT stack (all 5 slots — [2][3]=SELL STOP scale-in, [4]=Day 3 BUY LIMIT)
+   for(int _si = 0; _si < 5; _si++) {
       g_sell_limit_stack[_si].ticket   = 0;
       g_sell_limit_stack[_si].group_id = 0;
       g_sell_limit_stack[_si].mkt_magic = 0;
@@ -2568,6 +2590,12 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_stop_cont_lot_factor")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_lot_factor"); if(v > 0 && v <= 1.0)  g_sc.sell_stop_cont_lot_factor = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_stop_cont_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_stop_cont_expiry_bars = (int)v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_min_rsi"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_min_rsi");    if(v >= 0 && v < 50)  g_sc.sell_stop_cont_min_rsi    = v; }
+      // BUY LIMIT recovery (2.7.10 Day 3) — disabled by default
+      if(JsonHasKey(breakout_json, "buy_limit_recovery_enabled"))    { v = JsonGetDouble(breakout_json,"buy_limit_recovery_enabled");    g_sc.buy_limit_recovery_enabled    = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "buy_limit_recovery_min_rsi"))    { v = JsonGetDouble(breakout_json,"buy_limit_recovery_min_rsi");    if(v >= 0 && v < 80) g_sc.buy_limit_recovery_min_rsi    = v; }
+      if(JsonHasKey(breakout_json, "buy_limit_recovery_lot_factor")) { v = JsonGetDouble(breakout_json,"buy_limit_recovery_lot_factor"); if(v > 0 && v <= 1.0) g_sc.buy_limit_recovery_lot_factor = v; }
+      if(JsonHasKey(breakout_json, "buy_limit_recovery_expiry_bars")){ v = JsonGetDouble(breakout_json,"buy_limit_recovery_expiry_bars"); if(v >= 1 && v <= 50) g_sc.buy_limit_recovery_expiry_bars = (int)v; }
+      if(JsonHasKey(breakout_json, "buy_limit_recovery_sl_atr_mult")){ v = JsonGetDouble(breakout_json,"buy_limit_recovery_sl_atr_mult"); if(v > 0 && v <= 5.0) g_sc.buy_limit_recovery_sl_atr_mult = v; }
       // H4 supplemental gates (2.7.10) — disabled by default
       if(JsonHasKey(breakout_json, "h4_rsi_gate_enabled"))  { v = JsonGetDouble(breakout_json,"h4_rsi_gate_enabled");  g_sc.h4_rsi_gate_enabled  = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "h4_rsi_sell_max"))      { v = JsonGetDouble(breakout_json,"h4_rsi_sell_max");      if(v > 0 && v <= 100) g_sc.h4_rsi_sell_max      = v; }
@@ -5994,9 +6022,11 @@ void RebuildGroups() {
 }
 
 // ArmPostTP1Ladder — called from ManageOpenGroups() when TP1 is hit on a SELL group (2.7.10 Day 2)
-// Places SELL STOP continuation below crash_low when RSI not yet exhausted.
-// Slot [2] = SELL STOP continuation; slot [3] reserved for Day 3 BUY LIMIT recovery.
-// Disabled by default: sell_stop_cont_enabled=false. Enable via FORGE_SELL_STOP_CONT_ENABLED=1 in .env.
+// Places SELL STOP continuation below TP1 when RSI not yet exhausted.
+// TRUE SCALING: searches slots [2..3] for first free slot — up to 2 concurrent SELL STOPs
+// (one per group that fires TP1, e.g. G5001 and G5002 within ~10 pips of each other).
+// Slot [4] reserved for Day 3 BUY LIMIT recovery.
+// Enable via FORGE_SELL_STOP_CONT_ENABLED=1 in .env.
 void ArmPostTP1Ladder(const int gi) {
    if(gi < 0 || gi >= ArraySize(g_groups)) return;
    // Day 2 only arms for SELL groups — BUY recovery is Day 3
@@ -6008,31 +6038,38 @@ void ArmPostTP1Ladder(const int gi) {
    // Guard: BRIDGE groups have entry_atr=0 (ATR unavailable at BRIDGE registration time)
    if(crash_low <= 0 || entry_atr <= 0) {
       if(g_sc.sell_stop_cont_enabled)
-         PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped (crash_low=%.2f entry_atr=%.4f; BRIDGE group or ATR unavailable)",
-                     grp_id, crash_low, entry_atr);
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped (entry_atr unavailable; BRIDGE group)",
+                     grp_id);
       return;
    }
 
-   // SELL STOP continuation (slot [2])
+   // SELL STOP continuation — true scaling: use first free slot in [2..3]
+   // Allows G5001 and G5002 to each place their own SELL STOP within ~10 pips of each other.
    if(g_sc.sell_stop_cont_enabled) {
-      if(g_sell_limit_stack[2].active) {
-         PrintFormat("FORGE: ArmPostTP1Ladder G%d — slot [2] already occupied, skipping SELL STOP", grp_id);
+      // Find first free SELL STOP slot
+      int ss_slot = -1;
+      for(int _s = 2; _s <= 3; _s++) {
+         if(!g_sell_limit_stack[_s].active) { ss_slot = _s; break; }
+      }
+      if(ss_slot == -1) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d — slots [2][3] both occupied, SELL STOP skipped", grp_id);
       } else {
          // Check current M5 RSI — do not continue into an exhausted oversold zone
          double _rbuf[1];
          double cur_rsi = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _rbuf) == 1) ? _rbuf[0] : 0;
          if(cur_rsi > 0 && cur_rsi <= g_sc.sell_stop_cont_min_rsi) {
-            PrintFormat("FORGE: ArmPostTP1Ladder G%d — SELL STOP skipped (RSI=%.1f <= min_rsi=%.1f, exhausted)",
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d — SELL STOP skipped (RSI=%.1f <= %.1f, exhausted)",
                         grp_id, cur_rsi, g_sc.sell_stop_cont_min_rsi);
          } else {
-            // Reference: TP1 price (already hit) — SELL STOP goes below TP1 to catch second leg
-            // Using crash_low (entry bid) was wrong: entry - 0.4×ATR is above current price at TP1 time → retcode 10015
+            // Reference: TP1 price (already hit) — SELL STOP below TP1 catches second impulse leg
             double tp1_ref  = g_groups[gi].tp1;
             double ss_price = NormalizeDouble(tp1_ref - entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
             double ss_sl    = NormalizeDouble(tp1_ref + entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
             double ss_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                                                    g_sc.lot_fixed * g_sc.sell_stop_cont_lot_factor));
             datetime ss_exp = TimeCurrent() + (datetime)(g_sc.sell_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));
+            // Unique magic per slot so SL-cancel loop can distinguish them
+            ulong ss_magic  = (ulong)grp_magic + 20002 + (ulong)(ss_slot - 2);  // slot2→+20002, slot3→+20003
             MqlTradeRequest _ssr = {}; MqlTradeResult _ssres = {};
             _ssr.action       = TRADE_ACTION_PENDING;
             _ssr.type         = ORDER_TYPE_SELL_STOP;
@@ -6044,28 +6081,91 @@ void ArmPostTP1Ladder(const int gi) {
             _ssr.type_time    = ORDER_TIME_SPECIFIED;
             _ssr.expiration   = ss_exp;
             _ssr.type_filling = ORDER_FILLING_RETURN;
-            _ssr.magic        = (ulong)grp_magic + 20002;
-            _ssr.comment      = "SCALP_SELL_STOP_CONT|G" + IntegerToString(grp_id);
-            g_trade.SetExpertMagicNumber(_ssr.magic);
+            _ssr.magic        = ss_magic;
+            _ssr.comment      = "SCALP_SELL_STOP_CONT|G" + IntegerToString(grp_id) + "|S" + IntegerToString(ss_slot);
+            g_trade.SetExpertMagicNumber(ss_magic);
             if(OrderSend(_ssr, _ssres) && _ssres.order > 0) {
-               g_sell_limit_stack[2].ticket    = _ssres.order;
-               g_sell_limit_stack[2].group_id  = grp_id;
-               g_sell_limit_stack[2].mkt_magic = (ulong)grp_magic;
-               g_sell_limit_stack[2].expiry    = ss_exp;
-               g_sell_limit_stack[2].active    = true;
-               PrintFormat("FORGE: SELL STOP CONT placed G%d ticket=%d price=%.2f (TP1=%.2f-ATR*%.2f=%.2f) SL=%.2f lot=%.2f RSI=%.1f exp=%s",
-                           grp_id, _ssres.order, ss_price, tp1_ref, g_sc.sell_stop_cont_atr_mult,
-                           entry_atr * g_sc.sell_stop_cont_atr_mult, ss_sl, ss_lot, cur_rsi,
-                           TimeToString(ss_exp, TIME_DATE|TIME_SECONDS));
+               g_sell_limit_stack[ss_slot].ticket    = _ssres.order;
+               g_sell_limit_stack[ss_slot].group_id  = grp_id;
+               g_sell_limit_stack[ss_slot].mkt_magic = (ulong)grp_magic;
+               g_sell_limit_stack[ss_slot].expiry    = ss_exp;
+               g_sell_limit_stack[ss_slot].active    = true;
+               PrintFormat("FORGE: SELL STOP CONT placed G%d slot[%d] ticket=%d price=%.2f (TP1=%.2f-ATR*%.2f=%.2f) SL=%.2f lot=%.2f RSI=%.1f",
+                           grp_id, ss_slot, _ssres.order, ss_price, tp1_ref,
+                           g_sc.sell_stop_cont_atr_mult, entry_atr * g_sc.sell_stop_cont_atr_mult,
+                           ss_sl, ss_lot, cur_rsi);
             } else {
-               PrintFormat("FORGE: SELL STOP CONT placement FAILED G%d retcode=%d", grp_id, _ssres.retcode);
+               PrintFormat("FORGE: SELL STOP CONT placement FAILED G%d slot[%d] retcode=%d", grp_id, ss_slot, _ssres.retcode);
             }
             g_trade.SetExpertMagicNumber(MagicNumber);
          }
       }
    }
-   // Day 3 stub: BUY LIMIT recovery (slot [3]) — implement in Day 3 sprint
-   // if(g_sc.buy_limit_recovery_enabled) { ... }
+   // BUY LIMIT recovery (slot [4]) — Cardwell Bull Support entry at crash low after SELL TP1
+   // Captures the May-1-style parabolic reversal: RSI bounces from 20 back through 35 = recovery starting.
+   // Price: TP1 level (crash low) — buy at the established swing low, not chasing.
+   // BUY LIMIT at bid-level of TP1 is valid pending: bid ≈ ask - spread, order sits below current ask.
+   if(g_sc.buy_limit_recovery_enabled) {
+      if(g_sell_limit_stack[4].active) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d — slot [4] occupied, BUY LIMIT recovery skipped", grp_id);
+      } else {
+         double _rbuf2[1];
+         double cur_rsi_buy = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _rbuf2) == 1) ? _rbuf2[0] : 0;
+         if(cur_rsi_buy > 0 && cur_rsi_buy < g_sc.buy_limit_recovery_min_rsi) {
+            PrintFormat("FORGE: G%d BUY LIMIT skipped (RSI=%.1f < min=%.1f, Bull Support not confirmed)",
+                        grp_id, cur_rsi_buy, g_sc.buy_limit_recovery_min_rsi);
+         } else {
+            double tp1_ref_buy = g_groups[gi].tp1;   // crash low = TP1 hit price (bid at hit)
+            double ask_now     = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double _pt         = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            int    _stoplv     = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double min_dist    = MathMax(_stoplv * _pt, _pt);
+            // BUY LIMIT must be below current ask by at least broker min-stop distance.
+            // tp1_ref_buy = bid at TP1 time ≈ ask - spread → may be at or slightly above ask.
+            // Clamp to ask - min_dist to guarantee a valid pending order price.
+            double bl_price = NormalizeDouble(MathMin(tp1_ref_buy, ask_now - min_dist), _Digits);
+            double bl_sl    = NormalizeDouble(bl_price - entry_atr * g_sc.buy_limit_recovery_sl_atr_mult, _Digits);
+            // Validate price and SL are tradeable before sending
+            if(bl_price <= 0 || bl_sl <= 0 || bl_price <= bl_sl + min_dist) {
+               PrintFormat("FORGE: BUY LIMIT RECOV skipped G%d — invalid price %.2f or SL %.2f (ask=%.2f min_dist=%.5f)",
+                           grp_id, bl_price, bl_sl, ask_now, min_dist);
+               g_trade.SetExpertMagicNumber(MagicNumber);
+               // fall through to Day 3 done — don't skip Day 3 entirely if price math fails
+            } else {
+            double bl_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                                                   g_sc.lot_fixed * g_sc.buy_limit_recovery_lot_factor));
+            datetime bl_exp = TimeCurrent() + (datetime)(g_sc.buy_limit_recovery_expiry_bars * PeriodSeconds(PERIOD_M5));
+            MqlTradeRequest _blr = {}; MqlTradeResult _blres = {};
+            _blr.action       = TRADE_ACTION_PENDING;
+            _blr.type         = ORDER_TYPE_BUY_LIMIT;
+            _blr.symbol       = _Symbol;
+            _blr.volume       = bl_lot;
+            _blr.price        = bl_price;
+            _blr.sl           = bl_sl;
+            _blr.tp           = 0;    // no TP — trail manually or let RSI cancellation handle exit
+            _blr.type_time    = ORDER_TIME_SPECIFIED;
+            _blr.expiration   = bl_exp;
+            _blr.type_filling = ORDER_FILLING_RETURN;
+            _blr.magic        = (ulong)grp_magic + 20004;
+            _blr.comment      = "SCALP_BUY_LIMIT_RECOV|G" + IntegerToString(grp_id);
+            g_trade.SetExpertMagicNumber(_blr.magic);
+            if(OrderSend(_blr, _blres) && _blres.order > 0) {
+               g_sell_limit_stack[4].ticket    = _blres.order;
+               g_sell_limit_stack[4].group_id  = grp_id;
+               g_sell_limit_stack[4].mkt_magic = (ulong)grp_magic;
+               g_sell_limit_stack[4].expiry    = bl_exp;
+               g_sell_limit_stack[4].active    = true;
+               PrintFormat("FORGE: BUY LIMIT RECOV placed G%d slot[4] ticket=%d price=%.2f SL=%.2f lot=%.2f RSI=%.1f exp=%s",
+                           grp_id, _blres.order, bl_price, bl_sl, bl_lot, cur_rsi_buy,
+                           TimeToString(bl_exp, TIME_DATE|TIME_SECONDS));
+            } else {
+               PrintFormat("FORGE: BUY LIMIT RECOV placement FAILED G%d retcode=%d", grp_id, _blres.retcode);
+            }
+            g_trade.SetExpertMagicNumber(MagicNumber);
+            } // end price-validity else
+         }
+      }
+   }
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,
@@ -6084,9 +6184,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(profit < 0) {
       g_scalper_last_loss_time = TimeGMT();
       Print("FORGE: cooldown triggered after loss deal ", (long)deal, " profit=", DoubleToString(profit, 2));
-      // Cancel all cascade pending orders when market position hits SL (all 4 slots)
+      // Cancel all cascade pending orders when market position hits SL (all 5 slots)
       long _deal_magic = HistoryDealGetInteger(deal, DEAL_MAGIC);
-      for(int _si = 0; _si < 4; _si++) {
+      for(int _si = 0; _si < 5; _si++) {
          if(g_sell_limit_stack[_si].active && (long)g_sell_limit_stack[_si].mkt_magic == _deal_magic) {
             if(OrderSelect(g_sell_limit_stack[_si].ticket))
                g_trade.OrderDelete(g_sell_limit_stack[_si].ticket);

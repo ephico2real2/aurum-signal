@@ -1,5 +1,5 @@
 {
-  "version": "2.7.10",
+  "version": "2.7.11",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -78,7 +78,12 @@
     "h4_rsi_buy_min": 40.0,
     "h4_adx_gate_enabled": 0,
     "h4_adx_min_sell": 20.0,
-    "h4_adx_min_buy": 20.0
+    "h4_adx_min_buy": 20.0,
+    "buy_limit_recovery_enabled": 1,
+    "buy_limit_recovery_min_rsi": 35.0,
+    "buy_limit_recovery_lot_factor": 0.25,
+    "buy_limit_recovery_expiry_bars": 4,
+    "buy_limit_recovery_sl_atr_mult": 1.0
   },
   "indicators": {
     "bb_period": 20,
