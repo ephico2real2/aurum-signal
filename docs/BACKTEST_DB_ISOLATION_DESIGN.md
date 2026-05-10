@@ -180,4 +180,24 @@ TradingView panel remains unchanged (live feed, not tester-dependent).
 
 ---
 
-*Design: 2026-05-09 | Status: PROPOSED | Next: Phase 1 implementation sprint*
+*Design: 2026-05-09 | Status: Phase 1 IMPLEMENTED | Next: Phase 2 — backtest API endpoints*
+
+---
+
+## Implementation Notes (Phase 1)
+
+**Implemented: 2026-05-09**
+
+### Changes made
+
+- **`python/scribe.py`**: Added `get_tester_scribe()` module-level factory. `Scribe.__init__` already accepted `db_path` param — no signature change needed. The tester singleton reads `SCRIBE_TESTER_DB` env var, defaulting to `python/data/aurum_tester.db`. Both live and tester DBs share the same `_init_db()` / `_migrate()` schema path.
+
+- **`python/bridge.py`**: `from scribe import get_scribe, get_tester_scribe`. `Bridge.__init__` now initialises `self.tester_scribe = get_tester_scribe()`. Added `_active_scribe(is_tester: bool)` helper that returns `self.tester_scribe` when `is_tester=True`, else `self.scribe`. Journal sync block (previously lines 2783–2784) now uses `self._active_scribe(is_tester).sync_forge_journal(...)` and `self._active_scribe(is_tester).sync_forge_journal_trades(...)`.
+
+- **`.env.example`**: Added `# SCRIBE_TESTER_DB=python/data/aurum_tester.db` in SCRIBE section with doc comment.
+
+- **`Makefile`**: Added `tester-db-reset` phony target that wipes `python/data/aurum_tester.db` and updated help text.
+
+### Scope
+
+Phase 1 covers only `sync_forge_journal*` routing (SIGNALS + DEALS rows). `log_trade_closure`, `log_trade_position`, `log_trade_group` and regime snapshots are not yet routed (Phase 1 spec). Those remain live-only for now and are tracked for Phase 1 extension or Phase 2.

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from aeb_executor import execute_action, format_result_for_telegram
 
-from scribe      import get_scribe
+from scribe      import get_scribe, get_tester_scribe
 from herald      import get_herald, telegram_group_label
 from sentinel    import Sentinel
 from lens        import get_lens
@@ -869,7 +869,8 @@ def _normalize_forge_entry_legs(raw_legs) -> list[dict]:
 
 class Bridge:
     def __init__(self):
-        self.scribe   = get_scribe()
+        self.scribe        = get_scribe()
+        self.tester_scribe = get_tester_scribe()
         self.herald   = get_herald()
         self.sentinel    = Sentinel()
         self.lens        = get_lens()
@@ -938,6 +939,11 @@ class Bridge:
         self._trend_strength_atr_threshold = FORGE_TREND_STRENGTH_ATR_THRESHOLD
         self._breakout_buffer_points = FORGE_BREAKOUT_BUFFER_POINTS
         self._regime_snapshot: dict = {}
+
+    def _active_scribe(self, is_tester: bool):
+        """Route writes to tester DB when in Strategy Tester mode."""
+        return self.tester_scribe if is_tester else self.scribe
+
     def _pinned_mode(self) -> str | None:
         if BRIDGE_PIN_MODE in VALID_MODES:
             return BRIDGE_PIN_MODE
@@ -2780,8 +2786,8 @@ class Bridge:
                 if is_tester and not BRIDGE_SYNC_TESTER_JOURNAL:
                     continue
                 tag = "tester" if is_tester else "live"
-                synced_sig = self.scribe.sync_forge_journal(journal_path, source=tag)
-                synced_td = self.scribe.sync_forge_journal_trades(journal_path, source=tag)
+                synced_sig = self._active_scribe(is_tester).sync_forge_journal(journal_path, source=tag)
+                synced_td = self._active_scribe(is_tester).sync_forge_journal_trades(journal_path, source=tag)
                 if synced_sig or synced_td:
                     log.info(
                         "BRIDGE: synced FORGE journal %s — signals=%d deals=%d",

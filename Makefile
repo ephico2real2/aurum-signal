@@ -59,6 +59,9 @@ help:
 	@echo "  NOTE: never wipe the DB between runs — run_id increments automatically each backtest"
 	@echo "  (env) BRIDGE_SYNC_TESTER_JOURNAL=1  re-enable syncing *_tester.db → SCRIBE (default 0)"
 	@echo ""
+	@echo "  TESTER DB (backtest isolation — Phase 1)"
+	@echo "  make tester-db-reset  Wipe aurum_tester.db (recreated on next bridge start)"
+	@echo ""
 	@echo "  SERVICES (install_services.py — macOS: launchd; Linux: sudo systemctl)"
 	@echo "  make start             Install/load all services (same as services-install)"
 	@echo "  make stop              Unload/stop all (same as services-stop)"
@@ -375,6 +378,13 @@ journal-nuke:
 		-name "FORGE_journal_*_tester.db" -delete 2>/dev/null && \
 		echo "[journal] Tester journal DB(s) deleted." || \
 		echo "[journal] No tester journal DBs found (already clean)."
+
+# ── Tester DB (Phase 1 — backtest isolation) ──────────────────────
+.PHONY: tester-db-reset
+tester-db-reset:
+	@echo "Wiping tester SCRIBE DB..."
+	@rm -f python/data/aurum_tester.db
+	@echo "Done: aurum_tester.db removed (will recreate on next bridge start)"
 
 # ── Services ──────────────────────────────────────────────────────
 # install_services.py is chmod +x before each run so ./services/install_services.py works.

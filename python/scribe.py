@@ -1868,6 +1868,21 @@ def get_scribe() -> Scribe:
     return _instance
 
 
+# ── Tester DB singleton (Phase 1 — backtest isolation) ────────────
+_tester_scribe: "Scribe | None" = None
+
+def get_tester_scribe() -> "Scribe":
+    """Return a Scribe instance pointing at aurum_tester.db (Strategy Tester writes only)."""
+    global _tester_scribe
+    if _tester_scribe is None:
+        tester_path = os.environ.get(
+            "SCRIBE_TESTER_DB",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "aurum_tester.db"),
+        )
+        _tester_scribe = Scribe(db_path=tester_path)
+    return _tester_scribe
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     s = Scribe("data/test.db")
