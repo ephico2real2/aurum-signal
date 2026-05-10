@@ -537,7 +537,7 @@ function ATHENA(){
   const [signalStats,setSignalStats]=useState(null);
   const [pnlCurve,setPnlCurve]=useState([]);
   const [mgmtNote,setMgmtNote]=useState('');
-  const [aurumH,setAurumH]=useState(200); // default shows header + buttons + 1 message + input bar
+  const [aurumH,setAurumH]=useState(148); // default shows header + quick buttons + input bar
   const aurumDragRef=useRef(null);
   // Column + panel resize state
   const [leftW,setLeftW]=useState(186);    // left sidebar width (px)
