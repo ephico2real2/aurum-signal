@@ -933,13 +933,13 @@ function ATHENA(){
               onClick={()=>setTab(t.id)} style={{
               padding:'6px 10px',background:'transparent',border:'none',
               borderBottom:tab===t.id?`2px solid ${T.gold}`:'2px solid transparent',
-              color:tab===t.id?T.gold:T.text,fontFamily:T.mono,fontSize:7,
+              color:tab===t.id?T.gold:T.text,fontFamily:T.mono,fontSize:9,
               letterSpacing:0.5,cursor:'pointer',textTransform:'uppercase',
               display:'flex',alignItems:'center',gap:5}}>
               {t.label}
               {t.badge&&<span style={{background:T.amberBg,color:T.amber,
-                border:`1px solid ${T.amber}`,fontSize:7,fontFamily:T.mono,
-                padding:'0 4px',borderRadius:8}}>{t.badge}</span>}
+                border:`1px solid ${T.amber}`,fontSize:9,fontFamily:T.mono,
+                padding:'0 5px',borderRadius:8}}>{t.badge}</span>}
             </button>
           ))}
         </div>
