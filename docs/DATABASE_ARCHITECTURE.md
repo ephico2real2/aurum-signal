@@ -225,3 +225,50 @@ FROM forge_signals
 WHERE aurum_run_id = <N> AND outcome = 'TAKEN'
 ORDER BY time;
 ```
+
+---
+
+## Gate Legend — `forge_signals.gate_reason` Field Reference
+
+The `gate_reason` column in `forge_signals` uses internal FORGE codes. The full human-readable mapping is maintained in **`config/gate_legend.json`** and served via `GET /api/gate_legend`.
+
+> **How to update:** Edit `config/gate_legend.json` only. The Athena UI and this table should stay in sync — see `docs/ATHENA_UI_DESIGN.md` for the full legend table and the system design.
+
+### `gate_reason` Quick Reference
+
+| gate_reason | Category | What it means (plain English) |
+|-------------|----------|-------------------------------|
+| `entry_quality_direction` | Entry Quality | Not enough M5 bars moving in trade direction (need 2+ aligned bars) |
+| `entry_quality_body` | Entry Quality | Candle body too small — indecision candle, not a clean directional move |
+| `entry_quality_rsi_buy_ceil` | Entry Quality | RSI above 70 — overbought; buying here risks entering at the top |
+| `entry_quality_rsi_sell_floor` | Entry Quality | RSI below 30 — oversold (Cardwell exhaustion); selling here risks reversal |
+| `entry_quality_adx_min_sell` | Entry Quality | ADX too low for a breakout sell; not enough trending momentum |
+| `entry_quality_adx_min_buy` | Entry Quality | ADX too low for a breakout buy; market too range-bound |
+| `entry_quality_atr` | Entry Quality | ATR (volatility) too low — spread eats too much of the potential move |
+| `entry_quality_bb_contraction` | Entry Quality | Bollinger Bands squeezing inward — no momentum building for a breakout |
+| `entry_quality_bb_expansion` | Entry Quality | BB not expanding enough from recent low — breakout confirmation missing |
+| `entry_quality_m30_not_bearish` | Entry Quality | M30 timeframe not confirming bearish direction required for sell |
+| `entry_quality_macd_q0` | Indicators | MACD in Q0 (positive, rising) — blocks sells; momentum is bullish |
+| `entry_quality_macd_q1` | Indicators | MACD in Q1 (positive, falling) — blocks buys; momentum fading |
+| `entry_quality_macd_q2` | Indicators | MACD in Q2 (negative, falling) — blocks buys; momentum clearly bearish |
+| `entry_quality_macd_q3` | Indicators | MACD in Q3 (negative, rising) — market transitioning; blocks both directions |
+| `entry_quality_h4_rsi_sell_blocked` | Indicators | H4 RSI already oversold — selling risks piling into exhausted H4 move |
+| `entry_quality_h4_rsi_buy_blocked` | Indicators | H4 RSI already overbought — buying risks chasing extended H4 move |
+| `entry_quality_h4_adx_sell_blocked` | Indicators | H4 ADX below minimum — no strong H4 trend to support M5 sell |
+| `entry_quality_session_sell_cutoff` | Session / Time | Sells blocked after cutoff hour (NY 17:00, London 00:00 UTC) |
+| `open_groups` | Position Limits | Max concurrent trade groups reached (default 2) |
+| `max_open_same_direction` | Position Limits | Max concurrent SELLs (or BUYs) reached — prevents directional over-exposure |
+| `no_setup` | Market Conditions | Neither BB Breakout nor BB Bounce conditions met on this bar |
+| `session_off` | Session / Time | Outside allowed trading sessions (London / New York) |
+| `spread_too_wide` | Market Conditions | Bid-ask spread exceeds maximum (default 30 pts XAUUSD) |
+| `min_rr` | Risk Management | Risk:Reward ratio below minimum (default 1.5×) — TP1 too close to entry vs SL |
+| `min_entry_atr` | Risk Management | ATR at entry bar specifically below minimum |
+| `high_vol_trend_guard` | Risk Management | Explosive ADX AND H1/H4 trend not both aligned — avoids spike reversal |
+| `adx_hysteresis` | Risk Management | ADX recently exceeded trend-enter level; waiting to cool below trend-exit |
+| `sell_loss_grace` | Risk Management | Sell hit SL recently — 90s cooldown before new sells (no revenge trading) |
+| `loss_cooldown` | Risk Management | Any trade hit SL — brief cooldown before any new entry |
+| `direction_cooldown` | Risk Management | Recent entry in same direction — short cooldown to avoid rapid stacking |
+| `warmup_tester_m5_rollovers` | System | Backtest start: M5 indicator buffers not yet filled; signals discarded |
+| `news_filter_blocked` | Risk Management | High-impact news blackout window active (e.g. NFP ±30/60 min) |
+| `news_filter_tighten` | Risk Management | Near medium-impact news — tightened RSI criteria applied, signal failed |
+| `dd_equity_close_all` | Risk Management | Equity drawdown breaker triggered — new entries suspended |

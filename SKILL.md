@@ -455,3 +455,50 @@ CLOSURE STATS (7d rolling):
 6. **Trades = levels** -- when proposing execution, always show **SL + TP** (and lot) before or inside the single JSON block; never "buy 0.01" without stops and targets
 7. **General questions welcome** -- if asked about trading concepts, gold fundamentals, ICT, or system architecture, answer helpfully. Steer back to actionable context when relevant.
 8. **Message ordering** -- messages are queued FIFO. If the user sends multiple questions, answer each in order. Don't merge or skip.
+
+---
+
+## Gate Legend System — Maintenance Guide
+
+The **gate legend** maps internal FORGE `gate_reason` codes to human-readable labels and plain-English explanations. It was created because the Athena Backtest panel's Gate Breakdown section was opaque to non-developers.
+
+### Files involved
+
+| File | Role |
+|------|------|
+| `config/gate_legend.json` | **Single source of truth.** Edit ONLY this file to add/change explanations. |
+| `python/athena_api.py` | `GET /api/gate_legend` — serves the JSON (cached in-process per restart) |
+| `dashboard/app.js` | `gateLegend` state — fetched once on first Backtest tab open; renders 3-line gate entries |
+| `docs/ATHENA_UI_DESIGN.md` | Full legend table — keep in sync with the JSON |
+| `docs/DATABASE_ARCHITECTURE.md` | Quick-reference table — keep in sync with the JSON |
+
+### Structure of each entry in `gate_legend.json`
+
+```json
+"gate_reason_code": {
+  "label": "Short title ≤60 chars shown in UI (line 2, green)",
+  "explanation": "Full plain-English sentence(s) shown in UI (line 3, dim sans-serif).",
+  "category": "Entry Quality | Indicators | Position Limits | Session / Time | Risk Management | System"
+}
+```
+
+### How to add a new gate (when FORGE adds a new gate_reason)
+
+1. Find the exact `gate_reason` string FORGE writes (check `ea/FORGE.mq5` or the Athena Gate Breakdown panel).
+2. Add an entry to `config/gate_legend.json` with `label`, `explanation`, `category`.
+3. Restart Athena (`make reload-athena`) — the UI picks it up automatically; no code change needed.
+4. Append a row to the legend tables in both `docs/ATHENA_UI_DESIGN.md` and `docs/DATABASE_ARCHITECTURE.md`.
+
+### How the UI renders each gate entry
+
+```
+entry_quality_direction                    21,391   ← amber, bold  (gate_reason + count)
+↳ Direction — not enough aligned bars               ← green        (legend.label)
+   Too few M5 candles are moving in the             ← textB,       (legend.explanation)
+   trade direction. FORGE requires at least         ←  sans-serif
+   2 consecutive bars confirming the direction.
+```
+
+### Why 3-line layout instead of tooltip
+
+Tooltips are invisible until hover (low discoverability). The 3-line layout makes every explanation immediately readable — important for post-run analysis where you need to understand WHY signals were skipped. Gate entries are short lists (top 15), so the vertical space cost is acceptable.

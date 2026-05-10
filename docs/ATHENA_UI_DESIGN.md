@@ -229,6 +229,102 @@ GROUP BY gate_reason ORDER BY cnt DESC LIMIT 15
 | `entry_quality_bb_contraction` | BB not expanding (no momentum) |
 | `entry_quality_adx_min_sell` | ADX too low for sell |
 
+> **Full legend with plain-English explanations:** see [`config/gate_legend.json`](../config/gate_legend.json) and the Gate Legend section below.
+
+---
+
+## Gate Legend System
+
+### Purpose
+
+Gate reason codes are internal FORGE identifiers (e.g. `entry_quality_direction`). Without context they are opaque to anyone not reading the EA source. The gate legend system adds human-readable explanations everywhere they appear — without duplicating the text across files.
+
+### Single Source of Truth
+
+**`config/gate_legend.json`** — the only file to edit when adding or changing gate explanations.
+
+Each entry has three fields:
+
+| Field | Purpose |
+|-------|---------|
+| `label` | Short title (one line, ≤60 chars) shown as line 2 in the UI (green, `↳` prefix) |
+| `explanation` | Full plain-English sentence(s) shown as line 3 in the UI |
+| `category` | Grouping: Entry Quality / Indicators / Position Limits / Session / Risk Management / System |
+
+Example entry:
+```json
+"entry_quality_direction": {
+  "label": "Direction — not enough aligned bars",
+  "explanation": "Too few M5 candles are moving in the trade direction. FORGE requires at least 2 consecutive bars confirming the direction before entry.",
+  "category": "Entry Quality"
+}
+```
+
+### How It Flows
+
+```
+config/gate_legend.json          ← edit here to add/change explanations
+       │
+       ├─ GET /api/gate_legend   ← athena_api.py serves it (cached in-process)
+       │        │
+       │        └─ dashboard/app.js
+       │               gateLegend state — fetched once on first Backtest tab open
+       │               Gate Breakdown rows:
+       │                 Line 1: gate_reason code          + skip count (amber)
+       │                 Line 2: legend[code].label        (green, ↳ prefix)
+       │                 Line 3: legend[code].explanation  (dim, sans-serif)
+       │
+       └─ docs/ATHENA_UI_DESIGN.md   ← full legend table below (keep in sync)
+          docs/DATABASE_ARCHITECTURE.md  ← same table
+```
+
+### How to Add a New Gate
+
+1. In `config/gate_legend.json`, add a new key matching the exact `gate_reason` string FORGE writes.
+2. Fill in `label`, `explanation`, `category`.
+3. Restart Athena (or the in-process cache clears on next deploy) — the UI picks it up automatically.
+4. Update the legend tables in `docs/ATHENA_UI_DESIGN.md` and `docs/DATABASE_ARCHITECTURE.md`.
+5. No code changes required.
+
+### Complete Gate Legend Table
+
+| gate_reason | Label | Category | Plain-English Explanation |
+|-------------|-------|----------|--------------------------|
+| `entry_quality_direction` | Direction — not enough aligned bars | Entry Quality | Too few M5 candles moving in trade direction. Requires 2+ consecutive bars confirming direction. |
+| `entry_quality_body` | Candle body too small | Entry Quality | Entry candle's body (open→close) is too small vs full range (high→low). Means indecision, not a clean directional move. |
+| `entry_quality_rsi_buy_ceil` | RSI too high for a buy | Entry Quality | RSI above buy ceiling (default 70). Buying when overbought risks entering at the top of a move. |
+| `entry_quality_rsi_sell_floor` | RSI too low for a sell | Entry Quality | RSI below sell floor (default 30). Selling when deeply oversold risks entering exhaustion (Cardwell reversal zone). |
+| `entry_quality_adx_min_sell` | ADX too low for breakout sell | Entry Quality | ADX below minimum for sell breakout (default 20). Not enough trending momentum. |
+| `entry_quality_adx_min_buy` | ADX too low for breakout buy | Entry Quality | ADX below minimum for buy breakout. Market too range-bound for a breakout entry. |
+| `entry_quality_atr` | ATR (volatility) too low | Entry Quality | Average True Range below minimum. Market too quiet — spread eats too much of the potential move. |
+| `entry_quality_bb_contraction` | Bollinger Bands contracting | Entry Quality | BB squeezing inward. Breakout requires expanding bands — contracting means no momentum building. |
+| `entry_quality_bb_expansion` | Bollinger Bands not expanding enough | Entry Quality | BB width has not expanded enough from recent low. Required for breakout confirmation. |
+| `entry_quality_m30_not_bearish` | M30 not confirming bearish | Entry Quality | 30-min timeframe not showing bearish structure. M30 must agree with M5 sell signal. |
+| `entry_quality_macd_q0` | MACD Q0 — neutral rising | Indicators | MACD positive and rising. Required for buys on some setups. Blocks sells (momentum is bullish). |
+| `entry_quality_macd_q1` | MACD Q1 — neutral falling | Indicators | MACD positive but falling. Required for sells. Blocks buys. |
+| `entry_quality_macd_q2` | MACD Q2 — bearish falling | Indicators | MACD negative and falling. Required for strong sells. Blocks buys. |
+| `entry_quality_macd_q3` | MACD Q3 — bearish rising | Indicators | MACD negative but recovering. Blocks both aggressive sells and buys — market transitioning. |
+| `entry_quality_h4_rsi_sell_blocked` | H4 RSI blocked sell | Indicators | 4-hour RSI already oversold. Selling here risks piling into an exhausted H4 move. |
+| `entry_quality_h4_rsi_buy_blocked` | H4 RSI blocked buy | Indicators | 4-hour RSI already overbought. Buying risks chasing an extended H4 move. |
+| `entry_quality_h4_adx_sell_blocked` | H4 ADX blocked sell | Indicators | 4-hour ADX below minimum. No strong H4 trend to support M5 sell signal. |
+| `entry_quality_session_sell_cutoff` | Sell cutoff time reached | Session / Time | Sells blocked after configurable UTC hour (default NY 17:00, London 00:00). Avoids overnight short exposure. |
+| `open_groups` | Maximum open positions reached | Position Limits | At the group limit (default 2 concurrent). No new entries until an existing group closes. |
+| `max_open_same_direction` | Too many positions same direction | Position Limits | At max concurrent SELLs (or BUYs). Prevents over-exposure in one direction. |
+| `no_setup` | No valid pattern detected | Market Conditions | Neither BB Breakout nor BB Bounce conditions met. Market didn't reach a BB or show qualifying move. |
+| `session_off` | Outside trading session | Session / Time | Bar outside allowed sessions (London / New York). Asian session typically excluded for thin liquidity. |
+| `spread_too_wide` | Spread exceeds maximum | Market Conditions | Bid-ask spread wider than max (default 30 pts XAUUSD). Entry uneconomical — cost too high vs target profit. |
+| `min_rr` | Risk:Reward ratio too low | Risk Management | Distance entry→TP1 not large enough vs SL distance. Requires minimum R:R (default 1.5×). |
+| `min_entry_atr` | ATR too small at entry bar | Risk Management | ATR at the specific entry bar is below minimum. Checks actual-bar ATR, not just recent average. |
+| `high_vol_trend_guard` | High-volatility trend guard | Risk Management | ADX very high AND H1/H4 trend not fully aligned. Requires both TFs to agree in explosive conditions. |
+| `adx_hysteresis` | ADX cooling down | Risk Management | ADX recently exceeded trend-enter threshold; not yet below trend-exit. Waits for ADX to cool — avoids chasing decelerating trend. |
+| `sell_loss_grace` | Post-loss cooldown (sell) | Risk Management | A sell recently hit SL. Cooldown period (default 90s) before new sells. Prevents revenge-trading. |
+| `loss_cooldown` | Post-loss cooldown (any) | Risk Management | Any trade hit SL. Brief cooldown before any new entry. |
+| `direction_cooldown` | Same-direction cooldown | Risk Management | Recent entry in same direction. Short bar-count cooldown to avoid stacking entries too quickly. |
+| `warmup_tester_m5_rollovers` | Tester warmup | System | M5 indicator buffers lack enough history at backtest start. Signals discarded — they'd be based on incomplete data. |
+| `news_filter_blocked` | News event blackout | Risk Management | High-impact news event imminent or just released. Entries blocked within configurable windows (e.g. NFP: 30 min before, 60 min after). |
+| `news_filter_tighten` | News event tightened criteria | Risk Management | Near medium-impact news. Entries allowed but stricter RSI conditions apply. Signal failed tightened criteria. |
+| `dd_equity_close_all` | Drawdown breaker — equity too low | Risk Management | Equity dropped below drawdown threshold (default 3% from session high). New entries suspended until equity recovers. |
+
 ---
 
 ## Data Flow: Backtest Panel End-to-End
