@@ -212,7 +212,9 @@ struct ScalperConfig {
    double breakout_sell_inside_band_lot_factor; // lot multiplier when SELL entry is above BB lower (default 0.5)
    double breakout_max_reentry_atr_ext;  // 0 = disabled; >0 = max ATR multiples price can be from first entry for re-entry
    double breakout_sl_atr_mult;
-   double breakout_tp1_atr_mult;
+   double breakout_tp1_atr_mult;      // fallback if direction-specific not set
+   double breakout_tp1_buy_atr_mult;  // TP1 for BUY (0 = use breakout_tp1_atr_mult)
+   double breakout_tp1_sell_atr_mult; // TP1 for SELL (0 = use breakout_tp1_atr_mult)
    double breakout_tp2_atr_mult;
    double breakout_tp3_atr_mult;
    double breakout_tp4_atr_mult;
@@ -2259,7 +2261,9 @@ void InitScalperConfig() {
    g_sc.breakout_sell_inside_band_lot_factor = 0.25;
    g_sc.breakout_max_reentry_atr_ext = 0.0;
    g_sc.breakout_sl_atr_mult = 2.0;
-   g_sc.breakout_tp1_atr_mult = 1.0;
+   g_sc.breakout_tp1_atr_mult       = 1.0;
+   g_sc.breakout_tp1_buy_atr_mult   = 0.0;  // 0 = use breakout_tp1_atr_mult
+   g_sc.breakout_tp1_sell_atr_mult  = 0.0;  // 0 = use breakout_tp1_atr_mult
    g_sc.breakout_tp2_atr_mult = 1.5;
    g_sc.breakout_tp3_atr_mult = 2.5;
    g_sc.breakout_tp4_atr_mult = 4.0;
@@ -2586,6 +2590,10 @@ void ReadScalperConfig() {
          v = JsonGetDouble(breakout_json, "sl_atr_mult");
          if(v >= 0.5 && v <= 5.0) g_sc.breakout_sl_atr_mult = v;
       }
+      // Direction-specific TP1 — BUY gets more room (confirmed uptrend), SELL tighter (catch fast dip)
+      // 0 = fall back to breakout_tp1_atr_mult (backward compat). CHANGELOG: 2026-05-10.
+      if(JsonHasKey(breakout_json, "tp1_buy_atr_mult")) { v = JsonGetDouble(breakout_json,"tp1_buy_atr_mult");  if(v > 0.0) g_sc.breakout_tp1_buy_atr_mult  = v; }
+      if(JsonHasKey(breakout_json, "tp1_sell_atr_mult")){ v = JsonGetDouble(breakout_json,"tp1_sell_atr_mult"); if(v > 0.0) g_sc.breakout_tp1_sell_atr_mult = v; }
       if(JsonHasKey(breakout_json, "rsi_buy_ceil")) {
          v = JsonGetDouble(breakout_json, "rsi_buy_ceil");
          if(v > 0 && v <= 100) g_sc.breakout_rsi_buy_ceil = v;
@@ -5246,7 +5254,8 @@ void CheckNativeScalperSetups() {
             double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
             if(bo_sl > bo_sl_floor) bo_sl = bo_sl_floor;
-            double bo_tp1 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
+            double _tp1_buy_mult = (g_sc.breakout_tp1_buy_atr_mult > 0.0) ? g_sc.breakout_tp1_buy_atr_mult : g_sc.breakout_tp1_atr_mult;
+            double bo_tp1 = NormalizeDouble(bid + m5_atr * _tp1_buy_mult, _Digits);
             double bo_tp2 = NormalizeDouble(bid + m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
             if(g_sc.breakout_use_retest && !in_tester && !g_retest.active) {
                g_retest.active = true;
@@ -5453,7 +5462,8 @@ void CheckNativeScalperSetups() {
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
             if(bo_sl < bo_sl_ceil) bo_sl = bo_sl_ceil;
-            double bo_tp1 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp1_atr_mult, _Digits);
+            double _tp1_sell_mult = (g_sc.breakout_tp1_sell_atr_mult > 0.0) ? g_sc.breakout_tp1_sell_atr_mult : g_sc.breakout_tp1_atr_mult;
+            double bo_tp1 = NormalizeDouble(ask - m5_atr * _tp1_sell_mult, _Digits);
             double bo_tp2 = NormalizeDouble(ask - m5_atr * g_sc.breakout_tp2_atr_mult, _Digits);
             if(g_sc.breakout_use_retest && !in_tester && !g_retest.active) {
                g_retest.active = true;

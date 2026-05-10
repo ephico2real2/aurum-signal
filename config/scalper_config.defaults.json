@@ -38,6 +38,8 @@
     "require_m15_agree": true,
     "sl_atr_mult": 2.0,
     "tp1_atr_mult": 1.0,
+    "tp1_buy_atr_mult": 0.0,
+    "tp1_sell_atr_mult": 0.0,
     "tp2_atr_mult": 1.5,
     "tp3_atr_mult": 2.5,
     "tp4_atr_mult": 4.0,

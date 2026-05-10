@@ -38,6 +38,8 @@
     "require_m15_agree": true,
     "sl_atr_mult": 2.0,
     "tp1_atr_mult": 0.4,
+    "tp1_buy_atr_mult": 0.5,
+    "tp1_sell_atr_mult": 0.4,
     "tp2_atr_mult": 1.5,
     "tp3_atr_mult": 2.5,
     "tp4_atr_mult": 4.0,
@@ -194,8 +196,8 @@
     "breakout_adx_lot_use_m15": 1,
     "breakout_adx_lot_mid_threshold": 35,
     "breakout_adx_lot_high_threshold": 45,
-    "breakout_adx_lot_factor_mid": 0.25,
-    "breakout_adx_lot_factor_high": 0.125,
+    "breakout_adx_lot_factor_mid": 1,
+    "breakout_adx_lot_factor_high": 1,
     "breakout_adx_sell_block_threshold": 55
   },
   "journal": {
