@@ -541,8 +541,6 @@ function ATHENA(){
   const aurumDragRef=useRef(null);
   // Column + panel resize state
   const [leftW,setLeftW]=useState(186);    // left sidebar width (px)
-  const [rightW,setRightW]=useState(258);  // right panel width (px)
-  const [rightTopH,setRightTopH]=useState(280); // right panel: FORGE+OsMA section height
   // Backtest tab state
   const [btRuns,setBtRuns]=useState([]);
   const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
@@ -805,7 +803,7 @@ function ATHENA(){
     </div>
 
     {/* BODY */}
-    <div style={{flex:1,display:'grid',gridTemplateColumns:`${leftW}px 1fr ${rightW}px`,
+    <div style={{flex:1,display:'grid',gridTemplateColumns:`${leftW}px 1fr 258px`,
       overflow:'hidden',minHeight:0}}>
 
       {/* LEFT — drag handle on right edge to resize width */}
@@ -851,7 +849,7 @@ function ATHENA(){
             <div style={{marginTop:8,maxHeight:120,overflowY:'auto',
               border:`1px solid ${T.border2}`,borderRadius:4,background:T.row,padding:6}}>
               <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
-                MT5 PENDING (from market_data.json)</div>
+                MT5 PENDING (market_data.json)</div>
               {(D.pending_orders||[]).map((p,i)=>(
                 <div key={p.ticket||i} style={{fontSize:9,fontFamily:T.mono,color:T.textBB,
                   borderBottom:i<(D.pending_orders||[]).length-1?`1px solid ${T.border}`:'none',
@@ -885,6 +883,9 @@ function ATHENA(){
             <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:1}}>
               Cumulative P&L ({PERF_ROLLING_DAYS}d)</div>
           </div>
+          <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: SCRIBE trade_positions · balance/equity from MT5/market_data.json
+          </div>
         </div>
 
         <div>
@@ -904,6 +905,9 @@ function ATHENA(){
           ))}
           <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:3}}>
             BRIDGE → FORGE via config.json
+          </div>
+          <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: MT5/config.json + config/aurum_cmd.json · written by BRIDGE
           </div>
         </div>
 
@@ -935,6 +939,9 @@ function ATHENA(){
             </div>
           )}
           <SentinelHeadlines newsFeeds={sent.news_feeds}/>
+          <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: config/sentinel_status.json · SENTINEL writes every cycle
+          </div>
         </div>
 
         <div>
@@ -953,6 +960,9 @@ function ATHENA(){
               No heartbeats yet
             </div>
           )}
+          <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: SCRIBE component_heartbeats · /api/components
+          </div>
         </div>
       </div>
 
@@ -1091,6 +1101,9 @@ function ATHENA(){
                 <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,
                   textAlign:'center',padding:40}}>No open groups</div>
               )}
+              <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                Source: SCRIBE trade_groups + MT5 open_positions · /api/live
+              </div>
             </div>
           )}
 
@@ -1151,6 +1164,9 @@ function ATHENA(){
               )}
               <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:8}}>
                 Showing last 24h · Full history: GET /api/closures?days=7
+              </div>
+              <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                Source: SCRIBE trade_positions (status=CLOSED) · /api/closures
               </div>
             </div>
           )}
@@ -1266,6 +1282,9 @@ function ATHENA(){
                     :`No signals from ${chFilter||'this channel'}`}
                 </div>
               )}
+              <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                Source: SCRIBE signals_received · /api/signals
+              </div>
             </div>
             );})()}
 
@@ -1309,6 +1328,9 @@ function ATHENA(){
                   No upload/chart media events recorded yet.
                 </div>
               )}
+              <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                Source: SCRIBE signal_media · filtered from system_events (upload/chart event types)
+              </div>
             </div>
           )}
 
@@ -1349,6 +1371,9 @@ function ATHENA(){
                   <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,padding:'20px 8px'}}>
                     No closed trades in SCRIBE in the last {PERF_ROLLING_DAYS} days (UTC), or curve needs 1+ closes.</div>
                 )}
+              </div>
+              <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                Source: SCRIBE trade_positions (rolling {PERF_ROLLING_DAYS}d) · /api/live + /api/pnl_curve
               </div>
             </div>
           )}
@@ -1418,6 +1443,9 @@ function ATHENA(){
                             </div>
                           ))}
                         </div>
+                        <div style={{marginBottom:10,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                          Source: aurum_tester.db forge_signals + forge_journal_trades · /api/backtest/run/:id
+                        </div>
                         {/* ── RUN ANALYSIS — before P&L chart ── */}
                         {btCompare&&btCompare.run_a&&btCompare.run_b&&(
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:'10px 12px',marginBottom:12}}>
@@ -1477,6 +1505,9 @@ function ATHENA(){
                               </>);
                             })()}
                             <div style={{marginTop:6,fontSize:8,color:T.textD,fontFamily:T.mono}}>{btCompare.note}</div>
+                            <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                              Source: /api/backtest/compare → backtest_compare.py
+                            </div>
                           </div>
                         )}
                         {/* P&L curve with labeled axes */}
@@ -1717,24 +1748,9 @@ function ATHENA(){
 
       {/* RIGHT — FORGE + LENS/TradingView data panel */}
       <div style={{borderLeft:`1px solid ${T.border}`,display:'flex',flexDirection:'column',
-        overflow:'hidden',minHeight:0,position:'relative'}}>
-        {/* right column left-edge drag handle */}
-        <div title="Drag to resize right panel"
-          onMouseDown={e=>{
-            e.preventDefault();
-            const startX=e.clientX,startW=rightW;
-            const onMove=ev=>setRightW(Math.max(180,Math.min(420,startW-(ev.clientX-startX))));
-            const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);};
-            document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
-          }}
-          style={{position:'absolute',top:0,left:-4,width:8,height:'100%',cursor:'col-resize',zIndex:10,
-            display:'flex',alignItems:'center',justifyContent:'center'}}>
-          <div style={{width:3,height:36,borderRadius:2,background:T.border2,opacity:.5}}/>
-        </div>
-        {/* TOP section: FORGE execution + OsMA — draggable height */}
-        <div style={{height:rightTopH,flexShrink:0,overflowY:'auto',padding:'12px 10px',
-          display:'flex',flexDirection:'column',gap:14}}>
-      <div style={{padding:'0',display:'flex',flexDirection:'column',gap:14}}>
+        overflow:'hidden',minHeight:0}}>
+      <div style={{padding:'12px 10px',overflowY:'auto',overscrollBehavior:'contain',
+        display:'flex',flexDirection:'column',gap:14}}>
         <div>
           <PT ch="◆ FORGE · execution quote" color={T.amber}/>
           {ex.usable?(
@@ -1777,6 +1793,10 @@ function ATHENA(){
               </div>
             </div>
           )}
+
+          <div style={{marginTop:2,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: MT5/market_data.json price block · FORGE EA writes every tick
+          </div>
 
           {/* ── OsMA GATE panel (FORGE 2.7.7+) ───────────────────────── */}
           <div>
@@ -1824,6 +1844,9 @@ function ATHENA(){
                 </div>
               )}
             </div>
+          </div>
+          <div style={{marginTop:2,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: MT5/market_data.json indicators_m5 (iOsMA) · FORGE EA writes every tick
           </div>
 
         </div>{/* end top FORGE+OsMA section */}
@@ -1929,6 +1952,9 @@ function ATHENA(){
               </div>
             </div>
           )}
+          <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: config/lens_snapshot.json · LENS/TV MCP poller writes on each snapshot
+          </div>
           <PT ch="🧪 AUTO_SCALPER readiness" color={asrReady?T.green:T.amber}/>
           <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4,marginBottom:6}}>
             {autoscalperConditions?(
@@ -2025,6 +2051,9 @@ function ATHENA(){
               </div>
             )}
           </div>
+          <div style={{marginTop:2,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: /api/autoscalper/conditions → bridge.py AUTO_SCALPER logic
+          </div>
 
           <PT ch="🧭 Regime Engine" color={T.purple}/>
           <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4,marginBottom:6}}>
@@ -2108,6 +2137,9 @@ function ATHENA(){
             {regimeRows.length===0&&(
               <div style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>No closed trades with regime labels yet</div>
             )}
+          </div>
+          <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            Source: config/status.json → python/regime.py (HMM inference) · /api/live
           </div>
         </div>{/* end bottom TV+Regime section */}
       </div>{/* end right column */}

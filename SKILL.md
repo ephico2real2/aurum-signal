@@ -620,7 +620,21 @@ Every new panel must have tests for:
 - [ ] Auto-refresh verified (if applicable)
 - [ ] All interactive buttons have `data-testid` attributes
 
-### 6. Git — always version control test + code together
+### 6. Source attribution footer (MANDATORY for every new data panel)
+
+Every panel that displays data from a file, DB table, or API must include a one-line source footer at the bottom:
+```jsx
+<div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>Source: <path> · <brief note></div>
+```
+See `docs/ATHENA_UI_DATA_SOURCES.md` for the registry of all existing panel sources.
+
+When adding a new panel:
+(a) add the source footer as shown above, and
+(b) add an entry to `docs/ATHENA_UI_DATA_SOURCES.md` with Source file, Written by, Refresh cadence, API endpoint, and Key fields.
+
+Skip the footer only if the panel already has an equivalent note inline (e.g. Activity tab footer, Indicators tab description). Never add source lines inside repeated rows/lists — one per panel/card only.
+
+### 7. Git — always version control test + code together
 
 Every UI change commit must include:
 - `dashboard/app.js` — the change
