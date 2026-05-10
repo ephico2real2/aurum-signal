@@ -634,6 +634,32 @@ When adding a new panel:
 
 Skip the footer only if the panel already has an equivalent note inline (e.g. Activity tab footer, Indicators tab description). Never add source lines inside repeated rows/lists — one per panel/card only.
 
+**Never skip the RUN ANALYSIS panel.** It sources from `/api/backtest/compare` → `python/backtest_compare.py` → `aurum_tester.db` (forge_signals + forge_journal_trades + aurum_tester_runs). Its source footer must always read:
+```
+Source: /api/backtest/compare · backtest_compare.py · aurum_tester.db
+```
+
+### Backtest comparison accuracy rules (MANDATORY)
+
+The RUN ANALYSIS panel uses `backtest_compare.py`. Before shipping any changes to it:
+
+1. **Verify `balance` reads from `aurum_tester_runs.balance`** — not sim_start or any timestamp field. A wrong balance makes the P&L return % meaningless.
+
+2. **Scoring formula (current — do not silently change):**
+   - 40% win rate (`win_rate_pct / 100 * 40`)
+   - 30% P&L return (`total_pnl / balance * 100`, capped at 5% return = full marks)
+   - 15% loss avoidance (`(1 - loss_ratio) * 15`)
+   - 15% take rate (`take_rate_pct / 0.05`, capped at 1.0, full at ≥0.05%)
+   - Up to 5pt R/R bonus (`avg_win / |avg_loss|`, capped at 3:1)
+
+3. **All-wins case**: never use a flat fallback — use `pnl_return_pct` directly. The flat 25.0 fallback was the original bug that made run #2 ($366) and run #3 ($257) score identically.
+
+4. **Spot-check after any scoring change**: query the API with two runs that have meaningfully different P&L and verify the winner matches the higher-return run.
+
+5. **Compare useEffect must depend on `[btSelRun, btPinnedRun, tab]`** — NOT on `btRuns`. The 30s auto-refresh of the runs list must NOT reset the comparison panel while the user is viewing it.
+
+6. **Pin feature invariant**: pinned runs are always shown in the selector with `btAllRuns` injection, never counted in `display_limit`. The pin state (`btPinnedRun`) is the explicit comparison baseline.
+
 ### 7. Git — always version control test + code together
 
 Every UI change commit must include:
