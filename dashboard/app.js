@@ -548,6 +548,7 @@ function ATHENA(){
   const [btPinnedRuns,setBtPinnedRuns]=useState([]); // pinned run IDs — only cleared by explicit user action
   const btPinnedRunsRef=useRef([]);                  // ref so interval callbacks always see latest pins
   const [btDetail,setBtDetail]=useState(null);       // /api/backtest/run/:id response
+  const [btTakenPage,setBtTakenPage]=useState(1);    // pagination for TAKEN ENTRIES (12 per page)
   const [btCompares,setBtCompares]=useState([]);     // array of /api/backtest/compare results (one per pin or prev)
   const [gateLegend,setGateLegend]=useState({});         // gate_reason → {label, explanation}
   const [indLegend,setIndLegend]=useState({});           // acronym → indicator detail
@@ -641,7 +642,7 @@ function ATHENA(){
   const loadBtDetail=useCallback(async()=>{
     if(!btSelRun)return;
     try{const r=await fetch(`${API}/api/backtest/run/${btSelRun}`);
-      if(r.ok){const j=await r.json();setBtDetail(j);}}
+      if(r.ok){const j=await r.json();setBtDetail(j);setBtTakenPage(1);}}
     catch(e){};
   },[btSelRun]);
   useEffect(()=>{loadBtDetail();},[btSelRun]);
@@ -1632,35 +1633,38 @@ function ATHENA(){
                             </div>
                           </div>
                         );})()}
-                        {/* TAKEN entries — shown before gate breakdown */}
+                        {/* TAKEN entries — paginated, 12 per page, unlimited total */}
                         {(btDetail.taken||[]).length>0&&(()=>{
                           const takenRows=btDetail.taken||[];
                           const COL='96px 52px 68px 76px 88px 52px 52px 64px';
+                          const PAGE_SIZE=12;
+                          const totalPages=Math.ceil(takenRows.length/PAGE_SIZE);
+                          const page=Math.min(btTakenPage,totalPages);
+                          const pageRows=takenRows.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
                           return(
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
-                            {/* header: title + count badge */}
+                            {/* header: title + total count + page info */}
                             <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
                               <span style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1}}>TAKEN ENTRIES</span>
                               <span style={{fontSize:8,fontFamily:T.mono,color:T.amber,background:T.amberBg,
                                 border:`1px solid ${T.amber}`,borderRadius:8,padding:'0 5px'}}>{takenRows.length}</span>
+                              {totalPages>1&&(
+                                <span style={{fontSize:8,color:T.textD,fontFamily:T.mono,marginLeft:4}}>
+                                  showing {(page-1)*PAGE_SIZE+1}–{Math.min(page*PAGE_SIZE,takenRows.length)} of {takenRows.length}
+                                </span>
+                              )}
                             </div>
-                            {/* sticky column headers — outside scroll area so they stay visible */}
+                            {/* column headers */}
                             <div style={{display:'grid',gridTemplateColumns:COL,minWidth:556,
                               gap:4,borderBottom:`1px solid ${T.border2}`,paddingBottom:5,marginBottom:0,
-                              fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:.5}}>
+                              fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:.5,overflowX:'auto'}}>
                               <span>TIME (UTC)</span><span>DIR</span><span>SESSION</span>
                               <span>SETUP</span><span>OUTCOME</span>
                               <span>RSI</span><span>ADX</span><span style={{textAlign:'right'}}>P&amp;L</span>
                             </div>
-                            {/* rows: dynamically sized — scrolls when > 8 entries, expands freely below that */}
-                            <div style={{
-                              maxHeight: takenRows.length>8 ? 288 : undefined,
-                              overflowY: takenRows.length>8 ? 'auto' : undefined,
-                              overflowX:'auto',
-                              overscrollBehavior:'contain',
-                              minWidth:0,
-                            }}>
-                            {takenRows.map((e,i)=>{
+                            {/* rows for current page — no maxHeight, expands to fit all 12 */}
+                            <div style={{overflowX:'auto',minWidth:0}}>
+                            {pageRows.map((e,i)=>{
                               const outcome=e.trade_outcome||'—';
                               const isTP=outcome.startsWith('TP');
                               const isSL=outcome==='SL';
@@ -1703,6 +1707,28 @@ function ATHENA(){
                               </div>
                             );})}
                             </div>
+                            {/* pagination controls — only shown when >1 page */}
+                            {totalPages>1&&(
+                              <div style={{display:'flex',alignItems:'center',gap:4,marginTop:8,flexWrap:'wrap'}}>
+                                <button type="button" onClick={()=>setBtTakenPage(p=>Math.max(1,p-1))}
+                                  disabled={page<=1}
+                                  style={{padding:'2px 8px',fontFamily:T.mono,fontSize:9,cursor:page<=1?'default':'pointer',
+                                    border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
+                                    color:page<=1?T.textD:T.textBB,opacity:page<=1?0.4:1}}>‹ prev</button>
+                                {Array.from({length:totalPages},(_,idx)=>idx+1).map(pg=>(
+                                  <button key={pg} type="button" onClick={()=>setBtTakenPage(pg)}
+                                    style={{padding:'2px 7px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
+                                      border:`1px solid ${pg===page?T.gold:T.border}`,borderRadius:3,
+                                      background:pg===page?T.gold+'22':'transparent',
+                                      color:pg===page?T.gold:T.textBB,fontWeight:pg===page?700:400}}>{pg}</button>
+                                ))}
+                                <button type="button" onClick={()=>setBtTakenPage(p=>Math.min(totalPages,p+1))}
+                                  disabled={page>=totalPages}
+                                  style={{padding:'2px 8px',fontFamily:T.mono,fontSize:9,cursor:page>=totalPages?'default':'pointer',
+                                    border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
+                                    color:page>=totalPages?T.textD:T.textBB,opacity:page>=totalPages?0.4:1}}>next ›</button>
+                              </div>
+                            )}
                           </div>
                           );
                         })()}
