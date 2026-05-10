@@ -1,18 +1,38 @@
-anthropic>=0.89.0
-telethon>=1.40.0,<2.0.0
-python-telegram-bot>=21.0
-flask>=3.0.0,<4.0.0
-flask-cors>=4.0.0
-flask-swagger-ui>=4.0.0
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-python-dotenv>=1.0.0
-schedule>=1.2.0
-jsonschema>=4.0.0
-Pillow>=10.0.0
+# Signal System — Python dependencies
+# Updated 2026-05-10 — always use latest compatible versions.
+# Strategy: pin major version ceiling only where a breaking major upgrade
+# is likely (telethon 2.x, flask 4.x). Everything else: open floor, no ceiling.
+
+# ── Anthropic / Claude API ─────────────────────────────────────────
+# Never pin an upper cap — Claude API evolves fast; old SDKs break features.
+# Breaking incident: <0.50.0 cap (commit f3f2974) caused output_config failure.
+anthropic>=0.100.0
+
+# ── Telegram ──────────────────────────────────────────────────────
+telethon>=1.43.0,<2.0.0          # 2.0 would be a breaking MTProto rewrite
+python-telegram-bot>=22.0         # Bot API library for Herald notifications
+
+# ── Web framework (Athena API) ────────────────────────────────────
+flask>=3.1.0,<4.0.0              # 4.x TBD — cap for safety
+flask-cors>=6.0.0
+flask-swagger-ui>=5.0.0
+
+# ── HTTP ──────────────────────────────────────────────────────────
+requests>=2.33.0
+httpx>=0.28.0                    # Used by anthropic SDK internally
+
+# ── Data / ML ─────────────────────────────────────────────────────
+numpy>=2.0.0                     # Numpy 2.x is installed and working
+hmmlearn>=0.3.3                  # Regime engine — compatible with numpy 2.x
+jsonschema>=4.26.0
+
+# ── Vision / Image processing ─────────────────────────────────────
+Pillow>=12.0.0
 opencv-python-headless>=4.10.0
 pytesseract>=0.3.13
-hmmlearn>=0.3.0
-numpy>=1.26.0
-httpx>=0.27.0
-pytz>=2024.1
+
+# ── Utilities ─────────────────────────────────────────────────────
+python-dotenv>=1.2.0
+schedule>=1.2.0
+beautifulsoup4>=4.14.0
+pytz>=2024.1                     # Timezone data — update yearly
