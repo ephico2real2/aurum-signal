@@ -543,20 +543,20 @@ function ATHENA(){
   const [leftW,setLeftW]=useState(186);    // left sidebar width (px)
   // Backtest tab state
   const [btRuns,setBtRuns]=useState([]);
-  const [btAllRuns,setBtAllRuns]=useState([]);    // full list (pre-display-limit slice)
-  const [btSelRun,setBtSelRun]=useState(null);    // aurum_run_id currently viewed
-  const [btPinnedRun,setBtPinnedRun]=useState(null); // pinned run — only cleared by explicit user action
-  const btPinnedRunRef=useRef(null); // ref so interval callbacks always read latest pin value
-  const [btDetail,setBtDetail]=useState(null);    // /api/backtest/run/:id response
-  const [btCompare,setBtCompare]=useState(null);  // /api/backtest/compare response
+  const [btAllRuns,setBtAllRuns]=useState([]);       // full list (pre-display-limit slice)
+  const [btSelRun,setBtSelRun]=useState(null);       // aurum_run_id currently viewed
+  const [btPinnedRuns,setBtPinnedRuns]=useState([]); // pinned run IDs — only cleared by explicit user action
+  const btPinnedRunsRef=useRef([]);                  // ref so interval callbacks always see latest pins
+  const [btDetail,setBtDetail]=useState(null);       // /api/backtest/run/:id response
+  const [btCompares,setBtCompares]=useState([]);     // array of /api/backtest/compare results (one per pin or prev)
   const [gateLegend,setGateLegend]=useState({});         // gate_reason → {label, explanation}
   const [indLegend,setIndLegend]=useState({});           // acronym → indicator detail
   const [mgmtBusy,setMgmtBusy]=useState(false);
   const [autoscalperConditions,setAutoscalperConditions]=useState(null);
   const [autoscalperConditionsError,setAutoscalperConditionsError]=useState(null);
 
-  // Keep btPinnedRunRef in sync — interval callbacks read ref, never stale state
-  useEffect(()=>{ btPinnedRunRef.current=btPinnedRun; },[btPinnedRun]);
+  // Keep btPinnedRunsRef in sync — interval callbacks read ref, never stale state
+  useEffect(()=>{ btPinnedRunsRef.current=btPinnedRuns; },[btPinnedRuns]);
 
   useEffect(()=>{
     const poll=async()=>{
@@ -625,12 +625,13 @@ function ATHENA(){
           const all=j.runs||[];
           const displayLimit=j.display_limit||10;
           setBtAllRuns(all);
-          // Use ref for pinned run — closure captures stale state but ref always has latest
-          const pinned=btPinnedRunRef.current;
+          // Use ref — closure captures stale state; ref always has latest pins array
+          const pins=btPinnedRunsRef.current||[];
           const slice=all.slice(0,displayLimit);
-          const pinnedInSlice=pinned&&slice.some(r=>r.aurum_run_id===pinned);
-          const pinnedRow=pinned&&!pinnedInSlice?all.find(r=>r.aurum_run_id===pinned):null;
-          setBtRuns(pinnedRow?[...slice,pinnedRow]:slice);
+          // Inject any pinned runs not already in the slice (they survive display limit)
+          const sliceIds=new Set(slice.map(r=>r.aurum_run_id));
+          const extra=pins.map(id=>all.find(r=>r.aurum_run_id===id)).filter(r=>r&&!sliceIds.has(r.aurum_run_id));
+          setBtRuns([...slice,...extra]);
           if(!btSelRun&&slice.length>0)setBtSelRun(slice[0].aurum_run_id);}}
       catch(e){}};
     load();const t=setInterval(load,300000);return()=>clearInterval(t); // 5 min — runs list changes slowly
@@ -645,16 +646,23 @@ function ATHENA(){
   },[btSelRun]);
   useEffect(()=>{loadBtDetail();},[btSelRun]);
 
-  // Backtest compare — re-fetch only when selection or pin changes (not on auto-refresh)
+  // Backtest compare — one fetch per pinned run; or vs previous run when nothing pinned
   useEffect(()=>{
     if(tab!=='backtest'||!btSelRun)return;
-    const runB=btPinnedRun&&btPinnedRun!==btSelRun
-      ? btPinnedRun
-      : (btAllRuns.find(r=>r.aurum_run_id!==btSelRun)||{}).aurum_run_id;
-    if(!runB)return;
-    const url=`${API}/api/backtest/compare?run_a=${btSelRun}&run_b=${runB}`;
-    fetch(url).then(r=>r.ok?r.json():null).then(j=>{if(j&&!j.error)setBtCompare(j);}).catch(()=>{});
-  },[btSelRun,btPinnedRun,tab]);
+    const pins=btPinnedRuns.filter(id=>id!==btSelRun);
+    // baselines: pinned runs if any, else the run immediately before selected in list
+    const baselines=pins.length>0
+      ? pins
+      : [btAllRuns.find(r=>r.aurum_run_id<btSelRun)?.aurum_run_id].filter(Boolean);
+    if(!baselines.length){setBtCompares([]);return;}
+    Promise.all(
+      baselines.map(runB=>
+        fetch(`${API}/api/backtest/compare?run_a=${btSelRun}&run_b=${runB}`)
+          .then(r=>r.ok?r.json():null)
+          .catch(()=>null)
+      )
+    ).then(results=>setBtCompares(results.filter(j=>j&&!j.error)));
+  },[btSelRun,btPinnedRuns,tab]);
 
   const switchMode=async(m)=>{
     try{await fetch(`${API}/api/mode`,{method:'POST',
@@ -1404,8 +1412,7 @@ function ATHENA(){
                   <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
                     {btRuns.map(r=>{
                       const isSel=btSelRun===r.aurum_run_id;
-                      const isPinned=btPinnedRun===r.aurum_run_id;
-                      const isPinnedExtra=isPinned&&!btRuns.slice(0,btRuns.length-1).includes(r)&&btAllRuns.findIndex(x=>x.aurum_run_id===r.aurum_run_id)>=( btRuns.length-1);
+                      const isPinned=btPinnedRuns.includes(r.aurum_run_id);
                       return(
                         <div key={r.aurum_run_id} style={{display:'flex',alignItems:'center',gap:2}}>
                           <button type="button" onClick={()=>setBtSelRun(r.aurum_run_id)}
@@ -1422,7 +1429,14 @@ function ATHENA(){
                           </button>
                           {/* pin toggle */}
                           <button type="button" title={isPinned?'Unpin run':'Pin as comparison baseline'}
-                            onClick={e=>{e.stopPropagation();const next=isPinned?null:r.aurum_run_id;btPinnedRunRef.current=next;setBtPinnedRun(next);}}
+                            onClick={e=>{
+                              e.stopPropagation();
+                              const next=isPinned
+                                ? btPinnedRuns.filter(id=>id!==r.aurum_run_id)
+                                : [...btPinnedRuns,r.aurum_run_id];
+                              btPinnedRunsRef.current=next;
+                              setBtPinnedRuns(next);
+                            }}
                             style={{padding:'3px 5px',fontSize:9,cursor:'pointer',border:'none',
                               background:'transparent',color:isPinned?T.cyan:T.border,lineHeight:1}}>
                             📌
@@ -1477,73 +1491,73 @@ function ATHENA(){
                         <div style={{marginBottom:10,fontSize:8,color:T.textD,fontFamily:T.mono}}>
                           Source: aurum_tester.db forge_signals + forge_journal_trades · /api/backtest/run/:id
                         </div>
-                        {/* ── RUN ANALYSIS — before P&L chart ── */}
-                        {btCompare&&btCompare.run_a&&btCompare.run_b&&(
-                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:'10px 12px',marginBottom:12}}>
-                            <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,fontWeight:600,letterSpacing:2,marginBottom:8}}>
-                              ⚖ RUN ANALYSIS — Run #{btCompare.run_a.aurum_run_id} vs Run #{btCompare.run_b.aurum_run_id}
-                              {btPinnedRun===btCompare.run_b.aurum_run_id&&
-                                <span style={{marginLeft:6,color:T.cyan,fontSize:8}}>📌 pinned baseline</span>}
-                              {btCompare.winner&&btCompare.winner!=='tie'&&(
-                                <span style={{marginLeft:8,color:T.gold}}> · Winner: Run #{btCompare.winner}</span>
-                              )}
-                              {btCompare.winner==='tie'&&<span style={{marginLeft:8,color:T.textD}}> · Tie</span>}
-                            </div>
-                            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
-                              {[btCompare.run_a,btCompare.run_b].map(run=>(
-                                <div key={run.aurum_run_id} style={{padding:'6px 8px',background:T.bg,borderRadius:4,
-                                  border:`1px solid ${btCompare.winner===run.aurum_run_id?T.gold:T.border}`}}>
-                                  <div style={{fontSize:9,color:T.gold,fontFamily:T.mono,fontWeight:600,marginBottom:4}}>
-                                    Run #{run.aurum_run_id} · {run.forge_version}
-                                    {run.score!=null&&<span style={{marginLeft:6,color:T.cyan}}>Score {run.score}/100</span>}
-                                  </div>
-                                  {[
-                                    ['P&L',`$${(run.total_pnl||0).toFixed(2)}`],
-                                    ['Return',run.pnl_return_pct!=null?`${run.pnl_return_pct.toFixed(3)}%`:'n/a'],
-                                    ['Win Rate',run.win_rate_pct!=null?`${run.win_rate_pct}%`:'n/a'],
-                                    ['Taken',run.taken??'—'],
-                                    ['Take Rate',run.take_rate_pct!=null?`${run.take_rate_pct.toFixed(3)}%`:'n/a'],
-                                    ['Signals',run.total_signals??'—'],
-                                    ['Losses',run.losses??'—'],
-                                  ].map(([k,v])=>(
-                                    <div key={k} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
-                                      <span>{k}</span><span style={{color:T.text}}>{v}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                            <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>DELTAS (A − B)</div>
-                            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4,marginBottom:8}}>
-                              {Object.entries(btCompare.deltas||{}).filter(([,v])=>v!=null).map(([k,v])=>{
-                                const pos=v>0,neg=v<0,color=pos?T.green:neg?T.red:T.textD;
+                        {/* ── RUN ANALYSIS — dynamic multi-compare ── */}
+                        {btCompares.length>0&&(()=>{
+                          const scroll=btCompares.length>2;
+                          return(
+                          <div style={{marginBottom:12}}>
+                            <div style={{maxHeight:scroll?380:undefined,overflowY:scroll?'auto':undefined,
+                              display:'flex',flexDirection:'column',gap:8}}>
+                              {btCompares.map((cmp,ci)=>{
+                                if(!cmp||!cmp.run_a||!cmp.run_b)return null;
+                                const isPinnedB=btPinnedRuns.includes(cmp.run_b.aurum_run_id);
                                 return(
-                                  <div key={k} style={{padding:'3px 6px',background:T.bg,borderRadius:3,fontSize:9,fontFamily:T.mono}}>
-                                    <span style={{color:T.textD}}>{k.replace(/_pct$/,'%').replace(/_/g,' ')} </span>
-                                    <span style={{color}}>{pos?'+':''}{typeof v==='number'?v.toFixed(2):v}</span>
+                                <div key={ci} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:'8px 10px'}}>
+                                  <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,fontWeight:600,
+                                    letterSpacing:1.5,marginBottom:6,display:'flex',alignItems:'center',flexWrap:'wrap',gap:5}}>
+                                    <span>⚖ Run #{cmp.run_a.aurum_run_id} vs Run #{cmp.run_b.aurum_run_id}</span>
+                                    {isPinnedB&&<span style={{color:T.cyan,fontSize:8}}>📌 pinned</span>}
+                                    {cmp.winner&&cmp.winner!=='tie'
+                                      ?<span style={{color:T.gold}}>· Winner #{cmp.winner}</span>
+                                      :<span style={{color:T.textD}}>· Tie</span>}
                                   </div>
+                                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}}>
+                                    {[cmp.run_a,cmp.run_b].map(run=>(
+                                      <div key={run.aurum_run_id} style={{padding:'5px 7px',background:T.bg,borderRadius:4,
+                                        border:`1px solid ${cmp.winner===run.aurum_run_id?T.gold:isPinnedB&&run.aurum_run_id===cmp.run_b.aurum_run_id?T.cyan:T.border}`}}>
+                                        <div style={{fontSize:9,color:T.gold,fontFamily:T.mono,fontWeight:600,marginBottom:3}}>
+                                          Run #{run.aurum_run_id}
+                                          {run.score!=null&&<span style={{marginLeft:5,color:T.cyan}}>{run.score}/100</span>}
+                                        </div>
+                                        {[
+                                          ['P&L',`$${(run.total_pnl||0).toFixed(2)}`],
+                                          ['Return',run.pnl_return_pct!=null?`${run.pnl_return_pct.toFixed(2)}%`:'n/a'],
+                                          ['WR',run.win_rate_pct!=null?`${run.win_rate_pct}%`:'n/a'],
+                                          ['Taken',run.taken??'—'],
+                                          ['Losses',run.losses??'—'],
+                                        ].map(([k,v])=>(
+                                          <div key={k} style={{display:'flex',justifyContent:'space-between',
+                                            fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
+                                            <span>{k}</span><span style={{color:T.text}}>{v}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                                    {Object.entries(cmp.deltas||{}).filter(([k,v])=>v!=null&&v!==0&&
+                                      ['total_pnl','pnl_return_pct','win_rate_pct','taken','losses','score'].includes(k)
+                                    ).map(([k,v])=>{
+                                      const pos=v>0,color=pos?T.green:T.red;
+                                      const label=k==='pnl_return_pct'?'return%':k==='win_rate_pct'?'WR%':k==='total_pnl'?'P&L':k;
+                                      return(
+                                        <span key={k} style={{fontSize:8,fontFamily:T.mono,padding:'2px 5px',
+                                          borderRadius:3,background:T.bg,color}}>
+                                          {label} {pos?'+':''}{typeof v==='number'?v.toFixed(2):v}
+                                        </span>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
                                 );
                               })}
                             </div>
-                            {btCompare.gate_diff&&Object.keys(btCompare.gate_diff).length>0&&(()=>{
-                              const changed=Object.entries(btCompare.gate_diff).filter(([,v])=>v.delta!==0).slice(0,6);
-                              if(!changed.length)return null;
-                              return(<>
-                                <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>TOP GATE CHANGES</div>
-                                {changed.map(([gate,v])=>(
-                                  <div key={gate} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
-                                    <span style={{color:T.text}}>{gate}</span>
-                                    <span>A={v.a} B={v.b} <span style={{color:v.delta>0?T.red:T.green}}>{v.delta>0?'+':''}{v.delta}</span></span>
-                                  </div>
-                                ))}
-                              </>);
-                            })()}
-                            <div style={{marginTop:6,fontSize:8,color:T.textD,fontFamily:T.mono}}>{btCompare.note}</div>
-                            <div style={{marginTop:4,fontSize:8,color:T.textD,fontFamily:T.mono}}>
-                              Source: /api/backtest/compare → backtest_compare.py
+                            <div style={{marginTop:5,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                              {btCompares[0]?.note} · Source: /api/backtest/compare → backtest_compare.py
                             </div>
                           </div>
-                        )}
+                          );
+                        })()}
                         {/* P&L curve with labeled axes */}
                         {sparkData.length>=2&&(()=>{
                           const total=btDetail.pnl_curve?.length||sparkData.length;
