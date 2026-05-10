@@ -632,3 +632,32 @@ Every UI change commit must include:
 git add dashboard/app.js tests/ui/test_athena_backtest.spec.js python/athena_api.py config/*.json
 git commit -m "feat/fix(athena): description — tests: N/N pass"
 ```
+
+### 508 Audit script (alpha-compositing, use in Playwright evaluate)
+
+```js
+(() => {
+  function lum(r,g,b){return[r,g,b].map(v=>{const s=v/255;return s<=.04045?s/12.92:Math.pow((s+.055)/1.055,2.4);}).reduce((a,c,i)=>a+c*[.2126,.7152,.0722][i],0);}
+  function parse(s){const m=(s||'').match(/[\d.]+/g);if(!m||m.length<3)return null;return{r:+m[0],g:+m[1],b:+m[2],a:m[3]!==undefined?+m[3]:1};}
+  function effectiveBg(el){let r=11,g=13,b=20;const layers=[];let cur=el;while(cur&&cur!==document.documentElement){const bg=parse(window.getComputedStyle(cur).backgroundColor);if(bg&&bg.a>0)layers.unshift(bg);cur=cur.parentElement;}for(const c of layers){r=c.a*c.r+(1-c.a)*r;g=c.a*c.g+(1-c.a)*g;b=c.a*c.b+(1-c.a)*b;}return{r,g,b};}
+  function cr(fg,bg){const l1=Math.max(lum(fg.r,fg.g,fg.b),lum(bg.r,bg.g,bg.b))+.05;const l2=Math.min(lum(fg.r,fg.g,fg.b),lum(bg.r,bg.g,bg.b))+.05;return l1/l2;}
+  const fails=[];const seen=new Set();
+  document.querySelectorAll('span,div,button,p,label,a').forEach(el=>{
+    const cs=window.getComputedStyle(el);
+    const text=(el.childNodes.length===1&&el.childNodes[0].nodeType===3?el.innerText:'').trim();
+    if(!text||text.length<2||text.length>80)return;
+    const key=text+'|'+cs.fontSize+'|'+cs.color;
+    if(seen.has(key))return;seen.add(key);
+    const fs=parseFloat(cs.fontSize);
+    if(fs<5||cs.display==='none')return;
+    const fg=parse(cs.color);if(!fg)return;
+    const bg=effectiveBg(el);const ratio=cr(fg,bg);
+    const isLarge=fs>=18||(fs>=14&&parseInt(cs.fontWeight||'400')>=700);
+    if(ratio<(isLarge?3:4.5)||fs<9)
+      fails.push({text:text.slice(0,40),fs,ratio:Math.round(ratio*100)/100,tag:el.tagName});
+  });
+  return{totalFails:fails.length,items:fails.slice(0,20)};
+})()
+```
+
+**IMPORTANT:** The naive `window.getComputedStyle(el).backgroundColor` returns the element's own bg, NOT the blended result of alpha-transparent parents. Always use the `effectiveBg()` function above (walks up the DOM and alpha-blends all layers) for accurate results. The wrong approach produces hundreds of false positives.
