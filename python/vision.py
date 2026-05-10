@@ -335,15 +335,17 @@ class Vision:
             f"context_hint={context_hint}\ncaller={caller}\nfocus={focus}\ncaption={caption or ''}\n"
             "Extract actionable trading data and visible chart price labels."
         )
-        # output_config (json_schema enforcement) requires anthropic SDK ≥ 0.52.
-        # The .venv is pinned to 0.49.0 (commit f3f2974, requirements.txt <0.50.0).
-        # The SYSTEM_PROMPT already instructs the model to return strict JSON only,
-        # so removing output_config restores compatibility without changing behaviour.
         resp = self.claude.messages.create(
             model=VISION_MODEL,
             max_tokens=900,
             temperature=0,
             system=SYSTEM_PROMPT,
+            output_config={
+                "format": {
+                    "type": "json_schema",
+                    "schema": OUTPUT_SCHEMA,
+                }
+            },
             messages=[
                 {
                     "role": "user",
