@@ -1393,15 +1393,52 @@ function ATHENA(){
                         {(btDetail.taken||[]).length>0&&(
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12}}>
                             <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:2}}>TAKEN ENTRIES</div>
-                            {(btDetail.taken||[]).map((e,i)=>(
-                              <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 60px 50px 50px',
-                                gap:6,borderBottom:`1px solid ${T.border}`,padding:'4px 0',fontSize:8,fontFamily:T.mono}}>
-                                <span style={{color:T.textD}}>{(e.timestamp_utc||'').slice(0,16)}</span>
-                                <span style={{color:e.direction==='BUY'?T.green:T.red}}>{e.direction}</span>
+                            {/* header row */}
+                            <div style={{display:'grid',gridTemplateColumns:'90px 56px 70px 56px 80px 48px 48px 64px',
+                              gap:4,borderBottom:`1px solid ${T.border2}`,paddingBottom:4,marginBottom:2,
+                              fontSize:6,color:T.textD,fontFamily:T.mono,letterSpacing:1}}>
+                              <span>TIME (UTC)</span><span>DIR</span><span>SESSION</span>
+                              <span>SETUP</span><span>OUTCOME</span>
+                              <span>RSI</span><span>ADX</span><span style={{textAlign:'right'}}>P&amp;L</span>
+                            </div>
+                            {(btDetail.taken||[]).map((e,i)=>{
+                              const outcome=e.trade_outcome||'—';
+                              const isTP=outcome.startsWith('TP');
+                              const isSL=outcome==='SL';
+                              const isOpen=outcome==='OPEN';
+                              const outcomeColor=isSL?T.red:isOpen?T.amber:isTP?T.gold:T.green;
+                              const pnl=e.pnl||0;
+                              const pnlColor=pnl>0?T.green:pnl<0?T.red:T.textD;
+                              // session label + color
+                              const sess=(e.session||'').toUpperCase();
+                              const sessColor=sess.includes('LONDON')?T.blue:sess.includes('NEW_YORK')||sess.includes('NY')?T.green:sess.includes('SYDNEY')?T.purple:sess.includes('ASIAN')||sess.includes('ASIA')?T.cyan:T.textD;
+                              const sessShort=sess.replace('NEW_YORK','NY').replace('LONDON','LON').replace('SYDNEY','SYD').replace('ASIAN','ASIA').slice(0,10);
+                              return(
+                              <div key={i} style={{display:'grid',gridTemplateColumns:'90px 56px 70px 56px 80px 48px 48px 64px',
+                                gap:4,borderBottom:`1px solid ${T.border}`,padding:'5px 0',fontSize:8,fontFamily:T.mono,alignItems:'center'}}>
+                                <span style={{color:T.textD}}>{(e.timestamp_utc||'').slice(0,16).replace('T',' ')}</span>
+                                <span style={{color:e.direction==='BUY'?T.green:T.red,fontWeight:'bold'}}>{e.direction}</span>
+                                <span style={{color:sessColor,fontSize:7}}>{sessShort||'—'}</span>
+                                <span style={{color:T.textD,fontSize:7}}>{(e.setup_type||'').replace('BB_','')}</span>
+                                <span style={{display:'inline-flex',alignItems:'center',gap:3}}>
+                                  <span style={{background:outcomeColor+'22',color:outcomeColor,
+                                    border:`1px solid ${outcomeColor}44`,borderRadius:3,
+                                    padding:'1px 5px',fontSize:7,fontWeight:'bold',letterSpacing:1}}>
+                                    {outcome}
+                                  </span>
+                                  {e.close_comment&&!isSL&&(
+                                    <span style={{color:T.textD,fontSize:6,opacity:.7}} title={e.close_comment}>
+                                      {e.close_comment.replace('tp ','@')}
+                                    </span>
+                                  )}
+                                </span>
                                 <span style={{color:T.textD}}>RSI {e.rsi}</span>
                                 <span style={{color:T.textD}}>ADX {e.adx}</span>
+                                <span style={{color:pnlColor,textAlign:'right',fontWeight:pnl!==0?'bold':'normal'}}>
+                                  {pnl>0?'+':''}{pnl!==0?`$${pnl.toFixed(2)}`:'—'}
+                                </span>
                               </div>
-                            ))}
+                            );})}
                           </div>
                         )}
                       </>

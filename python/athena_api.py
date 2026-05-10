@@ -1584,16 +1584,98 @@ def api_backtest_run(aurum_run_id):
             GROUP BY gate_reason ORDER BY cnt DESC LIMIT 15
         """, (aurum_run_id,))
 
-        # TAKEN entries with indicators
-        taken = ts.query("""
-            SELECT timestamp_utc, direction,
+        # TAKEN entries enriched with trade outcomes
+        taken_raw = ts.query("""
+            SELECT forge_id, time, timestamp_utc, direction,
                    ROUND(rsi,1) as rsi, ROUND(adx,1) as adx,
-                   ROUND(price,2) as price, ROUND(atr,2) as atr,
-                   setup_type, session, gate_reason
+                   setup_type, session
             FROM forge_signals
             WHERE aurum_run_id=? AND outcome='TAKEN'
             ORDER BY time
         """, (aurum_run_id,))
+
+        # All trades for this run, grouped by magic
+        from collections import defaultdict as _dd
+        all_trades = ts.query(
+            "SELECT magic, profit, comment, time FROM forge_journal_trades "
+            "WHERE aurum_run_id=? ORDER BY time",
+            (aurum_run_id,)
+        )
+        _trades_by_magic = _dd(list)
+        for _t in all_trades:
+            _trades_by_magic[_t["magic"]].append(_t)
+
+        magic_base = meta.get("magic_base") or 202401
+
+        # Pre-compute: for each base_magic closing deal, find which group_magic
+        # closing deal is closest in time (exclusive attribution — one deal → one group).
+        _base_closing = [
+            _td for _td in _trades_by_magic.get(magic_base, [])
+            if (_td.get("profit") or 0) != 0
+        ]
+        # Build map: group_rank → list of attributed base_magic deals
+        _base_attr_by_rank: dict[int, list] = {r: [] for r in range(1, len(taken_raw) + 1)}
+        for _bd in _base_closing:
+            best_rank, best_diff = None, float("inf")
+            for _r in range(1, len(taken_raw) + 1):
+                _gm = magic_base + 5000 + _r
+                for _gt in _trades_by_magic.get(_gm, []):
+                    if (_gt.get("profit") or 0) != 0:
+                        diff = abs(_bd["time"] - _gt["time"])
+                        if diff < best_diff and diff <= 10:
+                            best_diff, best_rank = diff, _r
+            if best_rank is not None:
+                _base_attr_by_rank[best_rank].append(_bd)
+
+        taken = []
+        for _rank, _sig in enumerate(taken_raw, start=1):
+            grp_magic = magic_base + 5000 + _rank
+            grp_trades = _trades_by_magic.get(grp_magic, [])
+
+            # Highest TP from partial close comments (profit==0, comment like "|TP2")
+            max_tp = 0
+            for _td in grp_trades:
+                _c = _td.get("comment") or ""
+                if "|TP" in _c and (_td.get("profit") or 0) == 0:
+                    try:
+                        max_tp = max(max_tp, int(_c.split("|TP")[-1]))
+                    except ValueError:
+                        pass
+
+            # Realised P&L: group_magic deals + exclusively-attributed base_magic deals
+            base_attr = sum((_td.get("profit") or 0) for _td in _base_attr_by_rank.get(_rank, []))
+            grp_pnl = round(
+                sum((_td.get("profit") or 0) for _td in grp_trades if (_td.get("profit") or 0) != 0)
+                + base_attr, 2
+            )
+            has_sl = any((_td.get("profit") or 0) < 0 for _td in grp_trades)
+
+            # Closing price/comment from highest-profit deal
+            _closing = max(
+                (_td for _td in grp_trades if (_td.get("profit") or 0) > 0),
+                key=lambda x: x.get("profit") or 0, default=None
+            )
+            close_comment = (_closing.get("comment") or "").strip() if _closing else ""
+
+            if has_sl:
+                trade_outcome = "SL"
+            elif max_tp:
+                trade_outcome = f"TP{max_tp}"
+            elif grp_pnl > 0:
+                trade_outcome = "WIN"
+            elif not grp_trades:
+                trade_outcome = "OPEN"
+            else:
+                trade_outcome = "CLOSED"
+
+            taken.append({
+                **_sig,
+                "trade_outcome": trade_outcome,
+                "max_tp": max_tp or None,
+                "pnl": grp_pnl,
+                "close_comment": close_comment,
+                "group_id": f"G{magic_base + _rank:04d}",
+            })
 
         # Cumulative P&L curve (closing deals ordered by time)
         curve_rows = ts.query("""
