@@ -93,6 +93,10 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_ADX_MIN_SELL_LOOKBACK_BARS": ("bb_breakout", "adx_min_sell_lookback_bars",  "int",   0.0,  20.0),
     # H1 Wilder DI+/DI- gate: block BUY when H1 DI- > DI+ (bearish directional imbalance)
     "FORGE_BREAKOUT_REQUIRE_H1_DI_BUY":          ("bb_breakout", "require_h1_di_buy",           "bool01", None, None),
+    # H1 DI gate for SELL: block SELL when H1 DI+ >= DI- (H1 is bullish — no ADX bypass)
+    "FORGE_BREAKOUT_REQUIRE_H1_DI_SELL":         ("bb_breakout", "require_h1_di_sell",          "bool01", None, None),
+    # H1 MACD histogram gate for SELL: block SELL when H1 MACD hist >= 0 (H1 bullish momentum; Run 12+)
+    "FORGE_BREAKOUT_REQUIRE_H1_MACD_SELL":       ("bb_breakout", "require_h1_macd_sell",        "bool01", None, None),
     # ADX ceiling above which the H1 DI gate auto-disables (strong trend overrides the DI check)
     "FORGE_BREAKOUT_COUNTER_BUY_ADX_THRESHOLD":  ("bb_breakout", "counter_buy_adx_threshold",   "float", 0.0,  80.0),
     # Max ATR multiples price can extend from first entry before re-entry is blocked (0=disabled)

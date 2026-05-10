@@ -124,6 +124,8 @@ datetime g_scalper_last_nosetup_log_bar  = 0;   // throttle noisy "no setup" (on
 datetime g_scalper_last_rrtoolow_log_bar = 0;   // throttle journal rr_too_low (once per M5 bar)
 datetime g_scalper_last_sesscut_log_bar  = 0;   // throttle entry_quality_session_sell_cutoff (2.7.7)
 datetime g_scalper_last_macd_log_bar     = 0;   // throttle entry_quality_macd_* gates (2.7.7)
+datetime g_scalper_last_h1disell_log_bar = 0;  // throttle entry_quality_h1_di_sell (2.7.12)
+datetime g_scalper_last_h1macd_log_bar   = 0;  // throttle entry_quality_h1_macd_sell (2.7.12)
 datetime g_scalper_last_adxblk_log_bar   = 0;   // throttle entry_quality_adx_extreme_sell (2.7.7)
 double   g_last_combined_lot_factor      = 1.0; // last computed combined lot factor — written to SIGNALS.lot_factor
 datetime g_scalper_last_sesswarn_log_bar = 0; // throttle session_off log (once per M5 bar)
@@ -192,6 +194,8 @@ struct ScalperConfig {
    double breakout_m30_bear_adx_min;                // M30 gate only activates when m5_adx ≥ this (default 25)
    bool   breakout_require_h1_di_buy;               // block BUY when H1 DI- > DI+ at weak ADX (default false; DI+/DI- Wilder directional gate)
    double breakout_counter_buy_adx_threshold;       // h1_di_buy gate active only when m5_adx < this (default 28; auto-off in strong trend)
+   bool   breakout_require_h1_di_sell;              // block SELL when H1 DI+ >= DI- (bullish H1 — no ADX bypass; catches false breakdowns)
+   bool   breakout_require_h1_macd_sell;            // block SELL when H1 MACD histogram >= 0 (H1 bullish momentum; Run 12+ gate)
    int    breakout_adx_min_sell_lookback_bars;       // ADX spike-from-flat gate: bars back to check (default 6 = 30min; 0=disabled)
    // Cardwell RSI Zone Theory (Andrew Cardwell):
    //   Uptrend range: RSI 40–80.  Bull Support floor = 40 (long re-entry on dip).
@@ -2247,6 +2251,8 @@ void InitScalperConfig() {
    g_sc.breakout_m30_bear_adx_min             = 25.0;
    g_sc.breakout_require_h1_di_buy            = false;
    g_sc.breakout_counter_buy_adx_threshold    = 28.0;
+   g_sc.breakout_require_h1_di_sell           = false;
+   g_sc.breakout_require_h1_macd_sell         = false;
    g_sc.breakout_adx_min_sell_lookback_bars   = 6;
    g_sc.breakout_rsi_buy_min = 40;
    g_sc.breakout_rsi_sell_max = 60;
@@ -2685,6 +2691,14 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "require_h1_di_buy")) {
          v = JsonGetDouble(breakout_json, "require_h1_di_buy");
          g_sc.breakout_require_h1_di_buy = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "require_h1_di_sell")) {
+         v = JsonGetDouble(breakout_json, "require_h1_di_sell");
+         g_sc.breakout_require_h1_di_sell = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "require_h1_macd_sell")) {
+         v = JsonGetDouble(breakout_json, "require_h1_macd_sell");
+         g_sc.breakout_require_h1_macd_sell = (v >= 0.5);
       }
       if(JsonHasKey(breakout_json, "counter_buy_adx_threshold")) {
          v = JsonGetDouble(breakout_json, "counter_buy_adx_threshold");
@@ -5326,6 +5340,21 @@ void CheckNativeScalperSetups() {
          // — prevents late exhaustion entries at RSI 14-20 where mean-reversion risk is highest.
          // crash_sell_adx_max: high ADX means the move is already very extended — reversal risk elevated.
          // Mirrors bounce_adx_max logic: counter-trend bounces blocked when ADX > 40 for same reason.
+         // H1 DI directional gate (2.7.12): block SELL when H1 DI+ >= DI- (H1 bullish — counter-trend SELL)
+         // No ADX bypass: high-ADX false-breakdowns (like G5008 ADX=37.4) are the exact risk this gate targets.
+         // crash_sell_bypass does not skip this gate — if H1 is genuinely bearish, DI- > DI+ will confirm it.
+         bool h1_di_sell_ok = true;
+         if(g_sc.breakout_require_h1_di_sell) {
+            if(h1_di_read_ok && h1_di_plus >= h1_di_minus) {
+               datetime _h1ds_bar = iTime(_Symbol, PERIOD_M5, 0);
+               if(_h1ds_bar != g_scalper_last_h1disell_log_bar) {
+                  g_scalper_last_h1disell_log_bar = _h1ds_bar;
+                  JournalRecordSignal("SKIP","entry_quality_h1_di_sell","BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+               h1_di_sell_ok = false;
+            }
+         }
          bool crash_sell_bypass = g_sc.breakout_h1h4_crash_sell && h1_bear && h4_bear
                                   && m5_rsi > g_sc.breakout_h1h4_crash_sell_rsi_min
                                   && (g_sc.h1h4_crash_sell_adx_max <= 0 || m5_adx <= g_sc.h1h4_crash_sell_adx_max);
@@ -5348,7 +5377,7 @@ void CheckNativeScalperSetups() {
                rsi_floor_ok = false;
             }
          }
-         if(rsi_floor_ok) {
+         if(rsi_floor_ok && h1_di_sell_ok) {
             // ADX duration gate: block SELL if ADX spiked from flat base (skipped on crash bypass)
             bool adx_dur_ok = true;
             if(!crash_sell_bypass && g_sc.breakout_adx_min_sell_lookback_bars > 0) {
@@ -5402,12 +5431,32 @@ void CheckNativeScalperSetups() {
                   }
                }
             }
+            // H1 MACD histogram gate (2.7.12, Run 12+): block SELL when H1 MACD histogram >= 0 (H1 bullish momentum).
+            // Uses existing g_h_macd handle (H1 iMACD 12,26,9). Hist = main(buf0) - signal(buf1).
+            // Complements H1 DI gate: DI catches trend direction, MACD catches momentum phase.
+            bool h1_macd_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && g_sc.breakout_require_h1_macd_sell
+               && g_h_macd != INVALID_HANDLE) {
+               double _h1ma[1], _h1si[1];
+               if(CopyBuffer(g_h_macd, 0, 0, 1, _h1ma) == 1 && CopyBuffer(g_h_macd, 1, 0, 1, _h1si) == 1) {
+                  double _h1_hist = _h1ma[0] - _h1si[0];
+                  if(_h1_hist >= 0.0) {
+                     datetime _h1mcd_bar = iTime(_Symbol, PERIOD_M5, 0);
+                     if(_h1mcd_bar != g_scalper_last_h1macd_log_bar) {
+                        g_scalper_last_h1macd_log_bar = _h1mcd_bar;
+                        JournalRecordSignal("SKIP","entry_quality_h1_macd_sell","BB_BREAKOUT","SELL",
+                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0,_h1_hist);
+                     }
+                     h1_macd_sell_ok = false;
+                  }
+               }
+            }
             // M30 EMA bearish confirmation (2.7.9 Feature 3): block SELL when M30 is recovering
             // Uses existing g_mtf[2] handles (M30 EMA20/EMA50) — no new indicator handles needed.
             // Gate activates when ADX ≥ m30_bear_adx_min (trend confirmed) to avoid filtering
             // valid ranging entries where M30 EMA gap is meaningless.
             bool m30_bear_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && h1_macd_sell_ok
                && g_sc.breakout_require_m30_bear_sell
                && m5_adx >= g_sc.breakout_m30_bear_adx_min) {
                double _m30buf[1];
@@ -5428,7 +5477,7 @@ void CheckNativeScalperSetups() {
             //            that quickly reverses rather than a genuine breakdown. Gate is disabled by default.
             // Enable: FORGE_H4_RSI_GATE_ENABLED=1 in .env + "h4_rsi_gate_enabled":1 in scalper_config.json
             bool h4_rsi_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok
                && g_sc.h4_rsi_gate_enabled && h4_rsi_v > 0) {
                if(h4_rsi_v >= g_sc.h4_rsi_sell_max) {
                   JournalRecordSignal("SKIP","entry_quality_h4_rsi_sell_blocked","BB_BREAKOUT","SELL",
@@ -5440,7 +5489,7 @@ void CheckNativeScalperSetups() {
             // Rationale: if H4 is ranging (ADX < 20), scalp SELL breakouts have no structural confirmation
             // Enable: FORGE_H4_ADX_GATE_ENABLED=1 in .env + "h4_adx_gate_enabled":1 in scalper_config.json
             bool h4_adx_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok
                && g_sc.h4_adx_gate_enabled && h4_adx_v > 0) {
                if(h4_adx_v < g_sc.h4_adx_min_sell) {
                   JournalRecordSignal("SKIP","entry_quality_h4_adx_sell_blocked","BB_BREAKOUT","SELL",
@@ -5450,14 +5499,14 @@ void CheckNativeScalperSetups() {
             }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok
                && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
                && m5_rsi <= g_nf_eff_rsi_sell_min) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_sell_ok = false;
             }
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && nf_sell_ok) {
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && nf_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -6041,7 +6090,9 @@ void CheckNativeScalperSetups() {
    }  // end if(!in_tester)
 
    double _taken_macd = 0.0, _taken_m15adx = 0.0;
-   { double _th[1]; if(g_h_osma_scalp != INVALID_HANDLE && CopyBuffer(g_h_osma_scalp, 0, 0, 1, _th) == 1) _taken_macd = _th[0]; }
+   { double _h1ma[1], _h1si[1];  // log H1 MACD histogram — direction context for post-trade analysis
+     if(g_h_macd != INVALID_HANDLE && CopyBuffer(g_h_macd,0,0,1,_h1ma)==1 && CopyBuffer(g_h_macd,1,0,1,_h1si)==1)
+        _taken_macd = _h1ma[0] - _h1si[0]; }
    { double _tb[1]; if(CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _tb) == 1) _taken_m15adx = _tb[0]; }
    JournalRecordSignal("TAKEN","",setup_type,direction,
       direction=="BUY" ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID),

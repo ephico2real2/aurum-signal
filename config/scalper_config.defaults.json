@@ -60,6 +60,8 @@
     "adx_min_sell_lookback_bars": 6,
     "require_h1_di_buy": 0,
     "counter_buy_adx_threshold": 28.0,
+    "require_h1_di_sell": 0,
+    "require_h1_macd_sell": 0,
     "max_reentry_atr_ext": 0.0,
     "min_h1_bear_strength": 0.2,
     "require_m30_bear_sell": 1,
