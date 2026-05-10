@@ -646,15 +646,24 @@ function ATHENA(){
   },[btSelRun]);
   useEffect(()=>{loadBtDetail();},[btSelRun]);
 
-  // Backtest compare — one fetch per pinned run; or vs nearest other run when nothing pinned
-  // btAllRuns in deps so effect re-runs once the list arrives (avoids race condition on first load)
+  // Backtest compare — re-runs when selection, pins, or run list changes
   useEffect(()=>{
     if(tab!=='backtest'||!btSelRun||!btAllRuns.length)return;
     const pins=btPinnedRuns.filter(id=>id!==btSelRun);
-    // baselines: pinned runs if any, else the first OTHER run in the list (sorted DESC by ID)
-    const baselines=pins.length>0
-      ? pins
-      : [btAllRuns.find(r=>r.aurum_run_id!==btSelRun)?.aurum_run_id].filter(Boolean);
+    let baselines;
+    if(pins.length>0){
+      // compare selected vs each pinned run
+      baselines=pins;
+    } else {
+      // no pins: compare selected vs the immediately preceding run (highest ID < selected)
+      const prev=btAllRuns
+        .filter(r=>r.aurum_run_id<btSelRun)
+        .sort((a,b)=>b.aurum_run_id-a.aurum_run_id)[0];
+      // if no predecessor, compare vs the next newest run instead
+      const fallback=prev||btAllRuns.filter(r=>r.aurum_run_id!==btSelRun)
+        .sort((a,b)=>b.aurum_run_id-a.aurum_run_id)[0];
+      baselines=fallback?[fallback.aurum_run_id]:[];
+    }
     if(!baselines.length){setBtCompares([]);return;}
     Promise.all(
       baselines.map(runB=>
@@ -1410,41 +1419,53 @@ function ATHENA(){
                   No backtest runs in aurum_tester.db yet. Run a tester backtest to populate.</div>
               ):(
                 <>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:5,marginBottom:8,alignItems:'center'}}>
                     {btRuns.map(r=>{
                       const isSel=btSelRun===r.aurum_run_id;
                       const isPinned=btPinnedRuns.includes(r.aurum_run_id);
+                      const togglePin=e=>{
+                        e.stopPropagation();
+                        const next=isPinned
+                          ? btPinnedRuns.filter(id=>id!==r.aurum_run_id)
+                          : [...btPinnedRuns,r.aurum_run_id];
+                        btPinnedRunsRef.current=next;
+                        setBtPinnedRuns(next);
+                      };
                       return(
-                        <div key={r.aurum_run_id} style={{display:'flex',alignItems:'center',gap:2}}>
+                        <div key={r.aurum_run_id} style={{display:'flex',alignItems:'stretch',
+                          border:`1px solid ${isSel?T.gold:isPinned?T.cyan:T.border}`,
+                          borderRadius:4,overflow:'hidden'}}>
+                          {/* view button */}
                           <button type="button" onClick={()=>setBtSelRun(r.aurum_run_id)}
-                            style={{padding:'4px 10px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
-                              borderRadius:4,
-                              border:`1px solid ${isSel?T.gold:isPinned?T.cyan:T.border}`,
-                              background:isSel?T.card:'transparent',
+                            title="View this run"
+                            style={{padding:'3px 8px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
+                              border:'none',background:isSel?T.card:'transparent',
                               color:isSel?T.gold:isPinned?T.cyan:T.textD}}>
-                            {isPinned&&<span style={{marginRight:3}}>📌</span>}
                             Run #{r.aurum_run_id}
-                            {r.forge_version&&<span style={{marginLeft:4,color:T.textD}}>v{r.forge_version}</span>}
+                            {r.forge_version&&<span style={{marginLeft:4,opacity:.6}}>v{r.forge_version}</span>}
                             {r.total_pnl!=null&&<span style={{marginLeft:4,color:r.total_pnl>=0?T.green:T.red}}>
                               {r.total_pnl>=0?'+':''}{r.total_pnl?.toFixed(2)}</span>}
                           </button>
-                          {/* pin toggle */}
-                          <button type="button" title={isPinned?'Unpin run':'Pin as comparison baseline'}
-                            onClick={e=>{
-                              e.stopPropagation();
-                              const next=isPinned
-                                ? btPinnedRuns.filter(id=>id!==r.aurum_run_id)
-                                : [...btPinnedRuns,r.aurum_run_id];
-                              btPinnedRunsRef.current=next;
-                              setBtPinnedRuns(next);
-                            }}
-                            style={{padding:'3px 5px',fontSize:9,cursor:'pointer',border:'none',
-                              background:'transparent',color:isPinned?T.cyan:T.border,lineHeight:1}}>
+                          {/* pin toggle — right side of chip */}
+                          <button type="button" onClick={togglePin}
+                            title={isPinned?'Click to unpin':'Click to pin as compare baseline'}
+                            style={{padding:'3px 6px',border:'none',borderLeft:`1px solid ${isPinned?T.cyan:T.border}`,
+                              background:isPinned?'rgba(6,182,212,.12)':'transparent',
+                              cursor:'pointer',fontSize:9,color:isPinned?T.cyan:T.border,lineHeight:1}}>
                             📌
                           </button>
                         </div>
                       );
                     })}
+                    {/* clear all pins */}
+                    {btPinnedRuns.length>0&&(
+                      <button type="button" onClick={()=>{btPinnedRunsRef.current=[];setBtPinnedRuns([]);}}
+                        style={{padding:'3px 8px',fontFamily:T.mono,fontSize:8,cursor:'pointer',
+                          border:`1px solid ${T.border}`,borderRadius:4,background:'transparent',
+                          color:T.textD}}>
+                        clear {btPinnedRuns.length} pin{btPinnedRuns.length>1?'s':''}
+                      </button>
+                    )}
                   </div>
                   {/* Run detail */}
                   {btDetail&&btDetail.meta&&btSelRun===btDetail.meta.aurum_run_id&&(()=>{
@@ -1470,11 +1491,12 @@ function ATHENA(){
                         </div>
                         {/* ── RUN ANALYSIS — first panel after meta, dynamic multi-compare ── */}
                         {btCompares.length>0&&(()=>{
+                          const cols=btCompares.length===2?'1fr 1fr':'1fr';
                           const scroll=btCompares.length>2;
                           return(
                           <div style={{marginBottom:12}}>
-                            <div style={{maxHeight:scroll?380:undefined,overflowY:scroll?'auto':undefined,
-                              display:'flex',flexDirection:'column',gap:8}}>
+                            <div style={{maxHeight:scroll?360:undefined,overflowY:scroll?'auto':undefined,
+                              display:'grid',gridTemplateColumns:cols,gap:8}}>
                               {btCompares.map((cmp,ci)=>{
                                 if(!cmp||!cmp.run_a||!cmp.run_b)return null;
                                 const isPinnedB=btPinnedRuns.includes(cmp.run_b.aurum_run_id);
