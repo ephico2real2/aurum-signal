@@ -627,6 +627,110 @@ def api_live():
         "scalper_gates": _build_scalper_gates(mt5),
     })
 
+
+@app.route("/api/live/mt5")
+def api_live_mt5():
+    """Live MT5 snapshot: price, account, indicators, open positions, pending orders."""
+    mt5 = _read_json(MARKET_FILE)
+    if isinstance(mt5, dict):
+        mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+    broker = _read_json(BROKER_FILE)
+    execution = build_execution_quote(mt5)
+    return jsonify({
+        "timestamp":      datetime.now(timezone.utc).isoformat(),
+        "account_type":   broker.get("account_type", "UNKNOWN"),
+        "broker":         broker.get("broker", ""),
+        "server":         broker.get("server", ""),
+        "currency":       broker.get("currency", "USD"),
+        "leverage":       broker.get("leverage"),
+        "account":        mt5.get("account", {}),
+        "price":          mt5.get("price", {}),
+        "chart_symbol":   execution.get("symbol"),
+        "execution":      execution,
+        "indicators_h1":  mt5.get("indicators_h1", {}),
+        "indicators_m5":  mt5.get("indicators_m5", {}),
+        "indicators_m15": mt5.get("indicators_m15", {}),
+        "indicators_m30": mt5.get("indicators_m30", {}),
+        "open_positions": mt5.get("open_positions", []),
+        "pending_orders": mt5.get("pending_orders", []),
+        "forge_version":  mt5.get("forge_version"),
+        "ea_cycle":       mt5.get("ea_cycle"),
+        "mt5_connected":  bool(mt5),
+    })
+
+
+@app.route("/api/live/tradingview")
+def api_live_tradingview():
+    """TradingView / LENS panel: recommendations, indicators, bias, divergence from MT5."""
+    mt5 = _read_json(MARKET_FILE)
+    if isinstance(mt5, dict):
+        mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+    lens_raw = _read_json(LENS_FILE)
+    execution = build_execution_quote(mt5)
+    tradingview = _build_tradingview_panel(lens_raw)
+    mid_ex = execution.get("mid")
+    tv_last = tradingview.get("last")
+    if (
+        execution.get("usable")
+        and mid_ex is not None
+        and tv_last is not None
+        and abs(float(tv_last) - float(mid_ex)) > 2.0
+    ):
+        tradingview["divergence_from_mt5_usd"] = round(float(tv_last) - float(mid_ex), 2)
+    lens = _build_lens_backward_compat(lens_raw, execution, tradingview)
+    return jsonify({
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
+        "tradingview": tradingview,
+        "lens":        lens,
+    })
+
+
+@app.route("/api/live/sentinel")
+def api_live_sentinel():
+    """Current sentinel state: news guard, event digest, override status."""
+    sentinel = _read_json(SENTINEL_FILE)
+    return jsonify({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "sentinel":  sentinel,
+    })
+
+
+@app.route("/api/live/positions")
+def api_live_positions():
+    """Open trade groups: MT5-confirmed (open_groups) and bridge-queued (open_groups_queued)."""
+    mt5 = _read_json(MARKET_FILE)
+    if isinstance(mt5, dict):
+        mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+    scribe = get_scribe()
+    scribe_open_all = scribe.get_open_groups()
+    _forge_magic = int(os.environ.get("FORGE_MAGIC_NUMBER", str(FORGE_MAGIC_NUMBER_DEFAULT)))
+    open_groups_confirmed, open_groups_queued = partition_open_groups_for_athena(
+        scribe_open_all, mt5, _forge_magic
+    )
+    return jsonify({
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "open_groups":       open_groups_confirmed,
+        "open_groups_queued": open_groups_queued,
+        "open_groups_policy": (
+            "open_groups are SCRIBE rows with status OPEN/PARTIAL whose FORGE magic "
+            "(FORGE_MAGIC_NUMBER + group id) appears in MT5 open_positions or pending_orders. "
+            "open_groups_queued holds SCRIBE-only rows still waiting on the broker file."
+        ),
+    })
+
+
+@app.route("/api/live/scalper_gates")
+def api_live_scalper_gates():
+    """Current M5 OsMA scalper gate state: quadrant, bias, and per-direction pass/block."""
+    mt5 = _read_json(MARKET_FILE)
+    if isinstance(mt5, dict):
+        mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+    return jsonify({
+        "timestamp":    datetime.now(timezone.utc).isoformat(),
+        "scalper_gates": _build_scalper_gates(mt5),
+    })
+
+
 @app.route("/api/regime/current")
 def api_regime_current():
     scribe = get_scribe()

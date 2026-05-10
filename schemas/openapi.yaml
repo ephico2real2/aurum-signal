@@ -609,6 +609,7 @@ paths:
   /api/channel_performance:
     get:
       tags: [trading]
+      summary: Per-channel signal execution and P&L breakdown
       operationId: getChannelPerformance
       parameters:
         - name: days
@@ -627,6 +628,7 @@ paths:
   /api/aegis_state:
     get:
       tags: [trading]
+      summary: AEGIS risk state — win/loss streak, session P&L, lot scale factor
       operationId: getAegisState
       responses:
         "200":
@@ -634,11 +636,18 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  streak: { type: integer, description: "Consecutive win or loss count" }
+                  streak_type: { type: string, enum: [WIN, LOSS, NONE] }
+                  scale_factor: { type: number }
+                  scale_reason: { type: string }
+                  session_pnl: { type: number }
+                  pnl_day_reset_hour_utc: { type: integer }
 
   /api/signals:
     get:
       tags: [trading]
+      summary: Recent signals received from Telegram channels
       operationId: getSignals
       parameters:
         - name: limit
@@ -667,6 +676,7 @@ paths:
   /api/performance:
     get:
       tags: [trading]
+      summary: Closed trade performance stats over a rolling window
       operationId: getPerformance
       parameters:
         - name: days
@@ -686,6 +696,7 @@ paths:
   /api/pnl_curve:
     get:
       tags: [trading]
+      summary: Cumulative P&L time series for chart rendering
       operationId: getPnlCurve
       parameters:
         - name: days
@@ -858,6 +869,7 @@ paths:
   /api/events:
     get:
       tags: [scribe]
+      summary: Recent SCRIBE event log entries (trade lifecycle, mode changes, alerts)
       operationId: getEvents
       parameters:
         - name: limit
@@ -991,6 +1003,114 @@ paths:
                 properties:
                   status: { type: string }
                   message: { type: string }
+
+  /api/live/mt5:
+    get:
+      tags: [live]
+      summary: Live MT5 sub-resource — price, account, indicators, positions
+      description: Subset of `GET /api/live` containing only MT5-sourced data. Faster for clients that don't need LENS or SCRIBE data.
+      operationId: getLiveMt5
+      responses:
+        "200":
+          description: MT5 snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:      { type: string, format: date-time }
+                  account_type:   { type: string }
+                  broker:         { type: string }
+                  server:         { type: string }
+                  currency:       { type: string }
+                  leverage:       { type: number }
+                  account:        { type: object, additionalProperties: true }
+                  price:          { type: object, additionalProperties: true }
+                  chart_symbol:   { type: string }
+                  execution:      { type: object, additionalProperties: true }
+                  indicators_h1:  { type: object, additionalProperties: true }
+                  indicators_m5:  { type: object, additionalProperties: true }
+                  indicators_m15: { type: object, additionalProperties: true }
+                  indicators_m30: { type: object, additionalProperties: true }
+                  open_positions: { type: array, items: { type: object } }
+                  pending_orders: { type: array, items: { type: object } }
+                  forge_version:  { type: string }
+                  ea_cycle:       { type: integer }
+                  mt5_connected:  { type: boolean }
+
+  /api/live/tradingview:
+    get:
+      tags: [live]
+      summary: Live TradingView / LENS sub-resource — recommendations, indicators, bias
+      description: Subset of `GET /api/live` containing the `tradingview` panel and backward-compatible `lens` flat view. Includes `divergence_from_mt5_usd` when price sources disagree by more than $2.
+      operationId: getLiveTradingview
+      responses:
+        "200":
+          description: TradingView + LENS snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:   { type: string, format: date-time }
+                  tradingview: { type: object, additionalProperties: true }
+                  lens:        { type: object, additionalProperties: true }
+
+  /api/live/sentinel:
+    get:
+      tags: [live]
+      summary: Live sentinel sub-resource — news guard, event digest, override status
+      description: Subset of `GET /api/live` containing only the sentinel state object.
+      operationId: getLiveSentinel
+      responses:
+        "200":
+          description: Sentinel state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp: { type: string, format: date-time }
+                  sentinel:  { type: object, additionalProperties: true }
+
+  /api/live/positions:
+    get:
+      tags: [live]
+      summary: Live positions sub-resource — MT5-confirmed open groups and bridge-queued groups
+      description: |
+        Subset of `GET /api/live` for open trade groups.
+        `open_groups` are SCRIBE rows confirmed in MT5 open_positions/pending_orders.
+        `open_groups_queued` are SCRIBE-only rows still waiting on the broker file.
+      operationId: getLivePositions
+      responses:
+        "200":
+          description: Open group tiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:           { type: string, format: date-time }
+                  open_groups:         { type: array, items: { type: object } }
+                  open_groups_queued:  { type: array, items: { type: object } }
+                  open_groups_policy:  { type: string }
+
+  /api/live/scalper_gates:
+    get:
+      tags: [live]
+      summary: Live scalper gates sub-resource — OsMA quadrant, bias, per-direction pass/block
+      description: Subset of `GET /api/live` for the M5 OsMA scalper gate state used by FORGE native scalper path.
+      operationId: getLiveScalperGates
+      responses:
+        "200":
+          description: Scalper gate state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:     { type: string, format: date-time }
+                  scalper_gates: { type: object, additionalProperties: true }
 
   /api/search:
     get:
