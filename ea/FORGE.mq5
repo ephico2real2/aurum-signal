@@ -213,6 +213,7 @@ struct ScalperConfig {
    // Below RSI 20 the move is exhausted — mean-reversion risk spikes even in genuine crashes.
    double breakout_h1h4_crash_sell_rsi_min;   // Cardwell downtrend floor — RSI must be above this in crash bypass (default 20)
    double h1h4_crash_sell_adx_max;            // crash bypass blocked when ADX > this — high ADX = move already extended (default 40)
+   double h1h4_crash_sell_min_m15_adx;       // M15 ADX must be >= this for crash bypass — prevents M5-spike false breakdowns (default 25)
    double breakout_min_h1_bear_strength;      // SELL blocked when |H1 trend| < this — filters barely-bearish H1 (default 0.2)
    double breakout_sell_inside_band_lot_factor; // lot multiplier when SELL entry is above BB lower (default 0.5)
    double breakout_max_reentry_atr_ext;  // 0 = disabled; >0 = max ATR multiples price can be from first entry for re-entry
@@ -2268,6 +2269,7 @@ void InitScalperConfig() {
    g_sc.breakout_h1h4_crash_sell             = true;
    g_sc.breakout_h1h4_crash_sell_rsi_min    = 20.0;
    g_sc.h1h4_crash_sell_adx_max             = 40.0;
+   g_sc.h1h4_crash_sell_min_m15_adx        = 25.0;  // same as adx_min_sell — M15 must confirm the trend
    g_sc.breakout_min_h1_bear_strength       = 0.2;
    g_sc.breakout_sell_inside_band_lot_factor = 0.25;
    g_sc.breakout_max_reentry_atr_ext = 0.0;
@@ -2635,6 +2637,10 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "h1h4_crash_sell_adx_max")) {
          v = JsonGetDouble(breakout_json, "h1h4_crash_sell_adx_max");
          if(v > 0 && v <= 100) g_sc.h1h4_crash_sell_adx_max = v;
+      }
+      if(JsonHasKey(breakout_json, "h1h4_crash_sell_min_m15_adx")) {
+         v = JsonGetDouble(breakout_json, "h1h4_crash_sell_min_m15_adx");
+         if(v >= 0 && v <= 80) g_sc.h1h4_crash_sell_min_m15_adx = v;
       }
       if(JsonHasKey(breakout_json, "min_h1_bear_strength")) {
          v = JsonGetDouble(breakout_json, "min_h1_bear_strength");
@@ -5370,9 +5376,20 @@ void CheckNativeScalperSetups() {
                h1_di_sell_ok = false;
             }
          }
+         // Crash bypass: H1+H4 both bear → skip RSI floor + ADX spike gate.
+         // M15 ADX gate (2.7.13): crash bypass requires M15 ADX >= h1h4_crash_sell_min_m15_adx.
+         // Prevents false breakdowns where M5 ADX spikes from flat (e.g., May4 17:10 M5=37.4, M15=16.7).
+         // In a genuine crash, M15 and M5 trend together (Apr30 07:05: M5=41.3, M15=35.6 ✓).
+         double _m15adx_crash[1];
+         double m15_adx_now = (g_mtf[1].h_adx != INVALID_HANDLE
+                               && CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _m15adx_crash) == 1)
+                              ? _m15adx_crash[0] : 0;
+         bool crash_m15_ok = (g_sc.h1h4_crash_sell_min_m15_adx <= 0)
+                             || (m15_adx_now >= g_sc.h1h4_crash_sell_min_m15_adx);
          bool crash_sell_bypass = g_sc.breakout_h1h4_crash_sell && h1_bear && h4_bear
                                   && m5_rsi > g_sc.breakout_h1h4_crash_sell_rsi_min
-                                  && (g_sc.h1h4_crash_sell_adx_max <= 0 || m5_adx <= g_sc.h1h4_crash_sell_adx_max);
+                                  && (g_sc.h1h4_crash_sell_adx_max <= 0 || m5_adx <= g_sc.h1h4_crash_sell_adx_max)
+                                  && crash_m15_ok;
          // Two-tier RSI floor — absolute + ADX-conditioned stricter floor (skipped on crash bypass)
          bool rsi_floor_ok = true;
          if(!crash_sell_bypass) {

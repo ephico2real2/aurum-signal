@@ -127,6 +127,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_ADX_SELL_BLOCK_THRESHOLD": ("bb_breakout", "adx_sell_block_threshold", "float", 0.0, 100.0),
     # H1+H4 crash SELL — max ADX cap and min H1 bear strength
     "FORGE_BREAKOUT_H1H4_CRASH_SELL_ADX_MAX":  ("bb_breakout", "h1h4_crash_sell_adx_max", "float", 0.0, 100.0),
+    "FORGE_BREAKOUT_H1H4_CRASH_SELL_MIN_M15_ADX": ("bb_breakout", "h1h4_crash_sell_min_m15_adx", "float", 0.0, 80.0),
     "FORGE_BREAKOUT_MIN_H1_BEAR_STRENGTH":     ("bb_breakout", "min_h1_bear_strength",    "float", 0.0, 5.0),
     # SELL STOP continuation (2.7.10 Day 2) — disabled by default; enable to capture second impulse after TP1
     "FORGE_SELL_STOP_CONT_ENABLED":      ("bb_breakout", "sell_stop_cont_enabled",      "bool01", None, None),
