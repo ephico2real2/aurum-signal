@@ -541,6 +541,7 @@ function ATHENA(){
   const [btRuns,setBtRuns]=useState([]);
   const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
   const [btDetail,setBtDetail]=useState(null);   // /api/backtest/run/:id response
+  const [btCompare,setBtCompare]=useState(null); // /api/backtest/compare response
   const [gateLegend,setGateLegend]=useState({});         // gate_reason → {label, explanation}
   const [indLegend,setIndLegend]=useState({});           // acronym → indicator detail
   const [mgmtBusy,setMgmtBusy]=useState(false);
@@ -630,6 +631,16 @@ function ATHENA(){
       catch(e){}};
     load();const t=setInterval(load,30000);return()=>clearInterval(t);
   },[btSelRun]);
+
+  // Backtest compare — fetch when runs list updates (auto last-two)
+  useEffect(()=>{
+    if(tab!=='backtest')return;
+    const load=async()=>{
+      try{const r=await fetch(`${API}/api/backtest/compare`);
+        if(r.ok){const j=await r.json();if(!j.error)setBtCompare(j);}}
+      catch(e){}};
+    load();
+  },[btRuns]);
 
   const switchMode=async(m)=>{
     try{await fetch(`${API}/api/mode`,{method:'POST',
@@ -1520,6 +1531,72 @@ function ATHENA(){
                     );
                   })()}
                 </>
+              )}
+              {/* ── RUN COMPARISON PANEL ── */}
+              {btCompare&&btCompare.run_a&&btCompare.run_b&&(
+                <div style={{marginTop:16,padding:'10px 12px',background:T.card,borderRadius:6,border:`1px solid ${T.border}`}}>
+                  <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,fontWeight:600,letterSpacing:2,marginBottom:8}}>
+                    ⚖ RUN COMPARISON — Run #{btCompare.run_a.aurum_run_id} vs Run #{btCompare.run_b.aurum_run_id}
+                    {btCompare.winner&&btCompare.winner!=='tie'&&(
+                      <span style={{marginLeft:8,color:T.gold}}> · Winner: Run #{btCompare.winner}</span>
+                    )}
+                    {btCompare.winner==='tie'&&<span style={{marginLeft:8,color:T.textD}}> · Tie</span>}
+                  </div>
+                  {/* Score + key metrics row */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
+                    {[btCompare.run_a,btCompare.run_b].map(run=>(
+                      <div key={run.aurum_run_id} style={{padding:'6px 8px',background:T.bg,borderRadius:4,
+                        border:`1px solid ${btCompare.winner===run.aurum_run_id?T.gold:T.border}`}}>
+                        <div style={{fontSize:9,color:T.gold,fontFamily:T.mono,fontWeight:600,marginBottom:4}}>
+                          Run #{run.aurum_run_id} · {run.forge_version}
+                          {run.score!=null&&<span style={{marginLeft:6,color:T.cyan}}>Score {run.score}/100</span>}
+                        </div>
+                        {[
+                          ['P&L',`$${(run.total_pnl||0).toFixed(2)}`],
+                          ['Win Rate',run.win_rate_pct!=null?`${run.win_rate_pct}%`:'n/a'],
+                          ['Taken',run.taken??'—'],
+                          ['Take Rate',run.take_rate_pct!=null?`${run.take_rate_pct.toFixed(2)}%`:'n/a'],
+                          ['Signals',run.total_signals??'—'],
+                          ['Losses',run.losses??'—'],
+                        ].map(([k,v])=>(
+                          <div key={k} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
+                            <span>{k}</span><span style={{color:T.text}}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  {/* Deltas row */}
+                  <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>DELTAS (A − B)</div>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4,marginBottom:8}}>
+                    {Object.entries(btCompare.deltas||{}).filter(([,v])=>v!=null).map(([k,v])=>{
+                      const pos=v>0,neg=v<0,color=pos?T.green:neg?T.red:T.textD;
+                      return(
+                        <div key={k} style={{padding:'3px 6px',background:T.bg,borderRadius:3,fontSize:9,fontFamily:T.mono}}>
+                          <span style={{color:T.textD}}>{k.replace(/_pct$/,'%').replace(/_/g,' ')} </span>
+                          <span style={{color}}>{pos?'+':''}{typeof v==='number'?v.toFixed(2):v}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* Top gate changes */}
+                  {btCompare.gate_diff&&Object.keys(btCompare.gate_diff).length>0&&(()=>{
+                    const changed=Object.entries(btCompare.gate_diff).filter(([,v])=>v.delta!==0).slice(0,6);
+                    if(!changed.length)return null;
+                    return(
+                      <>
+                        <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>TOP GATE CHANGES</div>
+                        {changed.map(([gate,v])=>(
+                          <div key={gate} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
+                            <span style={{color:T.text}}>{gate}</span>
+                            <span>A={v.a} B={v.b} <span style={{color:v.delta>0?T.red:T.green}}>{v.delta>0?'+':''}{v.delta}</span></span>
+                          </div>
+                        ))}
+                      </>
+                    );
+                  })()}
+                  <div style={{marginTop:6,fontSize:8,color:T.textD,fontFamily:T.mono}}>{btCompare.note}</div>
+                </div>
               )}
             </div>
           )}
