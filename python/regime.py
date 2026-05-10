@@ -356,11 +356,14 @@ class RegimeEngine:
             last_trained = self._hmm_last_trained
         if model_ready and (now - last_trained) < self.retrain_interval_sec:
             return
-        if self._training_in_progress:
-            return
-        # Snapshot training data before handing off to background thread.
-        data_snapshot = list(self._feature_history)
-        self._training_in_progress = True
+        # Guard + snapshot inside the lock so two concurrent callers (bridge tick
+        # and API thread) cannot both pass the check and start parallel fit() runs,
+        # and so the deque snapshot is atomic with the in-progress flag set.
+        with self._train_lock:
+            if self._training_in_progress:
+                return
+            self._training_in_progress = True
+            data_snapshot = list(self._feature_history)
         threading.Thread(
             target=self._train_hmm_thread,
             args=(data_snapshot,),

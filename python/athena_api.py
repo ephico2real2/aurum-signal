@@ -1014,13 +1014,19 @@ def api_management():
     group_id = data.get("group_id")
     sl_price = data.get("sl")
     tp_price = data.get("tp")
+    try:
+        sl_float = float(sl_price) if sl_price is not None else None
+        tp_float = float(tp_price) if tp_price is not None else None
+        gid_int  = int(group_id)   if group_id  is not None else None
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": f"invalid numeric field: {exc}"}), 400
     body = {
         "type":     "MANAGEMENT",
         "intent":   intent,
         "pct":      pct if intent in ("CLOSE_PCT", "CLOSE_GROUP_PCT") else None,
-        "group_id": int(group_id) if group_id else None,
-        "sl":       float(sl_price) if sl_price else None,
-        "tp":       float(tp_price) if tp_price else None,
+        "group_id": gid_int,
+        "sl":       sl_float,
+        "tp":       tp_float,
         "tp_stage": None,
         "source":   "ATHENA",
         "timestamp": datetime.now(timezone.utc).isoformat(),

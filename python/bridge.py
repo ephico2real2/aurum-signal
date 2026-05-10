@@ -2355,6 +2355,11 @@ class Bridge:
                 self._regime_cold_start_alerted = False
         except Exception as e:
             log.warning("BRIDGE: regime inference failed: %s", e)
+            # Clear snapshot so AEGIS/FORGE don't keep acting on stale regime state.
+            self._regime_snapshot = {
+                "label": "UNKNOWN", "confidence": 0.0, "apply_entry_policy": False,
+                "entry_mode": self.regime_engine.entry_mode, "fallback_reason": "inference_error",
+            }
 
     def _regime_context_for_trade(self, direction: str) -> dict:
         snap = dict(self._regime_snapshot or {})
