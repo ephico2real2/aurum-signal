@@ -92,7 +92,8 @@
     "buy_limit_recovery_min_rsi": 35.0,
     "buy_limit_recovery_lot_factor": 0.25,
     "buy_limit_recovery_expiry_bars": 4,
-    "buy_limit_recovery_sl_atr_mult": 1.0
+    "buy_limit_recovery_sl_atr_mult": 1.0,
+    "require_rsi_declining_sell": 1
   },
   "indicators": {
     "bb_period": 20,
@@ -219,7 +220,7 @@
     "inputs_override_lot_sizing": 0,
     "fixed_lot": 0.08,
     "min_num_trades": 2,
-    "max_num_trades": 6,
+    "max_num_trades": 8,
     "staged_entry_enabled": 1,
     "staged_initial_legs": 8,
     "staged_add_interval_sec": 25,

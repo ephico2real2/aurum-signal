@@ -5750,13 +5750,15 @@ void CheckNativeScalperSetups() {
    double tp1_split_pct = is_breakout_setup ? g_sc.breakout_tp1_close_pct : g_sc.bounce_tp1_close_pct;
    int tp1_count = (int)MathCeil(n * tp1_split_pct / 100.0);
    int init_cap = MathMax(1, MathMin(30, g_sc.staged_initial_legs));
-   // Staged scale-in: when enabled and n>1, never open all n on the first wave (min 1 leg left for ManageStagedNativeLegs).
-   // Previous rule (n > init_cap) opened the full ladder when init_cap >= n or when staging defaulted off before JSON load.
+   // Staged scale-in: open init_cap legs immediately; remainder added via ManageStagedNativeLegs.
+   // When staged_initial_legs >= n, ALL legs fire at once (immediate multi-leg — scalp mode).
+   // Fix 2026-05-10: was MathMin(init_cap, n-1) which always held one back even when init_cap>=n.
+   // CHANGELOG: 2026-05-10 — staged_initial_legs=8 now fires all n legs at once when init_cap>=n.
    int open_first = n;
    bool staging_on = false;
    bool staging_eff = (g_sc.staged_entry_enabled || g_sc.native_force_staged_scale_in) && n > 1;
    if(staging_eff) {
-      int wave1 = MathMin(init_cap, n - 1);
+      int wave1 = MathMin(init_cap, n);   // init_cap >= n → fire all; init_cap < n → fire init_cap
       if(wave1 < 1) wave1 = 1;
       open_first = wave1;
       staging_on = (open_first < n);
