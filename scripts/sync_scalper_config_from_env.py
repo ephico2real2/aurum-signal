@@ -124,6 +124,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_SELL_STOP_CONT_EXPIRY_BARS":  ("bb_breakout", "sell_stop_cont_expiry_bars",  "int",   1.0, 50.0),
     "FORGE_SELL_STOP_CONT_TP_ATR_MULT": ("bb_breakout", "sell_stop_cont_tp_atr_mult",  "float", 0.0, 5.0),
     "FORGE_SELL_STOP_CONT_MIN_RSI":      ("bb_breakout", "sell_stop_cont_min_rsi",      "float", 0.0, 50.0),
+    "FORGE_SELL_STOP_CONT_MIN_ADX":      ("bb_breakout", "sell_stop_cont_min_adx",      "float", 0.0, 80.0),
+    "FORGE_SELL_STOP_CONT_REQUIRE_H1_DI": ("bb_breakout", "sell_stop_cont_require_h1_di", "bool01", None, None),
     # BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry at crash low after SELL TP1
     # Captures May-1-style parabolic reversals: RSI bounces from 20 back through 35 = recovery confirmed
     "FORGE_BUY_LIMIT_RECOVERY_ENABLED":      ("bb_breakout", "buy_limit_recovery_enabled",      "bool01", None, None),

@@ -264,6 +264,8 @@ struct ScalperConfig {
    double sell_stop_cont_tp_atr_mult;  // TP: cascade_entry - ATR×mult (default 1.5 = ~9pts @ ATR=6)
    int    sell_stop_cont_expiry_bars;  // cancel if not triggered within N M5 bars (default 2 = 10 min)
    double sell_stop_cont_min_rsi;      // only arm when M5 RSI > this — blocks exhausted entries (default 25.0)
+   double sell_stop_cont_min_adx;     // only arm when M5 ADX >= this — trend must be confirmed (default 25.0)
+   bool   sell_stop_cont_require_h1_di; // only arm when H1 DI- > DI+ — H1 must be bearish (default true)
    int    sell_stop_cont_legs;         // number of cascade SELL STOP legs to place (default 5, max 7)
    // BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry after crash RSI bounce
    // Arms at SELL TP1 hit when RSI has recovered above min_rsi (> 35 = Cardwell Bull Support zone entered)
@@ -2311,6 +2313,8 @@ void InitScalperConfig() {
    g_sc.sell_stop_cont_tp_atr_mult   = 1.5;   // ~9pts at ATR=6 — captures the continuation leg
    g_sc.sell_stop_cont_expiry_bars   = 2;     // 10 min — scalpers don't wait; if no fill in 10min, dead
    g_sc.sell_stop_cont_min_rsi       = 25.0;
+   g_sc.sell_stop_cont_min_adx      = 25.0;  // same floor as primary SELL entry gate
+   g_sc.sell_stop_cont_require_h1_di = true; // H1 DI- > DI+ — same check as require_h1_di_sell gate
    g_sc.sell_stop_cont_legs          = 5;     // 5 legs = same as typical ADX-tiered primary entry
    // BUY LIMIT recovery — off by default; enable via FORGE_BUY_LIMIT_RECOVERY_ENABLED=1
    g_sc.buy_limit_recovery_enabled      = false;
@@ -2653,6 +2657,8 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_stop_cont_tp_atr_mult")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_tp_atr_mult"); if(v >= 0.0) g_sc.sell_stop_cont_tp_atr_mult = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_stop_cont_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_stop_cont_expiry_bars = (int)v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_min_rsi"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_min_rsi");    if(v >= 0 && v < 50)  g_sc.sell_stop_cont_min_rsi    = v; }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_min_adx"))   { v = JsonGetDouble(breakout_json,"sell_stop_cont_min_adx");   if(v >= 0 && v <= 80) g_sc.sell_stop_cont_min_adx   = v; }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_require_h1_di")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_require_h1_di"); g_sc.sell_stop_cont_require_h1_di = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "sell_stop_cont_legs"))       { v = JsonGetDouble(breakout_json,"sell_stop_cont_legs");       if(v >= 1 && v <= 7)  g_sc.sell_stop_cont_legs       = (int)v; }
       // BUY LIMIT recovery (2.7.10 Day 3) — disabled by default
       if(JsonHasKey(breakout_json, "buy_limit_recovery_enabled"))    { v = JsonGetDouble(breakout_json,"buy_limit_recovery_enabled");    g_sc.buy_limit_recovery_enabled    = (v >= 0.5); }
@@ -6223,11 +6229,33 @@ void ArmPostTP1Ladder(const int gi) {
    // Use same lot as primary entry — this IS a primary entry at a better (confirmed) price.
    if(g_sc.sell_stop_cont_enabled) {
       double _rbuf[1];
+      bool cascade_ok = true;
       double cur_rsi = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _rbuf) == 1) ? _rbuf[0] : 0;
-      if(cur_rsi > 0 && cur_rsi <= g_sc.sell_stop_cont_min_rsi) {
-         PrintFormat("FORGE: ArmPostTP1Ladder G%d — SELL STOP skipped (RSI=%.1f <= %.1f, exhausted)",
-                     grp_id, cur_rsi, g_sc.sell_stop_cont_min_rsi);
-      } else {
+      double cur_adx = (g_mtf[0].h_adx != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, _rbuf) == 1) ? _rbuf[0] : 0;
+
+      // Gate 1 — RSI: do not add to position when market is oversold (exhausted)
+      if(cascade_ok && cur_rsi > 0 && cur_rsi <= g_sc.sell_stop_cont_min_rsi) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped RSI=%.1f <= %.1f (exhausted)", grp_id, cur_rsi, g_sc.sell_stop_cont_min_rsi);
+         cascade_ok = false;
+      }
+      // Gate 2 — ADX: trend must be confirmed at arm time, not a random spike from flat
+      if(cascade_ok && g_sc.sell_stop_cont_min_adx > 0 && cur_adx > 0 && cur_adx < g_sc.sell_stop_cont_min_adx) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped ADX=%.1f < %.1f (trend not confirmed)", grp_id, cur_adx, g_sc.sell_stop_cont_min_adx);
+         cascade_ok = false;
+      }
+      // Gate 3 — H1 DI: H1 must be bearish (DI- > DI+). Same logic as require_h1_di_sell gate.
+      // Uses g_h_adx (PERIOD_H1 handle): buffer 1=DI+, buffer 2=DI-.
+      if(cascade_ok && g_sc.sell_stop_cont_require_h1_di && g_h_adx != INVALID_HANDLE) {
+         double _di[1];
+         double arm_di_plus  = (CopyBuffer(g_h_adx, 1, 0, 1, _di) == 1) ? _di[0] : 0;
+         double arm_di_minus = (CopyBuffer(g_h_adx, 2, 0, 1, _di) == 1) ? _di[0] : 0;
+         if(arm_di_plus > 0 && arm_di_minus > 0 && arm_di_plus >= arm_di_minus) {
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped H1 DI+=%.1f >= DI-=%.1f (H1 bullish, counter-trend)", grp_id, arm_di_plus, arm_di_minus);
+            cascade_ok = false;
+         }
+      }
+
+      if(cascade_ok) {
          double tp1_ref  = g_groups[gi].tp1;
          double ss_price = NormalizeDouble(tp1_ref - entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
          double ss_sl    = NormalizeDouble(tp1_ref + entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
@@ -6274,10 +6302,10 @@ void ArmPostTP1Ladder(const int gi) {
          if(legs_placed == 0)
             PrintFormat("FORGE: ArmPostTP1Ladder G%d — no free slots [2..8], all %d cascade legs skipped", grp_id, legs_target);
          else
-            PrintFormat("FORGE: ArmPostTP1Ladder G%d — %d/%d SELL STOP legs placed", grp_id, legs_placed, legs_target);
-      }
-   }
-   // BUY LIMIT recovery (slot [4]) — Cardwell Bull Support entry at crash low after SELL TP1
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d — %d/%d SELL STOP legs placed (ADX=%.1f RSI=%.1f)", grp_id, legs_placed, legs_target, cur_adx, cur_rsi);
+      }  // end if(cascade_ok)
+   }  // end if(sell_stop_cont_enabled)
+   // BUY LIMIT recovery (slot [9]) — Cardwell Bull Support entry at crash low after SELL TP1
    // Captures the May-1-style parabolic reversal: RSI bounces from 20 back through 35 = recovery starting.
    // Price: TP1 level (crash low) — buy at the established swing low, not chasing.
    // BUY LIMIT at bid-level of TP1 is valid pending: bid ≈ ask - spread, order sits below current ask.
