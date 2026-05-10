@@ -1703,6 +1703,22 @@ def api_backtest_run(aurum_run_id):
 
 # ── Gate legend (human-readable explanations) ─────────────────────
 _gate_legend_cache: dict | None = None
+_indicator_legend_cache: dict | None = None
+
+@app.route("/api/indicator_legend")
+def api_indicator_legend():
+    """Return indicator acronym → {full_name, what_it_measures, forge_usage, ...} from config/indicator_legend.json."""
+    global _indicator_legend_cache
+    if _indicator_legend_cache is None:
+        legend_path = Path(__file__).parent.parent / "config" / "indicator_legend.json"
+        try:
+            with open(legend_path) as f:
+                data = json.load(f)
+            _indicator_legend_cache = {k: v for k, v in data.items() if not k.startswith("_")}
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    return jsonify(_indicator_legend_cache)
+
 
 @app.route("/api/gate_legend")
 def api_gate_legend():

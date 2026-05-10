@@ -541,7 +541,8 @@ function ATHENA(){
   const [btRuns,setBtRuns]=useState([]);
   const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
   const [btDetail,setBtDetail]=useState(null);   // /api/backtest/run/:id response
-  const [gateLegend,setGateLegend]=useState({});   // gate_reason → {label, explanation}
+  const [gateLegend,setGateLegend]=useState({});         // gate_reason → {label, explanation}
+  const [indLegend,setIndLegend]=useState({});           // acronym → indicator detail
   const [mgmtBusy,setMgmtBusy]=useState(false);
   const [autoscalperConditions,setAutoscalperConditions]=useState(null);
   const [autoscalperConditionsError,setAutoscalperConditionsError]=useState(null);
@@ -592,10 +593,16 @@ function ATHENA(){
   },[]);
   useEffect(()=>{const t=setInterval(()=>setTick(x=>x+1),1000);return()=>clearInterval(t);},[]);
 
-  // Gate legend — fetch once when backtest tab first opens (rarely changes)
+  // Gate legend — fetch once when backtest tab first opens
   useEffect(()=>{
     if(tab!=='backtest'||Object.keys(gateLegend).length>0)return;
     fetch(`${API}/api/gate_legend`).then(r=>r.ok?r.json():null).then(j=>{if(j)setGateLegend(j);}).catch(()=>{});
+  },[tab]);
+
+  // Indicator legend — fetch once when indicators tab first opens
+  useEffect(()=>{
+    if(tab!=='indicators'||Object.keys(indLegend).length>0)return;
+    fetch(`${API}/api/indicator_legend`).then(r=>r.ok?r.json():null).then(j=>{if(j)setIndLegend(j);}).catch(()=>{});
   },[tab]);
 
   // Backtest runs — fetch on tab open and refresh every 30s
@@ -920,7 +927,8 @@ function ATHENA(){
         <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
           {[{id:'groups',label:'Groups'},{id:'closures',label:'Closures'},{id:'activity',label:'Activity',badge:warnCount||null},
             {id:'signals',label:'Signals'},{id:'uploads',label:'Uploads',badge:uploadCount||null},{id:'perf',label:'Performance'},
-            {id:'backtest',label:'🔬 Backtest',badge:btRuns.length||null}].map(t=>(
+            {id:'backtest',label:'🔬 Backtest',badge:btRuns.length||null},
+            {id:'indicators',label:'📊 Indicators'}].map(t=>(
             <button key={t.id} type="button" data-testid={`tab-${t.id}`}
               onClick={()=>setTab(t.id)} style={{
               padding:'6px 10px',background:'transparent',border:'none',
@@ -1508,6 +1516,72 @@ function ATHENA(){
                     );
                   })()}
                 </>
+              )}
+            </div>
+          )}
+          {tab==='indicators'&&(
+            <div style={{padding:'12px 10px',overflowY:'auto',overscrollBehavior:'contain',flex:1,minHeight:0}}>
+              <div style={{fontSize:10,color:T.textBB,fontFamily:T.mono,fontWeight:600,marginBottom:12,letterSpacing:1}}>
+                📊 FORGE INDICATOR REFERENCE
+              </div>
+              <div style={{fontSize:9,color:T.textB,fontFamily:'sans-serif',marginBottom:16,lineHeight:1.5}}>
+                Every indicator FORGE uses — parameters, what it measures, and how it gates entries. Source: <span style={{color:T.gold,fontFamily:T.mono}}>config/indicator_legend.json</span>
+              </div>
+              {Object.keys(indLegend).length===0?(
+                <div style={{color:T.textD,fontSize:9}}>Loading indicator definitions…</div>
+              ):(
+                Object.entries(indLegend).map(([key,ind])=>(
+                  <div key={key} style={{background:T.card,border:`1px solid ${ind.color||T.border}44`,
+                    borderLeft:`3px solid ${ind.color||T.border}`,borderRadius:6,padding:12,marginBottom:10}}>
+                    {/* Header */}
+                    <div style={{display:'flex',alignItems:'baseline',gap:10,marginBottom:4}}>
+                      <span style={{fontSize:14,fontFamily:T.mono,fontWeight:700,color:ind.color||T.gold}}>{ind.acronym||key}</span>
+                      <span style={{fontSize:9,color:T.textBB,fontFamily:T.mono}}>{ind.full_name}</span>
+                      <span style={{marginLeft:'auto',fontSize:8,color:ind.color||T.textD,fontFamily:T.mono,
+                        background:(ind.color||T.gold)+'18',borderRadius:3,padding:'1px 6px'}}>
+                        {ind.category}
+                      </span>
+                    </div>
+                    {/* Params + timeframes */}
+                    <div style={{display:'flex',gap:12,marginBottom:6,flexWrap:'wrap'}}>
+                      {ind.forge_params&&(
+                        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                          <span style={{color:T.textB}}>params:</span> {ind.forge_params}
+                        </span>
+                      )}
+                      {ind.timeframes&&(
+                        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                          <span style={{color:T.textB}}>TF:</span> {ind.timeframes.join(' · ')}
+                        </span>
+                      )}
+                      {ind.range&&(
+                        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                          <span style={{color:T.textB}}>range:</span> {ind.range}
+                        </span>
+                      )}
+                    </div>
+                    {/* What it measures */}
+                    <div style={{fontSize:9,color:T.textBB,fontFamily:'sans-serif',lineHeight:1.5,marginBottom:6}}>
+                      {ind.what_it_measures}
+                    </div>
+                    {/* Reading guide */}
+                    {ind.reading_guide&&(
+                      <div style={{marginBottom:6}}>
+                        {Object.entries(ind.reading_guide).map(([k,v])=>(
+                          <div key={k} style={{display:'flex',gap:6,padding:'2px 0',borderTop:`1px solid ${T.border}`}}>
+                            <span style={{fontSize:8,color:ind.color||T.gold,fontFamily:T.mono,minWidth:120,flexShrink:0}}>{k.replace(/_/g,' ')}</span>
+                            <span style={{fontSize:8,color:T.textB,fontFamily:'sans-serif'}}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* FORGE usage */}
+                    <div style={{background:T.row,borderRadius:4,padding:'6px 8px'}}>
+                      <div style={{fontSize:8,color:T.gold,fontFamily:T.mono,marginBottom:2}}>HOW FORGE USES IT</div>
+                      <div style={{fontSize:9,color:T.textB,fontFamily:'sans-serif',lineHeight:1.5}}>{ind.forge_usage}</div>
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           )}

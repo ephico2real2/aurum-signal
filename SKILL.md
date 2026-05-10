@@ -502,3 +502,57 @@ entry_quality_direction                    21,391   ← amber, bold  (gate_reaso
 ### Why 3-line layout instead of tooltip
 
 Tooltips are invisible until hover (low discoverability). The 3-line layout makes every explanation immediately readable — important for post-run analysis where you need to understand WHY signals were skipped. Gate entries are short lists (top 15), so the vertical space cost is acceptable.
+
+---
+
+## Indicator Legend System — Maintenance Guide
+
+Every indicator FORGE uses has a full explanation in `config/indicator_legend.json`. The Athena "📊 Indicators" tab renders these directly from the API.
+
+### Files involved
+
+| File | Role |
+|------|------|
+| `config/indicator_legend.json` | **Single source of truth.** Edit ONLY this file to add/update indicators. |
+| `python/athena_api.py` | `GET /api/indicator_legend` — serves the JSON (cached in-process per restart) |
+| `dashboard/app.js` | `indLegend` state — fetched once on first Indicators tab open; renders each indicator as a card |
+
+### Structure of each entry
+
+```json
+"ACRONYM": {
+  "full_name": "Full technical name",
+  "acronym": "Display acronym (often same as key)",
+  "forge_params": "Exact parameters used by FORGE (period, price, etc.)",
+  "timeframes": ["M5 (primary)", "H1 (trend context)"],
+  "range": "0 – 100  (optional, for bounded indicators)",
+  "category": "Momentum | Trend Strength | Volatility | etc.",
+  "what_it_measures": "Plain-English explanation of what the indicator computes.",
+  "reading_guide": {
+    "above_70": "Overbought — ...",
+    "below_30": "Oversold — ..."
+  },
+  "forge_usage": "How FORGE specifically uses this indicator: thresholds, gates, lot sizing effects.",
+  "color": "#HEX  (used for card border and acronym colour in the UI)"
+}
+```
+
+### How to add a new indicator (when FORGE adds a new indicator)
+
+1. Find the indicator in `ea/FORGE.mq5` — look for `iRSI`, `iMACD`, `iATR`, `iOsMA`, etc. calls and note the exact parameters.
+2. Add an entry to `config/indicator_legend.json`.
+3. Restart Athena (`make reload-athena`) — the Indicators tab picks it up automatically.
+4. No code changes required.
+
+### CRITICAL: Always verify against the EA source
+
+Never write indicator parameters from memory. Always check `ea/FORGE.mq5`:
+- Search for `iRSI(`, `iMACD(`, `iATR(`, `iADX(`, `iMA(`, `iOsMA(`, `iBands(` etc.
+- The exact period and price type in those calls are the canonical parameters.
+- Scan the file for ALL indicator handle declarations (usually in `EnsureIndicators()` or `OnInit()`).
+
+### Why separate from gate_legend.json
+
+- Gate legend: maps signal filter codes to human-readable explanations (operational — which signals are blocked and why)
+- Indicator legend: explains the underlying math and usage (educational — what each tool does)
+These serve different audiences and different panels, so they are kept separate.

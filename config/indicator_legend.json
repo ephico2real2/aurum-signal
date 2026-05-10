@@ -1,0 +1,282 @@
+{
+  "_meta": {
+    "description": "Human-readable explanations for every indicator FORGE uses. Parameters reflect the actual values in scalper_config.defaults.json and ea/FORGE.mq5. Used by GET /api/indicator_legend and the Athena 'FORGE Indicators' panel.",
+    "verified_against": "ea/FORGE.mq5, config/scalper_config.defaults.json",
+    "last_verified": "2026-05-10"
+  },
+
+  "RSI": {
+    "full_name": "Relative Strength Index",
+    "acronym": "RSI",
+    "forge_params": "Period 14, Price Close",
+    "timeframes": ["M5 (primary)", "M15 (confirmation)", "M30", "H1 (trend)", "H4 (optional filter)"],
+    "range": "0 – 100",
+    "category": "Momentum",
+    "what_it_measures": "RSI measures how fast price has been moving up vs down over the last 14 bars. A high reading means recent moves have been mostly upward; a low reading means they've been mostly downward.",
+    "reading_guide": {
+      "above_70": "Overbought — price has risen very fast; a pullback or reversal is possible",
+      "below_30": "Oversold — price has fallen very fast; a bounce or reversal is possible",
+      "40–60": "Neutral zone — no strong momentum signal",
+      "below_25": "Deep exhaustion (Cardwell zone) — FORGE blocks new sells here"
+    },
+    "forge_usage": "Used as both an entry gate and an exhaustion block. Buys are blocked when RSI > 70 (overbought). Sells are blocked when RSI < 30 (oversold standard floor) or RSI < 36 when ADX is weak (stricter ADX floor). The Cardwell zone (RSI < 25) also blocks post-TP1 SELL STOP continuation orders.",
+    "color": "#10B981"
+  },
+
+  "ADX": {
+    "full_name": "Average Directional Index",
+    "acronym": "ADX",
+    "forge_params": "Period 14",
+    "timeframes": ["M5 (primary)", "M15 (confirmation)", "M30", "H1 (trend)", "H4 (optional filter)"],
+    "range": "0 – 100",
+    "category": "Trend Strength",
+    "what_it_measures": "ADX measures HOW STRONG a trend is — not which direction it goes. A high ADX means a strong trend (either up or down). A low ADX means the market is ranging or consolidating. ADX is always used alongside DI+ and DI- which show the direction.",
+    "reading_guide": {
+      "below_20": "No trend — market is ranging or choppy",
+      "20–35": "Developing trend — moderate momentum",
+      "35–50": "Strong trend — reliable breakout conditions",
+      "above_50": "Very strong trend — may be overextended; FORGE raises caution"
+    },
+    "related": ["DI+", "DI-"],
+    "forge_usage": "Breakout entries require ADX > 20 (sell). ADX > 55 blocks new sells (trend may be exhausted). The ADX lot-sizing tier adjusts position size: ADX 35–45 = reduced lot, ADX > 45 = minimum lot. On M15, ADX is used for the sell block threshold (default 55). H4 ADX gates require H4 to confirm trend.",
+    "color": "#F59E0B"
+  },
+
+  "DI+": {
+    "full_name": "Positive Directional Indicator",
+    "acronym": "DI+",
+    "forge_params": "Period 14 (paired with ADX)",
+    "timeframes": ["H1"],
+    "range": "0 – 100",
+    "category": "Trend Direction",
+    "what_it_measures": "DI+ (also written +DI) measures upward price movement strength. When DI+ is above DI-, buyers are dominant and the trend direction is up.",
+    "reading_guide": {
+      "DI+ > DI-": "Bullish trend — upward pressure dominant",
+      "DI+ < DI-": "Bearish trend — downward pressure dominant",
+      "crossing": "DI crossovers are classic trend-change signals"
+    },
+    "related": ["ADX", "DI-"],
+    "forge_usage": "Used on H1 for the DI alignment buy gate. A buy on M5 requires DI+ > DI- on H1 to confirm that the hourly trend supports the buy direction.",
+    "color": "#10B981"
+  },
+
+  "DI-": {
+    "full_name": "Negative Directional Indicator",
+    "acronym": "DI-",
+    "forge_params": "Period 14 (paired with ADX)",
+    "timeframes": ["H1"],
+    "range": "0 – 100",
+    "category": "Trend Direction",
+    "what_it_measures": "DI- (also written -DI) measures downward price movement strength. When DI- is above DI+, sellers are dominant and the trend direction is down.",
+    "reading_guide": {
+      "DI- > DI+": "Bearish trend — downward pressure dominant",
+      "DI- < DI+": "Bullish trend — upward pressure dominant"
+    },
+    "related": ["ADX", "DI+"],
+    "forge_usage": "Used alongside DI+ for H1 directional confirmation on buy entries.",
+    "color": "#EF4444"
+  },
+
+  "BB": {
+    "full_name": "Bollinger Bands",
+    "acronym": "BB",
+    "forge_params": "Period 20, Deviation 2.0, Price Close",
+    "timeframes": ["M5 (primary)"],
+    "components": ["Upper Band (BB Upper)", "Middle Band (BB Mid = 20-SMA)", "Lower Band (BB Lower)"],
+    "category": "Volatility / Mean Reversion",
+    "what_it_measures": "Bollinger Bands draw an envelope around price based on the 20-bar moving average ± 2 standard deviations. They expand when volatility increases and contract when the market is quiet. Roughly 95% of all price action stays inside the bands.",
+    "reading_guide": {
+      "price_at_upper_band": "Price is statistically far above the mean — potential sell zone (BB Bounce) or breakout (BB Breakout)",
+      "price_at_lower_band": "Price is statistically far below the mean — potential buy zone (BB Bounce) or sell breakout",
+      "bands_expanding": "Volatility rising — trend / breakout conditions",
+      "bands_contracting": "Volatility falling — consolidation; FORGE blocks entries"
+    },
+    "forge_usage": "FORGE's two core strategies are built on BB: (1) BB Breakout — price breaks outside the band with momentum; (2) BB Bounce — price touches the band and reverses back toward the middle. The BB proximity gate requires price to be within a % of the band to qualify.",
+    "color": "#3B82F6"
+  },
+
+  "ATR": {
+    "full_name": "Average True Range",
+    "acronym": "ATR",
+    "forge_params": "Period 14",
+    "timeframes": ["M5 (primary)"],
+    "category": "Volatility",
+    "what_it_measures": "ATR measures how much price typically moves per bar (in points), averaged over 14 bars. It accounts for gaps and captures the 'true' range of each candle. A higher ATR means the market is moving more; a lower ATR means it is quiet.",
+    "reading_guide": {
+      "high_ATR": "Large price moves per bar — wider stops needed, but bigger potential profit",
+      "low_ATR": "Small price moves — tight market; spread is a larger % of the move"
+    },
+    "forge_usage": "ATR drives almost every stop and target calculation in FORGE. SL = entry ± ATR × sl_mult (default 2.0 for breakout). TP1 = entry ± ATR × 1.0. TP2 = ATR × 1.5. TP3 = ATR × 2.5. TP4 = ATR × 4.0. The minimum entry ATR gate blocks entries when ATR < threshold (default 3.5 points), preventing trades in dead markets where spreads dominate.",
+    "color": "#A855F7"
+  },
+
+  "EMA": {
+    "full_name": "Exponential Moving Average",
+    "acronym": "EMA",
+    "forge_params": "Fast: 20 periods, Slow: 50 periods, Price Close",
+    "timeframes": ["M5", "H1 (trend direction)"],
+    "category": "Trend Direction",
+    "what_it_measures": "An EMA weights recent price bars more heavily than older ones, making it more responsive to recent moves than a simple moving average. The 20 EMA tracks short-term trend; the 50 EMA tracks medium-term trend. When price is above the EMA the trend is up; below means down.",
+    "reading_guide": {
+      "EMA20 > EMA50": "Short-term trend above medium-term — bullish alignment",
+      "EMA20 < EMA50": "Short-term trend below medium-term — bearish alignment",
+      "price_above_EMA20": "Bullish short-term momentum",
+      "price_below_EMA20": "Bearish short-term momentum"
+    },
+    "forge_usage": "H1 EMA crossover and slope are used to compute the H1 trend strength score. A strong EMA20 > EMA50 alignment on H1 with a clear slope contributes to higher trend confidence, which can unlock additional staged entry legs.",
+    "color": "#06B6D4"
+  },
+
+  "MACD": {
+    "full_name": "Moving Average Convergence Divergence",
+    "acronym": "MACD",
+    "forge_params": "Fast 12, Slow 26, Signal 9, Price Close (H1 trend context)",
+    "timeframes": ["H1", "M15 (MTF confirmation)"],
+    "components": ["MACD Line (12-EMA − 26-EMA)", "Signal Line (9-EMA of MACD)", "Histogram (MACD − Signal)"],
+    "category": "Momentum / Trend",
+    "what_it_measures": "MACD shows the relationship between two EMAs of price. The histogram (the difference between MACD and Signal) is the most important component — its position and direction indicate momentum strength and trend health.",
+    "reading_guide": {
+      "histogram_positive_rising": "Q0 — Bull Strong: upward momentum accelerating",
+      "histogram_positive_falling": "Q1 — Bull Fading: upward momentum waning",
+      "histogram_negative_falling": "Q2 — Bear Strong: downward momentum accelerating",
+      "histogram_negative_rising": "Q3 — Bear Fading: downward momentum recovering"
+    },
+    "forge_usage": "H1 MACD (12,26,9) provides trend context. M15 MACD is used for multi-timeframe momentum confirmation. The four histogram quadrants (Q0-Q3) are used as entry gates: FORGE blocks buys in Q2/Q3 (bearish momentum) and blocks sells in Q0/Q1 (bullish momentum).",
+    "color": "#F97316"
+  },
+
+  "OsMA": {
+    "full_name": "Oscillator of Moving Averages (MACD Histogram)",
+    "acronym": "OsMA",
+    "forge_params": "Fast 3, Slow 10, Signal 16, Price Close (M5 scalper gate)",
+    "timeframes": ["M5"],
+    "category": "Momentum",
+    "what_it_measures": "OsMA is the difference between the MACD line and its signal line — it is the MACD histogram. FORGE uses a fast OsMA (3,10,16) on M5 specifically for scalper entry quality gates. The fast parameters make it more responsive to M5 micro-momentum than the standard 12,26,9 MACD.",
+    "reading_guide": {
+      "negative_falling": "Q2 — bear momentum strengthening; required for sell entries",
+      "negative_rising": "Q3 — bear momentum fading; blocks entries",
+      "positive_falling": "Q1 — bull momentum fading; can block buys",
+      "positive_rising": "Q0 — bull momentum strengthening; blocks sells"
+    },
+    "forge_usage": "The OsMA gate requires the M5 histogram to be in the correct quadrant before allowing a breakout entry: sells need Q2 (negative and falling), buys need Q0 (positive and rising). This filters out entries where price is moving in the trade direction but M5 momentum is already fading.",
+    "color": "#14B8A6"
+  },
+
+  "PSAR": {
+    "full_name": "Parabolic SAR (Stop and Reverse)",
+    "acronym": "PSAR",
+    "forge_params": "Step 0.02, Maximum 0.2",
+    "timeframes": ["M5"],
+    "category": "Trend / Trailing Stop",
+    "what_it_measures": "Parabolic SAR plots dots above or below price that accelerate toward price over time. When the dots are below price the trend is up (PSAR=BELOW); when dots are above price the trend is down (PSAR=ABOVE). It was originally designed as a dynamic trailing stop system.",
+    "reading_guide": {
+      "PSAR_BELOW_price": "Uptrend in place — bullish bias",
+      "PSAR_ABOVE_price": "Downtrend in place — bearish bias",
+      "PSAR_flip": "A reversal signal — PSAR has flipped from one side of price to the other"
+    },
+    "forge_usage": "PSAR state (ABOVE/BELOW) is recorded in the signal journal for each TAKEN entry as context. It is also factored into the pattern score and can contribute to entry quality when it aligns with the trade direction.",
+    "color": "#D4AF37"
+  },
+
+  "VP": {
+    "full_name": "Volume Profile / Market Profile",
+    "acronym": "VP",
+    "forge_params": "Lookback 100 bars, Bins 50",
+    "timeframes": ["M5 (lookback window)"],
+    "components": ["POC — Point of Control (highest volume price)", "VWAP — Volume-Weighted Average Price"],
+    "category": "Volume / Price Level",
+    "what_it_measures": "Volume Profile analyses how much trading volume occurred at each price level over the last 100 bars. The Point of Control (POC) is the price level with the highest volume — a 'fair value' area where the most agreement between buyers and sellers occurred.",
+    "reading_guide": {
+      "price_at_POC": "At the most-traded price level — likely to act as support or resistance",
+      "price_above_POC": "Trading above fair value — bullish",
+      "price_below_POC": "Trading below fair value — bearish",
+      "VWAP": "Intraday benchmark: institutional traders use VWAP as a reference; price above VWAP = bullish, below = bearish"
+    },
+    "forge_usage": "POC and VWAP are recorded in the signal journal for context. The FIB bias system and confluence scoring use proximity to POC as one factor when assessing trade quality.",
+    "color": "#8E9EB2"
+  },
+
+  "FIB": {
+    "full_name": "Fibonacci Retracement Levels",
+    "acronym": "FIB",
+    "forge_params": "Lookback: auto-detected swing high/low; Key levels: 38.2%, 50%, 61.8%",
+    "timeframes": ["M5 (swing detection)"],
+    "category": "Price Levels / Support-Resistance",
+    "what_it_measures": "Fibonacci retracements are horizontal lines drawn at key ratios of a recent swing move. The 50% level (FIB50) marks the exact midpoint of the swing. Price often pauses, reverses, or accelerates at these levels because many traders watch and act on them.",
+    "reading_guide": {
+      "38.2%": "Shallow retracement — trend still strong",
+      "50%": "Midpoint — key battleground level",
+      "61.8%": "Deep retracement — last line before trend considered broken"
+    },
+    "forge_usage": "FORGE calculates FIB50 from detected swing highs/lows. It is recorded in the signal journal alongside POC and VWAP for confluence assessment. The FIB bias system can adjust entry thresholds or lot sizing when price is near key Fibonacci levels.",
+    "color": "#E8C84A"
+  },
+
+  "RSI_DIV": {
+    "full_name": "RSI Divergence",
+    "acronym": "RSI DIV",
+    "forge_params": "Lookback 20 bars, Swing bars 3, Min RSI diff 1.0",
+    "timeframes": ["M5"],
+    "category": "Divergence / Reversal",
+    "what_it_measures": "RSI Divergence occurs when price makes a new high (or low) but RSI does not confirm it. This mismatch — hidden bullish or bearish divergence — often signals that momentum is weakening and a reversal may be approaching.",
+    "reading_guide": {
+      "HID_BEAR": "Hidden bearish divergence — price making lower high while RSI makes higher high; bearish continuation signal",
+      "HID_BULL": "Hidden bullish divergence — price making higher low while RSI makes lower low; bullish continuation signal",
+      "REG_BEAR": "Regular bearish divergence — price new high, RSI lower high; potential reversal down",
+      "REG_BULL": "Regular bullish divergence — price new low, RSI higher low; potential reversal up"
+    },
+    "forge_usage": "RSI divergence state (HID_BEAR, HID_BULL, REG_BEAR, REG_BULL, or NONE) is recorded in the signal journal for each entry. It contributes to the pattern score that FORGE uses to assess overall trade quality.",
+    "color": "#EF4444"
+  },
+
+  "H1_TREND": {
+    "full_name": "H1 Trend Strength Score",
+    "acronym": "H1 Trend",
+    "forge_params": "Computed from H1 EMA20 vs EMA50 slope and separation",
+    "timeframes": ["H1"],
+    "range": "-1.0 (strong bear) to +1.0 (strong bull)",
+    "category": "Higher Timeframe Context",
+    "what_it_measures": "A composite score that summarises how strongly the 1-hour chart is trending. It combines the EMA20 vs EMA50 relationship and their slope to produce a single number from -1 (strongly bearish) to +1 (strongly bullish). Zero means ranging.",
+    "reading_guide": {
+      "+0.5 to +1.0": "Strong bullish H1 trend — supports buy entries",
+      "-0.5 to -1.0": "Strong bearish H1 trend — supports sell entries",
+      "-0.3 to +0.3": "No clear H1 trend — FORGE may require stricter gates"
+    },
+    "forge_usage": "H1 trend strength is displayed in the Athena LENS panel and recorded in the signal journal. For BB Bounce entries, a minimum H1 trend score in the trade direction is required (bounce_min_h1_trend default 0.3). It also gates staged entry sizing — a clear trend can unlock additional legs.",
+    "color": "#3B82F6"
+  },
+
+  "REGIME": {
+    "full_name": "Market Regime (HMM Gaussian Model)",
+    "acronym": "Regime",
+    "forge_params": "Hidden Markov Model; states: TREND_BULL, TREND_BEAR, RANGE, VOLATILE, UNKNOWN",
+    "timeframes": ["Live feed from LENS → AURUM"],
+    "category": "Market State / Meta",
+    "what_it_measures": "The Regime Engine classifies the current market environment into one of five states using a Hidden Markov Model trained on RSI, MACD, ADX, and BB readings. It provides FORGE with a higher-level view of whether the market is trending, ranging, or volatile.",
+    "reading_guide": {
+      "TREND_BULL": "Sustained upward move with momentum confirmation",
+      "TREND_BEAR": "Sustained downward move with momentum confirmation",
+      "RANGE": "Price oscillating between support and resistance — BB Bounce strategies favoured",
+      "VOLATILE": "Erratic price action — position sizing reduced, entries more selective",
+      "UNKNOWN": "Model not confident; FORGE applies fallback rules"
+    },
+    "forge_usage": "Regime state is sent from AURUM to the bridge and written to the FORGE config.json as regime_label + regime_confidence. When REGIME_ENTRY_MODE=active, FORGE can block counter-trend entries (e.g. blocking a buy when regime is TREND_BEAR with high confidence). The regime_countertrend gate_reason is written when this blocks an entry.",
+    "color": "#A855F7"
+  },
+
+  "OB": {
+    "full_name": "Order Block Zones (LuxAlgo)",
+    "acronym": "OB",
+    "forge_params": "Detected by Order Block Detector [LuxAlgo] on TradingView; imported via LENS MCP",
+    "timeframes": ["M5 via TradingView"],
+    "category": "Supply / Demand Zones",
+    "what_it_measures": "Order blocks are price zones where large institutional buy or sell orders were placed in the past, leaving a visible imprint on the chart. These zones often act as future support (bullish OB) or resistance (bearish OB) as institutions defend their original positions.",
+    "reading_guide": {
+      "bullish_OB": "A zone below current price where buyers stepped in strongly — acts as support",
+      "bearish_OB": "A zone above current price where sellers stepped in strongly — acts as resistance",
+      "zone_count": "Number of active order block zones detected — more zones = more confluence levels to watch"
+    },
+    "forge_usage": "The count of active order block zones (OB_zones) is recorded in the signal journal and contributes to the pattern score. A higher OB zone count near the entry price suggests more confluence and can improve the quality score of a signal.",
+    "color": "#F97316"
+  }
+}
