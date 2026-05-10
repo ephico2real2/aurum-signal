@@ -77,6 +77,7 @@
     "sell_stop_cont_enabled": 1,
     "sell_stop_cont_atr_mult": 0.4,
     "sell_stop_cont_lot_factor": 0.25,
+    "sell_stop_cont_tp_atr_mult": 0.8,
     "sell_stop_cont_expiry_bars": 2,
     "sell_stop_cont_min_rsi": 25.0,
     "h4_rsi_gate_enabled": 0,

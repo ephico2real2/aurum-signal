@@ -255,6 +255,7 @@ struct ScalperConfig {
    bool   sell_stop_cont_enabled;      // arm SELL STOP below crash_low after TP1 hit (default false)
    double sell_stop_cont_atr_mult;     // SELL STOP price: crash_low - ATR × this (default 0.40)
    double sell_stop_cont_lot_factor;   // lot factor for continuation leg (default 0.25 = 1/4 base)
+   double sell_stop_cont_tp_atr_mult; // TP for cascade leg at entry - ATR×mult; 0=disabled/naked (default 0)
    int    sell_stop_cont_expiry_bars;  // cancel if not triggered within N M5 bars (default 8 = 40 min)
    double sell_stop_cont_min_rsi;      // only arm when M5 RSI > this — blocks exhausted entries (default 25.0)
    // BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry after crash RSI bounce
@@ -2255,6 +2256,7 @@ void InitScalperConfig() {
    g_sc.sell_stop_cont_enabled       = false;
    g_sc.sell_stop_cont_atr_mult      = 0.40;
    g_sc.sell_stop_cont_lot_factor    = 0.25;
+   g_sc.sell_stop_cont_tp_atr_mult   = 0.0;
    g_sc.sell_stop_cont_expiry_bars   = 8;
    g_sc.sell_stop_cont_min_rsi       = 25.0;
    // BUY LIMIT recovery — off by default; enable via FORGE_BUY_LIMIT_RECOVERY_ENABLED=1
@@ -2591,6 +2593,7 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_stop_cont_enabled"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_enabled");    g_sc.sell_stop_cont_enabled    = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "sell_stop_cont_atr_mult"))   { v = JsonGetDouble(breakout_json,"sell_stop_cont_atr_mult");   if(v > 0 && v <= 5.0)  g_sc.sell_stop_cont_atr_mult   = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_lot_factor")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_lot_factor"); if(v > 0 && v <= 1.0)  g_sc.sell_stop_cont_lot_factor = v; }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_tp_atr_mult")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_tp_atr_mult"); if(v >= 0.0) g_sc.sell_stop_cont_tp_atr_mult = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_stop_cont_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_stop_cont_expiry_bars = (int)v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_min_rsi"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_min_rsi");    if(v >= 0 && v < 50)  g_sc.sell_stop_cont_min_rsi    = v; }
       // BUY LIMIT recovery (2.7.10 Day 3) — disabled by default
@@ -6120,7 +6123,11 @@ void ArmPostTP1Ladder(const int gi) {
             _ssr.volume       = ss_lot;
             _ssr.price        = ss_price;
             _ssr.sl           = ss_sl;
-            _ssr.tp           = 0;
+            // Tight scalp TP on continuation leg: entry - ATR×mult (0=naked, relies on fast-lock only)
+            // G5003 (+8pts) and G5008 (+21pts overnight) missed profit from tp=0. See CHANGELOG.md.
+            _ssr.tp = (g_sc.sell_stop_cont_tp_atr_mult > 0.0)
+                      ? NormalizeDouble(ss_price - entry_atr * g_sc.sell_stop_cont_tp_atr_mult, _Digits)
+                      : 0.0;
             _ssr.type_time    = ORDER_TIME_SPECIFIED;
             _ssr.expiration   = ss_exp;
             _ssr.type_filling = ORDER_FILLING_RETURN;
@@ -6335,6 +6342,11 @@ bool PlaceOpenGroupLeg(
    // (1 / (1 + 1.5) = 0.4). At RR=2.0 it drops to 33.3%.
    ok = false;
    fail_reason = "";
+   // Read current RSI/ADX for SKIP log completeness — open_group_* gates previously logged 0,0
+   // (PlaceOpenGroupLeg has no caller-side indicator params; local read avoids signature churn)
+   double _pog_buf[1];
+   double _log_rsi = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi,0,0,1,_pog_buf)==1) ? _pog_buf[0] : 0;
+   double _log_adx = (g_mtf[0].h_adx != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_adx,0,0,1,_pog_buf)==1) ? _pog_buf[0] : 0;
    string tp_label = (leg_index < (int)MathCeil(leg_count * 0.7)) ? "TP1" : "TP2";
    string comment = "FORGE|G" + IntegerToString(group_id) + "|" + IntegerToString(leg_index) + "|" + tp_label;
    string req_type = NormalizeOrderType(leg.order_type);
@@ -6361,19 +6373,19 @@ bool PlaceOpenGroupLeg(
    if(direction == "BUY" && StringFind(req_type, "SELL_") == 0) {
       order_kind = req_type;
       fail_reason = "direction/order_type mismatch";
-      JournalRecordSignal("SKIP","open_group_" + fail_reason,"OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+      JournalRecordSignal("SKIP","open_group_" + fail_reason,"OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
       return false;
    }
    if(direction == "SELL" && StringFind(req_type, "BUY_") == 0) {
       order_kind = req_type;
       fail_reason = "direction/order_type mismatch";
-      JournalRecordSignal("SKIP","open_group_" + fail_reason,"OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+      JournalRecordSignal("SKIP","open_group_" + fail_reason,"OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
       return false;
    }
    if(req_type != "BUY_MARKET" && req_type != "SELL_MARKET" && !SymbolSupportsOrderType(req_type)) {
       order_kind = req_type;
       fail_reason = "symbol does not support order type";
-      JournalRecordSignal("SKIP","open_group_unsupported_order_type","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+      JournalRecordSignal("SKIP","open_group_unsupported_order_type","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
       return false;
    }
 
@@ -6411,14 +6423,14 @@ bool PlaceOpenGroupLeg(
       fail_reason = "RR below floor";
       PrintFormat("FORGE: skipped %s leg %d/%d entry=%.2f sl=%.2f tp=%.2f RR=%.2f floor=%.2f",
                   req_type, leg_index+1, leg_count, entry_for_stops, sl_for_this, tp_for_this, rr, rr_floor);
-      JournalRecordSignal("SKIP","open_group_rr_below_floor","OPEN_GROUP",direction,entry_for_stops,0,0,0,0,0,0,0,0,0,0);
+      JournalRecordSignal("SKIP","open_group_rr_below_floor","OPEN_GROUP",direction,entry_for_stops,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
       return false;
    }
 
    if(req_type == "BUY_MARKET") {
       if(!ValidateStops(ask, sl_for_this, tp_for_this, ORDER_TYPE_BUY)) {
          fail_reason = "invalid BUY market stops";
-         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,ask,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,ask,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       ok = g_trade.Buy(lot_norm, _Symbol, ask, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
@@ -6427,7 +6439,7 @@ bool PlaceOpenGroupLeg(
    if(req_type == "SELL_MARKET") {
       if(!ValidateStops(bid, sl_for_this, tp_for_this, ORDER_TYPE_SELL)) {
          fail_reason = "invalid SELL market stops";
-         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,bid,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,bid,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       ok = g_trade.Sell(lot_norm, _Symbol, bid, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
@@ -6436,7 +6448,7 @@ bool PlaceOpenGroupLeg(
    if(req_type == "BUY_LIMIT") {
       if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_BUY_LIMIT)) {
          fail_reason = "invalid BUY_LIMIT stops";
-         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       ok = g_trade.BuyLimit(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
@@ -6445,7 +6457,7 @@ bool PlaceOpenGroupLeg(
    if(req_type == "SELL_LIMIT") {
       if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_SELL_LIMIT)) {
          fail_reason = "invalid SELL_LIMIT stops";
-         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       ok = g_trade.SellLimit(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
@@ -6454,7 +6466,7 @@ bool PlaceOpenGroupLeg(
    if(req_type == "BUY_STOP") {
       if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_BUY_STOP)) {
          fail_reason = "invalid BUY_STOP stops";
-         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       ok = g_trade.BuyStop(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
@@ -6463,7 +6475,7 @@ bool PlaceOpenGroupLeg(
    if(req_type == "SELL_STOP") {
       if(!ValidateStops(entry, sl_for_this, tp_for_this, ORDER_TYPE_SELL_STOP)) {
          fail_reason = "invalid SELL_STOP stops";
-         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       ok = g_trade.SellStop(lot_norm, NormalizeDouble(entry, _Digits), _Symbol, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), ORDER_TIME_GTC, 0, comment);
@@ -6473,29 +6485,29 @@ bool PlaceOpenGroupLeg(
       double slp = leg.stoplimit_price;
       if(slp <= 0) {
          fail_reason = "missing stoplimit_price";
-         JournalRecordSignal("SKIP","open_group_missing_stoplimit","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_missing_stoplimit","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       if(req_type == "BUY_STOP_LIMIT") {
          if(entry <= ask + entry_tolerance) {
             fail_reason = "BUY_STOP_LIMIT trigger must be above current ask";
-            JournalRecordSignal("SKIP","open_group_bad_stoplimit_trigger","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_trigger","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
             return false;
          }
          if(slp > entry) {
             fail_reason = "BUY_STOP_LIMIT stoplimit_price must be <= trigger";
-            JournalRecordSignal("SKIP","open_group_bad_stoplimit_price","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_price","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
             return false;
          }
       } else {
          if(entry >= bid - entry_tolerance) {
             fail_reason = "SELL_STOP_LIMIT trigger must be below current bid";
-            JournalRecordSignal("SKIP","open_group_bad_stoplimit_trigger","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_trigger","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
             return false;
          }
          if(slp < entry) {
             fail_reason = "SELL_STOP_LIMIT stoplimit_price must be >= trigger";
-            JournalRecordSignal("SKIP","open_group_bad_stoplimit_price","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+            JournalRecordSignal("SKIP","open_group_bad_stoplimit_price","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
             return false;
          }
       }
@@ -6512,7 +6524,7 @@ bool PlaceOpenGroupLeg(
       req.stoplimit = NormalizeDouble(slp, _Digits);
       if(!ValidateStops(entry, sl_for_this, tp_for_this, req.type)) {
          fail_reason = "invalid stop-limit stops";
-         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+         JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
       req.sl = NormalizeDouble(sl_for_this, _Digits);
@@ -6528,7 +6540,7 @@ bool PlaceOpenGroupLeg(
       return true;
    }
    fail_reason = "unsupported order_type";
-   JournalRecordSignal("SKIP","open_group_unsupported_order_type","OPEN_GROUP",direction,entry,0,0,0,0,0,0,0,0,0,0);
+   JournalRecordSignal("SKIP","open_group_unsupported_order_type","OPEN_GROUP",direction,entry,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
    return false;
 }
 
