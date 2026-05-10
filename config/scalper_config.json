@@ -99,6 +99,7 @@
     "buy_limit_recovery_expiry_bars": 4,
     "buy_limit_recovery_sl_atr_mult": 1.0,
     "require_rsi_declining_sell": 1,
+    "block_hid_bull_sell": 1,
     "sell_inside_band_lot_factor": 0.25,
     "adx_sell_block_threshold": 55
   },
@@ -205,8 +206,9 @@
     "breakout_adx_lot_mid_threshold": 35,
     "breakout_adx_lot_high_threshold": 45,
     "breakout_adx_lot_factor_mid": 1,
-    "breakout_adx_lot_factor_high": 1,
-    "breakout_adx_sell_block_threshold": 55
+    "breakout_adx_lot_factor_high": 0.5,
+    "breakout_adx_sell_block_threshold": 55,
+    "block_hid_bull_sell": 0
   },
   "journal": {
     "journal_enabled": 1,
@@ -237,7 +239,7 @@
     "recovery_leg_boost_dd_pct_min": 1.0,
     "recovery_leg_boost_extra": 2,
     "gold_native_max_sell_legs": 8,
-    "native_legs_max_when_unclear": 2,
+    "native_legs_max_when_unclear": 5,
     "native_legs_clear_trend_factor": 1.35,
     "native_force_staged_scale_in": 1,
     "native_scalper_use_limit_entry": 0,

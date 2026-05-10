@@ -203,7 +203,8 @@
     "breakout_adx_lot_high_threshold": 45,
     "breakout_adx_lot_factor_mid": 0.25,
     "breakout_adx_lot_factor_high": 0.125,
-    "breakout_adx_sell_block_threshold": 55
+    "breakout_adx_sell_block_threshold": 55,
+    "block_hid_bull_sell": 0
   },
   "journal": {
     "journal_enabled": 1,

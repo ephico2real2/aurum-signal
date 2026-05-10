@@ -104,6 +104,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # M30 EMA bearish confirmation gate (2.7.9 Feature 3)
     "FORGE_BREAKOUT_REQUIRE_M30_BEAR_SELL":      ("bb_breakout", "require_m30_bear_sell",      "bool01", None, None),
     "FORGE_BREAKOUT_REQUIRE_RSI_DECLINING_SELL": ("bb_breakout", "require_rsi_declining_sell", "bool01", None, None),
+    "FORGE_BREAKOUT_BLOCK_HID_BULL_SELL":        ("bb_breakout", "block_hid_bull_sell",         "bool01", None, None),
     "FORGE_BREAKOUT_RSI_DECL_SELL_ADX_THRESHOLD":("bb_breakout", "rsi_decl_sell_adx_threshold","float",  10.0, 80.0),
     "FORGE_BREAKOUT_M30_BEAR_ADX_MIN":      ("bb_breakout", "m30_bear_adx_min",      "float", 0.0, 80.0),
     # OsMA(fast,slow,signal) histogram gate — MACD Histogram MC 4-quadrant approach
