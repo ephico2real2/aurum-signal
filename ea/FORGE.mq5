@@ -2932,7 +2932,7 @@ void ReadScalperConfig() {
    }
    if(JsonHasKey(content, "max_open_same_direction")) {
       v = JsonGetDouble(content, "max_open_same_direction");
-      if(v >= 0 && v <= 10) g_sc.max_open_same_direction = (int)v;
+      if(v >= 0) g_sc.max_open_same_direction = (int)v;
    }
    if(JsonHasKey(content, "entry_quality_bars")) {
       v = JsonGetDouble(content, "entry_quality_bars");
