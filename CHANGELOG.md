@@ -25,6 +25,10 @@ around every loss (not indicator-only reasoning).
 | 11 | `.env` | `FORGE_BOUNCE_ADX_MAX`: 40 → 35 | G5005 BB_BOUNCE had ADX=33.2 — passed at 40. Lowered to 35 (still passes 33.2, but closer). adx_max=30 needed to fully block G5005-class setups. |
 | 12 | `.env` | `FORGE_BOUNCE_LOT_FACTOR=0.25` | New parameter: BB_BOUNCE position at 25% of base lot. |
 
+| 14 | ea/FORGE.mq5 + sync | sell_stop_cont_tp_atr_mult: cascade SELL STOP TP at entry−ATR×0.8. Was tp=0 (naked). G5003/G5008 missed $64/$170 profit from naked cascades. |
+| 15 | ea/FORGE.mq5 | PlaceOpenGroupLeg: local _log_rsi/_log_adx reads; 17 open_group_* SKIP logs now have real RSI/ADX instead of 0,0. |
+| 16 | ea/FORGE.mq5 | TP3 live staging: TradeGroup.tp2_hit flag + tp3 computed at group registration (rr_entry_ref−m5_atr×tp3_atr_mult). ManageOpenGroups TP3 pass: when TP2 reached, promotes runners to TP3. TP4 intentionally omitted — scalpers take TP3 and re-enter. |
+
 ### Known open items (EA code — needs recompile + next iteration)
 - `sell_stop_cont_tp=0` confirmed at line ~6122: SELL STOP CONT has no TP assigned. G5003 (+8pts) and G5008 (+21pts) were deeply profitable cascades that reversed because no TP was set. Fix needed: `sell_stop_cont_tp_atr_mult` config + EA logic.
 - TP3/TP4 (`tp3_atr_mult=2.5`, `tp4_atr_mult=4.0`) only used in R:R gate math — never assigned as live position targets. Runners after TP2 rely only on fast-lock SL ratchet.

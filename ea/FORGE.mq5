@@ -540,6 +540,7 @@ struct TradeGroup {
    double tp1, tp2, tp3;
    double tp1_close_pct;
    bool   tp1_hit;
+   bool   tp2_hit;   // set when all TP2 runners are modified to target TP3
    bool   be_moved;
    bool   move_be_on_tp1;
    int    magic_offset;  // magic + id to differentiate groups
@@ -1153,9 +1154,10 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].direction     = direction;
    g_groups[gi].tp1           = tp1;
    g_groups[gi].tp2           = tp2;
-   g_groups[gi].tp3           = 0;
+   g_groups[gi].tp3           = 0;   // BRIDGE path — tp3 not available from JSON
    g_groups[gi].tp1_close_pct = tp1_close_pct;
    g_groups[gi].tp1_hit       = false;
+   g_groups[gi].tp2_hit       = false;
    g_groups[gi].be_moved      = false;
    g_groups[gi].move_be_on_tp1 = move_be;
    g_groups[gi].magic_offset  = group_magic;
@@ -1564,6 +1566,45 @@ void ManageOpenGroups() {
          Print("FORGE: Group ", g_groups[gi].id, " remaining ", ArraySize(positions),
                " trades: SL→BE, TP→", DoubleToString(remaining_tp, 2));
       }
+   }
+
+   // ── TP3 staging pass ─────────────────────────────────────────────────────
+   // After TP1 runners reach TP2, promote remaining positions to target TP3.
+   // Allows scalper to ride in stages: capture TP2 exit, then let runners run
+   // to TP3 rather than going naked. TP4 is intentionally omitted — scalpers
+   // take TP3 and re-enter rather than holding for 4×ATR.
+   // tp3=0 disables this (BRIDGE groups, bounce groups, breakout_tp3_atr_mult=0).
+   for(int gi2 = 0; gi2 < ArraySize(g_groups); gi2++) {
+      if(!g_groups[gi2].tp1_hit)  continue;   // TP1 not hit yet
+      if(g_groups[gi2].tp2_hit)   continue;   // already staged to TP3
+      if(g_groups[gi2].tp3 <= 0)  continue;   // TP3 not set for this group
+
+      double tp2_price = g_groups[gi2].tp2;
+      double tp3_price = g_groups[gi2].tp3;
+      string dir2 = g_groups[gi2].direction;
+      int    gm2  = g_groups[gi2].magic_offset;
+      double bid2 = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask2 = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      // Check if TP2 has been reached (market has touched/crossed TP2 price)
+      bool tp2_reached = (dir2 == "BUY" && bid2 >= tp2_price) || (dir2 == "SELL" && ask2 <= tp2_price);
+      if(!tp2_reached) continue;
+
+      // Promote runners to TP3
+      int pos3[];
+      GetGroupPositions(gm2, pos3);
+      int promoted = 0;
+      for(int j = 0; j < ArraySize(pos3); j++) {
+         if(g_pos.SelectByTicket(pos3[j])) {
+            double cur_sl = g_pos.StopLoss();
+            if(g_trade.PositionModify(pos3[j], cur_sl, NormalizeDouble(tp3_price, _Digits)))
+               promoted++;
+         }
+      }
+      g_groups[gi2].tp2_hit = true;
+      if(promoted > 0)
+         PrintFormat("FORGE: Group %d TP2 reached — promoted %d runner(s) to TP3=%.2f",
+                     g_groups[gi2].id, promoted, tp3_price);
    }
 }
 
@@ -5777,9 +5818,16 @@ void CheckNativeScalperSetups() {
    g_groups[gi].direction     = direction;
    g_groups[gi].tp1           = tp1;
    g_groups[gi].tp2           = tp2;
-   g_groups[gi].tp3           = 0;
+   // TP3 live target — runner rides to TP3 after TP2 hit. 0 disables staging.
+   // Only set for breakout setups; tp3_atr_mult=0 or bounce disables it.
+   g_groups[gi].tp3 = (is_breakout_setup && g_sc.breakout_tp3_atr_mult > 0.0)
+                      ? NormalizeDouble((direction == "SELL")
+                          ? rr_entry_ref - m5_atr * g_sc.breakout_tp3_atr_mult
+                          : rr_entry_ref + m5_atr * g_sc.breakout_tp3_atr_mult, _Digits)
+                      : 0.0;
    g_groups[gi].tp1_close_pct = tp1_split_pct;
    g_groups[gi].tp1_hit       = false;
+   g_groups[gi].tp2_hit       = false;
    g_groups[gi].be_moved      = false;
    g_groups[gi].move_be_on_tp1 = is_breakout_setup ? g_sc.breakout_move_be : true;
    g_groups[gi].magic_offset  = group_magic;
@@ -6044,9 +6092,10 @@ void RebuildGroups() {
       g_groups[n].direction = (g_pos.PositionType() == POSITION_TYPE_BUY) ? "BUY" : "SELL";
       g_groups[n].tp1 = g_pos.TakeProfit();
       g_groups[n].tp2 = g_pos.TakeProfit();
-      g_groups[n].tp3 = 0;
+      g_groups[n].tp3 = 0;         // RebuildGroups path — tp3 not recomputed from live position
       g_groups[n].tp1_close_pct = 50;
       g_groups[n].tp1_hit = false;
+      g_groups[n].tp2_hit = false;
       g_groups[n].be_moved = false;
       g_groups[n].move_be_on_tp1 = true;
       g_groups[n].magic_offset = pm;
