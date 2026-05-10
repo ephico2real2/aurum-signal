@@ -22,6 +22,7 @@ Core architecture and operations docs:
 - **AI/automation:** do not hand-edit **`config/scalper_config.json`** — see **`AGENTS.md`** and **`docs/SCALPER_CONFIG_PIPELINE.md`**
 - **Scalper + regime phased roadmap** (execution prompts, testing, MT5 Tester, doc checklist): [docs/SCALPER_REGIME_PHASED_PLAN.md](docs/SCALPER_REGIME_PHASED_PLAN.md)
 - **System architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **MT5 ↔ Bridge integration, regime engine design, latency analysis, and direct FIX broker path**: [docs/MT5_BROKER_INTEGRATION.md](docs/MT5_BROKER_INTEGRATION.md)
 - **Database architecture** (source DBs, AURUM DBs, run_id vs aurum_run_id, backtest isolation): [docs/DATABASE_ARCHITECTURE.md](docs/DATABASE_ARCHITECTURE.md)
 - **Mode architecture**: [docs/MODES_ARCHITECTURE.md](docs/MODES_ARCHITECTURE.md)
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
