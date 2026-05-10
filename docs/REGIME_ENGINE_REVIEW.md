@@ -1,6 +1,8 @@
 # Regime Engine — Design Review & Gotchas
 
-> Reviewed: 2026-05-10 against python/regime.py (565 lines), python/bridge.py, python/aegis.py
+> Reviewed: 2026-05-10 against python/regime.py (565 lines), python/bridge.py, python/aegis.py — last updated 2026-05-10 (section 9 tracks implementation status)
+
+> See also: [docs/MT5_BROKER_INTEGRATION.md](MT5_BROKER_INTEGRATION.md) — system-level role, tick loop diagram, latency analysis, and direct FIX broker path.
 
 ---
 
@@ -155,3 +157,18 @@ The HMM lives only in `RegimeEngine._hmm_model` (in-memory). Every bridge restar
 | `REGIME_RETRAIN_INTERVAL_SEC` | `3600` | `3600` |
 | `REGIME_MIN_TRAIN_SAMPLES` | `120` | `120` |
 | `AEGIS_REGIME_LOT_SCALE_ENABLED` | `false` | `false` |
+
+---
+
+## 9. Implementation Status (2026-05-10)
+
+The following enhancements from Section 7 have been implemented:
+
+| Enhancement | Section 7 ref | Status | Notes |
+|---|---|---|---|
+| Async HMM retraining | High priority 1 | Done | `_train_hmm_thread()` daemon thread; atomic swap under `_train_lock` |
+| Persist model to disk | High priority 2 | Done | `pickle` to `python/data/regime_hmm.pkl`; restored on `__init__` |
+| Herald alert on cold-start | High priority 3 | Done | `bridge._refresh_regime_snapshot()` sends one-shot Herald when `fallback_reason=hmm_not_ready` + `entry_mode=active` |
+| LENS staleness fix | Medium priority 4 | Done | `max(stale_sec, 300)` → `REGIME_LENS_STALE_SEC` env var (default 90s) |
+
+Remaining open items: Medium 5 (tester regime confidence), Medium 6 (posterior entropy), Low 7–9.
