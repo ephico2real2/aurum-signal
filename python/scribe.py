@@ -555,6 +555,18 @@ class Scribe:
             # Use this for run filtering/grouping instead of run_id (which resets on source DB wipe).
             conn.execute("ALTER TABLE forge_signals ADD COLUMN aurum_run_id INTEGER DEFAULT 0")
             log.info("SCRIBE migration: added aurum_run_id to forge_signals")
+        if "macd_histogram" not in fs_cols:
+            # macd_histogram — H1 MACD histogram at signal time (added in FORGE 2.7.12).
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN macd_histogram REAL")
+            log.info("SCRIBE migration: added macd_histogram to forge_signals")
+        if "m15_adx" not in fs_cols:
+            # m15_adx — M15 ADX at signal time for multi-TF context.
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN m15_adx REAL")
+            log.info("SCRIBE migration: added m15_adx to forge_signals")
+        if "lot_factor" not in fs_cols:
+            # lot_factor — combined lot factor applied at entry (product of all lot modifiers).
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN lot_factor REAL")
+            log.info("SCRIBE migration: added lot_factor to forge_signals")
         # forge_journal_trades: create fresh with UNIQUE(deal_ticket, journal_source, run_id)
         # or migrate old schema (UNIQUE on deal_ticket+journal_source only) atomically.
         fjt_sql = conn.execute(

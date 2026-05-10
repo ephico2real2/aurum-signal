@@ -112,10 +112,21 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_MACD_FAST":         ("bb_breakout", "macd_fast",   "int", 1.0, 50.0),
     "FORGE_BREAKOUT_MACD_SLOW":         ("bb_breakout", "macd_slow",   "int", 1.0, 100.0),
     "FORGE_BREAKOUT_MACD_SIGNAL":       ("bb_breakout", "macd_signal", "int", 1.0, 50.0),
+    # SELL LIMIT L1 — pending SELL above entry to catch RSI bounce toward Bear Resistance
+    "FORGE_BREAKOUT_SELL_LIMIT_ENABLED":       ("bb_breakout", "sell_limit_enabled",       "bool01", None, None),
+    "FORGE_BREAKOUT_SELL_LIMIT_ATR_MULT":      ("bb_breakout", "sell_limit_atr_mult",      "float", 0.0, 5.0),
+    "FORGE_BREAKOUT_SELL_LIMIT_LOT_FACTOR":    ("bb_breakout", "sell_limit_lot_factor",    "float", 0.0, 1.0),
+    "FORGE_BREAKOUT_SELL_LIMIT_EXPIRY_BARS":   ("bb_breakout", "sell_limit_expiry_bars",   "int",   1.0, 50.0),
     # SELL LIMIT L2 — second cascade level (2.7.10); in .env for hot-reload control
     "FORGE_BREAKOUT_SELL_LIMIT_L2_ENABLED":    ("bb_breakout", "sell_limit_l2_enabled",    "bool01", None, None),
     "FORGE_BREAKOUT_SELL_LIMIT_L2_ATR_MULT":   ("bb_breakout", "sell_limit_l2_atr_mult",   "float", 0.0, 5.0),
     "FORGE_BREAKOUT_SELL_LIMIT_L2_LOT_FACTOR": ("bb_breakout", "sell_limit_l2_lot_factor", "float", 0.0, 1.0),
+    # Inside-band lot reduction and ADX SELL block threshold
+    "FORGE_BREAKOUT_SELL_INSIDE_BAND_LOT_FACTOR": ("bb_breakout", "sell_inside_band_lot_factor", "float", 0.0, 1.0),
+    "FORGE_BREAKOUT_ADX_SELL_BLOCK_THRESHOLD": ("bb_breakout", "adx_sell_block_threshold", "float", 0.0, 100.0),
+    # H1+H4 crash SELL — max ADX cap and min H1 bear strength
+    "FORGE_BREAKOUT_H1H4_CRASH_SELL_ADX_MAX":  ("bb_breakout", "h1h4_crash_sell_adx_max", "float", 0.0, 100.0),
+    "FORGE_BREAKOUT_MIN_H1_BEAR_STRENGTH":     ("bb_breakout", "min_h1_bear_strength",    "float", 0.0, 5.0),
     # SELL STOP continuation (2.7.10 Day 2) — disabled by default; enable to capture second impulse after TP1
     "FORGE_SELL_STOP_CONT_ENABLED":      ("bb_breakout", "sell_stop_cont_enabled",      "bool01", None, None),
     "FORGE_SELL_STOP_CONT_ATR_MULT":     ("bb_breakout", "sell_stop_cont_atr_mult",     "float", 0.1, 3.0),
