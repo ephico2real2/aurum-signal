@@ -912,6 +912,49 @@ paths:
                   limit:         { type: integer, description: "Rows fetched from DB (ATHENA_BACKTEST_RUNS_LIMIT)" }
                   display_limit: { type: integer, description: "Rows the UI shows in the tab selector (ATHENA_BACKTEST_RUNS_DISPLAY_LIMIT)" }
 
+  /api/backtest/compare:
+    get:
+      tags: [backtest]
+      summary: Compare two tester runs — deltas, gate diff, and composite score
+      description: |
+        Compares run_a vs run_b using real DB values only (no synthetic data).
+        If run_a/run_b omitted, defaults to the two most recent aurum_run_id values.
+
+        **Composite score (0–100):**
+        - 40% win rate
+        - 30% risk/reward (avg_win / |avg_loss|, capped at 3:1)
+        - 20% take rate (entries taken / total signals, full credit at ≥0.5%)
+        - 10% loss avoidance (proportional to loss-free trades)
+        - Returns `null` when fewer than 2 closed trades exist.
+
+        **gate_diff:** every gate_reason that appeared in either run, sorted by abs(delta).
+      operationId: getBacktestCompare
+      parameters:
+        - name: run_a
+          in: query
+          description: Newer run ID (defaults to most recent)
+          schema: { type: integer }
+        - name: run_b
+          in: query
+          description: Baseline run ID (defaults to second most recent)
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Comparison result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_a:    { type: object, description: "Stats + score for run A" }
+                  run_b:    { type: object, description: "Stats + score for run B" }
+                  deltas:   { type: object, description: "run_a minus run_b for every metric" }
+                  gate_diff: { type: object, description: "Per-gate counts in A and B plus delta" }
+                  winner:   { type: string, description: "aurum_run_id of winner, or 'tie'" }
+                  note:     { type: string, description: "Score formula explanation" }
+        '404':
+          description: Fewer than 2 runs in DB
+
   /api/backtest/run/{aurum_run_id}:
     get:
       tags: [backtest]
