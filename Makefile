@@ -4,8 +4,9 @@
 
 ROOT_DIR = $(shell pwd)
 # Prefer repo .venv when present so `pip install -r requirements.txt` (jsonschema, etc.) is used.
-PYTHON  := $(shell if [ -x "$(ROOT_DIR)/.venv/bin/python" ]; then echo "$(ROOT_DIR)/.venv/bin/python"; else echo python3; fi)
+PYTHON  := $(shell if [ -x "$(ROOT_DIR)/.venv/bin/python" ]; then echo "$(ROOT_DIR)/.venv/bin/python"; else python3; fi)
 SCRIPTS  = $(ROOT_DIR)/scripts
+TESTS    = $(ROOT_DIR)/tests
 INSTALL_SVC = $(ROOT_DIR)/services/install_services.py
 
 # ── Help ──────────────────────────────────────────────────────────
@@ -164,18 +165,18 @@ test-api:
 	@$(PYTHON) $(SCRIPTS)/test_api.py
 
 test-ui:
-	@cd tests && npx playwright test --reporter=list
+	@cd $(TESTS) && npx playwright test --reporter=list
 
 test-ui-silent:
-	@cd tests && npx playwright test --reporter=list
+	@cd $(TESTS) && npx playwright test --reporter=list
 
 # Run only the 508 + backtest + indicators suite (fast — used after every dashboard change)
 test-ui-backtest:
-	@cd tests && npx playwright test test_athena_backtest.spec.js --reporter=list
+	@cd $(TESTS) && npx playwright test test_athena_backtest.spec.js --reporter=list
 
 # Run only the 508 compliance audit inline (no Playwright, just the audit script)
 test-ui-508:
-	@cd tests && npx playwright test test_athena_backtest.spec.js --grep "508" --reporter=list
+	@cd $(TESTS) && npx playwright test test_athena_backtest.spec.js --grep "508" --reporter=list
 
 test-live:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file live
