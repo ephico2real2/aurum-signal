@@ -50,7 +50,7 @@ function fmtDateTime(ts){
 const Dot=({ok,sz=6,b=false})=>(<div className={b&&ok?'blink':''}
   style={{width:sz,height:sz,borderRadius:'50%',flexShrink:0,
     background:ok?T.green:T.red,boxShadow:`0 0 ${sz+2}px ${ok?T.green:T.red}55`}}/>);
-const Tag=({lbl,color,xs=false})=>(<span style={{fontSize:xs?6:7,fontFamily:T.mono,
+const Tag=({lbl,color,xs=false})=>(<span style={{fontSize:9,fontFamily:T.mono,
   letterSpacing:1,border:`1px solid ${color}`,color,
   padding:xs?'0 3px':'1px 5px',borderRadius:2,whiteSpace:'nowrap'}}>{lbl}</span>);
 const PT=({ch,color=T.gold,right})=>(<div style={{fontSize:9,fontFamily:T.mono,
@@ -90,10 +90,10 @@ function SentinelHeadlines({newsFeeds}){
   if(!rows.length){
     return(
       <div style={{marginTop:8}}>
-        <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,letterSpacing:1,marginBottom:3}}>
+        <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,letterSpacing:1,marginBottom:3}}>
           HEADLINES
         </div>
-        <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,lineHeight:1.4,padding:'6px 0'}}>
+        <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,lineHeight:1.4,padding:'6px 0'}}>
           {hasErr?`RSS error: ${String(err[0]).slice(0,120)}`:'No headlines yet — wait for BRIDGE SENTINEL tick (~60s) or check docs/SENTINEL.md'}
         </div>
       </div>
@@ -102,7 +102,7 @@ function SentinelHeadlines({newsFeeds}){
   const cap=24,show=rows.slice(0,cap);
   return(
     <div style={{marginTop:8}}>
-      <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,letterSpacing:1,marginBottom:4,
+      <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,letterSpacing:1,marginBottom:4,
         display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:6}}>
         <span>HEADLINES</span>
         <span style={{color:T.textD}}>{rows.length}{rows.length>cap?` · top ${cap}`:''}</span>
@@ -112,15 +112,15 @@ function SentinelHeadlines({newsFeeds}){
         {show.map((it,i)=>(
           <div key={i} style={{marginBottom:7,paddingBottom:6,
             borderBottom:i<show.length-1?`1px solid ${T.border}`:'none'}}>
-            <div style={{fontSize:6,color:T.cyan,fontFamily:T.mono,marginBottom:2}}>{it.source}</div>
+            <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,marginBottom:2}}>{it.source}</div>
             {it.link?(
               <a href={it.link} target="_blank" rel="noopener noreferrer"
-                style={{fontSize:8,color:T.textB,textDecoration:'none',lineHeight:1.35,wordBreak:'break-word',
+                style={{fontSize:9,color:T.textB,textDecoration:'none',lineHeight:1.35,wordBreak:'break-word',
                   display:'block'}}>
                 {it.title.length>160?`${it.title.slice(0,157)}…`:it.title}
               </a>
             ):(
-              <span style={{fontSize:8,color:T.text,lineHeight:1.35}}>{it.title}</span>
+              <span style={{fontSize:9,color:T.text,lineHeight:1.35}}>{it.title}</span>
             )}
           </div>
         ))}
@@ -197,7 +197,7 @@ function ActivityCategoryChips({catf,setCatf}){
         const col=c==='ALL'?T.gold:ACTIVITY_CAT_COLOR[c]||T.text;
         return(
           <button key={c} type="button" onClick={()=>setCatf(c)}
-            style={{fontSize:7,fontFamily:T.mono,letterSpacing:1,
+            style={{fontSize:9,fontFamily:T.mono,letterSpacing:1,
               background:on?`${col}22`:'transparent',
               border:`1px solid ${on?col:T.border}`,
               color:on?col:T.text,
@@ -222,13 +222,13 @@ function ActivityEventRow({e,sel,setSel,isRecent}){
           e.level==='ERROR'?'rgba(239,68,68,0.04)':'transparent',
         borderLeft:`2px solid ${e.level==='WARN'?T.amber:e.level==='ERROR'?T.red:cc}`,
         transition:'background 0.1s'}}>
-      <span style={{fontFamily:T.mono,fontSize:8,color:T.textD,
+      <span style={{fontFamily:T.mono,fontSize:9,color:T.textD,
         padding:'5px 7px',flexShrink:0,width:132}}>{e.t}</span>
-      <span style={{fontFamily:T.mono,fontSize:8,color:cc,
+      <span style={{fontFamily:T.mono,fontSize:9,color:cc,
         fontWeight:700,letterSpacing:1,width:56,flexShrink:0}}>{e.comp}</span>
-      <span style={{fontFamily:T.mono,fontSize:6,color:catc,
+      <span style={{fontFamily:T.mono,fontSize:9,color:catc,
         width:44,flexShrink:0,textAlign:'center',letterSpacing:0.5}}>{e.cat}</span>
-      <span style={{fontFamily:T.mono,fontSize:7,color:lc,
+      <span style={{fontFamily:T.mono,fontSize:9,color:lc,
         width:36,flexShrink:0}}>{e.level}</span>
       <span style={{fontSize:10,flex:1,padding:'5px 8px',lineHeight:1.4,
         color:e.level==='WARN'?T.amber:e.level==='ERROR'?T.red:T.textB}}>
@@ -301,10 +301,10 @@ function ActivityLog({events=[], components=[]}){
               display:'flex',flexDirection:'column',alignItems:'center',gap:2,minWidth:58}}>
             <div style={{display:'flex',alignItems:'center',gap:3}}>
               <Dot ok={comp?.ok??true} sz={4}/>
-              <span style={{fontFamily:T.mono,fontSize:7,
+              <span style={{fontFamily:T.mono,fontSize:9,
                 color:cf===name?color:T.text,letterSpacing:1}}>{name}</span>
             </div>
-            <span style={{fontSize:6,color:T.textD,fontFamily:T.mono}}>
+            <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
               {fmtDateTime(comp?.timestamp)}
             </span>
           </div>
@@ -321,7 +321,7 @@ function ActivityLog({events=[], components=[]}){
               padding:'3px 8px',borderRadius:4,fontSize:9,fontFamily:T.mono,width:150}}/>
           <div style={{display:'flex',gap:3}}>
             {['ALL','INFO','WARN','ERROR'].map(l=>(
-              <button key={l} type="button" onClick={()=>setLf(l)} style={{fontSize:7,fontFamily:T.mono,
+              <button key={l} type="button" onClick={()=>setLf(l)} style={{fontSize:9,fontFamily:T.mono,
                 letterSpacing:1,
                 background:lf===l?(l==='WARN'?T.amberBg:l==='ERROR'?T.redBg:T.goldBg):'transparent',
                 border:`1px solid ${lf===l?(l==='WARN'?T.amber:l==='ERROR'?T.red:T.gold):T.border}`,
@@ -331,15 +331,15 @@ function ActivityLog({events=[], components=[]}){
           </div>
           <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
             <a href={exportHref} download="system_events.ndjson"
-              style={{fontSize:7,fontFamily:T.mono,letterSpacing:1,color:T.cyan,
+              style={{fontSize:9,fontFamily:T.mono,letterSpacing:1,color:T.cyan,
                 border:`1px solid ${T.cyan}`,padding:'2px 6px',borderRadius:3,
                 textDecoration:'none'}}>EXPORT NDJSON</a>
-            <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+            <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
               {filtered.length} events
               {warns>0&&<span style={{color:T.amber}}> · {warns}⚠</span>}
               {errs>0&&<span style={{color:T.red}}> · {errs}✕</span>}
             </span>
-            <button type="button" onClick={()=>setPaused(p=>!p)} style={{fontSize:7,fontFamily:T.mono,
+            <button type="button" onClick={()=>setPaused(p=>!p)} style={{fontSize:9,fontFamily:T.mono,
               background:paused?T.amberBg:'transparent',
               border:`1px solid ${paused?T.amber:T.border}`,
               color:paused?T.amber:T.text,
@@ -373,12 +373,12 @@ function ActivityLog({events=[], components=[]}){
             <Tag lbl={e.comp} color={cc}/>
             <Tag lbl={e.cat} color={catc} xs/>
             <Tag lbl={e.level} color={lc(e.level)||T.textD} xs/>
-            <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>{e.t}</span>
+            <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>{e.t}</span>
           </div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:10,color:T.textBB,lineHeight:1.6,fontFamily:T.mono,
               marginBottom:6}}>{e.msg}</div>
-            <pre style={{fontSize:8,fontFamily:T.mono,color:T.textD,margin:0,
+            <pre style={{fontSize:9,fontFamily:T.mono,color:T.textD,margin:0,
               padding:8,background:T.row,border:`1px solid ${T.border2}`,borderRadius:4,
               overflow:'auto',maxHeight:140,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>
               {JSON.stringify(e.raw,null,2)}
@@ -393,11 +393,11 @@ function ActivityLog({events=[], components=[]}){
         background:T.panel,display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:6}}>
         <div style={{display:'flex',alignItems:'center',gap:5}}>
           <Dot ok={true} sz={4} b={!paused}/>
-          <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
+          <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
             {paused?'PAUSED':'LIVE — SCRIBE system_events; disk audit logs/audit/system_events.jsonl'}
           </span>
         </div>
-        <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>Click row for JSON detail</span>
+        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>Click row for JSON detail</span>
       </div>
     </div>
   );
@@ -480,7 +480,7 @@ function AurumChat({liveData}){
     <PT ch="⚡ AURUM · Telegram + Dashboard" color={T.gold}/>
     <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:2}}>
       {["P&L today?","Open groups?","LENS reading?","All clear?"].map(q=>(
-        <button key={q} onClick={()=>setInp(q)} style={{fontSize:7,fontFamily:T.mono,
+        <button key={q} onClick={()=>setInp(q)} style={{fontSize:9,fontFamily:T.mono,
           background:T.goldBg,border:`1px solid ${T.goldBdr}`,color:T.gold,
           padding:'2px 6px',borderRadius:3,cursor:'pointer'}}>{q}</button>
       ))}
@@ -495,7 +495,7 @@ function AurumChat({liveData}){
             padding:'5px 9px',borderRadius:5,
             fontFamily:m.role==='user'?T.mono:'Georgia,serif'}}>
             {m.role==='assistant'&&<span style={{color:T.gold,fontFamily:T.mono,
-              fontSize:7,marginRight:5,letterSpacing:1}}>AURUM ◆</span>}
+              fontSize:9,marginRight:5,letterSpacing:1}}>AURUM ◆</span>}
             {m.text}
           </div>
         </div>
@@ -516,9 +516,9 @@ function AurumChat({liveData}){
       <button onClick={send} disabled={loading} style={{background:T.goldBg,
         border:`1px solid ${T.goldBdr}`,color:T.gold,padding:'5px 10px',
         borderRadius:4,cursor:loading?'not-allowed':'pointer',
-        fontFamily:T.mono,fontSize:8,alignSelf:'flex-end'}}>{loading?'…':'SEND'}</button>
+        fontFamily:T.mono,fontSize:9,alignSelf:'flex-end'}}>{loading?'…':'SEND'}</button>
     </div>
-    <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,textAlign:'center'}}>
+    <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center'}}>
       Also on Telegram — same AURUM, same live context
     </div>
   </div>);
@@ -893,10 +893,10 @@ function ATHENA(){
           </div>
           <div style={{fontSize:9,color:T.text}}>Next: <span style={{color:T.amber}}>{sent.next_event}</span></div>
           <div style={{fontFamily:T.mono,fontSize:11,color:T.textBB,marginTop:2}}>{sent.next_time}</div>
-          <div style={{fontSize:8,color:T.textD,marginTop:1}}>
+          <div style={{fontSize:9,color:T.textD,marginTop:1}}>
             in {Math.floor((sent.next_in_min||0)/60)}h {(sent.next_in_min||0)%60}m</div>
           {Array.isArray(sent.calendar_currencies)&&sent.calendar_currencies.length>0&&(
-            <div style={{fontSize:6,color:T.textD,fontFamily:T.mono,marginTop:4,lineHeight:1.3}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:4,lineHeight:1.3}}>
               Cal: {sent.calendar_currencies.join(', ')}
             </div>
           )}
@@ -950,11 +950,11 @@ function ATHENA(){
           {tab==='groups'&&(
             <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
               {mgmtNote&&(
-                <div style={{fontSize:8,color:T.cyan,fontFamily:T.mono,marginBottom:10,padding:'6px 8px',
+                <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,marginBottom:10,padding:'6px 8px',
                   background:T.cyanBg,border:`1px solid ${T.cyan}`,borderRadius:4}}>{mgmtNote}</div>
               )}
               {(D.open_groups_queued||[]).length>0&&(
-                <div style={{fontSize:8,color:T.amber,fontFamily:T.mono,marginBottom:10,padding:'6px 8px',
+                <div style={{fontSize:9,color:T.amber,fontFamily:T.mono,marginBottom:10,padding:'6px 8px',
                   background:T.amberBg,border:`1px solid ${T.amber}`,borderRadius:4,lineHeight:1.35}}>
                   {(D.open_groups_queued||[]).length} group(s) in SCRIBE only — waiting for FORGE magic on MT5
                   (positions/pendings). Tiles below are MT5-confirmed.
@@ -995,8 +995,8 @@ function ATHENA(){
                       <span style={{fontFamily:T.mono,color:displayPnl>=0?T.green:T.red,fontWeight:700,
                         fontSize:hasLive?15:13}}>
                         {displayPnl>=0?'+':''}{displayPnl.toFixed(2)}</span>
-                      {hasLive&&<div style={{fontSize:7,color:T.gold,fontFamily:T.mono}}>LIVE</div>}
-                      {!hasLive&&<div style={{fontSize:8,color:T.text,fontFamily:T.mono}}>
+                      {hasLive&&<div style={{fontSize:9,color:T.gold,fontFamily:T.mono}}>LIVE</div>}
+                      {!hasLive&&<div style={{fontSize:9,color:T.text,fontFamily:T.mono}}>
                         +{(g.pips_captured||0).toFixed(1)}p</div>}
                     </div>
                   </div>
@@ -1015,11 +1015,11 @@ function ATHENA(){
                         border:`1px solid ${isCl?T.border:(g.direction==='BUY'?T.green:T.red)}`,
                         display:'flex',alignItems:'center',justifyContent:'center',
                         flexDirection:'column',gap:1,
-                        fontSize:7,color:isCl?T.textD:(g.direction==='BUY'?T.green:T.red),
+                        fontSize:9,color:isCl?T.textD:(g.direction==='BUY'?T.green:T.red),
                         fontFamily:T.mono}}>
                         {isCl?'✓':activePos?(<>
-                          <span style={{fontSize:6,color:T.textD}}>{activePos.open_price}</span>
-                          <span style={{fontSize:7,fontWeight:700,
+                          <span style={{fontSize:9,color:T.textD}}>{activePos.open_price}</span>
+                          <span style={{fontSize:9,fontWeight:700,
                             color:(activePos.profit||0)>=0?T.green:T.red}}>
                             {(activePos.profit||0)>=0?'+':''}{(activePos.profit||0).toFixed(2)}</span>
                         </>):'●'}
@@ -1029,7 +1029,7 @@ function ATHENA(){
                     <div style={{width:`${Math.min(100,(cl/tot)*140)}%`,height:'100%',
                       background:cl>0?T.green:T.gold,borderRadius:2}}/></div>
                   <div style={{display:'flex',justifyContent:'space-between',marginBottom:7}}>
-                    <span style={{fontSize:7,fontFamily:T.mono,color:T.text}}>{cl}/{tot} closed</span>
+                    <span style={{fontSize:9,fontFamily:T.mono,color:T.text}}>{cl}/{tot} closed</span>
                     <div style={{display:'flex',gap:4}}>
                       {cl>0&&<Tag lbl="TP1✓" color={T.green} xs/>}
                       {g.be_moved&&<Tag lbl="BE✓" color={T.cyan} xs/>}
@@ -1043,7 +1043,7 @@ function ATHENA(){
                     ].map(([label,intent,pct])=>(
                       <button key={label} type="button" disabled={mgmtBusy||!API}
                         onClick={()=>postMgmt(intent,pct,g.id)}
-                        style={{fontSize:7,fontFamily:T.mono,
+                        style={{fontSize:9,fontFamily:T.mono,
                         background:mgmtBusy?T.border:'transparent',
                         border:`1px solid ${T.border2}`,color:T.text,
                         padding:'2px 7px',borderRadius:3,
@@ -1076,7 +1076,7 @@ function ATHENA(){
                       textAlign:'center',minWidth:70}}>
                       {count!=null&&<div style={{fontFamily:T.mono,fontSize:16,color,fontWeight:700}}>{count}</div>}
                       {extra&&<div style={{fontFamily:T.mono,fontSize:count!=null?8:14,color,fontWeight:count!=null?400:700}}>{extra}</div>}
-                      <div style={{fontSize:7,color:T.textD,marginTop:2}}>{label}</div>
+                      <div style={{fontSize:9,color:T.textD,marginTop:2}}>{label}</div>
                     </div>
                   ))}
                 </div>
@@ -1102,11 +1102,11 @@ function ATHENA(){
                       <span style={{fontFamily:T.mono,fontSize:10,fontWeight:700,
                         color:(c.pnl||0)>=0?T.green:T.red,marginLeft:'auto'}}>
                         {(c.pnl||0)>=0?'+':''}{(c.pnl||0).toFixed(2)}</span>
-                      <span style={{fontFamily:T.mono,fontSize:8,color:T.textD}}>
+                      <span style={{fontFamily:T.mono,fontSize:9,color:T.textD}}>
                         {(c.pips||0)>=0?'+':''}{(c.pips||0).toFixed(1)}p</span>
-                      {c.pip_value_usd!=null&&(<span style={{fontFamily:T.mono,fontSize:7,color:(c.pip_value_usd||0)>=0?T.green:T.red}}>
+                      {c.pip_value_usd!=null&&(<span style={{fontFamily:T.mono,fontSize:9,color:(c.pip_value_usd||0)>=0?T.green:T.red}}>
                         {(c.pip_value_usd||0)>=0?'+':''}{(c.pip_value_usd||0).toFixed(2)}$pv</span>)}
-                      <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
+                      <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
                         {fmtDateTime(c.timestamp)}</span>
                     </div>
                   );
@@ -1115,7 +1115,7 @@ function ATHENA(){
                 <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,
                   textAlign:'center',padding:40}}>No closures recorded yet</div>
               )}
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:8}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:8}}>
                 Showing last 24h · Full history: GET /api/closures?days=7
               </div>
             </div>
@@ -1135,7 +1135,7 @@ function ATHENA(){
                   ['Skipped',st.skipped,T.amber],['Expired',st.expired,T.textD]].map(([l,v,c])=>(
                   <div key={l} style={{textAlign:'center'}}>
                     <div style={{fontFamily:T.mono,fontSize:16,color:c,fontWeight:700}}>{v}</div>
-                    <div style={{fontSize:7,color:T.textD,letterSpacing:1}}>{l}</div>
+                    <div style={{fontSize:9,color:T.textD,letterSpacing:1}}>{l}</div>
                   </div>
                 ))}
               </div>
@@ -1143,14 +1143,14 @@ function ATHENA(){
               {channels.length>0&&(
                 <div style={{display:'flex',gap:3,flexWrap:'wrap',marginBottom:8}}>
                   <button type="button" onClick={()=>setChFilter(null)}
-                    style={{fontSize:7,fontFamily:T.mono,letterSpacing:1,
+                    style={{fontSize:9,fontFamily:T.mono,letterSpacing:1,
                       background:!chFilter?T.goldBg:'transparent',
                       border:`1px solid ${!chFilter?T.gold:T.border}`,
                       color:!chFilter?T.gold:T.text,
                       padding:'2px 6px',borderRadius:3,cursor:'pointer'}}>ALL</button>
                   {channels.map(ch=>(
                     <button key={ch} type="button" onClick={()=>setChFilter(chFilter===ch?null:ch)}
-                      style={{fontSize:7,fontFamily:T.mono,letterSpacing:0.5,
+                      style={{fontSize:9,fontFamily:T.mono,letterSpacing:0.5,
                         background:chFilter===ch?T.cyanBg:'transparent',
                         border:`1px solid ${chFilter===ch?T.cyan:T.border}`,
                         color:chFilter===ch?T.cyan:T.text,
@@ -1158,7 +1158,7 @@ function ATHENA(){
                   ))}
                 </div>
               )}
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:1}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:1}}>
                 {filtered.length} signals · current session</div>
               {/* Signal rows — separate ENTRY from MANAGEMENT/other */}
               {filtered.map((row)=>{
@@ -1184,13 +1184,13 @@ function ATHENA(){
                     borderRadius:4,padding:'6px 10px',marginBottom:4,opacity:0.8}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                       <div style={{display:'flex',alignItems:'center',gap:6}}>
-                        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>{t}</span>
+                        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>{t}</span>
                         <Tag lbl={intent||'MSG'} color={T.purple} xs/>
-                        <span style={{fontSize:7,color:T.textD,fontFamily:T.mono,
+                        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono,
                           overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:400}}>
                           {(row.raw_text||'').slice(0,80)}</span>
                       </div>
-                      <span style={{fontSize:6,fontFamily:T.mono,color:T.textD,
+                      <span style={{fontSize:9,fontFamily:T.mono,color:T.textD,
                         border:`1px solid ${T.border}`,padding:'1px 5px',borderRadius:2}}>{ch}</span>
                     </div>
                   </div>);
@@ -1204,24 +1204,24 @@ function ATHENA(){
                   borderRadius:4,padding:'8px 10px',marginBottom:5}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
                     <div style={{display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{fontSize:8,color:T.text,fontFamily:T.mono}}>{t}</span>
+                      <span style={{fontSize:9,color:T.text,fontFamily:T.mono}}>{t}</span>
                       {dir&&<Tag lbl={dir} color={dir==='BUY'?T.green:T.red}/>}
                       {entry&&<span style={{fontSize:9,color:T.textB,fontFamily:T.mono,fontWeight:600}}>{entry}</span>}
                       <Tag lbl={act} color={act==='EXECUTED'?T.green:act==='SKIPPED'?T.amber:act==='EXPIRED'?T.textD:T.blue}/>
                     </div>
-                    <span style={{fontSize:6,fontFamily:T.mono,color:T.cyan,
+                    <span style={{fontSize:9,fontFamily:T.mono,color:T.cyan,
                       border:`1px solid ${T.cyan}33`,padding:'1px 5px',borderRadius:2,
                       letterSpacing:0.5}}>{ch}</span>
                   </div>
                   {(row.sl||row.tp1)&&(
-                    <div style={{fontSize:7,fontFamily:T.mono,color:T.text,marginBottom:2}}>
+                    <div style={{fontSize:9,fontFamily:T.mono,color:T.text,marginBottom:2}}>
                       {row.sl!=null&&<span style={{color:T.red}}>SL:{Number(row.sl).toFixed(0)} </span>}
                       {row.tp1!=null&&<span style={{color:T.green}}>TP1:{Number(row.tp1).toFixed(0)} </span>}
                       {row.tp2!=null&&<span style={{color:T.green}}>TP2:{Number(row.tp2).toFixed(0)} </span>}
                       {row.tp3!=null&&<span style={{color:T.green}}>TP3:{Number(row.tp3).toFixed(0)}</span>}
                     </div>
                   )}
-                  <div style={{fontSize:8,color:T.textD,fontFamily:T.mono,lineHeight:1.35,
+                  <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,lineHeight:1.35,
                     overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{info}</div>
                 </div>);
               })}
@@ -1237,7 +1237,7 @@ function ATHENA(){
 
           {tab==='uploads'&&(
             <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:1}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:1}}>
                 Direct bot uploads + signal-room chart media events
               </div>
               {uploadEvents.map((e,i)=>{
@@ -1255,15 +1255,15 @@ function ATHENA(){
                         <Tag lbl={et} color={c} xs/>
                         <Tag lbl={(raw.triggered_by||'SYSTEM').toUpperCase()} color={CC[(raw.triggered_by||'SYSTEM').toUpperCase()]||T.textD} xs/>
                       </div>
-                      <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
+                      <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
                         {fmtDateTime(raw.timestamp)}
                       </span>
                     </div>
-                    <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
+                    <div style={{fontSize:9,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
                       {raw.reason||'—'}
                     </div>
                     {raw.notes&&(
-                      <div style={{fontSize:8,color:T.textD,fontFamily:T.mono,lineHeight:1.35,marginTop:4,whiteSpace:'pre-wrap'}}>
+                      <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,lineHeight:1.35,marginTop:4,whiteSpace:'pre-wrap'}}>
                         {String(raw.notes)}
                       </div>
                     )}
@@ -1280,10 +1280,10 @@ function ATHENA(){
 
           {tab==='perf'&&(
             <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,lineHeight:1.4}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:8,lineHeight:1.4}}>
                 {D.performance_window?.label||`Closed trades in SCRIBE · rolling ${PERF_ROLLING_DAYS}d UTC`}
               </div>
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:10}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:10}}>
                 Last update: {fmtDateTime(D.timestamp)}
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
@@ -1301,13 +1301,13 @@ function ATHENA(){
                   <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
                     borderRadius:5,padding:'10px 12px',textAlign:'center'}}>
                     <div style={{fontSize:18,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
-                    <div style={{fontSize:8,color:T.text,marginTop:3,letterSpacing:1}}>{l}</div>
+                    <div style={{fontSize:9,color:T.text,marginTop:3,letterSpacing:1}}>{l}</div>
                   </div>
                 ))}
               </div>
               <div style={{background:T.card,border:`1px solid ${T.border}`,
                 borderRadius:6,padding:14}}>
-                <div style={{fontSize:8,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:2}}>
+                <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:2}}>
                   CUMULATIVE P&L · {PERF_ROLLING_DAYS}D (UTC)</div>
                 {pnlSpark&&pnlSpark.length>=2?(
                   <Sparkline data={pnlSpark} w={420} h={70} color={sparkColor}/>
@@ -1323,8 +1323,8 @@ function ATHENA(){
             <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
               {/* Header */}
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
-                <span style={{fontSize:8,color:T.cyan,fontFamily:T.mono,letterSpacing:2}}>🔬 BACKTEST — aurum_tester.db</span>
-                <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>{btRuns.length} run(s) stored</span>
+                <span style={{fontSize:9,color:T.cyan,fontFamily:T.mono,letterSpacing:2}}>🔬 BACKTEST — aurum_tester.db</span>
+                <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>{btRuns.length} run(s) stored</span>
               </div>
               {/* Run selector */}
               {btRuns.length===0?(
@@ -1336,7 +1336,7 @@ function ATHENA(){
                     {btRuns.map(r=>(
                       <button key={r.aurum_run_id} type="button"
                         onClick={()=>setBtSelRun(r.aurum_run_id)}
-                        style={{padding:'4px 10px',fontFamily:T.mono,fontSize:7,cursor:'pointer',
+                        style={{padding:'4px 10px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
                           borderRadius:4,border:`1px solid ${btSelRun===r.aurum_run_id?T.gold:T.border}`,
                           background:btSelRun===r.aurum_run_id?T.card:'transparent',
                           color:btSelRun===r.aurum_run_id?T.gold:T.textD}}>
@@ -1357,7 +1357,7 @@ function ATHENA(){
                     return(
                       <>
                         {/* Meta row */}
-                        <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,lineHeight:1.6}}>
+                        <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:8,lineHeight:1.6}}>
                           {m.symbol} · v{m.forge_version} · {m.scalper_mode}
                           {m.sim_start&&<> · sim start {m.sim_start}</>}
                           {m.balance&&<> · balance ${Number(m.balance).toFixed(0)}</>}
@@ -1380,7 +1380,7 @@ function ATHENA(){
                             <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
                               borderRadius:5,padding:'8px 10px',textAlign:'center'}}>
                               <div style={{fontSize:16,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
-                              <div style={{fontSize:7,color:T.text,marginTop:2,letterSpacing:1}}>{l}</div>
+                              <div style={{fontSize:9,color:T.text,marginTop:2,letterSpacing:1}}>{l}</div>
                             </div>
                           ))}
                         </div>
@@ -1537,7 +1537,7 @@ function ATHENA(){
                     <div style={{display:'flex',alignItems:'baseline',gap:10,marginBottom:4}}>
                       <span style={{fontSize:14,fontFamily:T.mono,fontWeight:700,color:ind.color||T.gold}}>{ind.acronym||key}</span>
                       <span style={{fontSize:9,color:T.textBB,fontFamily:T.mono}}>{ind.full_name}</span>
-                      <span style={{marginLeft:'auto',fontSize:8,color:ind.color||T.textD,fontFamily:T.mono,
+                      <span style={{marginLeft:'auto',fontSize:9,color:ind.color||T.textD,fontFamily:T.mono,
                         background:(ind.color||T.gold)+'18',borderRadius:3,padding:'1px 6px'}}>
                         {ind.category}
                       </span>
@@ -1545,17 +1545,17 @@ function ATHENA(){
                     {/* Params + timeframes */}
                     <div style={{display:'flex',gap:12,marginBottom:6,flexWrap:'wrap'}}>
                       {ind.forge_params&&(
-                        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
                           <span style={{color:T.textB}}>params:</span> {ind.forge_params}
                         </span>
                       )}
                       {ind.timeframes&&(
-                        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
                           <span style={{color:T.textB}}>TF:</span> {ind.timeframes.join(' · ')}
                         </span>
                       )}
                       {ind.range&&(
-                        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
                           <span style={{color:T.textB}}>range:</span> {ind.range}
                         </span>
                       )}
@@ -1569,15 +1569,15 @@ function ATHENA(){
                       <div style={{marginBottom:6}}>
                         {Object.entries(ind.reading_guide).map(([k,v])=>(
                           <div key={k} style={{display:'flex',gap:6,padding:'2px 0',borderTop:`1px solid ${T.border}`}}>
-                            <span style={{fontSize:8,color:ind.color||T.gold,fontFamily:T.mono,minWidth:120,flexShrink:0}}>{k.replace(/_/g,' ')}</span>
-                            <span style={{fontSize:8,color:T.textB,fontFamily:'sans-serif'}}>{v}</span>
+                            <span style={{fontSize:9,color:ind.color||T.gold,fontFamily:T.mono,minWidth:120,flexShrink:0}}>{k.replace(/_/g,' ')}</span>
+                            <span style={{fontSize:9,color:T.textB,fontFamily:'sans-serif'}}>{v}</span>
                           </div>
                         ))}
                       </div>
                     )}
                     {/* FORGE usage */}
                     <div style={{background:T.row,borderRadius:4,padding:'6px 8px'}}>
-                      <div style={{fontSize:8,color:T.gold,fontFamily:T.mono,marginBottom:2}}>HOW FORGE USES IT</div>
+                      <div style={{fontSize:9,color:T.gold,fontFamily:T.mono,marginBottom:2}}>HOW FORGE USES IT</div>
                       <div style={{fontSize:9,color:T.textB,fontFamily:'sans-serif',lineHeight:1.5}}>{ind.forge_usage}</div>
                     </div>
                   </div>
@@ -1616,7 +1616,7 @@ function ATHENA(){
                     ${Number(ex.ask).toFixed(2)}</div>
                 </div>
               </div>
-              <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,marginBottom:10,lineHeight:1.55}}>
+              <div style={{fontSize:9,color:T.textB,fontFamily:T.mono,marginBottom:10,lineHeight:1.55}}>
                 <span style={{color:T.textBB,fontWeight:600}}>{sym}</span>
                 {' · file age '}{fmtAgeSec(ex.age_sec)}
                 {' · spread '}
@@ -1628,12 +1628,12 @@ function ATHENA(){
           ):(
             <div style={{marginBottom:10,padding:'8px 10px',background:'rgba(245,158,11,0.08)',
               border:`1px solid ${T.amber}`,borderRadius:5}}>
-              <div style={{fontSize:8,color:T.amber,fontFamily:T.mono,fontWeight:700,marginBottom:4}}>
+              <div style={{fontSize:9,color:T.amber,fontFamily:T.mono,fontWeight:700,marginBottom:4}}>
                 NO LIVE BROKER QUOTE</div>
-              <div style={{fontSize:7,color:T.text,fontFamily:T.mono,lineHeight:1.4}}>
+              <div style={{fontSize:9,color:T.text,fontFamily:T.mono,lineHeight:1.4}}>
                 {ex.stale_reason||'market_data.json missing or unusable.'}
               </div>
-              <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,marginTop:6,lineHeight:1.45}}>
+              <div style={{fontSize:9,color:T.textB,fontFamily:T.mono,marginTop:6,lineHeight:1.45}}>
                 File age: {fmtAgeSec(ex.age_sec)} · {ex.timestamp_utc||'no timestamp'}
               </div>
             </div>
@@ -1645,14 +1645,14 @@ function ATHENA(){
             <div style={{padding:'7px 9px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
               {/* OsMA value + bias */}
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                <span style={{fontSize:8,color:T.textB,fontFamily:T.mono,fontWeight:600}}>
+                <span style={{fontSize:9,color:T.textB,fontFamily:T.mono,fontWeight:600}}>
                   {`OsMA(${sg.macd_fast||3},${sg.macd_slow||10},${sg.macd_signal||16}) M5`}
                 </span>
                 <span style={{fontFamily:T.mono,fontSize:12,fontWeight:700,
                   color:sg.osma_m5==null?T.textD:sg.osma_m5>0?T.green:sg.osma_m5<0?T.red:T.textBB}}>
                   {sg.osma_m5!=null?((sg.osma_m5>0?'+':'')+sg.osma_m5.toFixed(5)):'—'}
                   {sg.osma_bias!=null&&(
-                    <span style={{marginLeft:5,fontSize:8,
+                    <span style={{marginLeft:5,fontSize:9,
                       color:sg.osma_bias==='bull'?T.green:sg.osma_bias==='bear'?T.red:T.textD}}>
                       {sg.osma_bias==='bull'?'BULL':sg.osma_bias==='bear'?'BEAR':'FLAT'}
                     </span>
@@ -1666,11 +1666,11 @@ function ATHENA(){
               ].map(([lbl,req,on,pass])=>(
                 <div key={lbl} style={{display:'flex',justifyContent:'space-between',
                   alignItems:'center',padding:'3px 0',borderTop:`1px solid ${T.border}`}}>
-                  <span style={{fontSize:8,color:T.textB,fontFamily:T.mono,fontWeight:600,width:58}}>{lbl}</span>
-                  <span style={{fontSize:7,fontFamily:T.mono,color:on?T.amber:T.textD,width:28,textAlign:'center'}}>
+                  <span style={{fontSize:9,color:T.textB,fontFamily:T.mono,fontWeight:600,width:58}}>{lbl}</span>
+                  <span style={{fontSize:9,fontFamily:T.mono,color:on?T.amber:T.textD,width:28,textAlign:'center'}}>
                     {on?'ON':'OFF'}
                   </span>
-                  <span style={{fontSize:7,fontFamily:T.mono,color:T.textD,flex:1,textAlign:'center'}}>{req}</span>
+                  <span style={{fontSize:9,fontFamily:T.mono,color:T.textD,flex:1,textAlign:'center'}}>{req}</span>
                   <span style={{fontSize:13,fontFamily:T.mono,fontWeight:700,width:16,textAlign:'right',
                     color:pass==null?T.textD:pass?T.green:T.red}}>
                     {pass==null?(on?'?':'—'):pass?'✓':'✗'}
@@ -1679,7 +1679,7 @@ function ATHENA(){
               ))}
               {/* Session / ADX block footnote */}
               {(sg.session_ny_sell_cutoff||sg.adx_sell_block)&&(
-                <div style={{marginTop:5,fontSize:7,color:T.textD,fontFamily:T.mono,lineHeight:1.4}}>
+                <div style={{marginTop:5,fontSize:9,color:T.textD,fontFamily:T.mono,lineHeight:1.4}}>
                   {sg.session_ny_sell_cutoff?`SELL cutoff ≥${sg.session_ny_sell_cutoff}:00 UTC  `:null}
                   {sg.adx_sell_block?`ADX≥${sg.adx_sell_block} blocks SELL`:null}
                 </div>
@@ -1693,7 +1693,7 @@ function ATHENA(){
               {tv.last!=null?'$'+Number(tv.last).toFixed(2):'—'}</span>
             <span style={{fontFamily:T.mono,fontSize:10,color:T.cyan,fontWeight:600}}>last (FX)</span>
           </div>
-          <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,marginBottom:8,lineHeight:1.55}}>
+          <div style={{fontSize:9,color:T.textB,fontFamily:T.mono,marginBottom:8,lineHeight:1.55}}>
             <span style={{color:T.textBB,fontWeight:600}}>{tv.timeframe||'—'}</span>
             {' · snapshot '}{tvSnapAge}
             {tv.divergence_from_mt5_usd!=null&&ex.usable?(
@@ -1723,21 +1723,21 @@ function ATHENA(){
             </div>
           ))}
           <div style={{marginTop:8,padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
-            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>DMI STUDY</div>
-            <div style={{fontSize:8,color:T.cyan,fontFamily:T.mono,lineHeight:1.4}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>DMI STUDY</div>
+            <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,lineHeight:1.4}}>
               {tv.dmi_present?(tv.dmi_study||'present'):'missing on chart'}
             </div>
-            <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
+            <div style={{fontSize:9,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
               ADX {tv.adx!=null?tv.adx.toFixed(1):'—'} · DI+ {tv.di_plus!=null?tv.di_plus.toFixed(2):'—'} · DI- {tv.di_minus!=null?tv.di_minus.toFixed(2):'—'}
             </div>
           </div>
           <div style={{marginTop:6,padding:'6px 8px',background:tv.order_block_present?T.greenBg:T.amberBg,border:`1px solid ${tv.order_block_present?T.green:T.amber}`,borderRadius:4}}>
-            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:1}}>ORDER BLOCK DETECTOR</div>
-            <div style={{fontSize:8,color:tv.order_block_present?T.green:T.amber,fontFamily:T.mono,lineHeight:1.35}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:1}}>ORDER BLOCK DETECTOR</div>
+            <div style={{fontSize:9,color:tv.order_block_present?T.green:T.amber,fontFamily:T.mono,lineHeight:1.35}}>
               {tv.order_block_present?(tv.order_block_study||'present on chart'):'missing on chart'}
             </div>
             {tv.order_block_values&&Object.keys(tv.order_block_values).length>0&&(
-              <div style={{fontSize:7,color:T.text,fontFamily:T.mono,marginTop:4,lineHeight:1.35}}>
+              <div style={{fontSize:9,color:T.text,fontFamily:T.mono,marginTop:4,lineHeight:1.35}}>
                 {tv.order_block_values.zone_count!=null?(
                   <span>zone_count:{tv.order_block_values.zone_count}</span>
                 ):null}
@@ -1765,10 +1765,10 @@ function ATHENA(){
           </div>
           {tv.tv_brief&&(
             <div style={{marginTop:6,padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:1}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:1}}>
                 TV BRIEF {tv.tv_brief_source?`(${tv.tv_brief_source})`:''}
               </div>
-              <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,whiteSpace:'pre-wrap'}}>
+              <div style={{fontSize:9,color:T.text,fontFamily:T.mono,lineHeight:1.35,whiteSpace:'pre-wrap'}}>
                 {String(tv.tv_brief).slice(0,280)}
               </div>
             </div>
@@ -1779,17 +1779,17 @@ function ATHENA(){
               <>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
                   <Tag lbl={asrReady?(asrDirection?`READY·${asrDirection}`:'READY'):'BLOCKED'} color={asrReadyColor}/>
-                  <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
+                  <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
                     {fmtDateTime(asr.timestamp)}
                   </span>
                 </div>
                 {asrTesterMode&&(
-                  <div style={{fontSize:7,color:T.cyan,fontFamily:T.mono,marginBottom:4,padding:'2px 5px',
+                  <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,marginBottom:4,padding:'2px 5px',
                     background:'rgba(6,182,212,0.08)',border:`1px solid ${T.cyan}`,borderRadius:3}}>
                     STRATEGY TESTER — mt5 timestamps are simulated
                   </div>
                 )}
-                <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
+                <div style={{fontSize:9,color:T.textB,fontFamily:T.mono,lineHeight:1.4}}>
                   prefilters <span style={{color:asrPrefilterPass?T.green:T.red}}>{asrPrefilterPass?'PASS':'FAIL'}</span>
                   {' · '}h1 {asrPref.h1_bias||'UNKNOWN'}
                   {' · '}{asrPref.h1_bias==='BULL'?'lowerBB':'upperBB'}{' '}
@@ -1797,7 +1797,7 @@ function ATHENA(){
                     ?(asrSetup.near_lower_bb===true?'YES':asrSetup.near_lower_bb===false?'NO':'—')
                     :(asrSetup.near_upper_bb===true?'YES':asrSetup.near_upper_bb===false?'NO':'—')}
                 </div>
-                <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:3}}>
+                <div style={{fontSize:9,color:T.text,fontFamily:T.mono,lineHeight:1.35,marginTop:3}}>
                   quality {asrSetup.indicator_data_quality||'—'}
                   {' · '}open {asrPref.open_groups!=null?asrPref.open_groups:'—'}/{asrPref.max_groups!=null?asrPref.max_groups:'—'}
                   {' · '}mt5 {asrTesterMode?'tester':asrPref.mt5_fresh===true?'fresh':asrPref.mt5_fresh===false?'stale':'—'}
@@ -1806,10 +1806,10 @@ function ATHENA(){
                 {(asrLens.rsi!=null||asrLens.macd_hist!=null)&&(
                   <div style={{marginTop:5,padding:'4px 6px',background:T.row,
                     border:`1px solid ${T.border}`,borderRadius:3}}>
-                    <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:0.8}}>
+                    <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:3,letterSpacing:0.8}}>
                       TV LENS · AURUM context
                     </div>
-                    <div style={{fontSize:8,fontFamily:T.mono,lineHeight:1.5}}>
+                    <div style={{fontSize:9,fontFamily:T.mono,lineHeight:1.5}}>
                       {asrLens.rsi!=null&&(
                         <span style={{marginRight:8}}>
                           RSI <span style={{color:asrLens.rsi>60?T.red:asrLens.rsi<40?T.green:T.textBB,fontWeight:600}}>
@@ -1838,7 +1838,7 @@ function ATHENA(){
                       )}
                     </div>
                     {(asrLens.di_plus!=null&&asrLens.di_minus!=null)&&(
-                      <div style={{fontSize:7,color:T.textB,fontFamily:T.mono,marginTop:2}}>
+                      <div style={{fontSize:9,color:T.textB,fontFamily:T.mono,marginTop:2}}>
                         DI+ {asrLens.di_plus.toFixed(1)} · DI- {asrLens.di_minus.toFixed(1)}
                         {' · '}<span style={{color:asrLens.di_bear?T.red:T.green}}>
                           {asrLens.di_bear?'BEAR dir':'BULL dir'}
@@ -1846,25 +1846,25 @@ function ATHENA(){
                       </div>
                     )}
                     {asrLens.age_sec!=null&&(
-                      <div style={{fontSize:6,color:T.textD,fontFamily:T.mono,marginTop:2}}>
+                      <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:2}}>
                         lens age {asrLens.age_sec.toFixed(0)}s
                       </div>
                     )}
                   </div>
                 )}
                 {asrFailed.length>0&&(
-                  <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
+                  <div style={{fontSize:9,color:T.amber,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
                     failed: {asrFailed.slice(0,4).join(', ')}
                   </div>
                 )}
                 {asrLatest&&(
-                  <div style={{fontSize:7,color:T.cyan,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
+                  <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,lineHeight:1.35,marginTop:4}}>
                     latest: {asrLatest.decision||'—'} · {fmtDateTime(asrLatest.timestamp)}
                   </div>
                 )}
               </>
             ):(
-              <div style={{fontSize:8,color:T.textD,fontFamily:T.mono,lineHeight:1.35}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,lineHeight:1.35}}>
                 Endpoint unavailable{autoscalperConditionsError?`: ${autoscalperConditionsError}`:''}
               </div>
             )}
@@ -1874,11 +1874,11 @@ function ATHENA(){
           <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4,marginBottom:6}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
               <Tag lbl={regimeMode} color={regimeModeColor}/>
-              <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>
+              <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>
                 {regimeCfg.enabled?'enabled':'disabled'}
               </span>
             </div>
-            <div style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.45}}>
+            <div style={{fontSize:9,color:T.textB,fontFamily:T.mono,lineHeight:1.45}}>
               <span style={{color:T.textD}}>Regime:</span> {regimeCurrent.label||'UNKNOWN'} ·
               <span style={{color:T.gold}}> {regimeConfPct}</span>
               <br/>
@@ -1890,7 +1890,7 @@ function ATHENA(){
             {Object.keys(regimePosterior).length>0&&(
               <div style={{display:'flex',gap:6,marginTop:5,flexWrap:'wrap'}}>
                 {Object.entries(regimePosterior).sort((a,b)=>b[1]-a[1]).map(([lbl,prob])=>(
-                  <span key={lbl} style={{fontSize:7,fontFamily:T.mono,
+                  <span key={lbl} style={{fontSize:9,fontFamily:T.mono,
                     color:lbl===regimeCurrent.label?T.gold:T.textD}}>
                     {lbl} {Math.round(prob*100)}%
                   </span>
@@ -1899,7 +1899,7 @@ function ATHENA(){
             )}
             {/* LENS vs MT5 source indicator */}
             {regimeFeatures.source&&(
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginTop:4,lineHeight:1.4}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:4,lineHeight:1.4}}>
                 src <span style={{color:regimeFeatures.lens_used?T.cyan:T.amber}}>
                   {regimeFeatures.source}
                 </span>
@@ -1909,7 +1909,7 @@ function ATHENA(){
               </div>
             )}
             {(regimeCurrent.entry_gate_reason||regimeCurrent.fallback_reason)&&(
-              <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,marginTop:4,lineHeight:1.35}}>
+              <div style={{fontSize:9,color:T.amber,fontFamily:T.mono,marginTop:4,lineHeight:1.35}}>
                 gate: {regimeCurrent.entry_gate_reason||'—'}
                 {regimeCurrent.fallback_reason?` · fallback: ${regimeCurrent.fallback_reason}`:''}
               </div>
@@ -1917,30 +1917,30 @@ function ATHENA(){
           </div>
 
           <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4,marginBottom:6}}>
-            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
               TRANSITIONS (24H)
             </div>
             {regimeTransitions.slice(0,4).map((tr,i)=>(
-              <div key={`${tr.timestamp||i}-${i}`} style={{fontSize:8,color:T.textB,fontFamily:T.mono,lineHeight:1.35,marginBottom:3}}>
+              <div key={`${tr.timestamp||i}-${i}`} style={{fontSize:9,color:T.textB,fontFamily:T.mono,lineHeight:1.35,marginBottom:3}}>
                 {tr.from||'?'} → <span style={{color:T.cyan}}>{tr.to||'?'}</span>
                 <span style={{color:T.textD}}> · {fmtDateTime(tr.timestamp)}</span>
                 {tr.stale&&<span style={{color:T.amber}}> stale</span>}
               </div>
             ))}
             {regimeTransitions.length===0&&(
-              <div style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>No transitions in window</div>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>No transitions in window</div>
             )}
           </div>
 
           <div style={{padding:'6px 8px',background:T.card,border:`1px solid ${T.border2}`,borderRadius:4}}>
-            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
               REGIME METRICS ({regimePerf.days||30}D)
             </div>
-            <div style={{fontSize:8,color:T.text,fontFamily:T.mono,lineHeight:1.4,marginBottom:4}}>
+            <div style={{fontSize:9,color:T.text,fontFamily:T.mono,lineHeight:1.4,marginBottom:4}}>
               snapshots {regimePerf.snapshot_count||0} · fallback {regimePerf.fallback_rate||0}%
             </div>
             {regimeRows.map((row,i)=>(
-              <div key={`${row.regime_label||i}-${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:8,fontFamily:T.mono,lineHeight:1.45}}>
+              <div key={`${row.regime_label||i}-${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,lineHeight:1.45}}>
                 <span style={{color:row.regime_label===regimeCurrent.label?T.gold:T.textB}}>
                   {row.regime_label||'UNKNOWN'} ({row.total||0})
                 </span>
@@ -1950,7 +1950,7 @@ function ATHENA(){
               </div>
             ))}
             {regimeRows.length===0&&(
-              <div style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>No closed trades with regime labels yet</div>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>No closed trades with regime labels yet</div>
             )}
           </div>
         </div>
@@ -1961,7 +1961,7 @@ function ATHENA(){
     {/* FOOTER */}
     <div style={{borderTop:`1px solid ${T.border}`,padding:'4px 16px',
       display:'flex',justifyContent:'space-between',alignItems:'center',
-      fontSize:7,color:T.textD,fontFamily:T.mono,flexShrink:0,background:T.panel}}>
+      fontSize:9,color:T.textD,fontFamily:T.mono,flexShrink:0,background:T.panel}}>
       <span>ATHENA · /api/live: execution + tradingview · FORGE + TV MCP · SCRIBE</span>
       {!connected&&<span style={{color:T.amber}}>⚠ DEMO — run bridge.py + athena_api.py for live</span>}
       <span>Tick {tick} · 3s poll</span>
