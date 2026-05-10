@@ -690,6 +690,97 @@ git commit -m "feat/fix(athena): description — tests: N/N pass"
 
 ---
 
+## .env.example Maintenance Protocol
+
+Whenever a new env variable is added to `.env` or to the sync script
+(`scripts/sync_scalper_config_from_env.py`), `.env.example` **MUST** be updated
+in the **same commit**. Never add a variable to `.env` and leave `.env.example`
+stale.
+
+### Rules
+
+1. **Same-commit requirement** — `.env.example` changes are part of the feature
+   commit, not a follow-up. If you are adding a new `FORGE_*` key to
+   `sync_scalper_config_from_env.py`, the matching documented line in
+   `.env.example` goes in the same `git add` / `git commit`.
+
+2. **Correct section placement** — add the variable under the section header that
+   matches its subsystem. Section headers follow the pattern:
+   ```
+   # ── SECTION NAME ────────────────────────────────────────────────────────
+   ```
+   Existing sections: CLAUDE API, TELEGRAM — CHANNEL READER, TELEGRAM — BOT,
+   MT5 FILE BUS, FORGE MAGIC NUMBER, TRADINGVIEW MCP (LENS), TRADING PARAMETERS,
+   SIGNAL MODE, REGIME ENGINE, AUTO_SCALPER MODE, FORGE SCALPER CONFIG,
+   AEGIS, DRAWDOWN PROTECTION, SENTINEL, BRIDGE, RECONCILER, AURUM,
+   WEB SEARCH, ATHENA, SCRIBE, LISTENER, VISION, SESSION BOUNDARIES,
+   INTERNAL CONFIG FILE PATHS, DEFERRED ANALYSIS RUNS.
+
+3. **Description comment required** — every variable must have a one-line
+   comment immediately above it explaining what it does:
+   ```
+   # Minutes before a HIGH-impact event during which entries are blocked (0–240)
+   FORGE_NEWS_FILTER_HIGH_BEFORE=20
+   ```
+
+4. **Default value shown** — the `.env.example` line must show the recommended
+   default value. Commented-out lines (`# VAR=default`) are used for optional
+   overrides; uncommented lines are used for required or commonly-set vars.
+
+5. **Toggle explanation required for boolean vars** — always include the
+   toggle meaning in the comment. Use `(0=disabled, 1=enabled)` for integer
+   booleans and `(true/false)` for string booleans:
+   ```
+   # Apply the news filter in Strategy Tester runs (0=disabled, 1=enabled)
+   FORGE_NEWS_FILTER_APPLY_IN_TESTER=0
+   ```
+
+6. **Units and valid range** — for numeric vars, include the unit and valid
+   range in the comment where relevant:
+   ```
+   # Minutes before a HIGH-impact event during which entries are blocked (0–240)
+   # Minimum SL distance as a fraction of ATR — structural SL cannot be tighter (0.3–3.0)
+   ```
+
+7. **Tester-only vars** — mark variables that only affect Strategy Tester runs
+   with `[TESTER-ONLY]` in the comment:
+   ```
+   # [TESTER-ONLY] Apply loss cooldown in Strategy Tester (0=disabled, 1=enabled)
+   FORGE_TESTER_COOLDOWN_ENABLED=1
+   ```
+
+8. **No real secrets** — `.env.example` must never contain real API keys,
+   tokens, bot tokens, or passwords. Use placeholders:
+   - API keys: `your_key_here`
+   - Tokens: `your_token_here`
+   - Hashes: `your_api_hash_here`
+
+### Verification step
+
+Run the following before and after to confirm the variable count increased:
+```bash
+grep -c "^[A-Z]" .env.example
+```
+The post-change count must be strictly greater than the pre-change count.
+If the count did not increase, the variable was not properly added (check that
+the line is not commented out when it should be active).
+
+### Commit discipline
+
+```bash
+# Wrong — separate commit for .env.example
+git add scripts/sync_scalper_config_from_env.py
+git commit -m "feat(forge): add FORGE_NEW_GATE"
+git add .env.example
+git commit -m "docs: document FORGE_NEW_GATE"   # ← NEVER do this
+
+# Correct — same commit
+git add scripts/sync_scalper_config_from_env.py .env.example
+git commit -m "feat(forge): add FORGE_NEW_GATE with .env.example docs"
+```
+
+---
+
 ## Regime Engine — Maintenance Protocol
 
 `docs/REGIME_ENGINE_REVIEW.md` documents the FORGE HMM-based regime classification engine.
