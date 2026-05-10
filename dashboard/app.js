@@ -1467,31 +1467,7 @@ function ATHENA(){
                               border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
                               color:T.textD,flexShrink:0,marginLeft:8}}>↻ Refresh</button>
                         </div>
-                        {/* Stat grid */}
-                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
-                          {[
-                            ['Total P&L',`${p.total_pnl>=0?'+':''}$${(p.total_pnl||0).toFixed(2)}`,p.total_pnl>=0?T.green:T.red],
-                            ['Win Rate',p.win_rate!=null?`${p.win_rate}%`:'—',T.green],
-                            ['Trades',p.total||0,T.textBB],
-                            ['Wins',wins,T.green],
-                            ['Losses',losses,T.red],
-                            ['Best Win',`$${(p.best_win||0).toFixed(2)}`,T.green],
-                            ['Worst Loss',`$${(p.worst_loss||0).toFixed(2)}`,T.red],
-                            ['TAKEN',btDetail.signals?.taken||0,T.gold],
-                            ['Open at End',btDetail.signals?.open_at_end??'—',btDetail.signals?.open_at_end>0?T.amber:T.textD],
-                            ['Skipped',btDetail.signals?.skipped||0,T.textD],
-                          ].map(([l,v,c])=>(
-                            <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
-                              borderRadius:5,padding:'8px 10px',textAlign:'center'}}>
-                              <div style={{fontSize:16,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
-                              <div style={{fontSize:9,color:T.text,marginTop:2,letterSpacing:1}}>{l}</div>
-                            </div>
-                          ))}
-                        </div>
-                        <div style={{marginBottom:10,fontSize:8,color:T.textD,fontFamily:T.mono}}>
-                          Source: aurum_tester.db forge_signals + forge_journal_trades · /api/backtest/run/:id
-                        </div>
-                        {/* ── RUN ANALYSIS — dynamic multi-compare ── */}
+                        {/* ── RUN ANALYSIS — first panel after meta, dynamic multi-compare ── */}
                         {btCompares.length>0&&(()=>{
                           const scroll=btCompares.length>2;
                           return(
@@ -1558,6 +1534,32 @@ function ATHENA(){
                           </div>
                           );
                         })()}
+                        {/* Stat grid */}
+                        <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,
+                          letterSpacing:2,marginBottom:8}}>RUN STATISTICS</div>
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+                          {[
+                            ['Total P&L',`${p.total_pnl>=0?'+':''}$${(p.total_pnl||0).toFixed(2)}`,p.total_pnl>=0?T.green:T.red],
+                            ['Win Rate',p.win_rate!=null?`${p.win_rate}%`:'—',T.green],
+                            ['Trades',p.total||0,T.textBB],
+                            ['Wins',wins,T.green],
+                            ['Losses',losses,T.red],
+                            ['Best Win',`$${(p.best_win||0).toFixed(2)}`,T.green],
+                            ['Worst Loss',`$${(p.worst_loss||0).toFixed(2)}`,T.red],
+                            ['TAKEN',btDetail.signals?.taken||0,T.gold],
+                            ['Open at End',btDetail.signals?.open_at_end??'—',btDetail.signals?.open_at_end>0?T.amber:T.textD],
+                            ['Skipped',btDetail.signals?.skipped||0,T.textD],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
+                              borderRadius:5,padding:'8px 10px',textAlign:'center'}}>
+                              <div style={{fontSize:16,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
+                              <div style={{fontSize:9,color:T.text,marginTop:2,letterSpacing:1}}>{l}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{marginBottom:10,fontSize:8,color:T.textD,fontFamily:T.mono}}>
+                          Source: aurum_tester.db forge_signals + forge_journal_trades · /api/backtest/run/:id
+                        </div>
                         {/* P&L curve with labeled axes */}
                         {sparkData.length>=2&&(()=>{
                           const total=btDetail.pnl_curve?.length||sparkData.length;
