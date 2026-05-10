@@ -543,9 +543,11 @@ function ATHENA(){
   const [leftW,setLeftW]=useState(186);    // left sidebar width (px)
   // Backtest tab state
   const [btRuns,setBtRuns]=useState([]);
-  const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
-  const [btDetail,setBtDetail]=useState(null);   // /api/backtest/run/:id response
-  const [btCompare,setBtCompare]=useState(null); // /api/backtest/compare response
+  const [btAllRuns,setBtAllRuns]=useState([]);    // full list (pre-display-limit slice)
+  const [btSelRun,setBtSelRun]=useState(null);    // aurum_run_id currently viewed
+  const [btPinnedRun,setBtPinnedRun]=useState(null); // pinned run (always shown, outside display limit)
+  const [btDetail,setBtDetail]=useState(null);    // /api/backtest/run/:id response
+  const [btCompare,setBtCompare]=useState(null);  // /api/backtest/compare response
   const [gateLegend,setGateLegend]=useState({});         // gate_reason → {label, explanation}
   const [indLegend,setIndLegend]=useState({});           // acronym → indicator detail
   const [mgmtBusy,setMgmtBusy]=useState(false);
@@ -616,12 +618,15 @@ function ATHENA(){
     const load=async()=>{
       try{const r=await fetch(`${API}/api/backtest/runs`);
         if(r.ok){const j=await r.json();
-          // Apply display_limit from API (ATHENA_BACKTEST_RUNS_DISPLAY_LIMIT env var)
+          const all=j.runs||[];
           const displayLimit=j.display_limit||10;
-          const visible=(j.runs||[]).slice(0,displayLimit);
-          setBtRuns(visible);
-          // auto-select latest run if none selected
-          if(!btSelRun&&visible.length>0)setBtSelRun(visible[0].aurum_run_id);}}
+          setBtAllRuns(all);
+          // Apply display limit, but always include pinned run outside the slice
+          const slice=all.slice(0,displayLimit);
+          const pinnedInSlice=btPinnedRun&&slice.some(r=>r.aurum_run_id===btPinnedRun);
+          const pinnedRow=btPinnedRun&&!pinnedInSlice?all.find(r=>r.aurum_run_id===btPinnedRun):null;
+          setBtRuns(pinnedRow?[...slice,pinnedRow]:slice);
+          if(!btSelRun&&slice.length>0)setBtSelRun(slice[0].aurum_run_id);}}
       catch(e){}};
     load();const t=setInterval(load,30000);return()=>clearInterval(t);
   },[tab]);
@@ -636,15 +641,16 @@ function ATHENA(){
     load();const t=setInterval(load,30000);return()=>clearInterval(t);
   },[btSelRun]);
 
-  // Backtest compare — fetch when runs list updates (auto last-two)
+  // Backtest compare — re-fetch only when selection or pin changes (not on auto-refresh)
   useEffect(()=>{
-    if(tab!=='backtest')return;
-    const load=async()=>{
-      try{const r=await fetch(`${API}/api/backtest/compare`);
-        if(r.ok){const j=await r.json();if(!j.error)setBtCompare(j);}}
-      catch(e){}};
-    load();
-  },[btRuns]);
+    if(tab!=='backtest'||!btSelRun)return;
+    const runB=btPinnedRun&&btPinnedRun!==btSelRun
+      ? btPinnedRun
+      : (btAllRuns.find(r=>r.aurum_run_id!==btSelRun)||{}).aurum_run_id;
+    if(!runB)return;
+    const url=`${API}/api/backtest/compare?run_a=${btSelRun}&run_b=${runB}`;
+    fetch(url).then(r=>r.ok?r.json():null).then(j=>{if(j&&!j.error)setBtCompare(j);}).catch(()=>{});
+  },[btSelRun,btPinnedRun,tab]);
 
   const switchMode=async(m)=>{
     try{await fetch(`${API}/api/mode`,{method:'POST',
@@ -1392,19 +1398,34 @@ function ATHENA(){
               ):(
                 <>
                   <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
-                    {btRuns.map(r=>(
-                      <button key={r.aurum_run_id} type="button"
-                        onClick={()=>setBtSelRun(r.aurum_run_id)}
-                        style={{padding:'4px 10px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
-                          borderRadius:4,border:`1px solid ${btSelRun===r.aurum_run_id?T.gold:T.border}`,
-                          background:btSelRun===r.aurum_run_id?T.card:'transparent',
-                          color:btSelRun===r.aurum_run_id?T.gold:T.textD}}>
-                        Run #{r.aurum_run_id}
-                        {r.forge_version&&<span style={{marginLeft:5,color:T.textD}}>v{r.forge_version}</span>}
-                        {r.total_pnl!=null&&<span style={{marginLeft:5,color:r.total_pnl>=0?T.green:T.red}}>
-                          {r.total_pnl>=0?'+':''}{r.total_pnl?.toFixed(2)}</span>}
-                      </button>
-                    ))}
+                    {btRuns.map(r=>{
+                      const isSel=btSelRun===r.aurum_run_id;
+                      const isPinned=btPinnedRun===r.aurum_run_id;
+                      const isPinnedExtra=isPinned&&!btRuns.slice(0,btRuns.length-1).includes(r)&&btAllRuns.findIndex(x=>x.aurum_run_id===r.aurum_run_id)>=( btRuns.length-1);
+                      return(
+                        <div key={r.aurum_run_id} style={{display:'flex',alignItems:'center',gap:2}}>
+                          <button type="button" onClick={()=>setBtSelRun(r.aurum_run_id)}
+                            style={{padding:'4px 10px',fontFamily:T.mono,fontSize:9,cursor:'pointer',
+                              borderRadius:4,
+                              border:`1px solid ${isSel?T.gold:isPinned?T.cyan:T.border}`,
+                              background:isSel?T.card:'transparent',
+                              color:isSel?T.gold:isPinned?T.cyan:T.textD}}>
+                            {isPinned&&<span style={{marginRight:3}}>📌</span>}
+                            Run #{r.aurum_run_id}
+                            {r.forge_version&&<span style={{marginLeft:4,color:T.textD}}>v{r.forge_version}</span>}
+                            {r.total_pnl!=null&&<span style={{marginLeft:4,color:r.total_pnl>=0?T.green:T.red}}>
+                              {r.total_pnl>=0?'+':''}{r.total_pnl?.toFixed(2)}</span>}
+                          </button>
+                          {/* pin toggle */}
+                          <button type="button" title={isPinned?'Unpin run':'Pin as comparison baseline'}
+                            onClick={e=>{e.stopPropagation();setBtPinnedRun(isPinned?null:r.aurum_run_id);}}
+                            style={{padding:'3px 5px',fontSize:9,cursor:'pointer',border:'none',
+                              background:'transparent',color:isPinned?T.cyan:T.border,lineHeight:1}}>
+                            📌
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                   {/* Run detail */}
                   {btDetail&&btDetail.meta&&btSelRun===btDetail.meta.aurum_run_id&&(()=>{
@@ -1451,6 +1472,8 @@ function ATHENA(){
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:'10px 12px',marginBottom:12}}>
                             <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,fontWeight:600,letterSpacing:2,marginBottom:8}}>
                               ⚖ RUN ANALYSIS — Run #{btCompare.run_a.aurum_run_id} vs Run #{btCompare.run_b.aurum_run_id}
+                              {btPinnedRun===btCompare.run_b.aurum_run_id&&
+                                <span style={{marginLeft:6,color:T.cyan,fontSize:8}}>📌 pinned baseline</span>}
                               {btCompare.winner&&btCompare.winner!=='tie'&&(
                                 <span style={{marginLeft:8,color:T.gold}}> · Winner: Run #{btCompare.winner}</span>
                               )}
@@ -1466,9 +1489,10 @@ function ATHENA(){
                                   </div>
                                   {[
                                     ['P&L',`$${(run.total_pnl||0).toFixed(2)}`],
+                                    ['Return',run.pnl_return_pct!=null?`${run.pnl_return_pct.toFixed(3)}%`:'n/a'],
                                     ['Win Rate',run.win_rate_pct!=null?`${run.win_rate_pct}%`:'n/a'],
                                     ['Taken',run.taken??'—'],
-                                    ['Take Rate',run.take_rate_pct!=null?`${run.take_rate_pct.toFixed(2)}%`:'n/a'],
+                                    ['Take Rate',run.take_rate_pct!=null?`${run.take_rate_pct.toFixed(3)}%`:'n/a'],
                                     ['Signals',run.total_signals??'—'],
                                     ['Losses',run.losses??'—'],
                                   ].map(([k,v])=>(
