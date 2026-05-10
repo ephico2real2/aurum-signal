@@ -1701,6 +1701,24 @@ def api_backtest_run(aurum_run_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ── Gate legend (human-readable explanations) ─────────────────────
+_gate_legend_cache: dict | None = None
+
+@app.route("/api/gate_legend")
+def api_gate_legend():
+    """Return gate_reason → {label, explanation, category} map from config/gate_legend.json."""
+    global _gate_legend_cache
+    if _gate_legend_cache is None:
+        legend_path = Path(__file__).parent.parent / "config" / "gate_legend.json"
+        try:
+            with open(legend_path) as f:
+                data = json.load(f)
+            _gate_legend_cache = {k: v for k, v in data.items() if not k.startswith("_")}
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    return jsonify(_gate_legend_cache)
+
+
 # ── Serve React dashboard ──────────────────────────────────────────
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")

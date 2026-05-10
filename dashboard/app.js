@@ -541,6 +541,7 @@ function ATHENA(){
   const [btRuns,setBtRuns]=useState([]);
   const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
   const [btDetail,setBtDetail]=useState(null);   // /api/backtest/run/:id response
+  const [gateLegend,setGateLegend]=useState({});   // gate_reason → {label, explanation}
   const [mgmtBusy,setMgmtBusy]=useState(false);
   const [autoscalperConditions,setAutoscalperConditions]=useState(null);
   const [autoscalperConditionsError,setAutoscalperConditionsError]=useState(null);
@@ -590,6 +591,12 @@ function ATHENA(){
     poll();const t=setInterval(poll,3000);return()=>clearInterval(t);
   },[]);
   useEffect(()=>{const t=setInterval(()=>setTick(x=>x+1),1000);return()=>clearInterval(t);},[]);
+
+  // Gate legend — fetch once when backtest tab first opens (rarely changes)
+  useEffect(()=>{
+    if(tab!=='backtest'||Object.keys(gateLegend).length>0)return;
+    fetch(`${API}/api/gate_legend`).then(r=>r.ok?r.json():null).then(j=>{if(j)setGateLegend(j);}).catch(()=>{});
+  },[tab]);
 
   // Backtest runs — fetch on tab open and refresh every 30s
   useEffect(()=>{
@@ -1470,17 +1477,31 @@ function ATHENA(){
                             );})}
                           </div>
                         )}
-                        {/* Gate breakdown */}
+                        {/* Gate breakdown with legend explanations */}
                         {(btDetail.gates||[]).length>0&&(
                           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
                             <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,marginBottom:8,letterSpacing:1}}>GATE BREAKDOWN (SKIP)</div>
-                            {(btDetail.gates||[]).map(g=>(
-                              <div key={g.gate_reason} style={{display:'flex',justifyContent:'space-between',
-                                borderBottom:`1px solid ${T.border}`,padding:'5px 0',fontSize:10,fontFamily:T.mono}}>
-                                <span style={{color:T.textBB}}>{g.gate_reason}</span>
-                                <span style={{color:T.textB}}>{g.cnt.toLocaleString()}</span>
+                            {(btDetail.gates||[]).map(g=>{
+                              const leg=gateLegend[g.gate_reason]||{};
+                              return(
+                              <div key={g.gate_reason} style={{borderBottom:`1px solid ${T.border}`,padding:'6px 0'}}>
+                                {/* row 1: technical name + count */}
+                                <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
+                                  <span style={{color:T.textBB,fontSize:10,fontFamily:T.mono}}>{g.gate_reason}</span>
+                                  <span style={{color:T.amber,fontSize:10,fontFamily:T.mono,fontWeight:'bold',marginLeft:8,flexShrink:0}}>{g.cnt.toLocaleString()}</span>
+                                </div>
+                                {/* row 2: human label */}
+                                {leg.label&&(
+                                  <div style={{color:T.green,fontSize:9,fontFamily:T.mono,marginTop:1}}>↳ {leg.label}</div>
+                                )}
+                                {/* row 3: plain-English explanation */}
+                                {leg.explanation&&(
+                                  <div style={{color:T.textB,fontSize:9,fontFamily:'sans-serif',marginTop:2,lineHeight:1.4,paddingLeft:10}}>
+                                    {leg.explanation}
+                                  </div>
+                                )}
                               </div>
-                            ))}
+                            );})}
                           </div>
                         )}
                       </>
