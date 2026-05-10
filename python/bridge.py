@@ -910,6 +910,7 @@ class Bridge:
         self.lens        = get_lens()
         self.aegis       = get_aegis()
         self.regime_engine = get_regime_engine()
+        self._regime_cold_start_alerted = False
         self.listener    = Listener()
         self.aurum       = get_aurum()
         self.reconciler  = get_reconciler()
@@ -2338,6 +2339,20 @@ class Bridge:
                     mode=self._effective_mode(),
                     session=self._current_session,
                 )
+            # Alert once when HMM is not ready but regime is gating live entries.
+            in_fallback = snap.get("fallback_reason") == "hmm_not_ready"
+            in_active   = snap.get("entry_mode") == "active"
+            if in_fallback and in_active and not self._regime_cold_start_alerted:
+                self.herald.send(
+                    "⚠️ <b>REGIME cold-start</b> — HMM not ready, Gaussian fallback active "
+                    f"(need {self.regime_engine.min_train_samples} samples, "
+                    f"have {snap.get('train_samples', 0)}). "
+                    "Entry gates operating on weaker classifier."
+                )
+                self._regime_cold_start_alerted = True
+            elif snap.get("hmm_ready") and self._regime_cold_start_alerted:
+                # HMM came online — reset so a future restart can alert again.
+                self._regime_cold_start_alerted = False
         except Exception as e:
             log.warning("BRIDGE: regime inference failed: %s", e)
 

@@ -13,11 +13,16 @@ import hashlib
 import json
 import logging
 import os
+import pickle
 import statistics
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_HMM_PKL  = os.path.join(_DATA_DIR, "regime_hmm.pkl")
 
 from freshness import DATA_FRESHNESS_WINDOWS
 
@@ -136,6 +141,8 @@ class RegimeEngine:
         self.entry_mode = _norm_mode(os.environ.get("REGIME_ENTRY_MODE", "off"))
         self.min_confidence = max(0.0, min(1.0, _safe_float(os.environ.get("REGIME_MIN_CONFIDENCE"), 0.60)))
         self.stale_sec = max(5, int(_safe_float(os.environ.get("REGIME_STALE_SEC"), DATA_FRESHNESS_WINDOWS["REGIME"])))
+        # Separate staleness ceiling for LENS data (previously hard-floored at 300s).
+        self.lens_stale_sec = max(5, int(_safe_float(os.environ.get("REGIME_LENS_STALE_SEC"), 90)))
         self.hmm_components = _hmm_components_from_env()
         self.retrain_interval_sec = max(30, int(_safe_float(os.environ.get("REGIME_RETRAIN_INTERVAL_SEC"), 3600)))
         self.min_train_samples = max(10, int(_safe_float(os.environ.get("REGIME_MIN_TRAIN_SAMPLES"), 120)))
@@ -144,6 +151,8 @@ class RegimeEngine:
         self._feature_history: deque[list[float]] = deque(maxlen=5000)
         self._returns: deque[float] = deque(maxlen=500)
         self._prev_mid: float | None = None
+        self._train_lock = threading.Lock()
+        self._training_in_progress = False
         self._hmm_model = None
         self._hmm_state_labels: dict[int, str] = {}
         self._hmm_feature_shape: tuple[int, ...] | None = None
@@ -154,9 +163,11 @@ class RegimeEngine:
         self._last_label = "UNKNOWN"
 
         log.info(
-            "REGIME engine init — enabled=%s mode=%s min_conf=%.2f stale=%ss train_min=%s hmm=%s",
-            self.enabled, self.entry_mode, self.min_confidence, self.stale_sec, self.min_train_samples, HMM_AVAILABLE,
+            "REGIME engine init — enabled=%s mode=%s min_conf=%.2f stale=%ss lens_stale=%ss train_min=%s hmm=%s",
+            self.enabled, self.entry_mode, self.min_confidence,
+            self.stale_sec, self.lens_stale_sec, self.min_train_samples, HMM_AVAILABLE,
         )
+        self._load_model_from_disk()
 
     # ── Feature extraction ──────────────────────────────────────
     def _extract_features(self, mt5: dict, lens: dict | None, session: str | None) -> tuple[dict, list[float], float | None, bool]:
@@ -214,7 +225,7 @@ class RegimeEngine:
                 lens_age_sec = -1.0
         if lens_age_sec < 0:
             lens_age_sec = _safe_float(lens.get("age_seconds"), default=-1.0)
-        lens_stale = bool(lens and (lens_age_sec < 0 or lens_age_sec > max(self.stale_sec, 300)))
+        lens_stale = bool(lens and (lens_age_sec < 0 or lens_age_sec > self.lens_stale_sec))
         use_lens = bool(lens and not lens_stale)
 
         ema_spread_lens = (lens_ema20 - lens_ema50) if (lens_ema20 and lens_ema50) else 0.0
@@ -340,13 +351,28 @@ class RegimeEngine:
         if len(self._feature_history) < self.min_train_samples:
             return
         now = _now_unix()
-        if self._hmm_model is not None and (now - self._hmm_last_trained) < self.retrain_interval_sec:
+        with self._train_lock:
+            model_ready = self._hmm_model is not None
+            last_trained = self._hmm_last_trained
+        if model_ready and (now - last_trained) < self.retrain_interval_sec:
             return
+        if self._training_in_progress:
+            return
+        # Snapshot training data before handing off to background thread.
+        data_snapshot = list(self._feature_history)
+        self._training_in_progress = True
+        threading.Thread(
+            target=self._train_hmm_thread,
+            args=(data_snapshot,),
+            daemon=True,
+            name="regime-hmm-train",
+        ).start()
+
+    def _train_hmm_thread(self, data_snapshot: list) -> None:
         try:
-            arr = np.array(list(self._feature_history), dtype=float)
+            arr = np.array(data_snapshot, dtype=float)
             arr = np.nan_to_num(arr)
             n_components = _hmm_components_from_env()
-            self.hmm_components = n_components
             model = GaussianHMM(
                 n_components=n_components,
                 covariance_type="full",
@@ -356,29 +382,87 @@ class RegimeEngine:
             model.fit(arr)
             states = model.predict(arr)
             labels = self._build_hmm_state_labels(arr, states)
-            self._hmm_model = model
-            self._hmm_state_labels = labels
-            self._hmm_feature_shape = tuple(arr.shape[1:])
-            self._hmm_last_trained = now
+            shape = tuple(arr.shape[1:])
+            trained_at = _now_unix()
+            with self._train_lock:
+                self._hmm_model = model
+                self._hmm_state_labels = labels
+                self._hmm_feature_shape = shape
+                self.hmm_components = n_components
+                self._hmm_last_trained = trained_at
             log.info(
-                "REGIME HMM retrained — samples=%s states=%s labels=%s",
+                "REGIME HMM retrained (async) — samples=%s states=%s labels=%s",
                 len(arr), n_components, labels,
             )
+            self._save_model_to_disk(model, labels, shape, n_components, trained_at)
         except Exception as e:
-            self._hmm_model = None
-            self._hmm_state_labels = {}
-            self._hmm_feature_shape = None
             log.warning("REGIME HMM train failed: %s", e)
+        finally:
+            self._training_in_progress = False
+
+    def _save_model_to_disk(self, model, labels: dict, shape: tuple, n_components: int, trained_at: float) -> None:
+        try:
+            payload = {
+                "model": model,
+                "labels": labels,
+                "shape": shape,
+                "n_components": n_components,
+                "trained_at": trained_at,
+            }
+            tmp = _HMM_PKL + ".tmp"
+            with open(tmp, "wb") as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, _HMM_PKL)
+            log.info("REGIME HMM persisted → %s", _HMM_PKL)
+        except Exception as e:
+            log.warning("REGIME failed to persist model: %s", e)
+
+    def _load_model_from_disk(self) -> None:
+        if not os.path.isfile(_HMM_PKL):
+            return
+        try:
+            with open(_HMM_PKL, "rb") as f:
+                payload = pickle.load(f)
+            if not isinstance(payload, dict):
+                return
+            model      = payload.get("model")
+            labels     = payload.get("labels")
+            shape      = payload.get("shape")
+            trained_at = float(payload.get("trained_at") or 0.0)
+            n_comp     = int(payload.get("n_components") or 0)
+            if model is None or not isinstance(labels, dict):
+                return
+            if n_comp != self.hmm_components:
+                log.info(
+                    "REGIME persisted model has %s components, config=%s — skipping restore",
+                    n_comp, self.hmm_components,
+                )
+                return
+            with self._train_lock:
+                self._hmm_model          = model
+                self._hmm_state_labels   = labels
+                self._hmm_feature_shape  = shape
+                self._hmm_last_trained   = trained_at
+            log.info(
+                "REGIME HMM restored from disk — labels=%s trained=%s",
+                labels,
+                datetime.fromtimestamp(trained_at, tz=timezone.utc).isoformat(),
+            )
+        except Exception as e:
+            log.warning("REGIME failed to load persisted model: %s", e)
 
     def _feature_shape_mismatch(self, vector: list[float]) -> bool:
-        if self._hmm_model is None or self._hmm_feature_shape is None:
+        with self._train_lock:
+            model = self._hmm_model
+            shape = self._hmm_feature_shape
+        if model is None or shape is None:
             return False
         new_shape = (len(vector),)
-        if new_shape == self._hmm_feature_shape:
+        if new_shape == shape:
             return False
         log.warning(
             "REGIME HMM feature shape mismatch — trained_shape=%s current_shape=%s",
-            self._hmm_feature_shape,
+            shape,
             new_shape,
         )
         return True
@@ -386,16 +470,19 @@ class RegimeEngine:
     def _hmm_infer(self, vector: list[float]) -> tuple[str, float, dict, str | None]:
         if not HMM_AVAILABLE:
             return "UNKNOWN", 0.0, {}, "hmm_unavailable"
-        if self._hmm_model is None:
+        with self._train_lock:
+            model  = self._hmm_model
+            labels = self._hmm_state_labels
+        if model is None:
             return "UNKNOWN", 0.0, {}, "hmm_not_ready"
         try:
-            probs = self._hmm_model.predict_proba(np.array([vector], dtype=float))[0]
+            probs = model.predict_proba(np.array([vector], dtype=float))[0]
             state = int(np.argmax(probs))
-            conf = float(np.max(probs))
-            label = self._hmm_state_labels.get(state, "RANGE")
+            conf  = float(np.max(probs))
+            label = labels.get(state, "RANGE")
             posterior = {
                 # Unlabeled states fall back to RANGE (not shown as "STATE_N" in UI)
-                self._hmm_state_labels.get(int(i), "RANGE"): round(float(p), 4)
+                labels.get(int(i), "RANGE"): round(float(p), 4)
                 for i, p in enumerate(probs)
             }
             # Merge duplicate labels by summing probabilities (e.g. two RANGE states merge).
@@ -478,6 +565,7 @@ class RegimeEngine:
         self.enabled = _env_bool("REGIME_ENGINE_ENABLED", self.enabled)
         self.entry_mode = _norm_mode(os.environ.get("REGIME_ENTRY_MODE", self.entry_mode))
         self.min_confidence = max(0.0, min(1.0, _safe_float(os.environ.get("REGIME_MIN_CONFIDENCE"), self.min_confidence)))
+        self.lens_stale_sec = max(5, int(_safe_float(os.environ.get("REGIME_LENS_STALE_SEC"), self.lens_stale_sec)))
         feat, vector, age_sec, stale = self._extract_features(mt5 or {}, lens or {}, session)
         if mode and (mode or "").upper() == "OFF":
             stale = True
