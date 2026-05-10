@@ -646,14 +646,15 @@ function ATHENA(){
   },[btSelRun]);
   useEffect(()=>{loadBtDetail();},[btSelRun]);
 
-  // Backtest compare — one fetch per pinned run; or vs previous run when nothing pinned
+  // Backtest compare — one fetch per pinned run; or vs nearest other run when nothing pinned
+  // btAllRuns in deps so effect re-runs once the list arrives (avoids race condition on first load)
   useEffect(()=>{
-    if(tab!=='backtest'||!btSelRun)return;
+    if(tab!=='backtest'||!btSelRun||!btAllRuns.length)return;
     const pins=btPinnedRuns.filter(id=>id!==btSelRun);
-    // baselines: pinned runs if any, else the run immediately before selected in list
+    // baselines: pinned runs if any, else the first OTHER run in the list (sorted DESC by ID)
     const baselines=pins.length>0
       ? pins
-      : [btAllRuns.find(r=>r.aurum_run_id<btSelRun)?.aurum_run_id].filter(Boolean);
+      : [btAllRuns.find(r=>r.aurum_run_id!==btSelRun)?.aurum_run_id].filter(Boolean);
     if(!baselines.length){setBtCompares([]);return;}
     Promise.all(
       baselines.map(runB=>
@@ -662,7 +663,7 @@ function ATHENA(){
           .catch(()=>null)
       )
     ).then(results=>setBtCompares(results.filter(j=>j&&!j.error)));
-  },[btSelRun,btPinnedRuns,tab]);
+  },[btSelRun,btPinnedRuns,btAllRuns,tab]);
 
   const switchMode=async(m)=>{
     try{await fetch(`${API}/api/mode`,{method:'POST',
