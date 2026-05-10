@@ -18,7 +18,7 @@ from flask_cors import CORS
 from flask_swagger_ui import get_swaggerui_blueprint
 from aeb_executor import execute_action, execute_scribe_query
 
-from scribe import get_scribe
+from scribe import get_scribe, get_tester_scribe
 from status_report import KNOWN_COMPONENTS
 from market_data import MT5_STALE_SEC, build_execution_quote, enrich_mt5_for_stale_check, safe_float
 from autoscalper_condition_service import build_autoscalper_condition_report
@@ -1481,6 +1481,124 @@ def api_health():
             "auth_required": bool(AURUM_EXEC_SECRET),
         },
     })
+
+
+# ── Backtest (aurum_tester.db) ─────────────────────────────────────
+@app.route("/api/backtest/runs")
+def api_backtest_runs():
+    """All registered tester runs with per-run performance summary."""
+    ts = get_tester_scribe()
+    try:
+        runs = ts.query("""
+            SELECT r.aurum_run_id, r.wall_time, r.source_run_id,
+                   r.symbol, r.forge_version, r.scalper_mode,
+                   r.balance, r.magic_base,
+                   datetime(r.sim_start_time, 'unixepoch') as sim_start,
+                   r.first_seen_utc,
+                   COUNT(CASE WHEN s.outcome='TAKEN' THEN 1 END) as taken,
+                   COUNT(CASE WHEN s.outcome='SKIP'  THEN 1 END) as skipped,
+                   COUNT(CASE WHEN t.profit>0 AND t.profit IS NOT NULL THEN 1 END) as wins,
+                   COUNT(CASE WHEN t.profit<0 THEN 1 END) as losses,
+                   COALESCE(SUM(CASE WHEN t.profit!=0 THEN t.profit END), 0) as total_pnl
+            FROM aurum_tester_runs r
+            LEFT JOIN forge_signals s ON s.aurum_run_id = r.aurum_run_id
+            LEFT JOIN forge_journal_trades t ON t.aurum_run_id = r.aurum_run_id
+            GROUP BY r.aurum_run_id
+            ORDER BY r.aurum_run_id DESC
+        """)
+        for r in runs:
+            taken = r.get("taken") or 0
+            wins  = r.get("wins") or 0
+            losses = r.get("losses") or 0
+            r["win_rate"] = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else None
+            r["total_pnl"] = round(r.get("total_pnl") or 0, 2)
+        return jsonify({"runs": runs, "count": len(runs)})
+    except Exception as e:
+        return jsonify({"runs": [], "count": 0, "error": str(e)})
+
+
+@app.route("/api/backtest/run/<int:aurum_run_id>")
+def api_backtest_run(aurum_run_id):
+    """Full detail for one tester run: performance + gate breakdown + TAKEN entries + P&L curve."""
+    ts = get_tester_scribe()
+    try:
+        # Run metadata
+        meta_rows = ts.query(
+            "SELECT * FROM aurum_tester_runs WHERE aurum_run_id=? LIMIT 1",
+            (aurum_run_id,)
+        )
+        if not meta_rows:
+            return jsonify({"error": f"aurum_run_id={aurum_run_id} not found"}), 404
+        meta = meta_rows[0]
+
+        # Performance summary (closing deals only: profit != 0)
+        perf_row = ts.query("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN profit>0 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN profit<0 THEN 1 ELSE 0 END) as losses,
+                   COALESCE(SUM(profit),0) as total_pnl,
+                   COALESCE(AVG(CASE WHEN profit!=0 THEN profit END),0) as avg_deal_pnl,
+                   COALESCE(MIN(CASE WHEN profit<0 THEN profit END),0) as worst_loss,
+                   COALESCE(MAX(CASE WHEN profit>0 THEN profit END),0) as best_win
+            FROM forge_journal_trades
+            WHERE aurum_run_id=? AND profit IS NOT NULL AND profit!=0
+        """, (aurum_run_id,))
+        perf = perf_row[0] if perf_row else {}
+        wins = int(perf.get("wins") or 0)
+        losses = int(perf.get("losses") or 0)
+        perf["win_rate"] = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else None
+        perf["total_pnl"] = round(perf.get("total_pnl") or 0, 2)
+
+        # Signal stats
+        sig_row = ts.query("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN outcome='TAKEN' THEN 1 ELSE 0 END) as taken,
+                   SUM(CASE WHEN outcome='SKIP'  THEN 1 ELSE 0 END) as skipped
+            FROM forge_signals WHERE aurum_run_id=?
+        """, (aurum_run_id,))
+        sig_stats = sig_row[0] if sig_row else {}
+
+        # Gate breakdown (top 15 SKIP reasons)
+        gates = ts.query("""
+            SELECT gate_reason, COUNT(*) as cnt
+            FROM forge_signals
+            WHERE aurum_run_id=? AND outcome='SKIP' AND gate_reason IS NOT NULL
+            GROUP BY gate_reason ORDER BY cnt DESC LIMIT 15
+        """, (aurum_run_id,))
+
+        # TAKEN entries with indicators
+        taken = ts.query("""
+            SELECT timestamp_utc, direction,
+                   ROUND(rsi,1) as rsi, ROUND(adx,1) as adx,
+                   ROUND(price,2) as price, ROUND(atr,2) as atr,
+                   setup_type, session, gate_reason
+            FROM forge_signals
+            WHERE aurum_run_id=? AND outcome='TAKEN'
+            ORDER BY time
+        """, (aurum_run_id,))
+
+        # Cumulative P&L curve (closing deals ordered by time)
+        curve_rows = ts.query("""
+            SELECT time, profit FROM forge_journal_trades
+            WHERE aurum_run_id=? AND profit IS NOT NULL AND profit!=0
+            ORDER BY time
+        """, (aurum_run_id,))
+        cumulative = 0.0
+        pnl_curve = []
+        for row in curve_rows:
+            cumulative += row["profit"] or 0
+            pnl_curve.append({"t": row["time"], "pnl": round(cumulative, 2)})
+
+        return jsonify({
+            "meta": meta,
+            "performance": perf,
+            "signals": sig_stats,
+            "gates": gates,
+            "taken": taken,
+            "pnl_curve": pnl_curve,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Serve React dashboard ──────────────────────────────────────────

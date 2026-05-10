@@ -64,7 +64,21 @@
     "sell_limit_enabled": 1,
     "sell_limit_atr_mult": 0.4,
     "sell_limit_lot_factor": 0.125,
-    "sell_limit_expiry_bars": 6
+    "sell_limit_expiry_bars": 6,
+    "sell_limit_l2_enabled": 1,
+    "sell_limit_l2_atr_mult": 0.65,
+    "sell_limit_l2_lot_factor": 0.125,
+    "sell_stop_cont_enabled": 1,
+    "sell_stop_cont_atr_mult": 0.4,
+    "sell_stop_cont_lot_factor": 0.25,
+    "sell_stop_cont_expiry_bars": 8,
+    "sell_stop_cont_min_rsi": 25.0,
+    "h4_rsi_gate_enabled": 0,
+    "h4_rsi_sell_max": 60.0,
+    "h4_rsi_buy_min": 40.0,
+    "h4_adx_gate_enabled": 0,
+    "h4_adx_min_sell": 20.0,
+    "h4_adx_min_buy": 20.0
   },
   "indicators": {
     "bb_period": 20,

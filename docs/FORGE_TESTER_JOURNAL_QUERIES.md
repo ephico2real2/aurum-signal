@@ -293,6 +293,115 @@ sqlite3 -header -column "$DB" "SELECT run_id,
 
 ---
 
+## Gate Reasons — 2.7.10 additions
+
+| Gate reason | Trigger | Added |
+|-------------|---------|-------|
+| `entry_quality_m30_not_bearish` | M30 EMA20 ≥ EMA50 when ADX ≥ m30_bear_adx_min | 2.7.9 |
+| `entry_quality_macd_q2_bear_str` | OsMA histogram negative + falling (SELL gate, Q2) | 2.7.7 |
+| `entry_quality_macd_q3_bear_fading` | OsMA negative but rising (SELL gate, Q3) | 2.7.7 |
+| `entry_quality_macd_q0_bull_str` | OsMA positive + rising (BUY gate, Q0) | 2.7.7 |
+| `entry_quality_macd_q1_bull_fading` | OsMA positive but falling (BUY gate, Q1) | 2.7.7 |
+| `entry_quality_h4_rsi_sell_blocked` | H4 RSI ≥ h4_rsi_sell_max (60) — Cardwell Bear Resistance | 2.7.10 |
+| `entry_quality_h4_rsi_buy_blocked` | H4 RSI ≤ h4_rsi_buy_min (40) — Cardwell Bull Support | 2.7.10 |
+| `entry_quality_h4_adx_sell_blocked` | H4 ADX < h4_adx_min_sell (20) — H4 ranging | 2.7.10 |
+| `entry_quality_h4_adx_buy_blocked` | H4 ADX < h4_adx_min_buy (20) — H4 ranging | 2.7.10 |
+| `entry_quality_session_sell_cutoff` | UTC hour ≥ session_ny_sell_cutoff (17) | 2.7.7 |
+
+---
+
+## Quick Monitoring Snapshot (during live backtest)
+
+```bash
+DB="/Users/olasumbo/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/Tester/Agent-127.0.0.1-3000/MQL5/Files/FORGE_journal_XAUUSD_tester.db"
+
+# One-liner: sim time + signal count + TAKEN + P&L + losses
+sqlite3 "$DB" "
+SELECT
+  (SELECT datetime(MAX(time),'unixepoch') FROM SIGNALS WHERE run_id=(SELECT MAX(run_id) FROM SIGNALS)) as sim_time,
+  (SELECT COUNT(*) FROM SIGNALS WHERE run_id=(SELECT MAX(run_id) FROM SIGNALS)) as signals,
+  (SELECT COUNT(*) FROM SIGNALS WHERE run_id=(SELECT MAX(run_id) FROM SIGNALS) AND outcome='TAKEN') as taken,
+  (SELECT printf('%.2f',SUM(profit)) FROM TRADES WHERE run_id=(SELECT MAX(run_id) FROM TRADES)) as pnl,
+  (SELECT SUM(CASE WHEN profit<0 THEN 1 ELSE 0 END) FROM TRADES WHERE run_id=(SELECT MAX(run_id) FROM TRADES)) as losses;"
+
+# Gate breakdown for current run (SKIP reasons ranked)
+sqlite3 "$DB" "SELECT gate_reason, COUNT(*) as cnt FROM SIGNALS
+  WHERE run_id=(SELECT MAX(run_id) FROM SIGNALS) AND outcome='SKIP'
+  GROUP BY gate_reason ORDER BY cnt DESC LIMIT 15;"
+
+# TAKEN entries with time + direction + RSI + ADX
+sqlite3 "$DB" "SELECT datetime(time,'unixepoch') as t, direction,
+  printf('%.1f',rsi) as rsi, printf('%.1f',adx) as adx
+  FROM SIGNALS
+  WHERE run_id=(SELECT MAX(run_id) FROM SIGNALS) AND outcome='TAKEN'
+  ORDER BY time;"
+```
+
+**Schema notes (verified 2026-05-09):**
+- Column is `outcome` (not `status`) — values: `TAKEN`, `SKIP`
+- Column is `time` (unix epoch integer, not `sim_time`)
+- `run_id` in SIGNALS/TRADES matches `id` in TESTER_RUNS
+- Use `MAX(run_id) FROM SIGNALS` (not `MAX(id) FROM TESTER_RUNS`) for in-progress runs — TESTER_RUNS row may not exist until run completes
+
+---
+
+## SELL STOP Continuation — 2.7.10 Day 2 Monitoring
+
+```bash
+# Check MT5 agent log for SELL STOP CONT placement success/failure
+LOG="$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/Tester/Agent-127.0.0.1-3000/logs/$(date +%Y%m%d).log"
+grep -E "SELL STOP CONT|ArmPost|retcode|ladder slot" "$LOG" | tail -30
+
+# Ladder slot fill detection (auto-clear messages — new in 2.7.10)
+grep "ladder slot.*no longer pending" "$LOG" | tail -20
+
+# SELL STOP CONT deal — identified by comment containing SELL_STOP_CONT
+# Magic = group_magic + 20002 (distinct from L1=+20000, L2=+20001)
+sqlite3 "$DB" "SELECT datetime(time,'unixepoch') as t, magic, printf('%.2f',profit) as profit,
+  printf('%.2f',price) as price, comment
+  FROM TRADES WHERE run_id=(SELECT MAX(run_id) FROM TRADES)
+  AND comment LIKE '%SELL_STOP_CONT%'
+  ORDER BY time;"
+
+# All ladder-related trades (L1=+20000, L2=+20001, SELL_STOP=+20002)
+sqlite3 "$DB" "SELECT datetime(time,'unixepoch') as t,
+  CASE
+    WHEN comment LIKE '%SCALP_LIMIT_L2%' THEN 'L2_SELL_LIMIT'
+    WHEN comment LIKE '%SCALP_LIMIT%'    THEN 'L1_SELL_LIMIT'
+    WHEN comment LIKE '%SELL_STOP_CONT%' THEN 'SELL_STOP_CONT'
+    ELSE comment
+  END as role,
+  printf('%.2f',price) as price, printf('%.2f',profit) as profit
+  FROM TRADES WHERE run_id=(SELECT MAX(run_id) FROM TRADES)
+  AND (comment LIKE '%SCALP_LIMIT%' OR comment LIKE '%SELL_STOP_CONT%')
+  ORDER BY time;"
+```
+
+**Known SELL STOP CONT issues (2026-05-09):**
+- `retcode=10015` (TRADE_RETCODE_INVALID_STOPS): original impl used `crash_low - ATR×0.40` where crash_low=entry_bid. At TP1 time price is entry-ATR×1.0, so stop was above current price. **Fixed in 2.7.10**: reference is now `g_groups[gi].tp1 - ATR×0.40` — always below current price at TP1 time.
+- RSI guard: if M5 RSI ≤ 25.0 at TP1 time, SELL STOP is skipped (exhausted move). Check log for `"SELL STOP skipped (RSI=... <= min_rsi=25.0, exhausted)"`.
+- BRIDGE groups: `entry_atr=0` at registration → ArmPostTP1Ladder skips silently. Only native scalper groups arm.
+
+---
+
+## L1 / L2 SELL LIMIT Fill Confirmation
+
+```bash
+# Ladder slot fills — new auto-clear behavior (2.7.10)
+# "no longer pending" = filled before expiry (SELL LIMIT hit on bounce)
+grep "ladder slot" "$LOG" | tail -20
+
+# L1 and L2 fill deals in TRADES (by comment)
+sqlite3 "$DB" "SELECT datetime(time,'unixepoch') as t,
+  CASE WHEN comment LIKE '%SCALP_LIMIT_L2%' THEN 'L2' ELSE 'L1' END as slot,
+  printf('%.2f',price) as fill_price, printf('%.2f',profit) as profit, volume
+  FROM TRADES WHERE run_id=(SELECT MAX(run_id) FROM TRADES)
+  AND comment LIKE '%SCALP_LIMIT%' AND comment NOT LIKE '%SELL_STOP%'
+  ORDER BY time;"
+```
+
+---
+
 ## AURUM Sync Verification (after BRIDGE picks up the journal)
 
 ```bash

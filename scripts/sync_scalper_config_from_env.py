@@ -92,6 +92,26 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_MACD_FAST":         ("bb_breakout", "macd_fast",   "int", 1.0, 50.0),
     "FORGE_BREAKOUT_MACD_SLOW":         ("bb_breakout", "macd_slow",   "int", 1.0, 100.0),
     "FORGE_BREAKOUT_MACD_SIGNAL":       ("bb_breakout", "macd_signal", "int", 1.0, 50.0),
+    # SELL LIMIT L2 — second cascade level (2.7.10); in .env for hot-reload control
+    "FORGE_BREAKOUT_SELL_LIMIT_L2_ENABLED":    ("bb_breakout", "sell_limit_l2_enabled",    "bool01", None, None),
+    "FORGE_BREAKOUT_SELL_LIMIT_L2_ATR_MULT":   ("bb_breakout", "sell_limit_l2_atr_mult",   "float", 0.0, 5.0),
+    "FORGE_BREAKOUT_SELL_LIMIT_L2_LOT_FACTOR": ("bb_breakout", "sell_limit_l2_lot_factor", "float", 0.0, 1.0),
+    # SELL STOP continuation (2.7.10 Day 2) — disabled by default; enable to capture second impulse after TP1
+    "FORGE_SELL_STOP_CONT_ENABLED":      ("bb_breakout", "sell_stop_cont_enabled",      "bool01", None, None),
+    "FORGE_SELL_STOP_CONT_ATR_MULT":     ("bb_breakout", "sell_stop_cont_atr_mult",     "float", 0.1, 3.0),
+    "FORGE_SELL_STOP_CONT_LOT_FACTOR":   ("bb_breakout", "sell_stop_cont_lot_factor",   "float", 0.0, 1.0),
+    "FORGE_SELL_STOP_CONT_EXPIRY_BARS":  ("bb_breakout", "sell_stop_cont_expiry_bars",  "int",   1.0, 50.0),
+    "FORGE_SELL_STOP_CONT_MIN_RSI":      ("bb_breakout", "sell_stop_cont_min_rsi",      "float", 0.0, 50.0),
+    # H4 supplemental gates (2.7.10) — disabled by default in .defaults.json; enable per run for testing
+    # H4 RSI gate: block SELL when H4 RSI >= h4_rsi_sell_max (Cardwell Bear Resistance exhaustion on H4)
+    #              block BUY  when H4 RSI <= h4_rsi_buy_min  (Cardwell Bull Support exhaustion on H4)
+    "FORGE_H4_RSI_GATE_ENABLED": ("bb_breakout", "h4_rsi_gate_enabled", "bool01", None, None),
+    "FORGE_H4_RSI_SELL_MAX":     ("bb_breakout", "h4_rsi_sell_max",     "float", 30.0, 80.0),
+    "FORGE_H4_RSI_BUY_MIN":      ("bb_breakout", "h4_rsi_buy_min",      "float", 20.0, 70.0),
+    # H4 ADX gate: block entries when H4 ADX < min threshold (H4 trend not directional — ranging H4)
+    "FORGE_H4_ADX_GATE_ENABLED": ("bb_breakout", "h4_adx_gate_enabled", "bool01", None, None),
+    "FORGE_H4_ADX_MIN_SELL":     ("bb_breakout", "h4_adx_min_sell",     "float", 0.0, 80.0),
+    "FORGE_H4_ADX_MIN_BUY":      ("bb_breakout", "h4_adx_min_buy",      "float", 0.0, 80.0),
     "FORGE_FIB_BIAS_ENABLED": ("indicators", "fib_bias_enabled", "bool01", None, None),
     "FORGE_FIB_TP_ENABLED": ("indicators", "fib_tp_enabled", "bool01", None, None),
     "FORGE_FIB_LOOKBACK": ("indicators", "fib_lookback", "int", 0.0, 500.0),

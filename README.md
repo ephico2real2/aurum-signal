@@ -22,8 +22,10 @@ Core architecture and operations docs:
 - **AI/automation:** do not hand-edit **`config/scalper_config.json`** — see **`AGENTS.md`** and **`docs/SCALPER_CONFIG_PIPELINE.md`**
 - **Scalper + regime phased roadmap** (execution prompts, testing, MT5 Tester, doc checklist): [docs/SCALPER_REGIME_PHASED_PLAN.md](docs/SCALPER_REGIME_PHASED_PLAN.md)
 - **System architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Database architecture** (source DBs, AURUM DBs, run_id vs aurum_run_id, backtest isolation): [docs/DATABASE_ARCHITECTURE.md](docs/DATABASE_ARCHITECTURE.md)
 - **Mode architecture**: [docs/MODES_ARCHITECTURE.md](docs/MODES_ARCHITECTURE.md)
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
+- **FORGE gate flow + news filter architecture (2.7.6)**: [docs/FORGE_NEWS_FILTER_GATE_FLOW.md](docs/FORGE_NEWS_FILTER_GATE_FLOW.md)
 - **Vision validation runbook**: [docs/VISION_CLI_RUNBOOK.md](docs/VISION_CLI_RUNBOOK.md)
 - **Signal replay runbook**: [docs/SIGNAL_REPLAY_RUNBOOK.md](docs/SIGNAL_REPLAY_RUNBOOK.md)
 - **FORGE journal ML / missed-setup roadmap**: [docs/prompts/FORGE_JOURNAL_ML_PROMPT.md](docs/prompts/FORGE_JOURNAL_ML_PROMPT.md)

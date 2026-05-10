@@ -379,6 +379,42 @@ journal-nuke:
 		echo "[journal] Tester journal DB(s) deleted." || \
 		echo "[journal] No tester journal DBs found (already clean)."
 
+# ── Journal DB assertion — verify all expected DBs exist ──────────
+.PHONY: journal-assert
+journal-assert:
+	@echo "=== FORGE Journal DB Assertion ==="
+	@LIVE_DB=$$(find "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5" \
+		-name "FORGE_journal_XAUUSD.db" 2>/dev/null | head -1); \
+	if [ -z "$$LIVE_DB" ]; then \
+		echo "  ✗ FORGE_journal_XAUUSD.db NOT FOUND (live EA not yet run?)"; exit 1; \
+	else \
+		ROWS=$$(sqlite3 "$$LIVE_DB" "SELECT COUNT(*) FROM SIGNALS;" 2>/dev/null || echo "?"); \
+		SIZE=$$(du -sh "$$LIVE_DB" 2>/dev/null | cut -f1); \
+		echo "  ✓ Live journal: $$SIZE  signals=$$ROWS"; \
+		echo "    $$LIVE_DB"; \
+	fi
+	@echo ""
+	@FOUND=0; \
+	find "$(HOME)/Library/Application Support/net.metaquotes.wine.metatrader5" \
+		-name "FORGE_journal_XAUUSD_tester.db" 2>/dev/null | while read f; do \
+		ROWS=$$(sqlite3 "$$f" "SELECT COUNT(*) FROM SIGNALS;" 2>/dev/null || echo "?"); \
+		SIZE=$$(du -sh "$$f" 2>/dev/null | cut -f1); \
+		echo "  ✓ Tester journal: $$SIZE  signals=$$ROWS"; \
+		echo "    $$f"; \
+		FOUND=$$((FOUND+1)); \
+	done; \
+	if [ $$FOUND -eq 0 ] 2>/dev/null; then echo "  ✗ No tester journal DBs found (run a backtest first)"; fi
+	@echo ""
+	@echo "=== AURUM DBs ==="
+	@for db in python/data/aurum_intelligence.db python/data/aurum_tester.db; do \
+		if [ -f "$$db" ]; then \
+			SIZE=$$(du -sh "$$db" 2>/dev/null | cut -f1); \
+			echo "  ✓ $$SIZE  $$db"; \
+		else \
+			echo "  ✗ MISSING: $$db"; \
+		fi; \
+	done
+
 # ── Tester DB (Phase 1 — backtest isolation) ──────────────────────
 .PHONY: tester-db-reset
 tester-db-reset:

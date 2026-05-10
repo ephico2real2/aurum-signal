@@ -248,6 +248,25 @@ struct ScalperConfig {
    bool   breakout_sell_limit_l2_enabled;   // place L2 SELL LIMIT at deeper bounce (default true)
    double breakout_sell_limit_l2_atr_mult;  // L2 price: bid + ATR × this (default 0.65 = 50-62% retrace)
    double breakout_sell_limit_l2_lot_factor;// L2 lot factor — 1/8th (default 0.125)
+   // SELL STOP continuation (2.7.10 Day 2) — places SELL STOP below crash low after TP1 hit
+   // Captures second impulse leg when RSI is not yet exhausted (RSI > sell_stop_cont_min_rsi)
+   // Enable via .env: FORGE_SELL_STOP_CONT_ENABLED=1; disabled by default to preserve pre-2.7.10 behavior
+   bool   sell_stop_cont_enabled;      // arm SELL STOP below crash_low after TP1 hit (default false)
+   double sell_stop_cont_atr_mult;     // SELL STOP price: crash_low - ATR × this (default 0.40)
+   double sell_stop_cont_lot_factor;   // lot factor for continuation leg (default 0.25 = 1/4 base)
+   int    sell_stop_cont_expiry_bars;  // cancel if not triggered within N M5 bars (default 8 = 40 min)
+   double sell_stop_cont_min_rsi;      // only arm when M5 RSI > this — blocks exhausted entries (default 25.0)
+   // H4 supplemental gates — disabled by default (2.7.10)
+   // Enable via .env: FORGE_H4_RSI_GATE_ENABLED=1, FORGE_H4_ADX_GATE_ENABLED=1
+   // Rationale: H4 RSI identifies structural HH/LL exhaustion zones (Cardwell Bear Resistance ≥60 / Bull Support ≤40)
+   //            H4 ADX confirms the H4 trend is directional (not ranging) before adding a directional scalp entry
+   //            H4 BB upper/lower exported to market_data.json for BRIDGE/LENS structural context (no entry gate)
+   bool   h4_rsi_gate_enabled;   // block SELL when H4 RSI >= h4_rsi_sell_max; block BUY when H4 RSI <= h4_rsi_buy_min (default false)
+   double h4_rsi_sell_max;       // SELL blocked when H4 RSI >= this — Cardwell Bear Resistance zone (default 60)
+   double h4_rsi_buy_min;        // BUY blocked when H4 RSI <= this — Cardwell Bull Support zone (default 40)
+   bool   h4_adx_gate_enabled;   // block entries when H4 ADX < h4_adx_min — prevents entries in ranging H4 (default false)
+   double h4_adx_min_sell;       // H4 ADX minimum for SELL entries (default 20.0)
+   double h4_adx_min_buy;        // H4 ADX minimum for BUY entries (default 20.0)
    // Safety
    double max_spread_points;
    int    max_open_groups;
@@ -415,6 +434,11 @@ int g_h_adx        = INVALID_HANDLE;
 int g_h4_ma20 = INVALID_HANDLE;
 int g_h4_ma50 = INVALID_HANDLE;
 int g_h4_atr  = INVALID_HANDLE;
+// H4 supplemental handles — RSI/BB/ADX for HH/LL context and structural gate checks
+// Disabled by default; enable via FORGE_H4_RSI_GATE_ENABLED=1 / FORGE_H4_ADX_GATE_ENABLED=1 in .env
+int g_h4_rsi  = INVALID_HANDLE;  // H4 RSI(14) — structural overbought/oversold; Cardwell Bear Resistance (RSI>60=avoid sell), Bull Support (RSI<40=avoid buy)
+int g_h4_bb   = INVALID_HANDLE;  // H4 Bollinger Bands(20,2) — upper/lower for HH/LL zone context
+int g_h4_adx  = INVALID_HANDLE;  // H4 ADX(14) — H4 trend strength; min gate prevents entries in structurally ranging H4
 
 // M1 — optional entry confirmation / trigger (execution TF; H1/H4/regime stay bias-only)
 int g_m1_ma20 = INVALID_HANDLE;
@@ -519,6 +543,9 @@ struct TradeGroup {
    int    staged_tp1_legs;
    double staged_anchor;
    datetime staged_next_add;
+   // Post-TP1 ladder context (2.7.10 Day 2) — stored at entry, consumed by ArmPostTP1Ladder()
+   double crash_low;   // bid (SELL) or ask (BUY) at market order execution
+   double entry_atr;  // M5 ATR at entry — used for SELL STOP + BUY LIMIT placement offsets
 };
 TradeGroup g_groups[];
 
@@ -615,6 +642,7 @@ int OnInit() {
    EnsureMTFIndicators();
    if(g_h_rsi==INVALID_HANDLE || g_h_ma20==INVALID_HANDLE || g_h_ma50==INVALID_HANDLE || g_h_atr==INVALID_HANDLE
       || g_h4_ma20==INVALID_HANDLE || g_h4_ma50==INVALID_HANDLE || g_h4_atr==INVALID_HANDLE
+      || g_h4_rsi==INVALID_HANDLE  || g_h4_bb==INVALID_HANDLE   || g_h4_adx==INVALID_HANDLE
       || g_m1_ma20==INVALID_HANDLE || g_m1_ma50==INVALID_HANDLE || g_m1_atr==INVALID_HANDLE)
       Print("FORGE: indicator handles unavailable (market closed?) — will retry on timer");
    // Print all path info for diagnostics
@@ -667,6 +695,9 @@ void OnDeinit(const int reason) {
    IndicatorRelease(g_h4_ma20);
    IndicatorRelease(g_h4_ma50);
    IndicatorRelease(g_h4_atr);
+   IndicatorRelease(g_h4_rsi);
+   IndicatorRelease(g_h4_bb);
+   IndicatorRelease(g_h4_adx);
    IndicatorRelease(g_m1_ma20);
    IndicatorRelease(g_m1_ma50);
    IndicatorRelease(g_m1_atr);
@@ -727,6 +758,9 @@ void EnsureIndicators() {
    g_h4_ma20 = iMA(_Symbol, PERIOD_H4, 20, 0, MODE_EMA, PRICE_CLOSE);
    g_h4_ma50 = iMA(_Symbol, PERIOD_H4, 50, 0, MODE_EMA, PRICE_CLOSE);
    g_h4_atr  = iATR(_Symbol, PERIOD_H4, 14);
+   g_h4_rsi  = iRSI(_Symbol, PERIOD_H4, 14, PRICE_CLOSE);
+   g_h4_bb   = iBands(_Symbol, PERIOD_H4, 20, 0, 2.0, PRICE_CLOSE);
+   g_h4_adx  = iADX(_Symbol, PERIOD_H4, 14);
    g_m1_ma20 = iMA(_Symbol, PERIOD_M1, 20, 0, MODE_EMA, PRICE_CLOSE);
    g_m1_ma50 = iMA(_Symbol, PERIOD_M1, 50, 0, MODE_EMA, PRICE_CLOSE);
    g_m1_atr  = iATR(_Symbol, PERIOD_M1, 14);
@@ -855,14 +889,20 @@ void OnTick() {
    ManageStagedNativeLegs();
    ManageOpenGroups();
    ManagePendingLadderAbort();
-   // SELL LIMIT expiry check (2.7.7b/2.7.10): cancel stale cascade limits (all 4 slots)
+   // Pending ladder expiry + fill-detection (2.7.7b/2.7.10): all 4 slots
    { datetime _now = TimeTradeServer();
      for(int _si = 0; _si < 4; _si++) {
-        if(g_sell_limit_stack[_si].active && _now >= g_sell_limit_stack[_si].expiry) {
-           if(OrderSelect(g_sell_limit_stack[_si].ticket))
-              g_trade.OrderDelete(g_sell_limit_stack[_si].ticket);
+        if(!g_sell_limit_stack[_si].active) continue;
+        bool _pending = OrderSelect(g_sell_limit_stack[_si].ticket);
+        if(!_pending && _now < g_sell_limit_stack[_si].expiry) {
+           // Order no longer pending before expiry — filled or cancelled externally
            g_sell_limit_stack[_si].active = false;
-           PrintFormat("FORGE SCALPER: SELL LIMIT %d expired (>%d bars)", g_sell_limit_stack[_si].ticket, g_sc.breakout_sell_limit_expiry_bars);
+           PrintFormat("FORGE SCALPER: ladder slot[%d] ticket=%d no longer pending (filled or external cancel)",
+                       _si, g_sell_limit_stack[_si].ticket);
+        } else if(_now >= g_sell_limit_stack[_si].expiry) {
+           if(_pending) g_trade.OrderDelete(g_sell_limit_stack[_si].ticket);
+           g_sell_limit_stack[_si].active = false;
+           PrintFormat("FORGE SCALPER: ladder slot[%d] ticket=%d expired", _si, g_sell_limit_stack[_si].ticket);
         }
      }
    }
@@ -1118,6 +1158,9 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].staged_tp1_legs = 0;
    g_groups[gi].staged_anchor = 0;
    g_groups[gi].staged_next_add = 0;
+   // crash_low/entry_atr: BRIDGE groups use current bid/ATR; native scalper groups set these at CheckScalperEntry
+   g_groups[gi].crash_low = (direction == "SELL") ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   g_groups[gi].entry_atr = 0;  // BRIDGE path: ATR not available here; post-TP1 ladder disabled for BRIDGE groups
    int bridge_group_positions[];
    GetGroupPositions(group_magic, bridge_group_positions);
    g_groups[gi].had_positions = (ArraySize(bridge_group_positions) > 0);
@@ -1481,6 +1524,7 @@ void ManageOpenGroups() {
          }
       }
       g_groups[gi].tp1_hit = true;
+      ArmPostTP1Ladder(gi);  // 2.7.10 Day 2: arm SELL STOP continuation (off by default: sell_stop_cont_enabled=false)
       Print("FORGE: Group ", g_groups[gi].id, " TP1 — closed ", closed, "/", total);
 
       if(g_groups[gi].move_be_on_tp1) {
@@ -1934,13 +1978,23 @@ void WriteMarketData() {
    j += "},";
    // H4 — structure / regime context (native scalper alignment)
    j += "\"indicators_h4\":{";
-   double h4_ma20b[1], h4_ma50b[1], h4_atrb[1];
-   double h4_m20 = (CopyBuffer(g_h4_ma20,0,0,1,h4_ma20b)==1) ? h4_ma20b[0] : 0;
-   double h4_m50 = (CopyBuffer(g_h4_ma50,0,0,1,h4_ma50b)==1) ? h4_ma50b[0] : 0;
-   double h4_atr_v = (CopyBuffer(g_h4_atr, 0,0,1,h4_atrb)==1) ? h4_atrb[0] : 0;
-   j += "\"ema_20\":" + DoubleToString(h4_m20,2) + ",";
-   j += "\"ema_50\":" + DoubleToString(h4_m50,2) + ",";
-   j += "\"atr_14\":" + DoubleToString(h4_atr_v,2);
+   double h4_ma20b[1], h4_ma50b[1], h4_atrb[1], h4_rsib[1], h4_bbb[1], h4_adxb[1];
+   double h4_m20    = (CopyBuffer(g_h4_ma20, 0, 0, 1, h4_ma20b) == 1) ? h4_ma20b[0] : 0;
+   double h4_m50    = (CopyBuffer(g_h4_ma50, 0, 0, 1, h4_ma50b) == 1) ? h4_ma50b[0] : 0;
+   double h4_atr_v  = (CopyBuffer(g_h4_atr,  0, 0, 1, h4_atrb)  == 1) ? h4_atrb[0]  : 0;
+   double h4_rsi_v  = (CopyBuffer(g_h4_rsi,  0, 0, 1, h4_rsib)  == 1) ? h4_rsib[0]  : 0;
+   double h4_bb_m   = (CopyBuffer(g_h4_bb,   0, 0, 1, h4_bbb)   == 1) ? h4_bbb[0]   : 0;  // buffer 0 = middle
+   double h4_bb_u   = (CopyBuffer(g_h4_bb,   1, 0, 1, h4_bbb)   == 1) ? h4_bbb[0]   : 0;  // buffer 1 = upper
+   double h4_bb_l   = (CopyBuffer(g_h4_bb,   2, 0, 1, h4_bbb)   == 1) ? h4_bbb[0]   : 0;  // buffer 2 = lower
+   double h4_adx_v  = (CopyBuffer(g_h4_adx,  0, 0, 1, h4_adxb)  == 1) ? h4_adxb[0]  : 0;  // buffer 0 = ADX line
+   j += "\"ema_20\":" + DoubleToString(h4_m20,2)   + ",";
+   j += "\"ema_50\":" + DoubleToString(h4_m50,2)   + ",";
+   j += "\"atr_14\":" + DoubleToString(h4_atr_v,2) + ",";
+   j += "\"rsi_14\":" + DoubleToString(h4_rsi_v,1) + ",";
+   j += "\"bb_upper\":" + DoubleToString(h4_bb_u,2) + ",";
+   j += "\"bb_mid\":" + DoubleToString(h4_bb_m,2)   + ",";
+   j += "\"bb_lower\":" + DoubleToString(h4_bb_l,2) + ",";
+   j += "\"adx_14\":" + DoubleToString(h4_adx_v,1);
    j += "},";
    // M1 — optional scalper confirmation context
    j += "\"indicators_m1\":{";
@@ -2179,6 +2233,19 @@ void InitScalperConfig() {
    g_sc.breakout_sell_limit_l2_enabled      = true;
    g_sc.breakout_sell_limit_l2_atr_mult     = 0.65;
    g_sc.breakout_sell_limit_l2_lot_factor   = 0.125;
+   // SELL STOP continuation — off by default; enable via FORGE_SELL_STOP_CONT_ENABLED=1
+   g_sc.sell_stop_cont_enabled       = false;
+   g_sc.sell_stop_cont_atr_mult      = 0.40;
+   g_sc.sell_stop_cont_lot_factor    = 0.25;
+   g_sc.sell_stop_cont_expiry_bars   = 8;
+   g_sc.sell_stop_cont_min_rsi       = 25.0;
+   // H4 supplemental gates — off by default; enable via .env + scalper_config.json
+   g_sc.h4_rsi_gate_enabled  = false;
+   g_sc.h4_rsi_sell_max      = 60.0;  // Cardwell Bear Resistance ceiling
+   g_sc.h4_rsi_buy_min       = 40.0;  // Cardwell Bull Support floor
+   g_sc.h4_adx_gate_enabled  = false;
+   g_sc.h4_adx_min_sell      = 20.0;
+   g_sc.h4_adx_min_buy       = 20.0;
    // Init SELL LIMIT stack (all 4 slots — slots [2],[3] reserved for 2.7.10 SELL STOP + BUY LIMIT)
    for(int _si = 0; _si < 4; _si++) {
       g_sell_limit_stack[_si].ticket   = 0;
@@ -2495,6 +2562,19 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_limit_l2_enabled"))   { v = JsonGetDouble(breakout_json,"sell_limit_l2_enabled");   g_sc.breakout_sell_limit_l2_enabled   = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "sell_limit_l2_atr_mult"))  { v = JsonGetDouble(breakout_json,"sell_limit_l2_atr_mult");  if(v > 0 && v <= 5.0) g_sc.breakout_sell_limit_l2_atr_mult  = v; }
       if(JsonHasKey(breakout_json, "sell_limit_l2_lot_factor")){ v = JsonGetDouble(breakout_json,"sell_limit_l2_lot_factor"); if(v > 0 && v <= 1.0) g_sc.breakout_sell_limit_l2_lot_factor = v; }
+      // SELL STOP continuation (2.7.10 Day 2) — disabled by default
+      if(JsonHasKey(breakout_json, "sell_stop_cont_enabled"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_enabled");    g_sc.sell_stop_cont_enabled    = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_atr_mult"))   { v = JsonGetDouble(breakout_json,"sell_stop_cont_atr_mult");   if(v > 0 && v <= 5.0)  g_sc.sell_stop_cont_atr_mult   = v; }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_lot_factor")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_lot_factor"); if(v > 0 && v <= 1.0)  g_sc.sell_stop_cont_lot_factor = v; }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_stop_cont_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_stop_cont_expiry_bars = (int)v; }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_min_rsi"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_min_rsi");    if(v >= 0 && v < 50)  g_sc.sell_stop_cont_min_rsi    = v; }
+      // H4 supplemental gates (2.7.10) — disabled by default
+      if(JsonHasKey(breakout_json, "h4_rsi_gate_enabled"))  { v = JsonGetDouble(breakout_json,"h4_rsi_gate_enabled");  g_sc.h4_rsi_gate_enabled  = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "h4_rsi_sell_max"))      { v = JsonGetDouble(breakout_json,"h4_rsi_sell_max");      if(v > 0 && v <= 100) g_sc.h4_rsi_sell_max      = v; }
+      if(JsonHasKey(breakout_json, "h4_rsi_buy_min"))       { v = JsonGetDouble(breakout_json,"h4_rsi_buy_min");       if(v >= 0 && v < 100) g_sc.h4_rsi_buy_min       = v; }
+      if(JsonHasKey(breakout_json, "h4_adx_gate_enabled"))  { v = JsonGetDouble(breakout_json,"h4_adx_gate_enabled");  g_sc.h4_adx_gate_enabled  = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "h4_adx_min_sell"))      { v = JsonGetDouble(breakout_json,"h4_adx_min_sell");      if(v >= 0 && v <= 100) g_sc.h4_adx_min_sell      = v; }
+      if(JsonHasKey(breakout_json, "h4_adx_min_buy"))       { v = JsonGetDouble(breakout_json,"h4_adx_min_buy");       if(v >= 0 && v <= 100) g_sc.h4_adx_min_buy       = v; }
       if(JsonHasKey(breakout_json, "sell_inside_band_lot_factor")) {
          v = JsonGetDouble(breakout_json, "sell_inside_band_lot_factor");
          if(v > 0 && v <= 1.0) g_sc.breakout_sell_inside_band_lot_factor = v;
@@ -4726,6 +4806,9 @@ void CheckNativeScalperSetups() {
    bool h4_bull = h4_trend_strength > trend_thr_eff;
    bool h4_bear = h4_trend_strength < -trend_thr_eff;
    bool h4_flat = !h4_bull && !h4_bear;
+   // H4 supplemental reads for gate checks (RSI + ADX); BB upper/lower exported to WriteMarketData
+   double h4_rsi_v = (g_h4_rsi != INVALID_HANDLE && CopyBuffer(g_h4_rsi, 0, 0, 1, buf) == 1) ? buf[0] : 0;
+   double h4_adx_v = (g_h4_adx != INVALID_HANDLE && CopyBuffer(g_h4_adx, 0, 0, 1, buf) == 1) ? buf[0] : 0;
    bool h4_ok_buy  = in_tester || (!NativeScalperH4Align) || h4_bull || h4_flat;
    bool h4_ok_sell = in_tester || (!NativeScalperH4Align) || h4_bear || h4_flat;
    // V2 Fibonacci: VWAP-vs-Fib50 directional bias (optional gate for bounce entries)
@@ -5019,14 +5102,35 @@ void CheckNativeScalperSetups() {
                   }
                }
             }
+            // H4 RSI gate — blocks BUY when H4 RSI <= h4_rsi_buy_min (Cardwell Bull Support exhaustion)
+            // Rationale: H4 RSI <=40 = structurally oversold on H4 → breakout BUY may be catching a falling knife
+            // Enable: FORGE_H4_RSI_GATE_ENABLED=1 in .env + "h4_rsi_gate_enabled":1 in scalper_config.json
+            bool h4_rsi_buy_ok = true;
+            if(h1_di_ok && macd_buy_ok && g_sc.h4_rsi_gate_enabled && h4_rsi_v > 0) {
+               if(h4_rsi_v <= g_sc.h4_rsi_buy_min) {
+                  JournalRecordSignal("SKIP","entry_quality_h4_rsi_buy_blocked","BB_BREAKOUT","BUY",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  h4_rsi_buy_ok = false;
+               }
+            }
+            // H4 ADX gate — blocks BUY when H4 ADX < h4_adx_min_buy (H4 not directional)
+            bool h4_adx_buy_ok = true;
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && g_sc.h4_adx_gate_enabled && h4_adx_v > 0) {
+               if(h4_adx_v < g_sc.h4_adx_min_buy) {
+                  JournalRecordSignal("SKIP","entry_quality_h4_adx_buy_blocked","BB_BREAKOUT","BUY",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  h4_adx_buy_ok = false;
+               }
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_buy_ok = true;
-            if(h1_di_ok && macd_buy_ok && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok
+               && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","BUY",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_buy_ok = false;
             }
-            if(h1_di_ok && macd_buy_ok && nf_buy_ok)
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && nf_buy_ok)
             { // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -5199,16 +5303,41 @@ void CheckNativeScalperSetups() {
                   m30_bear_ok = false;
                }
             }
+            // H4 RSI gate — blocks SELL when H4 RSI >= h4_rsi_sell_max (Cardwell Bear Resistance exhaustion)
+            // Rationale: H4 RSI >=60 = structurally overbought on H4 → crash sell more likely to be a HH spike
+            //            that quickly reverses rather than a genuine breakdown. Gate is disabled by default.
+            // Enable: FORGE_H4_RSI_GATE_ENABLED=1 in .env + "h4_rsi_gate_enabled":1 in scalper_config.json
+            bool h4_rsi_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok
+               && g_sc.h4_rsi_gate_enabled && h4_rsi_v > 0) {
+               if(h4_rsi_v >= g_sc.h4_rsi_sell_max) {
+                  JournalRecordSignal("SKIP","entry_quality_h4_rsi_sell_blocked","BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  h4_rsi_sell_ok = false;
+               }
+            }
+            // H4 ADX gate — blocks SELL when H4 ADX < h4_adx_min_sell (H4 trend not directional)
+            // Rationale: if H4 is ranging (ADX < 20), scalp SELL breakouts have no structural confirmation
+            // Enable: FORGE_H4_ADX_GATE_ENABLED=1 in .env + "h4_adx_gate_enabled":1 in scalper_config.json
+            bool h4_adx_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok
+               && g_sc.h4_adx_gate_enabled && h4_adx_v > 0) {
+               if(h4_adx_v < g_sc.h4_adx_min_sell) {
+                  JournalRecordSignal("SKIP","entry_quality_h4_adx_sell_blocked","BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  h4_adx_sell_ok = false;
+               }
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok
                && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
                && m5_rsi <= g_nf_eff_rsi_sell_min) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_sell_ok = false;
             }
-            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && nf_sell_ok) {
+            if(adx_dur_ok && rsi_decl_ok && macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && nf_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -5591,6 +5720,9 @@ void CheckNativeScalperSetups() {
    g_groups[gi].staged_tp1_legs = staging_on ? tp1_count : 0;
    g_groups[gi].staged_anchor = staging_on ? ((direction == "BUY") ? ask : bid) : 0;
    g_groups[gi].staged_next_add = staging_on ? (TimeCurrent() + MathMax(3, g_sc.staged_add_interval_sec)) : 0;
+   // Post-TP1 ladder context: execution price is crash_low for SELL (bid) or entry_high for BUY (ask)
+   g_groups[gi].crash_low  = (direction == "SELL") ? bid : ask;
+   g_groups[gi].entry_atr  = m5_atr;
    int native_group_positions[];
    GetGroupPositions(group_magic, native_group_positions);
    g_groups[gi].had_positions = (ArraySize(native_group_positions) > 0);
@@ -5621,18 +5753,16 @@ void CheckNativeScalperSetups() {
       _lreq.comment    = "SCALP_LIMIT|" + setup_type + "|G" + IntegerToString(group_id);
       g_trade.SetExpertMagicNumber((ulong)group_magic + 20000);
       if(OrderSend(_lreq, _lres) && _lres.order > 0) {
-         for(int _si = 0; _si < 2; _si++) {
-            if(!g_sell_limit_stack[_si].active) {
-               g_sell_limit_stack[_si].ticket    = _lres.order;
-               g_sell_limit_stack[_si].group_id  = group_id;
-               g_sell_limit_stack[_si].mkt_magic = (ulong)group_magic;
-               g_sell_limit_stack[_si].expiry    = limit_exp;
-               g_sell_limit_stack[_si].active    = true;
-               PrintFormat("FORGE SCALPER: SELL LIMIT placed ticket=%d price=%.2f (ATR×%.1f) lot=%.2f expiry=%s",
-                           _lres.order, limit_price, g_sc.breakout_sell_limit_atr_mult, limit_lot,
-                           TimeToString(limit_exp, TIME_DATE|TIME_SECONDS));
-               break;
-            }
+         // L1 always uses slot [0]; slot [1] is reserved for L2 (hard-coded below)
+         if(!g_sell_limit_stack[0].active) {
+            g_sell_limit_stack[0].ticket    = _lres.order;
+            g_sell_limit_stack[0].group_id  = group_id;
+            g_sell_limit_stack[0].mkt_magic = (ulong)group_magic;
+            g_sell_limit_stack[0].expiry    = limit_exp;
+            g_sell_limit_stack[0].active    = true;
+            PrintFormat("FORGE SCALPER: SELL LIMIT placed ticket=%d price=%.2f (ATR×%.1f) lot=%.2f expiry=%s",
+                        _lres.order, limit_price, g_sc.breakout_sell_limit_atr_mult, limit_lot,
+                        TimeToString(limit_exp, TIME_DATE|TIME_SECONDS));
          }
       }
       // L2 SELL LIMIT — deeper Cardwell Bear Resistance zone (2.7.10 Day 1)
@@ -5861,6 +5991,81 @@ void RebuildGroups() {
    if(ArraySize(g_groups) > 0) {
       Print("FORGE: Rebuilt ", ArraySize(g_groups), " trade groups from open positions");
    }
+}
+
+// ArmPostTP1Ladder — called from ManageOpenGroups() when TP1 is hit on a SELL group (2.7.10 Day 2)
+// Places SELL STOP continuation below crash_low when RSI not yet exhausted.
+// Slot [2] = SELL STOP continuation; slot [3] reserved for Day 3 BUY LIMIT recovery.
+// Disabled by default: sell_stop_cont_enabled=false. Enable via FORGE_SELL_STOP_CONT_ENABLED=1 in .env.
+void ArmPostTP1Ladder(const int gi) {
+   if(gi < 0 || gi >= ArraySize(g_groups)) return;
+   // Day 2 only arms for SELL groups — BUY recovery is Day 3
+   if(g_groups[gi].direction != "SELL") return;
+   double crash_low = g_groups[gi].crash_low;
+   double entry_atr = g_groups[gi].entry_atr;
+   int    grp_id    = g_groups[gi].id;
+   int    grp_magic = g_groups[gi].magic_offset;
+   // Guard: BRIDGE groups have entry_atr=0 (ATR unavailable at BRIDGE registration time)
+   if(crash_low <= 0 || entry_atr <= 0) {
+      if(g_sc.sell_stop_cont_enabled)
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped (crash_low=%.2f entry_atr=%.4f; BRIDGE group or ATR unavailable)",
+                     grp_id, crash_low, entry_atr);
+      return;
+   }
+
+   // SELL STOP continuation (slot [2])
+   if(g_sc.sell_stop_cont_enabled) {
+      if(g_sell_limit_stack[2].active) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d — slot [2] already occupied, skipping SELL STOP", grp_id);
+      } else {
+         // Check current M5 RSI — do not continue into an exhausted oversold zone
+         double _rbuf[1];
+         double cur_rsi = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _rbuf) == 1) ? _rbuf[0] : 0;
+         if(cur_rsi > 0 && cur_rsi <= g_sc.sell_stop_cont_min_rsi) {
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d — SELL STOP skipped (RSI=%.1f <= min_rsi=%.1f, exhausted)",
+                        grp_id, cur_rsi, g_sc.sell_stop_cont_min_rsi);
+         } else {
+            // Reference: TP1 price (already hit) — SELL STOP goes below TP1 to catch second leg
+            // Using crash_low (entry bid) was wrong: entry - 0.4×ATR is above current price at TP1 time → retcode 10015
+            double tp1_ref  = g_groups[gi].tp1;
+            double ss_price = NormalizeDouble(tp1_ref - entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
+            double ss_sl    = NormalizeDouble(tp1_ref + entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
+            double ss_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                                                   g_sc.lot_fixed * g_sc.sell_stop_cont_lot_factor));
+            datetime ss_exp = TimeCurrent() + (datetime)(g_sc.sell_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));
+            MqlTradeRequest _ssr = {}; MqlTradeResult _ssres = {};
+            _ssr.action       = TRADE_ACTION_PENDING;
+            _ssr.type         = ORDER_TYPE_SELL_STOP;
+            _ssr.symbol       = _Symbol;
+            _ssr.volume       = ss_lot;
+            _ssr.price        = ss_price;
+            _ssr.sl           = ss_sl;
+            _ssr.tp           = 0;
+            _ssr.type_time    = ORDER_TIME_SPECIFIED;
+            _ssr.expiration   = ss_exp;
+            _ssr.type_filling = ORDER_FILLING_RETURN;
+            _ssr.magic        = (ulong)grp_magic + 20002;
+            _ssr.comment      = "SCALP_SELL_STOP_CONT|G" + IntegerToString(grp_id);
+            g_trade.SetExpertMagicNumber(_ssr.magic);
+            if(OrderSend(_ssr, _ssres) && _ssres.order > 0) {
+               g_sell_limit_stack[2].ticket    = _ssres.order;
+               g_sell_limit_stack[2].group_id  = grp_id;
+               g_sell_limit_stack[2].mkt_magic = (ulong)grp_magic;
+               g_sell_limit_stack[2].expiry    = ss_exp;
+               g_sell_limit_stack[2].active    = true;
+               PrintFormat("FORGE: SELL STOP CONT placed G%d ticket=%d price=%.2f (TP1=%.2f-ATR*%.2f=%.2f) SL=%.2f lot=%.2f RSI=%.1f exp=%s",
+                           grp_id, _ssres.order, ss_price, tp1_ref, g_sc.sell_stop_cont_atr_mult,
+                           entry_atr * g_sc.sell_stop_cont_atr_mult, ss_sl, ss_lot, cur_rsi,
+                           TimeToString(ss_exp, TIME_DATE|TIME_SECONDS));
+            } else {
+               PrintFormat("FORGE: SELL STOP CONT placement FAILED G%d retcode=%d", grp_id, _ssres.retcode);
+            }
+            g_trade.SetExpertMagicNumber(MagicNumber);
+         }
+      }
+   }
+   // Day 3 stub: BUY LIMIT recovery (slot [3]) — implement in Day 3 sprint
+   // if(g_sc.buy_limit_recovery_enabled) { ... }
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,

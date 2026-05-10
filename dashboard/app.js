@@ -537,6 +537,10 @@ function ATHENA(){
   const [signalStats,setSignalStats]=useState(null);
   const [pnlCurve,setPnlCurve]=useState([]);
   const [mgmtNote,setMgmtNote]=useState('');
+  // Backtest tab state
+  const [btRuns,setBtRuns]=useState([]);
+  const [btSelRun,setBtSelRun]=useState(null);   // aurum_run_id
+  const [btDetail,setBtDetail]=useState(null);   // /api/backtest/run/:id response
   const [mgmtBusy,setMgmtBusy]=useState(false);
   const [autoscalperConditions,setAutoscalperConditions]=useState(null);
   const [autoscalperConditionsError,setAutoscalperConditionsError]=useState(null);
@@ -586,6 +590,28 @@ function ATHENA(){
     poll();const t=setInterval(poll,3000);return()=>clearInterval(t);
   },[]);
   useEffect(()=>{const t=setInterval(()=>setTick(x=>x+1),1000);return()=>clearInterval(t);},[]);
+
+  // Backtest runs — fetch on tab open and refresh every 30s
+  useEffect(()=>{
+    if(tab!=='backtest')return;
+    const load=async()=>{
+      try{const r=await fetch(`${API}/api/backtest/runs`);
+        if(r.ok){const j=await r.json();setBtRuns(j.runs||[]);
+          // auto-select latest run if none selected
+          if(!btSelRun&&j.runs&&j.runs.length>0)setBtSelRun(j.runs[0].aurum_run_id);}}
+      catch(e){}};
+    load();const t=setInterval(load,30000);return()=>clearInterval(t);
+  },[tab]);
+
+  // Backtest run detail — fetch when selected run changes
+  useEffect(()=>{
+    if(!btSelRun)return;
+    const load=async()=>{
+      try{const r=await fetch(`${API}/api/backtest/run/${btSelRun}`);
+        if(r.ok){const j=await r.json();setBtDetail(j);}}
+      catch(e){}};
+    load();
+  },[btSelRun]);
 
   const switchMode=async(m)=>{
     try{await fetch(`${API}/api/mode`,{method:'POST',
@@ -886,7 +912,8 @@ function ATHENA(){
       <div style={{display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}>
         <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
           {[{id:'groups',label:'Groups'},{id:'closures',label:'Closures'},{id:'activity',label:'Activity',badge:warnCount||null},
-            {id:'signals',label:'Signals'},{id:'uploads',label:'Uploads',badge:uploadCount||null},{id:'perf',label:'Performance'}].map(t=>(
+            {id:'signals',label:'Signals'},{id:'uploads',label:'Uploads',badge:uploadCount||null},{id:'perf',label:'Performance'},
+            {id:'backtest',label:'🔬 Backtest',badge:btRuns.length||null}].map(t=>(
             <button key={t.id} type="button" data-testid={`tab-${t.id}`}
               onClick={()=>setTab(t.id)} style={{
               padding:'6px 10px',background:'transparent',border:'none',
@@ -1274,6 +1301,113 @@ function ATHENA(){
                     No closed trades in SCRIBE in the last {PERF_ROLLING_DAYS} days (UTC), or curve needs 1+ closes.</div>
                 )}
               </div>
+            </div>
+          )}
+
+          {tab==='backtest'&&(
+            <div style={{overflowY:'auto',height:'100%',padding:'12px 14px'}}>
+              {/* Header */}
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                <span style={{fontSize:8,color:T.cyan,fontFamily:T.mono,letterSpacing:2}}>🔬 BACKTEST — aurum_tester.db</span>
+                <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>{btRuns.length} run(s) stored</span>
+              </div>
+              {/* Run selector */}
+              {btRuns.length===0?(
+                <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,padding:'20px 0'}}>
+                  No backtest runs in aurum_tester.db yet. Run a tester backtest to populate.</div>
+              ):(
+                <>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
+                    {btRuns.map(r=>(
+                      <button key={r.aurum_run_id} type="button"
+                        onClick={()=>setBtSelRun(r.aurum_run_id)}
+                        style={{padding:'4px 10px',fontFamily:T.mono,fontSize:7,cursor:'pointer',
+                          borderRadius:4,border:`1px solid ${btSelRun===r.aurum_run_id?T.gold:T.border}`,
+                          background:btSelRun===r.aurum_run_id?T.card:'transparent',
+                          color:btSelRun===r.aurum_run_id?T.gold:T.textD}}>
+                        Run #{r.aurum_run_id}
+                        {r.forge_version&&<span style={{marginLeft:5,color:T.textD}}>v{r.forge_version}</span>}
+                        {r.total_pnl!=null&&<span style={{marginLeft:5,color:r.total_pnl>=0?T.green:T.red}}>
+                          {r.total_pnl>=0?'+':''}{r.total_pnl?.toFixed(2)}</span>}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Run detail */}
+                  {btDetail&&btDetail.meta&&btSelRun===btDetail.meta.aurum_run_id&&(()=>{
+                    const p=btDetail.performance||{};
+                    const m=btDetail.meta||{};
+                    const wins=p.wins||0; const losses=p.losses||0;
+                    const sparkData=(btDetail.pnl_curve||[]).map(x=>x.pnl);
+                    const sparkColor=p.total_pnl>=0?T.green:T.red;
+                    return(
+                      <>
+                        {/* Meta row */}
+                        <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,lineHeight:1.6}}>
+                          {m.symbol} · v{m.forge_version} · {m.scalper_mode}
+                          {m.sim_start&&<> · sim start {m.sim_start}</>}
+                          {m.balance&&<> · balance ${Number(m.balance).toFixed(0)}</>}
+                          {' · '}first seen {(m.first_seen_utc||'').slice(0,16)} UTC
+                        </div>
+                        {/* Stat grid */}
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+                          {[
+                            ['Total P&L',`${p.total_pnl>=0?'+':''}$${(p.total_pnl||0).toFixed(2)}`,p.total_pnl>=0?T.green:T.red],
+                            ['Win Rate',p.win_rate!=null?`${p.win_rate}%`:'—',T.green],
+                            ['Trades',p.total||0,T.textBB],
+                            ['Wins',wins,T.green],
+                            ['Losses',losses,T.red],
+                            ['Best Win',`$${(p.best_win||0).toFixed(2)}`,T.green],
+                            ['Worst Loss',`$${(p.worst_loss||0).toFixed(2)}`,T.red],
+                            ['TAKEN',btDetail.signals?.taken||0,T.gold],
+                            ['Skipped',btDetail.signals?.skipped||0,T.textD],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
+                              borderRadius:5,padding:'8px 10px',textAlign:'center'}}>
+                              <div style={{fontSize:16,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
+                              <div style={{fontSize:7,color:T.text,marginTop:2,letterSpacing:1}}>{l}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {/* P&L curve */}
+                        {sparkData.length>=2&&(
+                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
+                            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:6,letterSpacing:2}}>CUMULATIVE P&L</div>
+                            <Sparkline data={sparkData} w={380} h={60} color={sparkColor}/>
+                          </div>
+                        )}
+                        {/* Gate breakdown */}
+                        {(btDetail.gates||[]).length>0&&(
+                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12,marginBottom:12}}>
+                            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:2}}>GATE BREAKDOWN (SKIP)</div>
+                            {(btDetail.gates||[]).map(g=>(
+                              <div key={g.gate_reason} style={{display:'flex',justifyContent:'space-between',
+                                borderBottom:`1px solid ${T.border}`,padding:'4px 0',fontSize:8,fontFamily:T.mono}}>
+                                <span style={{color:T.text}}>{g.gate_reason}</span>
+                                <span style={{color:T.textD}}>{g.cnt.toLocaleString()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {/* TAKEN entries */}
+                        {(btDetail.taken||[]).length>0&&(
+                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:12}}>
+                            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:8,letterSpacing:2}}>TAKEN ENTRIES</div>
+                            {(btDetail.taken||[]).map((e,i)=>(
+                              <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 60px 50px 50px',
+                                gap:6,borderBottom:`1px solid ${T.border}`,padding:'4px 0',fontSize:8,fontFamily:T.mono}}>
+                                <span style={{color:T.textD}}>{(e.timestamp_utc||'').slice(0,16)}</span>
+                                <span style={{color:e.direction==='BUY'?T.green:T.red}}>{e.direction}</span>
+                                <span style={{color:T.textD}}>RSI {e.rsi}</span>
+                                <span style={{color:T.textD}}>ADX {e.adx}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </>
+              )}
             </div>
           )}
         </div>

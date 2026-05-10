@@ -494,6 +494,29 @@ class Scribe:
             log.info("SCRIBE migration: added psar_state to market_snapshots")
         tables = [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        # aurum_tester_runs — stable AURUM-level run registry keyed on wall_time (entropy).
+        # aurum_run_id auto-increments per unique wall_time and never resets even when the
+        # source journal DB is wiped. Use this instead of run_id for all AURUM run filtering.
+        # run_id in forge_signals/forge_journal_trades is kept for source-journal cross-reference
+        # only — it is unreliable across source DB resets (resets to 1 each wipe).
+        if "aurum_tester_runs" not in tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS aurum_tester_runs (
+                    aurum_run_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wall_time      INTEGER NOT NULL UNIQUE,
+                    source_run_id  INTEGER DEFAULT 0,
+                    journal_source TEXT DEFAULT 'tester',
+                    symbol         TEXT,
+                    forge_version  TEXT,
+                    scalper_mode   TEXT,
+                    balance        REAL,
+                    sim_start_time INTEGER,
+                    magic_base     INTEGER,
+                    first_seen_utc TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_atr_wall ON aurum_tester_runs(wall_time);
+            """)
+            log.info("SCRIBE migration: created aurum_tester_runs registry")
         if "forge_signals" not in tables:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS forge_signals (
@@ -518,13 +541,27 @@ class Scribe:
         if "journal_source" not in fs_cols:
             conn.execute("ALTER TABLE forge_signals ADD COLUMN journal_source TEXT DEFAULT 'live'")
             log.info("SCRIBE migration: added journal_source to forge_signals")
+        if "run_id" not in fs_cols:
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN run_id INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added run_id to forge_signals")
+        if "wall_time" not in fs_cols:
+            # wall_time = TESTER_RUNS.wall_time (GetTickCount64 at run start) — uniquely identifies
+            # a real tester run even when the source journal DB is wiped and run_id resets to 1.
+            # This is the "magic number + entropy" fix: prevents de-dup false positives across runs.
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN wall_time INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added wall_time to forge_signals")
+        if "aurum_run_id" not in fs_cols:
+            # aurum_run_id — stable AURUM-level sequential ID from aurum_tester_runs table.
+            # Use this for run filtering/grouping instead of run_id (which resets on source DB wipe).
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN aurum_run_id INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added aurum_run_id to forge_signals")
         # forge_journal_trades: create fresh with UNIQUE(deal_ticket, journal_source, run_id)
         # or migrate old schema (UNIQUE on deal_ticket+journal_source only) atomically.
         fjt_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='forge_journal_trades'"
         ).fetchone()
         if fjt_sql is None:
-            # New table
+            # New table — UNIQUE uses wall_time (entropy) so runs accumulate even after source DB reset
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS forge_journal_trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -545,15 +582,19 @@ class Scribe:
                     time_msc INTEGER,
                     journal_source TEXT DEFAULT 'live',
                     run_id INTEGER DEFAULT 0,
-                    UNIQUE(deal_ticket, journal_source, run_id)
+                    wall_time INTEGER DEFAULT 0,
+                    UNIQUE(deal_ticket, journal_source, wall_time)
                 );
                 CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
                 CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
                 CREATE INDEX IF NOT EXISTS idx_fjt_run ON forge_journal_trades(run_id);
+                CREATE INDEX IF NOT EXISTS idx_fjt_wall ON forge_journal_trades(wall_time);
             """)
-            log.info("SCRIBE migration: created forge_journal_trades with UNIQUE(deal_ticket,journal_source,run_id)")
-        elif "run_id" not in fjt_sql[0]:
-            # Old schema — recreate atomically
+            log.info("SCRIBE migration: created forge_journal_trades with UNIQUE(deal_ticket,journal_source,wall_time)")
+        elif "wall_time" not in fjt_sql[0]:
+            # Upgrade schema: add wall_time + change UNIQUE to use wall_time as entropy
+            # wall_time = TESTER_RUNS.wall_time (GetTickCount64) — unique per real run even when
+            # the source journal DB is wiped and deal_ticket/run_id reset to 1.
             conn.executescript("""
                 ALTER TABLE forge_journal_trades RENAME TO _fjt_old;
                 CREATE TABLE forge_journal_trades (
@@ -575,27 +616,34 @@ class Scribe:
                     time_msc INTEGER,
                     journal_source TEXT DEFAULT 'live',
                     run_id INTEGER DEFAULT 0,
-                    UNIQUE(deal_ticket, journal_source, run_id)
+                    wall_time INTEGER DEFAULT 0,
+                    UNIQUE(deal_ticket, journal_source, wall_time)
                 );
                 INSERT INTO forge_journal_trades
                     SELECT id, forge_rowid, deal_ticket, order_ticket, symbol,
                            type, direction, volume, price, profit, swap,
                            commission, magic, comment, time, time_msc,
-                           journal_source, 0
+                           COALESCE(journal_source,'live'), COALESCE(run_id,0), 0
                     FROM _fjt_old;
                 DROP TABLE _fjt_old;
                 CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
                 CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
                 CREATE INDEX IF NOT EXISTS idx_fjt_run ON forge_journal_trades(run_id);
+                CREATE INDEX IF NOT EXISTS idx_fjt_wall ON forge_journal_trades(wall_time);
             """)
-            log.info("SCRIBE migration: forge_journal_trades upgraded to UNIQUE(deal_ticket,journal_source,run_id)")
+            log.info("SCRIBE migration: forge_journal_trades upgraded to UNIQUE(deal_ticket,journal_source,wall_time)")
         else:
             # Correct schema already — just ensure indexes
             conn.executescript("""
                 CREATE INDEX IF NOT EXISTS idx_fjt_time ON forge_journal_trades(time);
                 CREATE INDEX IF NOT EXISTS idx_fjt_magic ON forge_journal_trades(magic);
                 CREATE INDEX IF NOT EXISTS idx_fjt_run ON forge_journal_trades(run_id);
+                CREATE INDEX IF NOT EXISTS idx_fjt_wall ON forge_journal_trades(wall_time);
             """)
+        fjt_cols = [r[1] for r in conn.execute("PRAGMA table_info(forge_journal_trades)").fetchall()]
+        if "aurum_run_id" not in fjt_cols:
+            conn.execute("ALTER TABLE forge_journal_trades ADD COLUMN aurum_run_id INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added aurum_run_id to forge_journal_trades")
         tg_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
         if "pending_entry_threshold_points" not in tg_cols:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN pending_entry_threshold_points REAL")
@@ -657,11 +705,14 @@ class Scribe:
         if "pip_value_usd" not in tc_cols:
             conn.execute("ALTER TABLE trade_closures ADD COLUMN pip_value_usd REAL")
             log.info("SCRIBE migration: added pip_value_usd to trade_closures")
-        # trade_positions: pip_value_usd
+        # trade_positions: pip_value_usd + comment
         tp_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_positions)").fetchall()]
         if "pip_value_usd" not in tp_cols:
             conn.execute("ALTER TABLE trade_positions ADD COLUMN pip_value_usd REAL")
             log.info("SCRIBE migration: added pip_value_usd to trade_positions")
+        if "comment" not in tp_cols:
+            conn.execute("ALTER TABLE trade_positions ADD COLUMN comment TEXT")
+            log.info("SCRIBE migration: added comment to trade_positions")
         # trade_groups: total_pip_value_usd (sum across all closed legs)
         tg_cols4 = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
         if "total_pip_value_usd" not in tg_cols4:
@@ -753,104 +804,194 @@ class Scribe:
             "notes": notes,
         })
 
-    def sync_forge_journal(self, journal_db_path: str, source: str = "live", batch_size: int = 500) -> int:
-        """Read unsynced SIGNALS from FORGE journal DB, insert into forge_signals,
-        then mark them synced=1 in the source DB. Returns count of synced rows."""
+    # Per-instance caches to avoid repeated PRAGMA/migration overhead across sync calls
+    _fj_src_cols_cache: dict = {}      # path → frozenset of source column names
+    _fj_wall_time_cache: dict = {}     # path → {run_id: wall_time}
+    _fj_aurum_run_cache: dict = {}     # path → {wall_time: aurum_run_id}
+    _fj_dedup_index: dict = {}         # (db_path, source) → set of (forge_id, wall_time)
+
+    def sync_forge_journal(self, journal_db_path: str, source: str = "live", batch_size: int = 2000) -> int:
+        """Read unsynced SIGNALS from FORGE journal DB, insert into forge_signals.
+
+        Optimisations vs naïve version:
+        - Column detection and migration cached per DB path (one-time PRAGMA)
+        - TESTER_RUNS wall_time map cached per DB path; refreshed only when new run_id appears
+        - Batch de-dup: existing (forge_id, wall_time) pairs loaded once into a Python set
+          instead of one SELECT per row — eliminates N round-trips to SQLite
+        - executemany for all INSERTs (one round-trip for the whole batch)
+        - Unique index on (forge_id, journal_source, wall_time) ensures INSERT OR IGNORE
+          is safe as a fallback even if the set misses a row (e.g. after restart)
+        """
         from pathlib import Path as _P
         if not _P(journal_db_path).exists():
-            return 0
+            return 0, 0
 
         import sqlite3 as _sqlite3
+        from datetime import datetime, timezone as _tz
         try:
             src = _sqlite3.connect(journal_db_path, timeout=5)
+            src.execute("PRAGMA journal_mode=WAL")   # allow concurrent tester writes
         except Exception as e:
             log.warning("SCRIBE sync_forge_journal: cannot open %s — %s", journal_db_path, e)
-            return 0
+            return 0, 0
 
         try:
-            # Migrate AURUM forge_signals — check existence first to avoid _conn() error spam
-            import sqlite3 as _sqlite3
-            _raw = _sqlite3.connect(self.db_path)
-            _existing_cols = {r[1] for r in _raw.execute("PRAGMA table_info(forge_signals)").fetchall()}
-            _raw.close()
-            _migrations = [
-                ("ALTER TABLE forge_signals ADD COLUMN run_id INTEGER DEFAULT 0", "run_id"),
-                ("ALTER TABLE forge_signals ADD COLUMN macd_histogram REAL",       "macd_histogram"),
-                ("ALTER TABLE forge_signals ADD COLUMN m15_adx REAL",              "m15_adx"),
-                ("ALTER TABLE forge_signals ADD COLUMN lot_factor REAL",           "lot_factor"),
-            ]
-            for _mig_sql, _col in _migrations:
-                if _col not in _existing_cols:
-                    with self._conn() as c:
-                        c.execute(_mig_sql)
+            # ── 1. One-time PRAGMA + migration (cached per DB path) ──────────
+            cache_key = journal_db_path
+            if cache_key not in self._fj_src_cols_cache:
+                src_cols = frozenset(r[1] for r in src.execute("PRAGMA table_info(SIGNALS)").fetchall())
+                self._fj_src_cols_cache[cache_key] = src_cols
+                # Ensure UNIQUE index on destination for safe INSERT OR IGNORE
+                try:
+                    with self._conn() as _c:
+                        _c.execute(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS idx_fs_dedup "
+                            "ON forge_signals(forge_id, journal_source, wall_time)"
+                        )
+                except Exception:
+                    pass
+            src_cols = self._fj_src_cols_cache[cache_key]
+            has_run_id     = "run_id"         in src_cols
+            has_macd_hist  = "macd_histogram" in src_cols
+            has_m15_adx    = "m15_adx"        in src_cols
+            has_lot_factor = "lot_factor"      in src_cols
 
-            # Check which columns exist in source journal (version detection)
-            src_cols = {r[1] for r in src.execute("PRAGMA table_info(SIGNALS)").fetchall()}
-            has_run_id    = "run_id"         in src_cols
-            has_macd_hist = "macd_histogram" in src_cols
-            has_m15_adx   = "m15_adx"        in src_cols
-            has_lot_factor = "lot_factor"    in src_cols
+            # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
+            wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
+            aurum_run_id_map = self._fj_aurum_run_cache.get(cache_key, {0: 0})
+            tester_runs_meta: dict = {}
+            try:
+                tr_cols = frozenset(r[1] for r in src.execute("PRAGMA table_info(TESTER_RUNS)").fetchall())
+                tr_select = (
+                    "SELECT id, wall_time"
+                    + (", sim_start_time" if "sim_start_time" in tr_cols else ", NULL")
+                    + (", symbol"         if "symbol"         in tr_cols else ", NULL")
+                    + (", balance"        if "balance"        in tr_cols else ", NULL")
+                    + (", forge_version"  if "forge_version"  in tr_cols else ", NULL")
+                    + (", scalper_mode"   if "scalper_mode"   in tr_cols else ", NULL")
+                    + (", magic_base"     if "magic_base"     in tr_cols else ", NULL")
+                    + " FROM TESTER_RUNS"
+                )
+                for tr in src.execute(tr_select).fetchall():
+                    rid, wt = int(tr[0]), int(tr[1] or 0)
+                    if rid not in wall_time_map:
+                        wall_time_map[rid] = wt
+                        tester_runs_meta[wt] = {
+                            "source_run_id": rid, "sim_start_time": tr[2],
+                            "symbol": tr[3], "balance": tr[4],
+                            "forge_version": tr[5], "scalper_mode": tr[6], "magic_base": tr[7],
+                        }
+            except Exception:
+                pass  # live DB has no TESTER_RUNS
 
+            # Register any new wall_times into aurum_tester_runs
+            if tester_runs_meta:
+                with self._conn() as c:
+                    for wt, meta in tester_runs_meta.items():
+                        if wt == 0 or wt in aurum_run_id_map:
+                            continue
+                        existing = c.execute(
+                            "SELECT aurum_run_id FROM aurum_tester_runs WHERE wall_time=? LIMIT 1", (wt,)
+                        ).fetchone()
+                        if existing:
+                            aurum_run_id_map[wt] = existing[0]
+                        else:
+                            cur = c.execute(
+                                "INSERT INTO aurum_tester_runs "
+                                "(wall_time, source_run_id, journal_source, symbol, forge_version, "
+                                "scalper_mode, balance, sim_start_time, magic_base, first_seen_utc) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                (wt, meta["source_run_id"], source, meta["symbol"],
+                                 meta["forge_version"], meta["scalper_mode"], meta["balance"],
+                                 meta["sim_start_time"], meta["magic_base"],
+                                 datetime.now(_tz.utc).isoformat()),
+                            )
+                            aurum_run_id_map[wt] = cur.lastrowid
+                            log.info("SCRIBE: registered aurum_run_id=%d wall_time=%d source=%s",
+                                     cur.lastrowid, wt, source)
+            self._fj_wall_time_cache[cache_key]  = wall_time_map
+            self._fj_aurum_run_cache[cache_key]  = aurum_run_id_map
+
+            # ── 3. Fetch unsynced rows (large batch) ─────────────────────────
             select_sql = (
                 "SELECT id, time, symbol, setup_type, direction, outcome, gate_reason, "
                 "price, spread, atr, rsi, adx, bb_upper, bb_lower, bb_mid, "
                 "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
                 "pattern_score, h1_trend, regime_label, regime_confidence, "
-                f"adx_trend_regime, high_vol_trend, session, magic"
-                + (", run_id"         if has_run_id    else ", 0")
-                + (", macd_histogram" if has_macd_hist else ", NULL")
-                + (", m15_adx"        if has_m15_adx   else ", NULL")
-                + (", lot_factor"     if has_lot_factor else ", NULL")
+                "adx_trend_regime, high_vol_trend, session, magic"
+                + (", run_id"         if has_run_id     else ", 0")
+                + (", macd_histogram" if has_macd_hist  else ", NULL")
+                + (", m15_adx"        if has_m15_adx    else ", NULL")
+                + (", lot_factor"     if has_lot_factor  else ", NULL")
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
-
             if not rows:
-                return 0
+                return 0, 0
 
-            from datetime import datetime, timezone
+            # ── 4. Batch de-dup: load existing keys into a Python set (1 query) ──
+            dedup_key = (journal_db_path, source)
+            if dedup_key not in self._fj_dedup_index:
+                with self._conn() as _c:
+                    existing_keys = {
+                        (r[0], r[1])
+                        for r in _c.execute(
+                            "SELECT forge_id, wall_time FROM forge_signals WHERE journal_source=?",
+                            (source,)
+                        ).fetchall()
+                    }
+                self._fj_dedup_index[dedup_key] = existing_keys
+            dedup_set = self._fj_dedup_index[dedup_key]
+
+            # ── 5. Build insert params + mark synced ids ──────────────────────
+            insert_params: list[tuple] = []
             synced_ids: list[int] = []
+            for r in rows:
+                run_id     = int(r[28] or 0)
+                wall_time  = wall_time_map.get(run_id, 0)
+                fid        = r[0]
+                dedup_pair = (fid, wall_time)
+                if dedup_pair in dedup_set:
+                    synced_ids.append(fid)
+                    continue
+                ts_utc   = datetime.fromtimestamp(r[1], tz=_tz.utc).isoformat()
+                aurum_rid = aurum_run_id_map.get(wall_time, 0)
+                insert_params.append((
+                    fid, r[1], ts_utc, *r[2:28], source, run_id,
+                    r[29], r[30], r[31], wall_time, aurum_rid,
+                ))
+                synced_ids.append(fid)
+                dedup_set.add(dedup_pair)  # update in-place so next batch sees it
+
+            # ── 6. executemany INSERT + one UPDATE (2 round-trips total) ─────
             inserted = 0
-            with self._conn() as c:
-                for r in rows:
-                    run_id     = r[28]
-                    macd_hist  = r[29]
-                    m15_adx_v  = r[30]
-                    lot_factor = r[31]
-                    existing = c.execute(
-                        "SELECT 1 FROM forge_signals "
-                        "WHERE forge_id=? AND time=? AND symbol=? AND journal_source=? LIMIT 1",
-                        (r[0], r[1], r[2], source),
-                    ).fetchone()
-                    if existing:
-                        synced_ids.append(r[0])
-                        continue
-                    ts_utc = datetime.fromtimestamp(r[1], tz=timezone.utc).isoformat()
-                    c.execute(
-                        "INSERT INTO forge_signals "
+            if insert_params:
+                with self._conn() as c:
+                    c.executemany(
+                        "INSERT OR IGNORE INTO forge_signals "
                         "(forge_id, time, timestamp_utc, symbol, setup_type, direction, "
                         "outcome, gate_reason, price, spread, atr, rsi, adx, "
                         "bb_upper, bb_lower, bb_mid, poc_price, vwap_price, fib_50, "
                         "rsi_divergence, psar_state, pattern_score, h1_trend, "
                         "regime_label, regime_confidence, adx_trend_regime, "
                         "high_vol_trend, session, magic, journal_source, run_id, "
-                        "macd_histogram, m15_adx, lot_factor) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (r[0], r[1], ts_utc, *r[2:28], source, run_id, macd_hist, m15_adx_v, lot_factor),
+                        "macd_histogram, m15_adx, lot_factor, wall_time, aurum_run_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        insert_params,
                     )
-                    synced_ids.append(r[0])
-                    inserted += 1
+                    inserted = len(insert_params)
 
             if synced_ids:
-                placeholders = ",".join(str(i) for i in synced_ids)
-                src.execute(f"UPDATE SIGNALS SET synced = 1 WHERE id IN ({placeholders})")
+                placeholders = ",".join("?" * len(synced_ids))
+                src.execute(f"UPDATE SIGNALS SET synced = 1 WHERE id IN ({placeholders})",
+                            tuple(synced_ids))
                 src.commit()
-                log.info("SCRIBE: synced %d forge journal signals", inserted)
 
-            return len(synced_ids)
+            # Return (total_processed, newly_inserted) so caller can log both
+            return len(synced_ids), inserted
         except Exception as e:
             log.warning("SCRIBE sync_forge_journal error: %s", e)
-            return 0
+            return 0, 0
         finally:
             src.close()
 
@@ -858,39 +999,56 @@ class Scribe:
         """Read unsynced TRADES deal rows from FORGE journal DB into forge_journal_trades."""
         from pathlib import Path as _P
         if not _P(journal_db_path).exists():
-            return 0
+            return 0, 0
 
         import sqlite3 as _sqlite3
         try:
             src = _sqlite3.connect(journal_db_path, timeout=5)
         except Exception as e:
             log.warning("SCRIBE sync_forge_journal_trades: cannot open %s — %s", journal_db_path, e)
-            return 0
+            return 0, 0
 
         try:
-            cols = [r[1] for r in src.execute("PRAGMA table_info(TRADES)").fetchall()]
-            if "synced" not in cols:
+            # Ensure synced column exists (one-time, cached via src_cols check below)
+            cols_t = frozenset(r[1] for r in src.execute("PRAGMA table_info(TRADES)").fetchall())
+            if "synced" not in cols_t:
                 try:
                     src.execute("ALTER TABLE TRADES ADD COLUMN synced INTEGER DEFAULT 0")
                     src.commit()
+                    cols_t = cols_t | {"synced"}
                 except Exception:
                     pass
         except Exception as e:
             log.warning("SCRIBE sync_forge_journal_trades: no TRADES table in %s — %s", journal_db_path, e)
             src.close()
-            return 0
+            return 0, 0
 
         try:
-            # Migrate AURUM forge_journal_trades with run_id (safe no-op if column exists)
-            try:
-                with self._conn() as c:
-                    c.execute("ALTER TABLE forge_journal_trades ADD COLUMN run_id INTEGER DEFAULT 0")
-            except Exception:
-                pass  # column already exists
+            src.execute("PRAGMA journal_mode=WAL")
+            # Reuse wall_time and aurum_run_id maps already built by sync_forge_journal
+            # (both use the same instance-level cache keyed by journal_db_path)
+            cache_key    = journal_db_path
+            wall_time_map_t  = self._fj_wall_time_cache.get(cache_key, {0: 0})
+            aurum_run_id_map_t = self._fj_aurum_run_cache.get(cache_key, {0: 0})
 
-            # Check if source journal has run_id column
-            src_cols_t = {r[1] for r in src.execute("PRAGMA table_info(TRADES)").fetchall()}
-            has_run_id_t = "run_id" in src_cols_t
+            # If caches are empty (trades sync called before signals sync), build them now
+            if len(wall_time_map_t) <= 1:
+                try:
+                    for tr in src.execute("SELECT id, wall_time FROM TESTER_RUNS").fetchall():
+                        wt = int(tr[1] or 0)
+                        wall_time_map_t[int(tr[0])] = wt
+                except Exception:
+                    pass
+                if wall_time_map_t:
+                    with self._conn() as _c:
+                        for wt in list(wall_time_map_t.values()):
+                            if wt and wt not in aurum_run_id_map_t:
+                                row = _c.execute(
+                                    "SELECT aurum_run_id FROM aurum_tester_runs WHERE wall_time=? LIMIT 1", (wt,)
+                                ).fetchone()
+                                aurum_run_id_map_t[wt] = row[0] if row else 0
+
+            has_run_id_t = "run_id" in cols_t
 
             select_sql_t = (
                 "SELECT id, deal_ticket, order_ticket, symbol, type, direction, volume, "
@@ -900,34 +1058,40 @@ class Scribe:
             )
             rows = src.execute(select_sql_t).fetchall()
             if not rows:
-                return 0
+                return 0, 0
 
+            # Build all insert params then executemany (one round-trip)
+            insert_params_t: list[tuple] = []
             synced_ids: list[int] = []
-            with self._conn() as c:
-                for r in rows:
-                    run_id_t = r[15] if has_run_id_t else 0
-                    try:
-                        c.execute(
-                            "INSERT OR IGNORE INTO forge_journal_trades "
-                            "(forge_rowid, deal_ticket, order_ticket, symbol, type, direction, "
-                            "volume, price, profit, swap, commission, magic, comment, time, time_msc, "
-                            "journal_source, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (*r[:15], source, run_id_t),
-                        )
-                    except Exception as row_e:
-                        log.warning("SCRIBE forge_journal_trades row skip: %s", row_e)
-                    synced_ids.append(r[0])
+            for r in rows:
+                run_id_t  = int(r[15] if has_run_id_t else 0)
+                wall_time = wall_time_map_t.get(run_id_t, 0)
+                aurum_rid = aurum_run_id_map_t.get(wall_time, 0)
+                insert_params_t.append((*r[:15], source, run_id_t, wall_time, aurum_rid))
+                synced_ids.append(r[0])
 
+            if insert_params_t:
+                with self._conn() as c:
+                    c.executemany(
+                        "INSERT OR IGNORE INTO forge_journal_trades "
+                        "(forge_rowid, deal_ticket, order_ticket, symbol, type, direction, "
+                        "volume, price, profit, swap, commission, magic, comment, time, time_msc, "
+                        "journal_source, run_id, wall_time, aurum_run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        insert_params_t,
+                    )
+
+            inserted_t = len(insert_params_t) if insert_params_t else 0
             if synced_ids:
-                placeholders = ",".join(str(i) for i in synced_ids)
-                src.execute(f"UPDATE TRADES SET synced = 1 WHERE id IN ({placeholders})")
+                placeholders = ",".join("?" * len(synced_ids))
+                src.execute(f"UPDATE TRADES SET synced = 1 WHERE id IN ({placeholders})",
+                            tuple(synced_ids))
                 src.commit()
-                log.info("SCRIBE: synced %d forge journal trade deals", len(synced_ids))
 
-            return len(synced_ids)
+            # Return (total_processed, newly_inserted)
+            return len(synced_ids), inserted_t
         except Exception as e:
             log.warning("SCRIBE sync_forge_journal_trades error: %s", e)
-            return 0
+            return 0, 0
         finally:
             src.close()
 
@@ -970,7 +1134,7 @@ class Scribe:
 
     def log_market_regime(self, snapshot: dict, mode: str = None, session: str = None) -> int:
         if not snapshot:
-            return 0
+            return 0, 0
         posterior_json = json.dumps(snapshot.get("posterior") or {}, default=str)
         feature_json = json.dumps(snapshot.get("features") or {}, default=str)
         with self._conn() as c:
@@ -1211,18 +1375,19 @@ class Scribe:
             stage_int = int(stage_val) if stage_val is not None else None
         except (TypeError, ValueError):
             stage_int = None
-        if stage_int is not None and stage_int not in (1, 2, 3):
+        if stage_int is not None and stage_int not in (1, 2, 3, 4):
             stage_int = None
+        comment_val = data.get("comment") or ""
         with self._conn() as c:
             cur = c.execute("""INSERT INTO trade_positions
                 (trade_group_id,timestamp,mode,ticket,magic_number,
-                 direction,lot_size,entry_price,sl,tp,tp_stage)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                 direction,lot_size,entry_price,sl,tp,tp_stage,comment)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (group_id, self._now(), mode,
                  data.get("ticket"), data.get("magic"),
                  data.get("direction"), data.get("lot_size"),
                  data.get("entry_price"), data.get("sl"), data.get("tp"),
-                 stage_int))
+                 stage_int, comment_val or None))
             return cur.lastrowid
 
     def backfill_tp_stage_from_comment(self, ticket: int, comment: str) -> int | None:
@@ -1268,9 +1433,9 @@ class Scribe:
         DBs missing optional columns.
         """
         if tp_stage not in (1, 2, 3):
-            return 0
+            return 0, 0
         if sl is None and tp is None:
-            return 0
+            return 0, 0
         affected = 0
         try:
             with self._conn() as c:

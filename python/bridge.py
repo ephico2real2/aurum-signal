@@ -794,7 +794,7 @@ def _parse_tp_stage_from_comment(comment) -> int | None:
         stage = int(m.group(1))
     except (TypeError, ValueError):
         return None
-    return stage if stage in (1, 2, 3) else None
+    return stage if 1 <= stage <= 4 else None
 
 
 def _ratchet_pip_size(symbol: str | None) -> float:
@@ -1002,7 +1002,7 @@ class Bridge:
         # Seed from SCRIBE OPEN positions
         try:
             open_pos = self.scribe.query(
-                "SELECT ticket, trade_group_id, magic_number, direction, entry_price, lot_size, sl, tp, timestamp "
+                "SELECT ticket, trade_group_id, magic_number, direction, entry_price, lot_size, sl, tp, timestamp, comment "
                 "FROM trade_positions WHERE status='OPEN' AND ticket IS NOT NULL"
             )
             for r in open_pos:
@@ -1024,6 +1024,7 @@ class Bridge:
                     "open_time": r.get("timestamp"),   # for duration_seconds at close
                     "symbol": None,
                     "sl": r.get("sl"), "tp": r.get("tp"),
+                    "comment": r.get("comment") or "",  # for TP stage detection at close
                 }
         except Exception as e:
             log.warning("TRACKER seed from SCRIBE failed: %s", e)
@@ -1054,6 +1055,7 @@ class Bridge:
                         "lot_size": p.get("lots", 0),
                         "open_time": datetime.now(timezone.utc).isoformat(),
                         "sl": p.get("sl"), "tp": p.get("tp"),
+                        "comment": p.get("comment", ""),  # for TP stage detection at close
                     }
             else:
                 t = int(p["ticket"])
@@ -1314,6 +1316,7 @@ class Bridge:
                 "lot_size": p.get("lots", 0),
                 "open_time": datetime.now(timezone.utc).isoformat(),
                 "sl": p.get("sl"), "tp": p.get("tp"),
+                "comment": p.get("comment", ""),  # stored for TP stage detection at close time
             }
             _tlog("TRACKER", "FILL", f"{direction} {p.get('lots',0):.2f}lot @ {p.get('open_price')} SL={p.get('sl')} TP={p.get('tp')}",
                   group_id=gid, ticket=ticket)
@@ -1593,14 +1596,26 @@ class Bridge:
                 close_reason = self._infer_close_reason(
                     close_price, sl, tp, direction, gid)
 
-            # Determine TP stage for SCRIBE trade_positions
+            # Determine TP stage — comment is the ground truth for FORGE native legs
+            # (e.g. "SCALP|BB_BREAKOUT|G5001|TP2" → stage=2).
+            # Price-matching via _match_tp_stage is unreliable because trade_groups.tp2/tp3
+            # are not populated for native scalper groups.
             tp_stage = None
-            if close_reason == "TP1_HIT":
-                tp_stage = 1
-            elif close_reason == "TP2_HIT":
-                tp_stage = 2
-            elif close_reason == "TP3_HIT":
-                tp_stage = 3
+            if close_reason and close_reason.startswith("TP") and pnl >= 0:
+                comment_stage = _parse_tp_stage_from_comment(snap.get("comment", ""))
+                if comment_stage:
+                    tp_stage = comment_stage
+                    close_reason = f"TP{comment_stage}_HIT"
+                elif close_reason == "TP1_HIT":
+                    tp_stage = 1
+                elif close_reason == "TP2_HIT":
+                    tp_stage = 2
+                elif close_reason == "TP3_HIT":
+                    tp_stage = 3
+                elif close_reason == "TP4_HIT":
+                    tp_stage = 4
+                else:
+                    tp_stage = 1  # fallback for bare TP_HIT
 
             self.scribe.close_trade_position(
                 ticket=ticket,
@@ -1639,7 +1654,7 @@ class Bridge:
             )
 
             groups_touched.setdefault(gid, []).append(pnl)
-            _tlog("TRACKER", "CLOSE", f"reason={close_reason} pnl=${pnl:+.2f} pips={pips:+.1f} close@{close_price} entry@{open_price} SL={sl} TP={tp}",
+            _tlog("TRACKER", "CLOSE", f"reason={close_reason} tp_stage={tp_stage} pnl=${pnl:+.2f} pips={pips:+.1f} close@{close_price} entry@{open_price} SL={sl} TP={tp}",
                   group_id=gid, ticket=ticket)
             if pnl < 0:
                 self._last_loss_close_ts = time.time()
@@ -1649,7 +1664,7 @@ class Bridge:
                 self.herald.position_closed(
                     ticket, direction, pnl, pips, group_id=gid, outcome="SL HIT"
                 )
-            elif close_reason.startswith("TP"):
+            elif close_reason and close_reason.startswith("TP"):
                 remaining = sum(
                     1 for s in self._known_positions.values()
                     if s.get("group_id") == gid
@@ -1742,12 +1757,21 @@ class Bridge:
                     close_price, sl, tp, direction, gid
                 )
             tp_stage = None
-            if close_reason == "TP1_HIT":
-                tp_stage = 1
-            elif close_reason == "TP2_HIT":
-                tp_stage = 2
-            elif close_reason == "TP3_HIT":
-                tp_stage = 3
+            if close_reason and close_reason.startswith("TP") and pnl >= 0:
+                comment_stage2 = _parse_tp_stage_from_comment(snap.get("comment", ""))
+                if comment_stage2:
+                    tp_stage = comment_stage2
+                    close_reason = f"TP{comment_stage2}_HIT"
+                elif close_reason == "TP1_HIT":
+                    tp_stage = 1
+                elif close_reason == "TP2_HIT":
+                    tp_stage = 2
+                elif close_reason == "TP3_HIT":
+                    tp_stage = 3
+                elif close_reason == "TP4_HIT":
+                    tp_stage = 4
+                else:
+                    tp_stage = 1
             self.scribe.close_trade_position(
                 ticket=ticket,
                 close_price=close_price,
@@ -2824,14 +2848,18 @@ class Bridge:
                 if is_tester and not BRIDGE_SYNC_TESTER_JOURNAL:
                     continue
                 tag = "tester" if is_tester else "live"
-                synced_sig = self._active_scribe(is_tester).sync_forge_journal(journal_path, source=tag)
-                synced_td = self._active_scribe(is_tester).sync_forge_journal_trades(journal_path, source=tag)
-                if synced_sig or synced_td:
+                # Tester syncs use large batch; live uses smaller to avoid blocking the main loop
+                _batch = 5000 if is_tester else 500
+                # Short label for log: "live" or "tester[agent-3000]"
+                _agent = Path(journal_path).parent.parent.parent.name if is_tester else "live"
+                _label = f"tester[{_agent}]" if is_tester else "live"
+                proc_sig, new_sig = self._active_scribe(is_tester).sync_forge_journal(journal_path, source=tag, batch_size=_batch)
+                proc_td, new_td   = self._active_scribe(is_tester).sync_forge_journal_trades(journal_path, source=tag, batch_size=_batch)
+                if proc_sig or proc_td:
                     log.info(
-                        "BRIDGE: synced FORGE journal %s — signals=%d deals=%d",
-                        tag,
-                        synced_sig,
-                        synced_td,
+                        "BRIDGE: synced FORGE journal %s — "
+                        "signals: processed=%d new=%d | deals: processed=%d new=%d",
+                        _label, proc_sig, new_sig, proc_td, new_td,
                     )
 
         # ── 5b. Management (ATHENA / Telegram LISTENER) — all modes incl. SCALPER/WATCH
@@ -4329,26 +4357,45 @@ class Bridge:
         return out
 
     def _resolve_forge_journal_paths(self) -> list[str]:
-        """Locate FORGE journal DBs — both live (Common Files) and tester (local Files)."""
-        import platform
+        """Locate FORGE journal DBs — both live (Common Files) and tester (local Files).
+
+        Results are cached for 300 s to avoid rescanning the MT5 directory tree every 60 s.
+        Cache is invalidated early if a previously found path no longer exists (agent restart).
+        """
+        import platform, time as _time
+        now = _time.monotonic()
+        cache = getattr(self, "_journal_path_cache", None)
+        cache_ts = getattr(self, "_journal_path_cache_ts", 0.0)
+        # Invalidate if stale OR any cached path disappeared
+        if cache is not None and (now - cache_ts) < 300:
+            if all(Path(p).exists() for p in cache):
+                return cache
+
         home = Path.home()
-        found = []
+        found: list[str] = []
         if platform.system() == "Darwin":
             mt5_base = home / "Library" / "Application Support" / "net.metaquotes.wine.metatrader5" / "drive_c"
-            search_roots = [
+            tester_dir = mt5_base / "Program Files" / "MetaTrader 5" / "Tester"
+            # Check exact known paths first (fast) — no recursive rglob needed
+            candidates = [
                 mt5_base / "users" / "user" / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files",
-                mt5_base / "Program Files" / "MetaTrader 5" / "MQL5" / "Files",
-                mt5_base / "Program Files" / "MetaTrader 5",
             ]
+            if tester_dir.exists():
+                candidates.extend(sorted(tester_dir.glob("Agent-*/MQL5/Files")))
+            for root in candidates:
+                if root.is_dir():
+                    for p in root.glob("FORGE_journal_*.db"):
+                        if p.stat().st_size > 0 and str(p) not in found:
+                            found.append(str(p))
         else:
-            search_roots = [
-                home / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files",
-            ]
-        for root in search_roots:
-            if root.exists():
-                for p in root.rglob("FORGE_journal_*.db"):
-                    if p.exists() and p.stat().st_size > 0 and str(p) not in found:
+            root = home / "AppData" / "Roaming" / "MetaQuotes" / "Terminal" / "Common" / "Files"
+            if root.is_dir():
+                for p in root.glob("FORGE_journal_*.db"):
+                    if p.stat().st_size > 0:
                         found.append(str(p))
+
+        self._journal_path_cache = found
+        self._journal_path_cache_ts = now
         return found
 
     def _check_forge_scalper_entry(self, mt5: dict | None = None):

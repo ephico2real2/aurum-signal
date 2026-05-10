@@ -1,5 +1,78 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [FORGE 2.7.10-day2] — 2026-05-09 (SELL STOP continuation ladder — TP1 arming)
+
+### Changes table
+
+| # | Location | Change | Notes |
+|---|----------|--------|-------|
+| 1 | `TradeGroup` struct | Added `crash_low` + `entry_atr` fields | Set at entry, consumed by `ArmPostTP1Ladder()` |
+| 2 | `CheckScalperEntry()` group registration | Store `crash_low = bid` (SELL) / `ask` (BUY) and `entry_atr = m5_atr` | BRIDGE groups get current bid/ask; entry_atr=0 disables post-TP1 arming for BRIDGE |
+| 3 | `ExecuteOpenGroup()` (BRIDGE path) | Init `crash_low` from current bid/ask; `entry_atr = 0` (disables arming) | Keeps struct clean; BRIDGE doesn't have ATR at registration time |
+| 4 | New `ArmPostTP1Ladder(gi)` function | Places SELL STOP in slot [2] at `crash_low − ATR × 0.40` | RSI guard: skips if M5 RSI ≤ sell_stop_cont_min_rsi (exhausted); SL at crash_low + ATR × mult |
+| 5 | `ManageOpenGroups()` after `tp1_hit = true` | Call `ArmPostTP1Ladder(gi)` | Fires exactly once per group; no comment parsing needed |
+| 6 | Expiry loop (OnTimer) | Auto-clear filled slots: `!OrderSelect` before expiry → `active = false` | Prevents slot [2] from being stuck active after SELL STOP fills |
+| 7 | `ScalperConfig` struct | Added `sell_stop_cont_enabled/atr_mult/lot_factor/expiry_bars/min_rsi` | Defaults: off, 0.40, 0.25, 8 bars, RSI 25.0 |
+| 8 | Config + sync + env | Added `sell_stop_cont_*` to all three (JSON, sync script, .env) | Disabled in .env; enabled by `FORGE_SELL_STOP_CONT_ENABLED=1` |
+
+### Key design decisions
+
+- **crash_low in `TradeGroup`, not `SellLimitEntry`**: Group struct survives TP1 event; sell limit stack is pending-order lifecycle only.
+- **Arm from `ManageOpenGroups()`, not `OnTradeTransaction`**: Direct `gi` access, no comment parsing, no magic range concerns. Fires immediately when TP1 positions are closed via `PositionClose()`.
+- **BRIDGE groups disabled**: `entry_atr = 0` at BRIDGE registration → `ArmPostTP1Ladder` skips (guard: `entry_atr <= 0`). BRIDGE doesn't have M5 ATR available at the time `ExecuteOpenGroup` fires.
+- **Slot [2] auto-clear on fill**: `OrderSelect(ticket)` returning false before expiry = filled externally → slot cleared. Previously the expiry loop could hold a filled slot active until its expiry timestamp.
+- **SL symmetric**: SELL STOP SL = `crash_low + ATR × sell_stop_cont_atr_mult` (mirrors placement offset). At default 0.40, risk = 0.80 ATR.
+
+### How to enable for testing
+```
+FORGE_SELL_STOP_CONT_ENABLED=1
+```
+Then `make scalper-env-sync && make forge-compile`. Reload EA in MT5.
+
+### Day 3 stub
+`ArmPostTP1Ladder()` has a commented `// Day 3 stub` block at the bottom for BUY LIMIT recovery (slot [3]). Implement Day 3 when SELL STOP validation is complete.
+
+---
+
+## [FORGE 2.7.10-h4] — 2026-05-09 (H4 RSI/BB/ADX supplemental gates + indicators export)
+
+### Changes table
+
+| # | Location | Change | Notes |
+|---|----------|--------|-------|
+| 1 | `ea/FORGE.mq5` globals | Added `g_h4_rsi`, `g_h4_bb`, `g_h4_adx` handles | Initialized in `EnsureIndicators()`, released in `OnDeinit()` |
+| 2 | `ea/FORGE.mq5` `WriteMarketData` | Extended `indicators_h4` JSON block with `rsi_14`, `bb_upper`, `bb_lower`, `adx_14` | Always exported; BRIDGE/LENS can use for structural context |
+| 3 | `ea/FORGE.mq5` `CheckScalperEntry` | Added `h4_rsi_v` and `h4_adx_v` reads in entry logic scope | Available for both SELL and BUY gate checks |
+| 4 | `ea/FORGE.mq5` SELL gate | Added `h4_rsi_sell_ok` gate (blocks when H4 RSI ≥ 60 — Cardwell Bear Resistance on H4) | Disabled by default; `h4_rsi_gate_enabled=0` in defaults |
+| 5 | `ea/FORGE.mq5` SELL gate | Added `h4_adx_sell_ok` gate (blocks when H4 ADX < 20 — H4 structurally ranging) | Disabled by default; `h4_adx_gate_enabled=0` in defaults |
+| 6 | `ea/FORGE.mq5` BUY gate | Added `h4_rsi_buy_ok` gate (blocks when H4 RSI ≤ 40 — Cardwell Bull Support on H4) | Same flag as SELL; symmetric |
+| 7 | `ea/FORGE.mq5` BUY gate | Added `h4_adx_buy_ok` gate (blocks when H4 ADX < 20) | Same flag as SELL; separate min threshold |
+| 8 | `ScalperConfig` struct | Added `h4_rsi_gate_enabled`, `h4_rsi_sell_max`, `h4_rsi_buy_min`, `h4_adx_gate_enabled`, `h4_adx_min_sell`, `h4_adx_min_buy` | Defaults: gates off, RSI 60/40, ADX 20 |
+| 9 | `config/scalper_config.json` | Added all 6 H4 gate keys + `sell_limit_l2_*` keys; gates enabled for testing | Revert by setting `h4_rsi_gate_enabled`:0 and `h4_adx_gate_enabled`:0 |
+| 10 | `config/scalper_config.defaults.json` | Added same keys with gates disabled (production defaults) | Prevents accidental enablement in clean deploys |
+| 11 | `scripts/sync_scalper_config_from_env.py` | Added `FORGE_H4_RSI_GATE_ENABLED`, `FORGE_H4_RSI_SELL_MAX`, `FORGE_H4_RSI_BUY_MIN`, `FORGE_H4_ADX_GATE_ENABLED`, `FORGE_H4_ADX_MIN_SELL`, `FORGE_H4_ADX_MIN_BUY` | Hot-reloadable via `make scalper-env-sync` |
+| 12 | `.env` | Added H4 gate env vars with documentation + sell_limit_l2 vars | Enabled (=1) for testing run; set =0 to disable |
+
+### Design rationale
+
+H4 RSI identifies structural exhaustion zones that M5/H1 miss:
+- **H4 RSI ≥ 60** (Cardwell Bear Resistance): price just spiked to a structurally significant HH level on H4. A BB_BREAKOUT SELL at this point is likely catching a reversal of the H4 spike, not a genuine crash. Gate blocks it.
+- **H4 RSI ≤ 40** (Cardwell Bull Support): price is at LL on H4. A BB_BREAKOUT BUY here may be catching a falling knife before H4 turns. Gate blocks it.
+- **H4 ADX < 20**: H4 is structurally ranging — no directional trend on the higher TF. Scalp entries lack multi-TF confirmation. Gate blocks until H4 trend is established.
+
+Gates are additive to existing M5/H1 gates and placed after MACD/M30 checks. Journal gate reasons: `entry_quality_h4_rsi_sell_blocked`, `entry_quality_h4_rsi_buy_blocked`, `entry_quality_h4_adx_sell_blocked`, `entry_quality_h4_adx_buy_blocked`.
+
+### How to disable (revert to 2.7.10 pre-H4 behaviour)
+
+In `.env`:
+```
+FORGE_H4_RSI_GATE_ENABLED=0
+FORGE_H4_ADX_GATE_ENABLED=0
+```
+Then `make scalper-env-sync && make forge-compile`.
+
+---
+
 ## [System 1.9.9] — 2026-05-09 (ATHENA — Final UI/API review, 7 bugs fixed)
 
 ### Changes table
