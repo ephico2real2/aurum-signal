@@ -1,6 +1,174 @@
-# FORGE 2.6.7 — Run 11 Backtest Analysis
-**Date:** 2026-05-08 | **Period:** Apr 14–ongoing (May 5+) | **Symbol:** XAUUSD | **Mode:** DUAL
-**Status:** COMPLETE — Apr 14 00:00 to May 7 23:58 UTC 2026
+# FORGE Run 11 — Tester Analysis (FORGE v2.7.12)
+
+> Note: Previous FORGE 2.6.7 Run 11 live trading analysis saved in memory/run11_forge_267_results.md
+
+**EA version**: FORGE v2.7.12
+**Symbol**: XAUUSD
+**Sim period**: 2026-04-29 → (in progress)
+**Scalper mode**: DUAL
+**Balance**: 10,000 (magic_base=202401)
+**aurum_run_id**: 11
+**wall_time**: 516237360
+**source_run_id**: 1 (TESTER_RUNS.id)
+
+**First run with 2.7.12 full config:**
+- `require_h1_di_sell=1` — blocks SELL when H1 DI+≥DI- (G5008 direction fix)
+- `sell_stop_cont_enabled=1, legs=5, lot_factor=1.0, tp_atr_mult=1.5` — cascade re-classified as full entry
+- `sell_stop_cont_min_adx=25, sell_stop_cont_require_h1_di=1` — real-time cascade gates in ArmPostTP1Ladder
+- `rsi_buy_ceil=78` (was 77)
+- `staged_initial_legs=8` fix active (all N legs fire simultaneously)
+
+---
+
+## Summary — FINAL
+- Sim period: 2026-04-29 → 2026-05-05 23:55
+- Total signals: 14,481
+- TAKEN: 7 signals (7 actual groups) | Skipped: 14,474
+- Total P&L: **-$630.61**
+- Win rate: **85.7% (6W / 1L)**
+- Best win: G5005 BUY May1 +$65.92
+- Biggest loss: G5007 SELL May4 -$955.78
+- Athena cross-check: DB ground truth = -$630.61 ✓
+
+---
+
+## TAKEN Groups
+| Sim Time (UTC) | Group | Direction | Session | RSI | ADX | ATR | Price | Legs | TP reached | P&L |
+|----------------|-------|-----------|---------|-----|-----|-----|-------|------|-----------|-----|
+| 2026-04-29 15:55 | G5001 | SELL | LONDON | 26.4 | 25.9 | 5.41 | 4545.46 | 3L | TP1+TP2 | **+$87.02** |
+| 2026-04-30 07:05 | G5002 | SELL | LONDON | 32.1 | 41.3 | 3.55 | 4554.51 | 4L (ADX boost) | TP1+TP2 | **+$25.13** |
+| 2026-04-30 16:07 | G5003 | BUY | LONDON | 54.6 | 23.0 | 7.00 | 4636.79 | 1L | TP1+TP2 | **+$58.06** |
+| 2026-05-01 17:00 | G5004 | BUY | LONDON | 74.9 | 26.1 | 7.76 | 4625.98 | 1L | TP1+TP2 | **+$58.16** |
+| 2026-05-01 17:05 | G5005 | BUY | LONDON | **78.0** | 31.3 | 8.65 | 4634.76 | 1L | TP1+TP2 | **+$65.92** |
+| 2026-05-04 13:05 | G5006 | SELL | LONDON | 23.8 | 29.2 | 4.71 | 4558.94 | 3L | TP1+TP2 | **+$30.88** |
+| 2026-05-04 17:10 | G5007 | SELL | LONDON | 39.2 | **37.4** | 7.05 | 4554.82 | 8L | SL | **-$955.78** |
+
+---
+
+## Gate Breakdown (final — 14,481 signals)
+| Gate Reason | Count | Human Label |
+|-------------|-------|-------------|
+| entry_quality_direction | 5,437 | Price not at BB extreme |
+| entry_quality_body | 4,257 | Candle body too small |
+| entry_quality_rsi_buy_ceil | 3,386 | BUY RSI ≥ 78 (May1 rally 78-84.6) |
+| no_setup | 768 | Neither breakout nor bounce |
+| session_off | 598 | Outside London/NY session |
+| rr_too_low | 11 | R:R below minimum |
+| entry_quality_rsi_sell_floor | 4 | SELL RSI too low |
+| entry_quality_adx_min_sell | 4 | SELL ADX < 25 |
+| entry_quality_session_sell_cutoff | 3 | SELL after 18:00 UTC |
+| entry_quality_rsi_rising_sell | 2 | RSI rising at SELL bar |
+| entry_quality_rsi_sell_adx_floor | 1 | Stricter RSI floor at weak ADX |
+| entry_quality_atr_ext | 1 | ATR extension exceeded |
+
+---
+
+## SELL STOP CONT Events (5-leg multi-lot cascade — FIRST RUN)
+| Event | EA Group | Sim Time | Legs | Price | TP | SL | Lot | ADX | RSI | Result |
+|-------|----------|----------|------|-------|----|----|-----|-----|-----|--------|
+| Skipped — exhausted | G5001 | Apr29 15:55 | — | — | — | — | — | 25.9 | 24.9 | RSI≤25.0 gate ✓ |
+| **5 legs placed → expired** | G5002 | Apr30 07:06 | 5 | 4551.46 | 4546.13 | 4554.30 | 0.08 | 41.3 | 29.6 | All 5 expired at 07:16 — price recovered, no fill, zero loss ✓ |
+| Skipped — exhausted | G5006 | May4 13:05 | — | — | — | — | — | 29.2 | 22.5 | RSI≤25.0 gate ✓ |
+
+---
+
+## Losses — Price Movement Analysis
+| Deal | Magic | Profit | Entry | TP1 | SL | Max favor pts | % TP1 | Pattern |
+|------|-------|--------|-------|-----|-----|---------------|-------|---------|
+| 72-79 | 207408 | -$934.64 | 4554.82 | 4552.00 | 4569.50 | 0 pts | 0% | **Trend-failure (reversal)** |
+| 80-81 | 227408/9 | -$21.14 | cascade fills | — | 4569.50 | — | — | Cascade SELL LIMIT SL |
+
+### G5007 Loss Narrative (May4 17:10 SELL, ADX=37.4)
+- Entry: 4554.82, SL=4569.50 (14.68 pts = 2.08×ATR). SL was proportional.
+- **H1 trend was bearish at entry** (h1=-0.5551, h4=-1.0535). H1 DI gate correctly passed.
+- **RSI_DIV=HID_BULL**: EA detected hidden bullish RSI divergence at entry bar. Signal that downtrend is weakening. Trade still fired — this divergence was not gated.
+- Q1 Direction: NO — price moved immediately AGAINST SELL (+5.46 pts in 5 min). Zero favorable movement.
+- Q2 SL: Proportional (2.08×ATR). Not the problem.
+- Q3 TP: Never reached. Direction was wrong.
+- Pattern: **Trend-failure / reversal** — price at support level, hidden bullish divergence, reversed sharply up.
+- Root cause: 8 full-lot legs at ADX=37.4 → -$940 from single reversal. `adx_lot_factor_high=1.0` is the amplifier.
+
+---
+
+## Recommended Parameter Changes — Run 12
+
+**Context**: 14,481 signals, 7 TAKEN (0.05% take rate). Net -$630.61. One catastrophic loss wiped +$325 in wins.
+
+### Current blocking gates → parameters
+
+| Gate | Hits | Config key | Current | Proposed |
+|------|------|------------|---------|---------|
+| entry_quality_rsi_buy_ceil | 3,386 | bb_breakout.rsi_buy_ceil | 78 | 79 or 80 (test cautiously) |
+| entry_quality_body | 4,257 | safety.min_body_ratio | 0.25 | 0.20 (loosen) |
+| native_legs_max_when_unclear | (caps G5001 at 2-4L) | safety.native_legs_max_when_unclear | 2 | **5** |
+| adx_lot_factor_high | (amplifies loss) | safety.breakout_adx_lot_factor_high | 1.0 | **0.5** |
+| RSI_DIV=HID_BULL at SELL | (not gated — fired G5007) | (no gate exists) | N/A | Add block_sell_on_hid_bull_div |
+
+### Change 1 — `adx_lot_factor_high`: 1.0 → 0.5 (CRITICAL)
+**Impact**: G5007 loss: -$940 → -$470. Net P&L: -$630 → -$165 (approx).
+**Risk**: G5002 wins also halved. ADX>35 wins smaller but losses capped.
+**Rationale**: High ADX = strong trend but also extended reversal risk. Half lot limits catastrophic loss while maintaining directional exposure.
+
+### Change 2 — `native_legs_max_when_unclear`: 2 → 5
+**Impact**: G5001 early-sim entries fire 5 legs instead of 2-4. +$30-50 extra on good entries.
+**Risk**: Slightly more exposure when H1 is flat (warmup period). Acceptable for BB_BREAKOUT quality entries.
+**Rationale**: H1 trend=0 in early sim is a warmup artifact, not genuine uncertainty. BB_BREAKOUT gates already confirm entry quality.
+
+### Change 3 — Add RSI_DIV=HID_BULL SELL block
+**Impact**: Would have blocked G5007 (RSI_DIV=HID_BULL present). -$955 loss prevented.
+**Risk**: May block some valid SELL entries that happen to show hidden bullish div (rare but possible).
+**Implementation**: Gate `entry_quality_hid_bull_div_sell`: block SELL when `rsi_divergence == "HID_BULL"`.
+
+### Apply order for Run 12
+1. `adx_lot_factor_high=0.5` — highest priority, halves catastrophic loss magnitude
+2. `native_legs_max_when_unclear=5` — more legs on early confirmed entries
+3. RSI divergence gate — code change needed in entry quality check
+
+> Changes go via `.env` → `make forge-compile`
+
+---
+
+## Observations & Anomalies
+
+1. **H1 DI sell gate works but insufficient alone**: Gate correctly confirmed H1 bearish at G5007 entry. The loss is a reversal (H1 was temporarily bearish, then reversed), not a direction failure. Gate type-2 error — cannot prevent all reversals.
+2. **RSI_DIV=HID_BULL is a reversal warning**: Log shows G5007 had hidden bullish divergence at entry. This is a known reversal precursor. Adding a gate for this specific case could prevent the exact loss pattern.
+3. **Cascade expired cleanly**: G5002's 5-leg SELL STOP CONT expired after 10 min with zero loss. Design validated. The 2-bar expiry is working exactly as intended.
+4. **staged_initial_legs=8 fix confirmed**: G5002 fired 8/8 legs simultaneously at ADX=41.3. G5007 also fired 8/8. The fix is working.
+5. **native_legs_max_when_unclear limits early-sim entries**: G5001 at Apr29 (warmup H1) was capped. This is over-conservative — BB_BREAKOUT already confirms direction.
+6. **rsi_buy_ceil=78 captured G5005**: RSI=78.0 (actual ~77.9x) BUY captured for +$65.92. Run 10 missed this at ceil=77. Validated.
+7. **session_sell_cutoff working**: Blocked SELL at May4 18:20-18:25 (ADX=38-43, strong continuation). Correct — post-2PM EDT block.
+
+---
+
+## Session Log
+
+### 2026-05-10 (monitoring session start)
+- **Tick 0** (real 18:07): DB at Apr29 18:15. Sim AHEAD — log shows Apr30 07:06 processed.
+- source_run_id=1, wall_time=516237360, FORGE 2.7.12 DUAL, sim_start=2026-04-29, 2,796 signals, 1 TAKEN
+- aurum_run_id=11 confirmed
+- G5001 SELL Apr29 15:55: P&L=$92.70 (8W/0L). Cascade SKIPPED — RSI=24.9≤25.0 (exhausted gate correct).
+- Apr29 16:00 SELL blocked: gate=entry_quality_rsi_rising_sell. New gate working.
+- **G5002 cascade 5-leg FIRED** (Apr30 07:06, ADX=41.3): 5×0.08 lot at 4551.46, TP=4546.13, SL=4554.30, ATR=3.55.
+- No H1 DI sell blocks observed yet. All SELL entries passing H1 bearish check.
+- **Tick 1** (real 18:13): DB at Apr30 15:10. 2 TAKEN, 18W/0L, $115.73.
+- G5002 SELL Apr30 07:05 ADX=41.3: **8/8 legs fired simultaneously** (staged_initial_legs fix confirmed ✓). TP1+TP2 hit. Total ~$23.
+- G5002 cascade: 5 legs placed at 4551.46 ��� **all 5 expired at 07:16**. Price recovered after TP2. Zero loss from cascade ✓ — 2-bar expiry design validated.
+- G5003 BUY Apr30 16:07 (ADX=23.0, 2 legs) spotted in log — formerly "missing G5004" in Run 10. Not yet in source DB.
+- **Tick 2** (real 18:15): DB at May1 15:45. 3 TAKEN, 20W/0L, $170.21.
+- G5003 BUY Apr30 16:07: TAKEN, 2 legs, TP1+TP2, +$54.48 total. Missing signals gap resolved in Run 11.
+- **entry_quality_body: 2,332 new blocks** — body filter firing heavily Apr30-May1. Loosen min_body_ratio at end of run.
+- **May1 rally confirmed in log**: G5004 BUY 17:00 RSI=74.9 (2 legs) + G5005 BUY 17:05 RSI=78.0 (2 legs). rsi_buy_ceil=78 validated — G5005 captured (was blocked at ceil=77 in Run 10).
+- **Tick 3** (real 18:18): DB at May4 01:55. 5 TAKEN, 24W/0L, $294.29.
+- G5004 BUY May1 17:00: 2 legs, TP1+TP2, +$58.16. G5005 BUY May1 17:05 RSI=78.0: 2 legs, +$65.92.
+- **native_legs_max_when_unclear=2 issue**: G5001 fired only 2-4 legs (vs 5 in Run 10) because H1 trend=0.0 at Apr29 15:55 warmup. Fix: raise to 5 for Run 12.
+- 24W/0L — no losses yet. H1 DI sell gate not triggered (all SELLs in genuine bearish H1 context).
+- **Tick 4** (real 18:26): DB at May5 16:00. 7 TAKEN, 30W/10L, -$630.61. No new trades since May4 loss.
+- G5007 SELL May4 17:10 ADX=37.4: H1 gate PASSED (H1 was genuinely bearish h1=-0.5551). Trade fired 8 legs (htf_clear=true). Price reversed immediately, SL hit at 17:18. -$940.
+- Pattern: **Reversal after entry** — not direction failure. H1 DI gate worked correctly but cannot prevent market reversals.
+- Root cause still: adx_lot_factor_high=1.0 → 8 legs × 0.08 lot at ADX>35. Fix: set to 0.5 for Run 12.
+- Post-loss gates: rr_too_low blocked 3 SELL setups (17:30-17:45), session_sell_cutoff blocked 2 more at 18:20-18:25. Correct behavior.
+- **native_legs_max_when_unclear=2** still limiting early-sim entries. Fix: raise to 5 for Run 12.
+- SELL LIMIT L1/L2 (227403/227404) fired for both G5001 and G5002, all closed profitably.
 
 ---
 
