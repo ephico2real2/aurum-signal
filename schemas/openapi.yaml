@@ -44,6 +44,10 @@ tags:
     description: AURUM chat (may enqueue aurum_cmd.json via BRIDGE)
   - name: scribe
     description: SQLite-backed queries and events
+  - name: backtest
+    description: FORGE Strategy Tester runs and per-run analysis (aurum_tester.db)
+  - name: legend
+    description: Gate reason and indicator acronym human-readable explanations
   - name: meta
     description: OpenAPI document
 
@@ -830,6 +834,83 @@ paths:
                   type: object
                   additionalProperties: true
 
+  /api/backtest/runs:
+    get:
+      tags: [backtest]
+      summary: All tester runs with summary stats
+      operationId: getBacktestRuns
+      responses:
+        '200':
+          description: List of tester runs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs: { type: array, items: { type: object, additionalProperties: true } }
+                  count: { type: integer }
+
+  /api/backtest/run/{aurum_run_id}:
+    get:
+      tags: [backtest]
+      summary: Full detail for one tester run
+      operationId: getBacktestRun
+      parameters:
+        - in: path
+          name: aurum_run_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Run detail including performance, gates, TAKEN entries, P&L curve
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Run not found
+
+  /api/gate_legend:
+    get:
+      tags: [legend]
+      summary: Gate reason codes with human-readable explanations
+      operationId: getGateLegend
+      responses:
+        '200':
+          description: Map of gate_reason → {label, explanation, category}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+                  properties:
+                    label: { type: string }
+                    explanation: { type: string }
+                    category: { type: string }
+
+  /api/indicator_legend:
+    get:
+      tags: [legend]
+      summary: Indicator acronyms with full names and FORGE usage
+      operationId: getIndicatorLegend
+      responses:
+        '200':
+          description: Map of acronym → indicator metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+                  properties:
+                    full_name: { type: string }
+                    forge_params: { type: string }
+                    what_it_measures: { type: string }
+                    forge_usage: { type: string }
+                    category: { type: string }
+
   /api/events/export:
     get:
       tags: [scribe]
@@ -1084,10 +1165,19 @@ components:
       properties:
         intent:
           type: string
-          enum: [CLOSE_ALL, MOVE_BE, CLOSE_PCT]
+          enum: [CLOSE_ALL, MOVE_BE, CLOSE_PCT, CLOSE_GROUP, CLOSE_GROUP_PCT, CLOSE_PROFITABLE, CLOSE_LOSING, MODIFY_SL, MODIFY_TP]
         pct:
           type: number
-          description: Required semantics for CLOSE_PCT (default 70)
+          description: Percentage for CLOSE_PCT / CLOSE_GROUP_PCT (0–100, default 70)
+        group_id:
+          type: integer
+          description: Required for CLOSE_GROUP and CLOSE_GROUP_PCT
+        sl:
+          type: number
+          description: Stop loss price for MODIFY_SL
+        tp:
+          type: number
+          description: Take profit price for MODIFY_TP
 
     ModeRequest:
       type: object
@@ -1095,7 +1185,7 @@ components:
       properties:
         mode:
           type: string
-          enum: [OFF, WATCH, SIGNAL, SCALPER, HYBRID]
+          enum: [OFF, WATCH, SIGNAL, SCALPER, HYBRID, AUTO_SCALPER]
 
     AurumAskRequest:
       type: object

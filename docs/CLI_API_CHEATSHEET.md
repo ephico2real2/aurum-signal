@@ -1376,6 +1376,180 @@ MT5 on Wine/macOS does NOT auto-restore EAs after restart. `make forge-reload` r
 
 ---
 
+## Backtest Runs (FORGE Strategy Tester)
+
+All completed tester runs:
+```bash
+curl -s http://localhost:7842/api/backtest/runs | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f'{d[\"count\"]} runs stored')
+for r in d['runs']:
+    wr = f'{r[\"win_rate\"]}%' if r.get('win_rate') is not None else 'n/a'
+    print(f'Run {r[\"aurum_run_id\"]:3d} | v{r.get(\"forge_version\",\"?\"):7s} | {r.get(\"scalper_mode\",\"?\"):10s} | sim_start={str(r.get(\"sim_start\") or \"-\")[:10]} | taken={r.get(\"taken\",0):3d} | wr={wr:6s} | pnl=\${r.get(\"total_pnl\",0):+.2f}')
+"
+```
+
+Full detail for run 15 (replace with your aurum_run_id):
+```bash
+curl -s http://localhost:7842/api/backtest/run/15 | python3 -c "
+import sys, json
+d = json.load(sys.stdin); p = d.get('performance',{}); s = d.get('signals',{})
+print(f'FORGE {d[\"meta\"].get(\"forge_version\")}  mode={d[\"meta\"].get(\"scalper_mode\")}')
+print(f'P&L: \${p.get(\"total_pnl\",0):+.2f}  WR: {p.get(\"win_rate\",\"n/a\")}%  Trades: {p.get(\"total\",0)}  Wins: {p.get(\"wins\",0)}  Losses: {p.get(\"losses\",0)}')
+print(f'Best: \${p.get(\"best_win\",0):+.2f}  Worst: \${p.get(\"worst_loss\",0):+.2f}  Avg: \${p.get(\"avg_deal_pnl\",0):+.2f}')
+print(f'Signals: taken={s.get(\"taken\",0)} skipped={s.get(\"skipped\",0)} open_at_end={s.get(\"open_at_end\",0)}')
+print()
+print('Top skip gates:')
+for g in d.get('gates',[])[:10]:
+    print(f'  {g[\"gate_reason\"]:45s} {g[\"cnt\"]:4d}')
+"
+```
+
+TAKEN entries with outcomes:
+```bash
+curl -s http://localhost:7842/api/backtest/run/15 | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for t in d.get('taken',[]):
+    ts = str(t.get('timestamp_utc',''))[:16]
+    print(f'{ts} {t[\"direction\"]:4s} {t.get(\"session\",\"?\"):8s} {t.get(\"setup_type\",\"?\"):12s} RSI={str(t.get(\"rsi\") or \"n/a\"):5} {t.get(\"trade_outcome\",\"?\"):6s} pnl=\${t.get(\"pnl\",0):+.2f}')
+"
+```
+
+---
+
+## Gate Legend
+
+All FORGE gate reason codes with human-readable explanations:
+```bash
+curl -s http://localhost:7842/api/gate_legend | python3 -c "
+import sys, json
+for code, info in sorted(json.load(sys.stdin).items()):
+    print(f'{code:45s} [{info.get(\"category\",\"?\"):20s}] {info.get(\"label\",\"\")}')
+"
+```
+
+Explanation for a specific gate:
+```bash
+curl -s http://localhost:7842/api/gate_legend | python3 -c "
+import sys, json
+gate='entry_quality_rsi_sell_adx_floor'
+info=json.load(sys.stdin).get(gate,{})
+print(f'Gate: {gate}')
+print(f'Label: {info.get(\"label\")}')
+print(f'Category: {info.get(\"category\")}')
+print(f'Explanation: {info.get(\"explanation\")}')
+"
+```
+
+---
+
+## Indicator Legend
+
+Full names and FORGE usage for all indicator acronyms (RSI, ADX, ATR, BB, MACD, OsMA, etc.):
+```bash
+curl -s http://localhost:7842/api/indicator_legend | python3 -c "
+import sys, json
+for code, info in sorted(json.load(sys.stdin).items()):
+    print(f'{code:10s} {info.get(\"full_name\",\"\"):38s} | params: {info.get(\"forge_params\",\"\")[:60]}')
+"
+```
+
+---
+
+## Regime Engine
+
+Current regime snapshot:
+```bash
+curl -s http://localhost:7842/api/regime/current | python3 -c "
+import sys, json
+d = json.load(sys.stdin); curr = d.get('current',{}); cfg = d.get('config',{})
+print(f'label: {curr.get(\"label\")}  confidence: {curr.get(\"confidence\")}  stale: {curr.get(\"stale\")}')
+print(f'entry_mode: {cfg.get(\"entry_mode\")}  enabled: {cfg.get(\"enabled\")}')
+print(f'24h transitions: {len(d.get(\"transitions_24h\",[]))}')
+"
+```
+
+Regime history (last 24h):
+```bash
+curl -s "http://localhost:7842/api/regime/history?hours=24&limit=50" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for r in d['history'][:10]:
+    print(f'{str(r.get(\"timestamp\",\"\"))[:16]} label={r.get(\"label\",\"?\"):15s} conf={r.get(\"confidence\")}')
+"
+```
+
+---
+
+## Reconciler Status
+
+```bash
+curl -s http://localhost:7842/api/reconciler | python3 -c "
+import sys, json; d = json.load(sys.stdin)
+print(f'status={d.get(\"status\")}  issues={d.get(\"issue_count\",0)}  mt5_open={d.get(\"mt5_open_count\",0)}  scribe_open={d.get(\"scribe_open_count\",0)}')
+print(f'timestamp: {d.get(\"timestamp\",\"NEVER_RUN\")}')
+"
+```
+
+---
+
+## Sessions
+
+Recent trading sessions:
+```bash
+curl -s "http://localhost:7842/api/sessions?limit=10" | python3 -c "
+import sys, json
+for s in json.load(sys.stdin):
+    print(f'{str(s.get(\"open_time\") or s.get(\"session_date\") or \"\")[:19]} {s.get(\"session_name\",\"?\"):8s} mode={s.get(\"mode_at_open\",\"?\")} pnl=\${s.get(\"total_pnl\",0):+.2f}')
+"
+```
+
+---
+
+## P&L Curve
+
+Cumulative P&L data points:
+```bash
+curl -s "http://localhost:7842/api/pnl_curve?days=7" | python3 -c "
+import sys, json
+points = json.load(sys.stdin)
+if points:
+    print(f'{len(points)} data points  start=\${points[0][\"cumulative\"]:+.2f}  end=\${points[-1][\"cumulative\"]:+.2f}')
+else:
+    print('No closed trades in window')
+"
+```
+
+---
+
+## Signal Gate Diagnostics
+
+Last BRIDGE gate snapshot (requires `GATE_DIAGNOSTICS_ENABLED=1` in .env):
+```bash
+curl -s http://localhost:7842/api/signal_gate/diagnostics | python3 -m json.tool
+```
+
+---
+
+## System Events Export (NDJSON)
+
+```bash
+# Download full audit log
+curl -s "http://localhost:7842/api/events/export?limit=10000" -o system_events.ndjson && wc -l system_events.ndjson
+
+# Filter for mode changes
+curl -s "http://localhost:7842/api/events/export?limit=5000" | grep '"MODE_CHANGE"' | python3 -c "
+import sys, json
+for line in sys.stdin:
+    r = json.loads(line)
+    print(f'{r[\"timestamp\"][:19]} {r.get(\"prev_mode\",\"?\"):10s} → {r.get(\"new_mode\",\"?\")} by={r.get(\"triggered_by\",\"?\")}')
+"
+```
+
+---
+
 ## Notes
 
 - All `curl` commands assume ATHENA is running on port 7842 (default)
