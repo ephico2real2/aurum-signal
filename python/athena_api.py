@@ -135,6 +135,25 @@ OPENAPI_YAML   = os.path.join(_ROOT, "schemas", "openapi.yaml")
 app   = Flask(__name__, static_folder=DASHBOARD_DIR)
 CORS(app)
 
+# ── Disable Werkzeug's URL-map merge_slashes ──────────────────────────────
+# Werkzeug's URL map has merge_slashes=True by default, which collapses
+# consecutive slashes during *route matching* (the final routing step).
+# Setting it False ensures that if PATH_INFO ever contains "//" it will NOT
+# silently match a single-slash route.
+#
+# NOTE on Python's HTTP layer: Python's BaseHTTPRequestHandler.parse_request()
+# uses urlsplit() on the raw request line, which interprets "//api/docs/" as
+# netloc="api" + path="/docs/" and then reconstructs PATH_INFO as "/api/docs/".
+# This means "GET //api/docs/ HTTP/1.1" is normalised to PATH_INFO="/api/docs/"
+# *before* any WSGI middleware or Flask code runs — there is no way to detect
+# the original double-slash at the WSGI or Flask layer when using Werkzeug's
+# built-in dev server.  The catch-all "/<path:path>" route therefore matches
+# the normalised path and returns 200 regardless of this setting.
+# merge_slashes=False is still correct to prevent merging within the URL map
+# for any paths that survive normalisation intact (e.g. in production behind
+# gunicorn/nginx where PATH_INFO is populated from the raw URI).
+app.url_map.merge_slashes = False
+
 if not (os.environ.get("ATHENA_SECRET") or "").strip():
     log.warning(
         "ATHENA_SECRET is unset; state-mutating API routes are open. "
