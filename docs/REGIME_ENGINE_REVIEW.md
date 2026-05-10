@@ -172,3 +172,5 @@ The following enhancements from Section 7 have been implemented:
 | LENS staleness fix | Medium priority 4 | Done | `max(stale_sec, 300)` → `REGIME_LENS_STALE_SEC` env var (default 90s) |
 
 Remaining open items: Medium 5 (tester regime confidence), Medium 6 (posterior entropy), Low 7–9.
+
+**MLOps extension:** the supervised Tier 3 classifier described in [docs/REGIME_MLOPS_DESIGN.md](REGIME_MLOPS_DESIGN.md) addresses Medium 5 (tester confidence calibration, Section 7.4) and Medium 6 (posterior entropy drift detection, Section 6.1) as part of a three-tier architecture. It also provides the outcome-validated confidence calibration that the current HMM and Gaussian models cannot produce.

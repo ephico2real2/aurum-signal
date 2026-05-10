@@ -24,6 +24,7 @@ Core architecture and operations docs:
 - **System architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **MT5 ↔ Bridge integration, regime engine design, latency analysis, and direct FIX broker path**: [docs/MT5_BROKER_INTEGRATION.md](docs/MT5_BROKER_INTEGRATION.md)
 - **Regime engine design, gotchas, and enhancement backlog**: [docs/REGIME_ENGINE_REVIEW.md](docs/REGIME_ENGINE_REVIEW.md)
+- **Regime MLOps extension — supervised classifier design and implementation roadmap**: [docs/REGIME_MLOPS_DESIGN.md](docs/REGIME_MLOPS_DESIGN.md)
 - **Database architecture** (source DBs, AURUM DBs, run_id vs aurum_run_id, backtest isolation): [docs/DATABASE_ARCHITECTURE.md](docs/DATABASE_ARCHITECTURE.md)
 - **Mode architecture**: [docs/MODES_ARCHITECTURE.md](docs/MODES_ARCHITECTURE.md)
 - **Scalper rules/tuning**: [docs/FORGE_TRADING_RULES.md](docs/FORGE_TRADING_RULES.md)
