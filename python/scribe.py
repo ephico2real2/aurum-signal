@@ -860,6 +860,10 @@ class Scribe:
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
             aurum_run_id_map = self._fj_aurum_run_cache.get(cache_key, {0: 0})
             tester_runs_meta: dict = {}
+            # Track which run_ids got a NEW wall_time this cycle — these need
+            # their source SIGNALS reset to synced=0 so the full run re-syncs
+            # under the new aurum_run_id (MT5 never clears SIGNALS between runs).
+            new_wall_time_run_ids: list[int] = []
             try:
                 tr_cols = frozenset(r[1] for r in src.execute("PRAGMA table_info(TESTER_RUNS)").fetchall())
                 tr_select = (
@@ -874,15 +878,50 @@ class Scribe:
                 )
                 for tr in src.execute(tr_select).fetchall():
                     rid, wt = int(tr[0]), int(tr[1] or 0)
-                    if rid not in wall_time_map:
+                    prev_wt = wall_time_map.get(rid)
+                    if prev_wt is None:
+                        # First time we see this run_id — treat as new run
                         wall_time_map[rid] = wt
                         tester_runs_meta[wt] = {
                             "source_run_id": rid, "sim_start_time": tr[2],
                             "symbol": tr[3], "balance": tr[4],
                             "forge_version": tr[5], "scalper_mode": tr[6], "magic_base": tr[7],
                         }
+                        new_wall_time_run_ids.append(rid)
+                    elif prev_wt != wt:
+                        # wall_time changed → MT5 started a new tester run on this run_id.
+                        # Old SIGNALS rows still exist with synced=1 from the previous run.
+                        # Reset them so the full new run gets re-synced under the new aurum_run_id.
+                        wall_time_map[rid] = wt
+                        tester_runs_meta[wt] = {
+                            "source_run_id": rid, "sim_start_time": tr[2],
+                            "symbol": tr[3], "balance": tr[4],
+                            "forge_version": tr[5], "scalper_mode": tr[6], "magic_base": tr[7],
+                        }
+                        new_wall_time_run_ids.append(rid)
+                        # Invalidate the dedup cache for this source so it rebuilds
+                        self._fj_dedup_index.pop((cache_key, source), None)
+
             except Exception:
                 pass  # live DB has no TESTER_RUNS
+
+            # Reset synced=0 for all signals belonging to run_ids with a new wall_time
+            if new_wall_time_run_ids:
+                try:
+                    placeholders = ",".join("?" * len(new_wall_time_run_ids))
+                    reset_count = src.execute(
+                        f"UPDATE SIGNALS SET synced=0 WHERE run_id IN ({placeholders}) AND synced=1",
+                        tuple(new_wall_time_run_ids),
+                    ).rowcount
+                    src.commit()
+                    if reset_count:
+                        log.info(
+                            "SCRIBE: new TESTER_RUNS wall_time detected — reset %d SIGNALS "
+                            "to synced=0 for full re-sync under new aurum_run_id (run_ids=%s)",
+                            reset_count, new_wall_time_run_ids,
+                        )
+                except Exception as _e:
+                    log.debug("SCRIBE: synced-reset on new wall_time failed: %s", _e)
 
             # Register any new wall_times into aurum_tester_runs
             if tester_runs_meta:
