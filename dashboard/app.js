@@ -1,4 +1,4 @@
-const {useState,useEffect,useRef,useMemo} = React;
+const {useState,useEffect,useRef,useMemo,useCallback} = React;
 const API = window.location.hostname==='localhost'?'http://localhost:7842':'';
 const T={
   bg:'#060709',panel:'#0B0D14',card:'#0F1119',row:'#13151F',
@@ -631,15 +631,14 @@ function ATHENA(){
     load();const t=setInterval(load,300000);return()=>clearInterval(t); // 5 min — runs list changes slowly
   },[tab]);
 
-  // Backtest run detail — fetch when selected run changes, refresh every 2 min
-  useEffect(()=>{
+  // Backtest run detail — fetch on selection only, no auto-poll (stable data; manual refresh below)
+  const loadBtDetail=useCallback(async()=>{
     if(!btSelRun)return;
-    const load=async()=>{
-      try{const r=await fetch(`${API}/api/backtest/run/${btSelRun}`);
-        if(r.ok){const j=await r.json();setBtDetail(j);}}
-      catch(e){}};
-    load();const t=setInterval(load,120000);return()=>clearInterval(t); // 2 min — detail stable while reading
+    try{const r=await fetch(`${API}/api/backtest/run/${btSelRun}`);
+      if(r.ok){const j=await r.json();setBtDetail(j);}}
+    catch(e){};
   },[btSelRun]);
+  useEffect(()=>{loadBtDetail();},[btSelRun]);
 
   // Backtest compare — re-fetch only when selection or pin changes (not on auto-refresh)
   useEffect(()=>{
@@ -1436,12 +1435,18 @@ function ATHENA(){
                     const sparkColor=p.total_pnl>=0?T.green:T.red;
                     return(
                       <>
-                        {/* Meta row */}
-                        <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:8,lineHeight:1.6}}>
+                        {/* Meta row + manual refresh */}
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                        <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,lineHeight:1.6}}>
                           {m.symbol} · v{m.forge_version} · {m.scalper_mode}
                           {m.sim_start&&<> · sim start {m.sim_start}</>}
                           {m.balance&&<> · balance ${Number(m.balance).toFixed(0)}</>}
                           {' · '}first seen {(m.first_seen_utc||'').slice(0,16)} UTC
+                        </div>
+                          <button type="button" onClick={loadBtDetail} title="Refresh run detail"
+                            style={{fontSize:9,fontFamily:T.mono,cursor:'pointer',padding:'2px 7px',
+                              border:`1px solid ${T.border}`,borderRadius:3,background:'transparent',
+                              color:T.textD,flexShrink:0,marginLeft:8}}>↻ Refresh</button>
                         </div>
                         {/* Stat grid */}
                         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
