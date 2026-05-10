@@ -628,17 +628,17 @@ function ATHENA(){
           setBtRuns(pinnedRow?[...slice,pinnedRow]:slice);
           if(!btSelRun&&slice.length>0)setBtSelRun(slice[0].aurum_run_id);}}
       catch(e){}};
-    load();const t=setInterval(load,30000);return()=>clearInterval(t);
+    load();const t=setInterval(load,300000);return()=>clearInterval(t); // 5 min — runs list changes slowly
   },[tab]);
 
-  // Backtest run detail — fetch when selected run changes, refresh every 30s
+  // Backtest run detail — fetch when selected run changes, refresh every 2 min
   useEffect(()=>{
     if(!btSelRun)return;
     const load=async()=>{
       try{const r=await fetch(`${API}/api/backtest/run/${btSelRun}`);
         if(r.ok){const j=await r.json();setBtDetail(j);}}
       catch(e){}};
-    load();const t=setInterval(load,30000);return()=>clearInterval(t);
+    load();const t=setInterval(load,120000);return()=>clearInterval(t); // 2 min — detail stable while reading
   },[btSelRun]);
 
   // Backtest compare — re-fetch only when selection or pin changes (not on auto-refresh)
