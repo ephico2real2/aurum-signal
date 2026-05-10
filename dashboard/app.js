@@ -610,9 +610,13 @@ function ATHENA(){
     if(tab!=='backtest')return;
     const load=async()=>{
       try{const r=await fetch(`${API}/api/backtest/runs`);
-        if(r.ok){const j=await r.json();setBtRuns(j.runs||[]);
+        if(r.ok){const j=await r.json();
+          // Apply display_limit from API (ATHENA_BACKTEST_RUNS_DISPLAY_LIMIT env var)
+          const displayLimit=j.display_limit||10;
+          const visible=(j.runs||[]).slice(0,displayLimit);
+          setBtRuns(visible);
           // auto-select latest run if none selected
-          if(!btSelRun&&j.runs&&j.runs.length>0)setBtSelRun(j.runs[0].aurum_run_id);}}
+          if(!btSelRun&&visible.length>0)setBtSelRun(visible[0].aurum_run_id);}}
       catch(e){}};
     load();const t=setInterval(load,30000);return()=>clearInterval(t);
   },[tab]);

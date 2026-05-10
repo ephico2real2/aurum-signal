@@ -907,9 +907,10 @@ paths:
               schema:
                 type: object
                 properties:
-                  runs:  { type: array, items: { type: object, additionalProperties: true } }
-                  count: { type: integer }
-                  limit: { type: integer, description: "Effective limit applied to this response" }
+                  runs:          { type: array, items: { type: object, additionalProperties: true } }
+                  count:         { type: integer }
+                  limit:         { type: integer, description: "Rows fetched from DB (ATHENA_BACKTEST_RUNS_LIMIT)" }
+                  display_limit: { type: integer, description: "Rows the UI shows in the tab selector (ATHENA_BACKTEST_RUNS_DISPLAY_LIMIT)" }
 
   /api/backtest/run/{aurum_run_id}:
     get:

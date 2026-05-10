@@ -69,8 +69,10 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
 SCRIBE_QUERY_SECRET = (os.environ.get("ATHENA_SCRIBE_QUERY_SECRET") or "").strip()
 SCRIBE_QUERY_MAX_ROWS = _env_int("SCRIBE_QUERY_MAX_ROWS", 500, 1, 50_000)
 SCRIBE_QUERY_BUSY_MS = _env_int("SCRIBE_QUERY_BUSY_MS", 5000, 0, 120_000)
-# Max backtest runs shown in /api/backtest/runs and the Backtest tab. Raise for longer history.
+# Max runs fetched from DB by /api/backtest/runs. Controls query cost. Raise for deep history.
 BACKTEST_RUNS_LIMIT = _env_int("ATHENA_BACKTEST_RUNS_LIMIT", 50, 1, 10_000)
+# Max runs the Athena UI shows in the Backtest tab selector. Must be <= BACKTEST_RUNS_LIMIT.
+BACKTEST_RUNS_DISPLAY_LIMIT = _env_int("ATHENA_BACKTEST_RUNS_DISPLAY_LIMIT", 10, 1, 10_000)
 AURUM_EXEC_SECRET = (os.environ.get("ATHENA_AURUM_EXEC_SECRET") or "").strip()
 # MT5 files live at project root (root-level symlink)
 MARKET_FILE    = _root_path(os.environ.get("MT5_MARKET_FILE",  "MT5/market_data.json"))
@@ -1650,9 +1652,19 @@ def api_backtest_runs():
             losses = r.get("losses") or 0
             r["win_rate"] = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else None
             r["total_pnl"] = round(r.get("total_pnl") or 0, 2)
-        return jsonify({"runs": runs, "count": len(runs), "limit": limit})
+        return jsonify({
+            "runs": runs,
+            "count": len(runs),
+            "limit": limit,
+            "display_limit": BACKTEST_RUNS_DISPLAY_LIMIT,
+        })
     except Exception as e:
-        return jsonify({"runs": [], "count": 0, "limit": BACKTEST_RUNS_LIMIT, "error": str(e)})
+        return jsonify({
+            "runs": [], "count": 0,
+            "limit": BACKTEST_RUNS_LIMIT,
+            "display_limit": BACKTEST_RUNS_DISPLAY_LIMIT,
+            "error": str(e),
+        })
 
 
 @app.route("/api/backtest/compare")
