@@ -583,14 +583,14 @@ Quick contrast reference (on `T.card = #0F1119`):
 ### 2. Run Playwright after EVERY dashboard change
 
 ```bash
-cd tests && npx playwright test test_athena_backtest.spec.js --reporter=list
+cd tests && npx playwright test test_athena_ui.spec.js --reporter=list
 # Or all UI tests:
 make test-ui
 ```
 
 **Do not commit dashboard changes if any test fails.** Fix the test or the code first.
 
-### 3. Keep `test_athena_backtest.spec.js` up to date
+### 3. Keep `test_athena_ui.spec.js` up to date
 
 When you add a new tab, panel, or field:
 1. Add a test for tab existence (in `ALL_TABS` array)
@@ -599,7 +599,7 @@ When you add a new tab, panel, or field:
 4. Add a 508 contrast test for any new header row
 5. If auto-refresh is implemented, add a `requestCount` test verifying it fires within 35s
 
-File location: `tests/ui/test_athena_backtest.spec.js`
+File location: `tests/ui/test_athena_ui.spec.js`
 
 ### 4. Layout rules — keep it simple
 
@@ -624,12 +624,12 @@ Every new panel must have tests for:
 
 Every UI change commit must include:
 - `dashboard/app.js` — the change
-- `tests/ui/test_athena_backtest.spec.js` — updated/new tests
+- `tests/ui/test_athena_ui.spec.js` — updated/new tests
 - Any new config/legend files (`config/*.json`)
 - Any new API endpoint in `python/athena_api.py`
 
 ```bash
-git add dashboard/app.js tests/ui/test_athena_backtest.spec.js python/athena_api.py config/*.json
+git add dashboard/app.js tests/ui/test_athena_ui.spec.js python/athena_api.py config/*.json
 git commit -m "feat/fix(athena): description — tests: N/N pass"
 ```
 

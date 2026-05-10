@@ -172,11 +172,11 @@ test-ui-silent:
 
 # Run only the 508 + backtest + indicators suite (fast — used after every dashboard change)
 test-ui-backtest:
-	@cd $(TESTS) && npx playwright test test_athena_backtest.spec.js --reporter=list
+	@cd $(TESTS) && npx playwright test test_athena_ui.spec.js --reporter=list
 
 # Run only the 508 compliance audit inline (no Playwright, just the audit script)
 test-ui-508:
-	@cd $(TESTS) && npx playwright test test_athena_backtest.spec.js --grep "508" --reporter=list
+	@cd $(TESTS) && npx playwright test test_athena_ui.spec.js --grep "508" --reporter=list
 
 test-live:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file live

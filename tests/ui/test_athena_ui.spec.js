@@ -1,17 +1,18 @@
 /**
- * ATHENA Backtest + Indicators Panel — automated Playwright tests.
+ * ATHENA UI — comprehensive automated Playwright tests.
  *
- * Covers:
- *   - All tab navigation (all 8 tabs exist and are clickable)
+ * Covers the full Athena dashboard, not just the Backtest panel:
+ *   - All 8 tab navigation (exist, clickable, no console errors)
  *   - Backtest tab: run list, stat grid, P&L chart axes, TAKEN ENTRIES, GATE BREAKDOWN
  *   - Gate legend: 3-line display (code + label + explanation) renders
  *   - Indicators tab: indicator cards render with required fields
- *   - Section 508: key headers ≥ 4.5:1 contrast ratio, ≥ 9px font
+ *   - Section 508: headers ≥ 4.5:1 contrast ratio (alpha-compositing), ≥ 9px font
  *   - Auto-refresh: btRuns and btDetail intervals fire within 35s
- *   - API wiring: gate_legend and indicator_legend endpoints return data
+ *   - API wiring: gate_legend, indicator_legend, backtest endpoints
  *
- * Run:  make test-ui
- *       OR: cd tests && npx playwright test test_athena_backtest.spec.js
+ * Run:  make test-ui          (all UI tests)
+ *       make test-ui-backtest  (this file only — fast)
+ *       OR: cd tests && npx playwright test test_athena_ui.spec.js
  *
  * MAINTAIN: Update this file whenever you add a new tab, panel, or field
  * to the Athena UI. Run after EVERY dashboard change.

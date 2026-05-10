@@ -426,7 +426,7 @@ All Athena UI changes MUST pass the full Playwright suite before commit. Tests l
 
 | File | Coverage |
 |------|---------|
-| `test_athena_backtest.spec.js` | **Primary** — 20 tests covering backtest tab, indicators tab, 508 compliance, API wiring, auto-refresh |
+| `test_athena_ui.spec.js` | **Primary** — 20 tests covering backtest tab, indicators tab, 508 compliance, API wiring, auto-refresh |
 | `test_dashboard.spec.js` | Dashboard load, header, mode badge, left/right panels, tab nav, no JS errors |
 | `test_panels.spec.js` | Right panel (TV/LENS, OsMA, AUTO_SCALPER), activity log, mode buttons, AURUM chat, performance, groups, SENTINEL |
 | `test_closures.spec.js` | Closures tab visibility, switching, API help text, stats tiles |
@@ -443,7 +443,7 @@ make test-ui-audit     # Full audit with screenshots → tests/results/athena-ui
 
 ### 508 compliance test coverage
 
-`test_athena_backtest.spec.js` includes:
+`test_athena_ui.spec.js` includes:
 - **TAKEN ENTRIES header cells**: font ≥ 9px, contrast ≥ 4.5:1 (computed via alpha-compositing)
 - **GATE BREAKDOWN header**: font ≥ 9px, contrast ≥ 4.5:1
 - **All 8 tab buttons**: font ≥ 9px (verified via `getComputedStyle`)
@@ -453,7 +453,7 @@ Use the audit script in SKILL.md for a full-page 508 scan before committing new 
 ### When to add tests
 
 For every new tab, panel, or API endpoint added to Athena:
-1. Add tab ID to `ALL_TABS` in `test_athena_backtest.spec.js`
+1. Add tab ID to `ALL_TABS` in `test_athena_ui.spec.js`
 2. Add panel render test (header text visible, key labels)
 3. Add API structure test if new endpoint
 4. Add 508 test for any new header row
