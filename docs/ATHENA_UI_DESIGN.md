@@ -415,3 +415,45 @@ The bridge runs a two-layer recovery every 60s:
 2. **ATTACH-based gap recovery** (`bridge.py`): ATTACHes `aurum_tester.db` to the source and resets `synced=0` only for source rows marked `synced=1` that are missing from the destination. Self-heals within one 60s cycle.
 
 See `docs/DATABASE_ARCHITECTURE.md` for the full multi-agent isolation design.
+
+---
+
+## Playwright Test Suite
+
+All Athena UI changes MUST pass the full Playwright suite before commit. Tests live in `tests/ui/`.
+
+### Test files
+
+| File | Coverage |
+|------|---------|
+| `test_athena_backtest.spec.js` | **Primary** — 20 tests covering backtest tab, indicators tab, 508 compliance, API wiring, auto-refresh |
+| `test_dashboard.spec.js` | Dashboard load, header, mode badge, left/right panels, tab nav, no JS errors |
+| `test_panels.spec.js` | Right panel (TV/LENS, OsMA, AUTO_SCALPER), activity log, mode buttons, AURUM chat, performance, groups, SENTINEL |
+| `test_closures.spec.js` | Closures tab visibility, switching, API help text, stats tiles |
+| `test_athena_audit.spec.js` | Full tab walk + screenshot + JSON report for manual review |
+
+### Make targets
+
+```bash
+make test-ui           # Run all UI tests (Playwright, all files)
+make test-ui-backtest  # Run only backtest + 508 suite (fast, use after every dashboard change)
+make test-ui-508       # Run only 508 compliance tests
+make test-ui-audit     # Full audit with screenshots → tests/results/athena-ui-audit.json
+```
+
+### 508 compliance test coverage
+
+`test_athena_backtest.spec.js` includes:
+- **TAKEN ENTRIES header cells**: font ≥ 9px, contrast ≥ 4.5:1 (computed via alpha-compositing)
+- **GATE BREAKDOWN header**: font ≥ 9px, contrast ≥ 4.5:1
+- **All 8 tab buttons**: font ≥ 9px (verified via `getComputedStyle`)
+
+Use the audit script in SKILL.md for a full-page 508 scan before committing new panels.
+
+### When to add tests
+
+For every new tab, panel, or API endpoint added to Athena:
+1. Add tab ID to `ALL_TABS` in `test_athena_backtest.spec.js`
+2. Add panel render test (header text visible, key labels)
+3. Add API structure test if new endpoint
+4. Add 508 test for any new header row

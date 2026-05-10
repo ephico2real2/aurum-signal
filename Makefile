@@ -164,10 +164,18 @@ test-api:
 	@$(PYTHON) $(SCRIPTS)/test_api.py
 
 test-ui:
-	@$(PYTHON) $(SCRIPTS)/test_ui.py --headed
+	@cd tests && npx playwright test --reporter=list
 
 test-ui-silent:
-	@$(PYTHON) $(SCRIPTS)/test_ui.py
+	@cd tests && npx playwright test --reporter=list
+
+# Run only the 508 + backtest + indicators suite (fast — used after every dashboard change)
+test-ui-backtest:
+	@cd tests && npx playwright test test_athena_backtest.spec.js --reporter=list
+
+# Run only the 508 compliance audit inline (no Playwright, just the audit script)
+test-ui-508:
+	@cd tests && npx playwright test test_athena_backtest.spec.js --grep "508" --reporter=list
 
 test-live:
 	@$(PYTHON) $(SCRIPTS)/test_api.py --file live
