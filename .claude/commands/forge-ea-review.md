@@ -1,0 +1,1 @@
+Read and follow all instructions in /Users/olasumbo/signal_system/.claude/skills/forge-ea-review/SKILL.md exactly. Execute the full EA review protocol defined there — validate FORGE.mq5 against all source files, document all findings rigorously, and write the output report.
