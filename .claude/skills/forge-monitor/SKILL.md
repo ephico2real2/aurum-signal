@@ -1,6 +1,6 @@
 ---
 name: forge-monitor
-description: Monitor an MT5/MQL5 FORGE EA backtest by polling tester journal DBs every 45s. Reports new signals, skips, taken trades, gate deltas, and SELL STOP continuation / BUY LIMIT recovery arming. Cross-references the source tester DB (SIGNALS/TRADES/TESTER_RUNS) against aurum_tester.db (forge_signals / forge_journal_trades / aurum_tester_runs). Writes a per-run analysis doc and keeps the query cheat sheet current. Invoke when the user asks to "monitor the forge tester", "watch the backtest", "tail the journal", "monitor", "now monitor", or "/forge-monitor".
+description: Monitor an MT5/MQL5 FORGE EA backtest by polling the source tester journal DB every 45s. ALL monitoring queries run against the source DB (SIGNALS/TRADES/TESTER_RUNS) written directly by FORGE EA — NEVER aurum_tester.db which lags by 60s+. Reports new signals, skips, taken trades, gate deltas, and SELL STOP continuation / BUY LIMIT recovery arming. Writes a per-run analysis doc and keeps the query cheat sheet current. Invoke when the user asks to "monitor the forge tester", "watch the backtest", "tail the journal", "monitor", "now monitor", or "/forge-monitor".
 ---
 
 # /forge-monitor — FORGE tester journal monitor
@@ -9,6 +9,11 @@ You are debugging an MT5/MQL5 backtesting session. Be skeptical — flag suspici
 patterns rather than reporting them as normal: atr=0, identical prices, P&L moving
 without trade count changing, unknown gate_reason values, all-skip runs, cascade
 magics firing unexpectedly.
+
+> **ALWAYS query the source tester DB for all monitoring.** aurum_tester.db is
+> synced by bridge every 60s and lags by 1–3 minutes during active runs — it is
+> stale and must NOT be used for live monitoring. Use aurum_tester.db only in
+> Step 4 to look up the stable `aurum_run_id` for naming the analysis doc.
 
 The source DB is read-only. aurum_tester.db is also read-only (bridge manages it).
 The cheat sheet and analysis docs are writable.
@@ -65,7 +70,7 @@ Use the most recently modified DB (check mtime).
 - `forge_signals`: `UNIQUE(forge_id, journal_source, wall_time)` — prevents duplicate syncs across runs
 - `forge_journal_trades`: `UNIQUE(deal_ticket, journal_source, wall_time)` — same protection
 
-**CRITICAL: sync lag** — BRIDGE syncs source DB → aurum_tester.db every 60s in batches of 5000. During an active run, aurum_tester.db may lag by 1–3 minutes. **Always query the source SIGNALS/TRADES tables for live monitoring.** Use aurum_tester.db only for cross-run analysis.
+**Sync lag** — BRIDGE syncs source → aurum_tester.db every 60s in batches of 5000. Lag is typically 1–3 minutes during an active run. Query the source DB for all live monitoring (see top of this skill). Use aurum_tester.db only for `aurum_run_id` lookup (Step 4) and post-run cross-run analysis.
 
 **Sync recovery:** If aurum_tester.db lags significantly, BRIDGE auto-detects the gap using ATTACH and resets `synced=0` on missing rows within one 60s cycle (logged as `BRIDGE: sync-recovery` in bridge.log). MT5 never clears SIGNALS between runs — BRIDGE uses wall_time to distinguish runs.
 
@@ -216,7 +221,7 @@ WHERE metric LIKE 'hour_%'
 ORDER BY metric;"
 ```
 
-### Q8 — Sync lag check
+### Q8 — Sync lag check (optional diagnostic only — do NOT use aurum_tester.db for monitoring data)
 ```bash
 python3 -c "
 import sqlite3
