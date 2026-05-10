@@ -1783,38 +1783,88 @@ def api_backtest_run(aurum_run_id):
 
         magic_base = meta.get("magic_base") or 202401
 
-        # Pre-compute: for each base_magic closing deal, find which group_magic
-        # closing deal is closest in time (exclusive attribution — one deal → one group).
+        # ── Group magic resolution ──────────────────────────────────────────
+        # Do NOT assume grp_magic = magic_base + 5000 + rank_in_signals.
+        # When a signal is missing (e.g. G5004 has no SIGNALS row), sequential
+        # rank mapping assigns wrong magics to every subsequent group.
+        # Fix: for each TAKEN signal, find the primary group magic whose earliest
+        # trade time is closest to the signal entry time (within 5 min).
+        _primary_magics = {
+            m for m in _trades_by_magic
+            if 5001 <= (m - magic_base) <= 5099
+        }
+        _grp_magic_first_trade = {
+            m: min(t["time"] for t in _trades_by_magic[m])
+            for m in _primary_magics
+        }
+
+        # Map each signal → its group_magic using time proximity
+        _assigned_magics: set[int] = set()
+        _sig_to_grp: list[int] = []
+        for _sig in taken_raw:
+            sig_time = _sig["time"]
+            best_m, best_diff = None, float("inf")
+            for _m, _t0 in _grp_magic_first_trade.items():
+                if _m in _assigned_magics:
+                    continue
+                d = abs(_t0 - sig_time)
+                if d < best_diff and d <= 300:   # within 5 min of signal
+                    best_diff, best_m = d, _m
+            if best_m is None:
+                # fallback: nearest unassigned
+                for _m, _t0 in sorted(_grp_magic_first_trade.items(), key=lambda x: abs(x[1]-sig_time)):
+                    if _m not in _assigned_magics:
+                        best_m = _m
+                        break
+            _assigned_magics.add(best_m)
+            _sig_to_grp.append(best_m)
+
+        # ── Cascade magic attribution ───────────────────────────────────────
+        # Each cascade magic M belongs to exactly ONE primary group.
+        # Try offsets 20000..20009 in order; first match whose candidate primary
+        # magic is in our detected set wins — no double-counting across groups.
+        _cascade_offsets = list(range(20000, 20010))
+        _cascade_owner: dict[int, int] = {}   # cascade_magic → primary_magic
+        for _cm in sorted(_trades_by_magic.keys()):
+            if _cm in _primary_magics or _cm == magic_base:
+                continue
+            for _off in _cascade_offsets:
+                _candidate = _cm - _off
+                if _candidate in _primary_magics:
+                    _cascade_owner[_cm] = _candidate
+                    break
+
+        # ── Base magic attribution ──────────────────────────────────────────
+        # Base-magic closing deals are splits from group closes; attribute each
+        # to the primary group whose closing deal occurred at the same second.
         _base_closing = [
             _td for _td in _trades_by_magic.get(magic_base, [])
             if (_td.get("profit") or 0) != 0
         ]
-        # Build map: group_rank → list of attributed base_magic deals
-        _base_attr_by_rank: dict[int, list] = {r: [] for r in range(1, len(taken_raw) + 1)}
+        _base_attr_by_grp: dict[int, list] = {m: [] for m in _primary_magics}
+        _base_used: set[int] = set()
         for _bd in _base_closing:
-            best_rank, best_diff = None, float("inf")
-            for _r in range(1, len(taken_raw) + 1):
-                _gm = magic_base + 5000 + _r
-                for _gt in _trades_by_magic.get(_gm, []):
+            best_m, best_diff = None, float("inf")
+            for _m in _primary_magics:
+                for _gt in _trades_by_magic.get(_m, []):
                     if (_gt.get("profit") or 0) != 0:
-                        diff = abs(_bd["time"] - _gt["time"])
-                        if diff < best_diff and diff <= 10:
-                            best_diff, best_rank = diff, _r
-            if best_rank is not None:
-                _base_attr_by_rank[best_rank].append(_bd)
+                        d = abs(_bd["time"] - _gt["time"])
+                        if d < best_diff and d <= 10:
+                            best_diff, best_m = d, _m
+            if best_m is not None:
+                _base_attr_by_grp[best_m].append(_bd)
 
         taken = []
-        for _rank, _sig in enumerate(taken_raw, start=1):
-            grp_magic = magic_base + 5000 + _rank
+        for _idx, _sig in enumerate(taken_raw):
+            grp_magic = _sig_to_grp[_idx]
             grp_trades = _trades_by_magic.get(grp_magic, [])
 
-            # Cascade/limit magics for this group: L1(+20000), L2(+20001),
-            # SELL STOP slots (+20002..+20008), BUY LIMIT (+20009)
-            _cascade_offsets = range(20000, 20010)
+            # Cascade trades for this group (those whose cascade_owner = grp_magic)
             cascade_trades = [
                 _td
-                for _off in _cascade_offsets
-                for _td in _trades_by_magic.get(grp_magic + _off, [])
+                for _cm, _owner in _cascade_owner.items()
+                if _owner == grp_magic
+                for _td in _trades_by_magic.get(_cm, [])
             ]
 
             # Highest TP from partial close comments (profit==0, comment like "|TP2")
@@ -1828,7 +1878,7 @@ def api_backtest_run(aurum_run_id):
                         pass
 
             # Realised P&L: group_magic + cascade magic deals + attributed base_magic deals
-            base_attr = sum((_td.get("profit") or 0) for _td in _base_attr_by_rank.get(_rank, []))
+            base_attr = sum((_td.get("profit") or 0) for _td in _base_attr_by_grp.get(grp_magic, []))
             primary_pnl = sum((_td.get("profit") or 0) for _td in grp_trades if (_td.get("profit") or 0) != 0)
             cascade_pnl = sum((_td.get("profit") or 0) for _td in cascade_trades if (_td.get("profit") or 0) != 0)
             grp_pnl = round(primary_pnl + base_attr + cascade_pnl, 2)
