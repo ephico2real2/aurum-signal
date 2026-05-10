@@ -672,6 +672,29 @@ def _calc_pips(symbol: str | None, direction: str, open_price: float, close_pric
         pip_size = 1.0
     return round(raw / pip_size, 1)
 
+
+def _calc_pip_value_usd(symbol: str | None, lot_size: float, pips: float) -> float:
+    """USD value of pip move for the given symbol and lot size.
+
+    For XAUUSD:
+      - Contract size = 100 oz per standard lot
+      - SYMBOL_POINT (pip_size) = 0.01 USD
+      - 1 pip on 1.0 lot = 100 oz × $0.01 = $1.00
+      - 1 pip on 0.01 lot = 1 oz × $0.01 = $0.01
+
+    Formula: pip_value_usd = lot_size × contract_size × pip_size × pips
+                           = lot_size × 100 × 0.01 × pips
+                           = lot_size × pips  (for XAUUSD)
+
+    This produces signed output: positive = profit, negative = loss.
+    """
+    sym = (symbol or "").upper()
+    if "XAU" in sym or "XAG" in sym:
+        # XAUUSD: contract_size=100oz, pip_size=0.01 → factor = 100 × 0.01 = 1.0
+        return round(float(lot_size) * 1.0 * float(pips), 2)
+    # Other symbols: return 0 (not yet implemented)
+    return 0.0
+
 def _safe_float(value):
     try:
         if value is None:
@@ -1542,6 +1565,7 @@ class Bridge:
             tp = snap.get("tp") or 0
             lot_size = snap.get("lot_size", 0)
             pips = _calc_pips(symbol, direction, open_price, close_price)
+            pip_value_usd = _calc_pip_value_usd(symbol, lot_size, pips)
 
             # ── Infer close reason from SL/TP proximity ────────────
             close_reason = None
@@ -1597,6 +1621,7 @@ class Bridge:
                 sl=sl, tp=tp,
                 close_reason=close_reason,
                 pnl=pnl, pips=pips,
+                pip_value_usd=pip_value_usd,
                 duration_seconds=_dur,
                 session=_session(),
                 mode=mode,
@@ -1693,6 +1718,7 @@ class Bridge:
             tp = snap.get("tp") or 0
             lot_size = snap.get("lot_size", 0)
             pips = _calc_pips(symbol, direction, open_price, close_price)
+            pip_value_usd = _calc_pip_value_usd(symbol, lot_size, pips)
             close_time = _deal_close_time_iso(deal_row) if deal_row else None
             close_reason = _close_reason_from_broker_hint(
                 str((deal_row or {}).get("close_reason") or (deal_row or {}).get("reason") or ""),
@@ -1739,6 +1765,7 @@ class Bridge:
                 close_reason=close_reason,
                 pnl=pnl,
                 pips=pips,
+                pip_value_usd=pip_value_usd,
                 duration_seconds=_dur2,
                 session=_session(),
                 mode=mode,

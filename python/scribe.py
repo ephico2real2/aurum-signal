@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS trade_groups (
     close_reason   TEXT,
     total_pnl      REAL,
     pips_captured  REAL,
+    total_pip_value_usd REAL,
     trades_opened  INTEGER,
     trades_closed  INTEGER
 );
@@ -278,6 +279,7 @@ CREATE TABLE IF NOT EXISTS trade_positions (
     close_reason   TEXT,
     pnl            REAL,
     pips           REAL,
+    pip_value_usd  REAL,
     tp_stage       INTEGER
 );
 
@@ -320,6 +322,7 @@ CREATE TABLE IF NOT EXISTS trade_closures (
     close_reason    TEXT NOT NULL,
     pnl             REAL,
     pips            REAL,
+    pip_value_usd   REAL,
     duration_seconds INTEGER,
     session         TEXT,
     mode            TEXT
@@ -648,6 +651,22 @@ class Scribe:
         if "open_context" not in tg_cols3:
             conn.execute("ALTER TABLE trade_groups ADD COLUMN open_context TEXT")
             log.info("SCRIBE migration: added open_context to trade_groups (JSON attribution snapshot)")
+        # ── Pip value USD columns ───────────────────────────────────
+        # trade_closures: pip_value_usd (signed USD value of pip move)
+        tc_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_closures)").fetchall()]
+        if "pip_value_usd" not in tc_cols:
+            conn.execute("ALTER TABLE trade_closures ADD COLUMN pip_value_usd REAL")
+            log.info("SCRIBE migration: added pip_value_usd to trade_closures")
+        # trade_positions: pip_value_usd
+        tp_cols = [r[1] for r in conn.execute("PRAGMA table_info(trade_positions)").fetchall()]
+        if "pip_value_usd" not in tp_cols:
+            conn.execute("ALTER TABLE trade_positions ADD COLUMN pip_value_usd REAL")
+            log.info("SCRIBE migration: added pip_value_usd to trade_positions")
+        # trade_groups: total_pip_value_usd (sum across all closed legs)
+        tg_cols4 = [r[1] for r in conn.execute("PRAGMA table_info(trade_groups)").fetchall()]
+        if "total_pip_value_usd" not in tg_cols4:
+            conn.execute("ALTER TABLE trade_groups ADD COLUMN total_pip_value_usd REAL")
+            log.info("SCRIBE migration: added total_pip_value_usd to trade_groups")
 
     @staticmethod
     def _serialize_open_context(value) -> str | None:
@@ -1367,18 +1386,24 @@ class Scribe:
                           entry_price: float, close_price: float,
                           sl: float, tp: float,
                           close_reason: str, pnl: float, pips: float,
+                          pip_value_usd: float = 0.0,
                           duration_seconds: int = None,
                           session: str = None, mode: str = None) -> int:
-        """Log a position closure to trade_closures table."""
+        """Log a position closure to trade_closures table.
+
+        pip_value_usd: signed USD value of the pip move for this trade.
+          For XAUUSD: pip_value_usd = lot_size × pips  (since contract_size=100, pip_size=0.01 → factor=1.0).
+          Positive = profitable move, negative = loss.
+        """
         with self._conn() as c:
             cur = c.execute("""INSERT INTO trade_closures
                 (timestamp, ticket, trade_group_id, direction, lot_size,
                  entry_price, close_price, sl, tp, close_reason,
-                 pnl, pips, duration_seconds, session, mode)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 pnl, pips, pip_value_usd, duration_seconds, session, mode)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (self._now(), ticket, trade_group_id, direction, lot_size,
                  entry_price, close_price, sl, tp, close_reason,
-                 pnl, pips, duration_seconds, session, mode))
+                 pnl, pips, pip_value_usd, duration_seconds, session, mode))
             return cur.lastrowid
 
     def get_recent_closures(self, limit: int = 20, days: int = 7) -> list:
@@ -1407,7 +1432,8 @@ class Scribe:
                     COALESCE(SUM(pnl), 0) AS total_pnl,
                     COALESCE(AVG(pnl), 0) AS avg_pnl,
                     COALESCE(AVG(pips), 0) AS avg_pips,
-                    COALESCE(AVG(duration_seconds), 0) AS avg_duration_sec
+                    COALESCE(AVG(duration_seconds), 0) AS avg_duration_sec,
+                    COALESCE(AVG(pip_value_usd), 0) AS avg_pip_value_usd
                 FROM trade_closures
                 WHERE timestamp >= datetime('now', ?)""",
                 (f"-{d} days",)).fetchone()
@@ -1425,6 +1451,7 @@ class Scribe:
                 "avg_pnl": round(row[7] or 0, 2),
                 "avg_pips": round(row[8] or 0, 1),
                 "avg_duration_sec": round(row[9] or 0, 0),
+                "avg_pip_value_usd": round(row[10] or 0, 2),
             }
 
     @staticmethod
@@ -1773,7 +1800,8 @@ class Scribe:
                     SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) wins,
                     SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END) losses,
                     COALESCE(SUM(pnl),0) total_pnl,
-                    COALESCE(AVG(pips),0) avg_pips
+                    COALESCE(AVG(pips),0) avg_pips,
+                    COALESCE(AVG(pip_value_usd),0) avg_pip_value_usd
                     FROM trade_closures {base}""",
                 tuple(params),
             ).fetchone()
@@ -1787,6 +1815,7 @@ class Scribe:
                 "win_rate": round(wins / total_n * 100, 1) if total_n else None,
                 "total_pnl": round(rows[3] or 0, 2),
                 "avg_pips": round(rows[4] or 0, 1),
+                "avg_pip_value_usd": round(rows[5] or 0, 2),
             }
 
     def query(self, sql: str, params: tuple = ()) -> list:

@@ -1062,6 +1062,8 @@ function ATHENA(){
                         {(c.pnl||0)>=0?'+':''}{(c.pnl||0).toFixed(2)}</span>
                       <span style={{fontFamily:T.mono,fontSize:8,color:T.textD}}>
                         {(c.pips||0)>=0?'+':''}{(c.pips||0).toFixed(1)}p</span>
+                      {c.pip_value_usd!=null&&(<span style={{fontFamily:T.mono,fontSize:7,color:(c.pip_value_usd||0)>=0?T.green:T.red}}>
+                        {(c.pip_value_usd||0)>=0?'+':''}{(c.pip_value_usd||0).toFixed(2)}$pv</span>)}
                       <span style={{fontSize:7,color:T.textD,fontFamily:T.mono}}>
                         {fmtDateTime(c.timestamp)}</span>
                     </div>
@@ -1243,13 +1245,17 @@ function ATHENA(){
                 Last update: {fmtDateTime(D.timestamp)}
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
-                {[['Win Rate',winRateLbl,T.green],
+                {(()=>{const avgPv=D.performance?.avg_pip_value_usd!=null?Number(D.performance.avg_pip_value_usd):null;
+                  const avgPvLbl=avgPv!=null?`${avgPv>=0?'+':''}$${avgPv.toFixed(2)}`:'—';
+                  const avgPvColor=avgPv==null?T.textD:avgPv>=0?T.green:T.red;
+                  return[['Win Rate',winRateLbl,T.green],
                   ['Avg Pips',avgPipsLbl,T.gold],
+                  ['Avg Pip $',avgPvLbl,avgPvColor],
                   ['Total P&L',`$${(D.performance?.total_pnl||0).toFixed(2)}`,(D.performance?.total_pnl||0)>=0?T.green:T.red],
                   ['Trades',D.performance?.total||0,T.textBB],
                   ['Wins',D.performance?.wins||0,T.green],
                   ['Losses',D.performance?.losses||0,T.red],
-                ].map(([l,v,c])=>(
+                ]})().map(([l,v,c])=>(
                   <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,
                     borderRadius:5,padding:'10px 12px',textAlign:'center'}}>
                     <div style={{fontSize:18,fontFamily:T.mono,color:c,fontWeight:700}}>{v}</div>
