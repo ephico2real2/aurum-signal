@@ -756,7 +756,7 @@ function ATHENA(){
       <div style={{display:'flex',alignItems:'center',gap:14}}>
         <div>
           <div style={{fontFamily:T.mono,fontSize:15,fontWeight:700,color:T.gold,letterSpacing:4}}>⚒ ATHENA</div>
-          <div style={{fontSize:8,color:T.text,letterSpacing:2,textTransform:'uppercase'}}>Signal System · XAUUSD</div>
+          <div style={{fontSize:9,color:T.text,letterSpacing:2,textTransform:'uppercase'}}>Signal System · XAUUSD</div>
         </div>
         <div style={{background:`${modeColor}11`,border:`1px solid ${modeColor}`,
           padding:'3px 10px',borderRadius:4,display:'flex',alignItems:'center',gap:6}}>
@@ -779,7 +779,7 @@ function ATHENA(){
           fontFamily:T.mono,color:connected?T.green:T.amber}}>
           <Dot ok={connected} sz={5} b={connected}/>{connected?'LIVE':'DEMO'}
         </div>
-        <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>Cycle {D.cycle}</span>
+        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>Cycle {D.cycle}</span>
       </div>
     </div>
 
@@ -794,14 +794,14 @@ function ATHENA(){
         <div>
           <PT ch="⬡ Account · MT5 Live"/>
           {D.mt5_quote_stale&&(
-            <div style={{fontSize:7,color:T.amber,fontFamily:T.mono,marginBottom:6,padding:'5px 6px',
-              background:T.amberBg,border:`1px solid ${T.amber}`,borderRadius:4,lineHeight:1.35}}>
-              FORGE quote file stale ({fmtAgeSec(ex.age_sec)}) — bid/ask on the right are hidden until fresh.
+            <div style={{fontSize:9,color:T.amber,fontFamily:T.mono,marginBottom:6,padding:'5px 6px',
+              background:T.amberBg,border:`1px solid ${T.amber}`,borderRadius:4,lineHeight:1.4}}>
+              FORGE quote file stale ({fmtAgeSec(ex.age_sec)}) — bid/ask hidden until fresh.
             </div>
           )}
           <div style={{fontFamily:T.mono,fontSize:20,color:T.gold,fontWeight:700,marginBottom:1}}>
             {acc.balance!=null?'$'+acc.balance.toLocaleString('en',{minimumFractionDigits:2}):'—'}</div>
-          <div style={{fontSize:8,color:T.text,marginBottom:8}}>BALANCE (from market_data.json)</div>
+          <div style={{fontSize:9,color:T.text,marginBottom:8}}>BALANCE (from market_data.json)</div>
           {[['EQUITY',acc.equity!=null?'$'+acc.equity.toLocaleString('en',{minimumFractionDigits:2}):'—',T.textBB],
             ['MRG LVL',acc.margin_level!=null?acc.margin_level.toFixed(0)+'%':'—',T.green],
             ['POSITIONS (filled)',acc.open_positions_count??0,T.amber],
@@ -809,17 +809,17 @@ function ATHENA(){
             ['FORGE pendings',D.pending_orders_forge_count!=null?D.pending_orders_forge_count:'—',T.text]].map(([l,v,c])=>(
             <div key={l} style={{display:'flex',justifyContent:'space-between',
               padding:'3px 0',borderBottom:`1px solid ${T.border}`,marginBottom:2}}>
-              <span style={{fontSize:8,color:T.textD,fontFamily:T.mono}}>{l}</span>
+              <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>{l}</span>
               <span style={{fontSize:10,fontFamily:T.mono,color:c}}>{v}</span>
             </div>
           ))}
           {(D.pending_orders||[]).length>0&&(
             <div style={{marginTop:8,maxHeight:120,overflowY:'auto',
               border:`1px solid ${T.border2}`,borderRadius:4,background:T.row,padding:6}}>
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginBottom:4,letterSpacing:1}}>
                 MT5 PENDING (from market_data.json)</div>
               {(D.pending_orders||[]).map((p,i)=>(
-                <div key={p.ticket||i} style={{fontSize:7,fontFamily:T.mono,color:T.textBB,
+                <div key={p.ticket||i} style={{fontSize:9,fontFamily:T.mono,color:T.textBB,
                   borderBottom:i<(D.pending_orders||[]).length-1?`1px solid ${T.border}`:'none',
                   padding:'4px 0',lineHeight:1.35}}>
                   <span style={{color:T.cyan}}>#{p.ticket}</span>
@@ -835,7 +835,7 @@ function ATHENA(){
             background:(acc.session_pnl??0)>=0?T.greenBg:T.redBg,
             border:`1px solid ${(acc.session_pnl??0)>=0?T.green:T.red}`,
             borderRadius:4,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <span style={{fontSize:8,fontFamily:T.mono,color:T.text}}>SESSION</span>
+            <span style={{fontSize:9,fontFamily:T.mono,color:T.text}}>SESSION</span>
             <span style={{fontFamily:T.mono,fontWeight:700,
               color:(acc.session_pnl??0)>=0?T.green:T.red}}>
               {acc.session_pnl!=null?((acc.session_pnl>=0?'+':'')+acc.session_pnl.toFixed(2)):'—'}
@@ -845,10 +845,10 @@ function ATHENA(){
             {pnlSpark&&pnlSpark.length>=2?(
               <Sparkline data={pnlSpark} w={158} h={28} color={sparkColor}/>
             ):(
-              <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,textAlign:'center',padding:'6px 2px'}}>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',padding:'6px 2px'}}>
                 No closed trades ({PERF_ROLLING_DAYS}d UTC)</div>
             )}
-            <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:1}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:1}}>
               Cumulative P&L ({PERF_ROLLING_DAYS}d)</div>
           </div>
         </div>
@@ -864,11 +864,11 @@ function ATHENA(){
               borderRadius:4,cursor:'pointer'}}>
               <span style={{fontFamily:T.mono,fontSize:9,
                 color:mode===m.id?m.color:T.text,letterSpacing:1}}>{m.id}</span>
-              <span style={{fontSize:7,color:T.textD}}>{m.desc}</span>
+              <span style={{fontSize:9,color:T.textD}}>{m.desc}</span>
               {mode===m.id&&<Dot ok={true} sz={4}/>}
             </button>
           ))}
-          <div style={{fontSize:7,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:3}}>
+          <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',marginTop:3}}>
             BRIDGE → FORGE via config.json
           </div>
         </div>
@@ -879,7 +879,7 @@ function ATHENA(){
             <div style={{fontSize:9,color:'#E8445A',fontFamily:T.mono,fontWeight:700,marginBottom:2}}>
               ⚡ CIRCUIT BREAKER
             </div>
-            <div style={{fontSize:8,color:T.text}}>MT5 data stale — trading suspended</div>
+            <div style={{fontSize:9,color:T.text}}>MT5 data stale — trading suspended</div>
           </div>
         )}
 
@@ -908,14 +908,14 @@ function ATHENA(){
           {(components.length>0?components:[]).map(c=>(
             <div key={c.name} style={{display:'flex',alignItems:'center',gap:5,marginBottom:5}}>
               <Dot ok={c.ok} sz={5}/>
-              <span style={{fontFamily:T.mono,fontSize:8,color:c.ok?(CC[c.name]||T.text):T.red,
-                width:56,flexShrink:0}}>{c.name}</span>
-              <span style={{fontSize:7,color:T.textD,overflow:'hidden',
+              <span style={{fontFamily:T.mono,fontSize:9,color:c.ok?(CC[c.name]||T.text):T.red,
+                width:64,flexShrink:0}}>{c.name}</span>
+              <span style={{fontSize:9,color:T.textD,overflow:'hidden',
                 textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{c.note}</span>
             </div>
           ))}
           {components.length===0&&(
-            <div style={{fontSize:8,color:T.textD,fontFamily:T.mono,textAlign:'center',padding:'8px 0'}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,textAlign:'center',padding:'8px 0'}}>
               No heartbeats yet
             </div>
           )}
