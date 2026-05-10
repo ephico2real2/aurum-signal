@@ -1399,6 +1399,67 @@ function ATHENA(){
                             </div>
                           ))}
                         </div>
+                        {/* ── RUN ANALYSIS — before P&L chart ── */}
+                        {btCompare&&btCompare.run_a&&btCompare.run_b&&(
+                          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:'10px 12px',marginBottom:12}}>
+                            <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,fontWeight:600,letterSpacing:2,marginBottom:8}}>
+                              ⚖ RUN ANALYSIS — Run #{btCompare.run_a.aurum_run_id} vs Run #{btCompare.run_b.aurum_run_id}
+                              {btCompare.winner&&btCompare.winner!=='tie'&&(
+                                <span style={{marginLeft:8,color:T.gold}}> · Winner: Run #{btCompare.winner}</span>
+                              )}
+                              {btCompare.winner==='tie'&&<span style={{marginLeft:8,color:T.textD}}> · Tie</span>}
+                            </div>
+                            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
+                              {[btCompare.run_a,btCompare.run_b].map(run=>(
+                                <div key={run.aurum_run_id} style={{padding:'6px 8px',background:T.bg,borderRadius:4,
+                                  border:`1px solid ${btCompare.winner===run.aurum_run_id?T.gold:T.border}`}}>
+                                  <div style={{fontSize:9,color:T.gold,fontFamily:T.mono,fontWeight:600,marginBottom:4}}>
+                                    Run #{run.aurum_run_id} · {run.forge_version}
+                                    {run.score!=null&&<span style={{marginLeft:6,color:T.cyan}}>Score {run.score}/100</span>}
+                                  </div>
+                                  {[
+                                    ['P&L',`$${(run.total_pnl||0).toFixed(2)}`],
+                                    ['Win Rate',run.win_rate_pct!=null?`${run.win_rate_pct}%`:'n/a'],
+                                    ['Taken',run.taken??'—'],
+                                    ['Take Rate',run.take_rate_pct!=null?`${run.take_rate_pct.toFixed(2)}%`:'n/a'],
+                                    ['Signals',run.total_signals??'—'],
+                                    ['Losses',run.losses??'—'],
+                                  ].map(([k,v])=>(
+                                    <div key={k} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
+                                      <span>{k}</span><span style={{color:T.text}}>{v}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                            <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>DELTAS (A − B)</div>
+                            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4,marginBottom:8}}>
+                              {Object.entries(btCompare.deltas||{}).filter(([,v])=>v!=null).map(([k,v])=>{
+                                const pos=v>0,neg=v<0,color=pos?T.green:neg?T.red:T.textD;
+                                return(
+                                  <div key={k} style={{padding:'3px 6px',background:T.bg,borderRadius:3,fontSize:9,fontFamily:T.mono}}>
+                                    <span style={{color:T.textD}}>{k.replace(/_pct$/,'%').replace(/_/g,' ')} </span>
+                                    <span style={{color}}>{pos?'+':''}{typeof v==='number'?v.toFixed(2):v}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {btCompare.gate_diff&&Object.keys(btCompare.gate_diff).length>0&&(()=>{
+                              const changed=Object.entries(btCompare.gate_diff).filter(([,v])=>v.delta!==0).slice(0,6);
+                              if(!changed.length)return null;
+                              return(<>
+                                <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>TOP GATE CHANGES</div>
+                                {changed.map(([gate,v])=>(
+                                  <div key={gate} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
+                                    <span style={{color:T.text}}>{gate}</span>
+                                    <span>A={v.a} B={v.b} <span style={{color:v.delta>0?T.red:T.green}}>{v.delta>0?'+':''}{v.delta}</span></span>
+                                  </div>
+                                ))}
+                              </>);
+                            })()}
+                            <div style={{marginTop:6,fontSize:8,color:T.textD,fontFamily:T.mono}}>{btCompare.note}</div>
+                          </div>
+                        )}
                         {/* P&L curve with labeled axes */}
                         {sparkData.length>=2&&(()=>{
                           const total=btDetail.pnl_curve?.length||sparkData.length;
@@ -1430,9 +1491,9 @@ function ATHENA(){
                               <text x={PL-5} y={PT+5} textAnchor="end" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">${maxPnl.toFixed(0)}</text>
                               {showZero&&<text x={PL-5} y={zeroY+3} textAnchor="end" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">$0</text>}
                               <text x={PL-5} y={PT+ch} textAnchor="end" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">${minPnl.toFixed(0)}</text>
-                              {/* Y axis label — rotated */}
+                              {/* Y axis label — P&L Yield */}
                               <text x={10} y={PT+ch/2} textAnchor="middle" fill={T.text} fontSize={8} fontFamily="'Courier New',monospace"
-                                transform={`rotate(-90,10,${PT+ch/2})`}>Equity ($)</text>
+                                transform={`rotate(-90,10,${PT+ch/2})`}>P&amp;L Yield ($)</text>
                               {/* X tick labels */}
                               <text x={PL} y={PT+ch+14} textAnchor="middle" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">1</text>
                               <text x={PL+cw} y={PT+ch+14} textAnchor="middle" fill={T.textB} fontSize={8} fontFamily="'Courier New',monospace">{total}</text>
@@ -1442,6 +1503,10 @@ function ATHENA(){
                               <polygon points={`${PL},${PT+ch} ${pts} ${PL+cw},${PT+ch}`} fill="url(#btsg)"/>
                               <polyline points={pts} fill="none" stroke={sparkColor} strokeWidth="1.5" strokeLinejoin="round"/>
                             </svg>
+                            <div style={{marginTop:6,fontSize:8,color:T.textD,fontFamily:T.mono,lineHeight:1.4}}>
+                              P&amp;L Yield — running sum of closed-trade profit/loss in USD across all TAKEN entries for this run.
+                              Each point = cumulative P&amp;L after trade N. Source: <span style={{color:T.gold}}>forge_journal_trades</span> (aurum_tester.db).
+                            </div>
                           </div>
                         );})()}
                         {/* TAKEN entries — shown before gate breakdown */}
@@ -1531,72 +1596,6 @@ function ATHENA(){
                     );
                   })()}
                 </>
-              )}
-              {/* ── RUN COMPARISON PANEL ── */}
-              {btCompare&&btCompare.run_a&&btCompare.run_b&&(
-                <div style={{marginTop:16,padding:'10px 12px',background:T.card,borderRadius:6,border:`1px solid ${T.border}`}}>
-                  <div style={{fontSize:9,color:T.cyan,fontFamily:T.mono,fontWeight:600,letterSpacing:2,marginBottom:8}}>
-                    ⚖ RUN COMPARISON — Run #{btCompare.run_a.aurum_run_id} vs Run #{btCompare.run_b.aurum_run_id}
-                    {btCompare.winner&&btCompare.winner!=='tie'&&(
-                      <span style={{marginLeft:8,color:T.gold}}> · Winner: Run #{btCompare.winner}</span>
-                    )}
-                    {btCompare.winner==='tie'&&<span style={{marginLeft:8,color:T.textD}}> · Tie</span>}
-                  </div>
-                  {/* Score + key metrics row */}
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
-                    {[btCompare.run_a,btCompare.run_b].map(run=>(
-                      <div key={run.aurum_run_id} style={{padding:'6px 8px',background:T.bg,borderRadius:4,
-                        border:`1px solid ${btCompare.winner===run.aurum_run_id?T.gold:T.border}`}}>
-                        <div style={{fontSize:9,color:T.gold,fontFamily:T.mono,fontWeight:600,marginBottom:4}}>
-                          Run #{run.aurum_run_id} · {run.forge_version}
-                          {run.score!=null&&<span style={{marginLeft:6,color:T.cyan}}>Score {run.score}/100</span>}
-                        </div>
-                        {[
-                          ['P&L',`$${(run.total_pnl||0).toFixed(2)}`],
-                          ['Win Rate',run.win_rate_pct!=null?`${run.win_rate_pct}%`:'n/a'],
-                          ['Taken',run.taken??'—'],
-                          ['Take Rate',run.take_rate_pct!=null?`${run.take_rate_pct.toFixed(2)}%`:'n/a'],
-                          ['Signals',run.total_signals??'—'],
-                          ['Losses',run.losses??'—'],
-                        ].map(([k,v])=>(
-                          <div key={k} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
-                            <span>{k}</span><span style={{color:T.text}}>{v}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                  {/* Deltas row */}
-                  <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>DELTAS (A − B)</div>
-                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4,marginBottom:8}}>
-                    {Object.entries(btCompare.deltas||{}).filter(([,v])=>v!=null).map(([k,v])=>{
-                      const pos=v>0,neg=v<0,color=pos?T.green:neg?T.red:T.textD;
-                      return(
-                        <div key={k} style={{padding:'3px 6px',background:T.bg,borderRadius:3,fontSize:9,fontFamily:T.mono}}>
-                          <span style={{color:T.textD}}>{k.replace(/_pct$/,'%').replace(/_/g,' ')} </span>
-                          <span style={{color}}>{pos?'+':''}{typeof v==='number'?v.toFixed(2):v}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* Top gate changes */}
-                  {btCompare.gate_diff&&Object.keys(btCompare.gate_diff).length>0&&(()=>{
-                    const changed=Object.entries(btCompare.gate_diff).filter(([,v])=>v.delta!==0).slice(0,6);
-                    if(!changed.length)return null;
-                    return(
-                      <>
-                        <div style={{fontSize:9,color:T.textBB,fontFamily:T.mono,fontWeight:600,letterSpacing:1,marginBottom:4}}>TOP GATE CHANGES</div>
-                        {changed.map(([gate,v])=>(
-                          <div key={gate} style={{display:'flex',justifyContent:'space-between',fontSize:9,fontFamily:T.mono,color:T.textD,marginBottom:1}}>
-                            <span style={{color:T.text}}>{gate}</span>
-                            <span>A={v.a} B={v.b} <span style={{color:v.delta>0?T.red:T.green}}>{v.delta>0?'+':''}{v.delta}</span></span>
-                          </div>
-                        ))}
-                      </>
-                    );
-                  })()}
-                  <div style={{marginTop:6,fontSize:8,color:T.textD,fontFamily:T.mono}}>{btCompare.note}</div>
-                </div>
               )}
             </div>
           )}
