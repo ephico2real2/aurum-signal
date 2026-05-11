@@ -35,6 +35,28 @@ You are performing a rigorous technical validation of the FORGE EA entry logic a
 
 ## VALIDATION PROTOCOL
 
+### MANDATORY CHECKS (must appear in every review output as explicit PASS/FAIL)
+
+Every `/forge-ea-review` run MUST emit explicit results for these two checks. They have proven repeatedly to be the highest-value, lowest-effort regression catchers:
+
+#### Mandatory Check A — Dead `FORGE_*` env vars (must PASS or list all failures)
+- Enumerate every `FORGE_*` key in `.env`
+- For each: confirm a mapping exists in `scripts/sync_scalper_config_from_env.py` (`f'"{key}"' in source`) — OR confirm it's intentionally consumed outside sync (e.g. by `python/bridge.py` or as an MT5 `input` parameter); in that case the var must be listed in `tests/api/test_forge_27x_gates.py::FORGE_ENV_VARS_NOT_IN_SYNC` with rationale
+- Any unmapped, unwhitelisted `FORGE_*` env var is a **FAIL** — these are silently dropped and leave runtime config diverging from `.env`
+- Also catch the case-mismatch class: lowercase keys in `.env` (e.g. `adx_hysteresis_enabled=1`) that *look* like FORGE config but bypass the `FORGE_*` uppercase prefix the sync script requires — also a **FAIL**
+
+#### Mandatory Check B — Gate legend completeness (must PASS or list all failures)
+- Extract every gate code emitted by `ea/FORGE.mq5` (pattern: `JournalRecordSignal("SKIP","<code>",...)`)
+- For each: confirm a matching key exists in `config/gate_legend.json`, OR the code matches a `_patterns` wildcard (e.g. `warmup_*`)
+- Any EA-emitted gate without a legend entry or wildcard match is a **FAIL** — monitoring tools and analysis reports show raw codes with no human label
+- Report exact missing codes and the EA file:line where each is emitted
+
+Both checks must appear in the report's "Validation Summary" header AND in their own dedicated section before the section-by-section breakdown.
+
+Historical context: Sessions 2026-05-10 found 8 dead env vars (renamed/unused), 4 case-mismatch env vars, and 3 missing gate codes (`h1_di_sell`, `h1_macd_sell`, `hid_bull_div_sell`) across consecutive reviews. The fixes were trivial; the value lost from missing them was significant (silent config drift, undecoded gates in monitoring).
+
+---
+
 ### Step 1 — Read all source files
 
 Before writing any output, read:
@@ -159,6 +181,22 @@ For each factor in combined_lot_factor:
 | Check | File:line | Status | Notes |
 |-------|-----------|--------|-------|
 
+## Mandatory Check A — Dead FORGE_* env vars
+**Status**: PASS / FAIL
+| .env key | sync mapping found? | Whitelisted (FORGE_ENV_VARS_NOT_IN_SYNC)? | Status |
+|----------|---------------------|-------------------------------------------|--------|
+| ... | yes/no @ line N | yes/no | PASS/FAIL |
+
+Lowercase config-looking keys (must be empty for PASS):
+| .env line | key | Reason flagged |
+|-----------|-----|----------------|
+
+## Mandatory Check B — Gate legend completeness
+**Status**: PASS / FAIL
+| EA gate code | EA file:line | In gate_legend.json? | Matches _patterns wildcard? | Status |
+|--------------|--------------|----------------------|------------------------------|--------|
+| ... | FORGE.mq5:N | yes/no | yes/no | PASS/FAIL |
+
 ## Issues Found (Consolidated)
 | # | Severity | Section | Description | Action |
 |---|----------|---------|-------------|--------|
@@ -190,6 +228,20 @@ CRITICAL RULES:
 3. If code is not found, mark UNVERIFIED — do not guess.
 4. Validate .env variable names against .env.example and sync_scalper_config_from_env.py.
 5. Cross-check schemas/ SQL against scribe.py CREATE TABLE + ALTER TABLE migrations.
+
+MANDATORY CHECKS (REPORT EXPLICIT PASS/FAIL FOR BOTH — DO NOT SKIP):
+A. Dead FORGE_* env vars: enumerate every FORGE_* key in .env, confirm each maps in
+   sync_scalper_config_from_env.py OR appears in the FORGE_ENV_VARS_NOT_IN_SYNC
+   whitelist in tests/api/test_forge_27x_gates.py. Also flag any lowercase config-
+   looking keys in .env (e.g. adx_hysteresis_enabled=1) that bypass the FORGE_*
+   prefix. Each unmapped/unwhitelisted var = FAIL.
+B. Gate legend completeness: enumerate every JournalRecordSignal("SKIP","<code>",...)
+   in ea/FORGE.mq5, confirm <code> has a key in config/gate_legend.json OR matches a
+   _patterns wildcard. Each missing code = FAIL.
+
+These two checks have caught real silent-config-drift and undecoded-gate bugs in
+every recent review. They MUST appear in the report's Validation Summary AND in
+their own dedicated sections.
 6. Check dashboard/app.js field names against athena_api.py response shapes.
 7. Flag tests/ referencing stale gate codes or removed config keys.
 8. After writing the file, output a brief summary of PASS/WARNING/FAIL counts.
