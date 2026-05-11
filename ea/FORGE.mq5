@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.82"
+#property version "2.83"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.12";
+const string FORGE_VERSION = "2.7.13";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -126,6 +126,7 @@ datetime g_scalper_last_sesscut_log_bar  = 0;   // throttle entry_quality_sessio
 datetime g_scalper_last_macd_log_bar     = 0;   // throttle entry_quality_macd_* gates (2.7.7)
 datetime g_scalper_last_h1disell_log_bar = 0;  // throttle entry_quality_h1_di_sell (2.7.12)
 datetime g_scalper_last_h1macd_log_bar   = 0;  // throttle entry_quality_h1_macd_sell (2.7.12)
+datetime g_scalper_last_hbd_log_bar      = 0;  // throttle entry_quality_hid_bull_div_sell (2.7.13)
 datetime g_scalper_last_adxblk_log_bar   = 0;   // throttle entry_quality_adx_extreme_sell (2.7.7)
 double   g_last_combined_lot_factor      = 1.0; // last computed combined lot factor — written to SIGNALS.lot_factor
 datetime g_scalper_last_sesswarn_log_bar = 0; // throttle session_off log (once per M5 bar)
@@ -5461,9 +5462,8 @@ void CheckNativeScalperSetups() {
             if(adx_dur_ok && rsi_decl_ok && g_sc.breakout_block_hid_bull_sell
                && g_rsi_div_type == "HID_BULL") {
                datetime _hbd_bar = iTime(_Symbol, PERIOD_M5, 0);
-               static datetime _last_hbd_bar = 0;
-               if(_hbd_bar != _last_hbd_bar) {
-                  _last_hbd_bar = _hbd_bar;
+               if(_hbd_bar != g_scalper_last_hbd_log_bar) {
+                  g_scalper_last_hbd_log_bar = _hbd_bar;
                   JournalRecordSignal("SKIP","entry_quality_hid_bull_div_sell","BB_BREAKOUT","SELL",
                      mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                }
