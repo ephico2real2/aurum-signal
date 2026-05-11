@@ -229,7 +229,7 @@
   "lot_sizing": {
     "lot_sizing_source": "AUTO",
     "inputs_override_lot_sizing": 0,
-    "fixed_lot": 0.08,
+    "fixed_lot": 0.25,
     "min_num_trades": 2,
     "max_num_trades": 30,
     "staged_entry_enabled": 1,
