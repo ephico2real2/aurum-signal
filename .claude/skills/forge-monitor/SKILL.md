@@ -277,6 +277,55 @@ Ensure analysis doc: `/Users/olasumbo/signal_system/docs/FORGE_RUN<aurum_run_id>
 
 ---
 
+## MANDATORY HOUSEKEEPING CHECKS (run once per session, flag findings inline)
+
+Two checks have repeatedly caught silent config-drift bugs. Run them once at session start and report any failures alongside the trade monitoring — they take seconds and the cost of missing them is high.
+
+### Check A — Dead `FORGE_*` env vars
+```bash
+python3 << 'EOF'
+import re
+from pathlib import Path
+ROOT = Path("/Users/olasumbo/signal_system")
+env_text = (ROOT / ".env").read_text() if (ROOT / ".env").exists() else ""
+sync_text = (ROOT / "scripts/sync_scalper_config_from_env.py").read_text()
+WHITELIST = {"FORGE_SCALPER_MODE"}  # consumed by bridge.py / MT5 input
+forge_keys = set(re.findall(r"^(FORGE_[A-Z0-9_]+)=", env_text, re.MULTILINE))
+dead = [k for k in forge_keys if f'"{k}"' not in sync_text and k not in WHITELIST]
+print(f"DEAD ENV VARS: {sorted(dead) if dead else 'none — PASS'}")
+# Also catch lowercase config-looking keys that bypass FORGE_ prefix
+leaks = []
+for m in re.finditer(r"^([a-z][a-z0-9_]*)=", env_text, re.MULTILINE):
+    k = m.group(1)
+    if any(tok in k for tok in ("adx", "rsi", "atr", "bounce", "breakout", "forge", "tp", "sl")):
+        leaks.append(k)
+print(f"LOWERCASE LEAKS: {leaks if leaks else 'none — PASS'}")
+EOF
+```
+
+### Check B — Gate legend coverage
+```bash
+python3 << 'EOF'
+import json, re
+from pathlib import Path
+ROOT = Path("/Users/olasumbo/signal_system")
+ea = (ROOT / "ea/FORGE.mq5").read_text()
+legend = json.loads((ROOT / "config/gate_legend.json").read_text())
+emitted = set(re.findall(r'JournalRecordSignal\(\s*"SKIP"\s*,\s*"([a-z_]+)"', ea))
+keys = {k for k in legend if not k.startswith("_")}
+patterns = [p.rstrip("*") for p in legend.get("_patterns", {}) if p.endswith("*")]
+missing = [g for g in emitted if g not in keys and not any(g.startswith(p) for p in patterns)]
+print(f"MISSING GATES: {sorted(missing) if missing else 'none — PASS'}")
+EOF
+```
+
+If either check fails:
+- **Dead env**: fix by adding the mapping to `sync_scalper_config_from_env.py` OR adding the var to `tests/api/test_forge_27x_gates.py::FORGE_ENV_VARS_NOT_IN_SYNC` with rationale
+- **Missing gate**: add an entry to `config/gate_legend.json` with label/explanation/category
+- Either way, report in the monitoring log so the next analysis doc captures it
+
+---
+
 ## LOOP (every 45s)
 
 ### Q1 — Sim progress
