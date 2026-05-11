@@ -201,7 +201,7 @@
     "post_sl_cooldown_sec": 0,
     "breakout_near_floor_lot_factor": 0.25,
     "same_direction_stack_lot_factor": 0.25,
-    "session_ny_sell_cutoff_utc": 18,
+    "session_ny_sell_cutoff_utc": 0,
     "session_london_sell_cutoff_utc": 0,
     "breakout_adx_lot_use_m15": 1,
     "breakout_adx_lot_mid_threshold": 35,
