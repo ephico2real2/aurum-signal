@@ -202,6 +202,21 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # 2.7.25 — ATR trail (FORGE_RATCHET_LOGIC_IDEAS.md spec). Continuous SL trail at peak∓mult×ATR after TP1.
     "FORGE_BREAKOUT_ATR_TRAIL_ENABLED": ("bb_breakout", "atr_trail_enabled", "bool01", None, None),
     "FORGE_BREAKOUT_ATR_TRAIL_MULT": ("bb_breakout", "atr_trail_mult", "float", 0.3, 5.0),
+    # 2.7.27 — Extended TP4/TP5 staging (Run 17 G5040 captured only 12pts of 53pt dump after TP3).
+    "FORGE_BREAKOUT_TP4_STAGING_ENABLED": ("bb_breakout", "tp4_staging_enabled", "bool01", None, None),
+    "FORGE_BREAKOUT_TP4_MIN_ADX":         ("bb_breakout", "tp4_min_adx",         "int",    0,    100),
+    "FORGE_BREAKOUT_TP5_STAGING_ENABLED": ("bb_breakout", "tp5_staging_enabled", "bool01", None, None),
+    "FORGE_BREAKOUT_TP5_MIN_ADX":         ("bb_breakout", "tp5_min_adx",         "int",    0,    100),
+    "FORGE_BREAKOUT_TP5_ATR_MULT":        ("bb_breakout", "tp5_atr_mult",        "float",  3.0,  10.0),
+    # 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 -$1,666 fix.
+    "FORGE_DAILY_DIRECTION_GATE_ENABLED":  ("safety", "daily_direction_gate_enabled",  "bool01", None, None),
+    "FORGE_DAILY_SMA_PERIOD":               ("safety", "daily_sma_period",              "int",    2,    200),
+    "FORGE_DAILY_SMA_LOOKBACK_DAYS":        ("safety", "daily_sma_lookback_days",       "int",    1,    30),
+    "FORGE_DAILY_SLOPE_BLOCK_ATR":          ("safety", "daily_slope_block_atr",         "float",  0.0,  5.0),
+    "FORGE_DAILY_MOVE_BLOCK_ATR":           ("safety", "daily_move_block_atr",          "float",  0.0,  5.0),
+    "FORGE_DAILY_MOVE_FLIP_HYSTERESIS":     ("safety", "daily_move_flip_hysteresis",    "float",  0.0,  5.0),
+    "FORGE_DAILY_CANCEL_PENDING_ON_FLIP":   ("safety", "daily_cancel_pending_on_flip",  "bool01", None, None),
+    "FORGE_DAILY_CANCEL_INCLUDES_CASCADE":  ("safety", "daily_cancel_includes_cascade", "bool01", None, None),
     "FORGE_BREAKOUT_TP1_ATR_MULT":      ("bb_breakout", "tp1_atr_mult",      "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_BUY_ATR_MULT":  ("bb_breakout", "tp1_buy_atr_mult",  "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_SELL_ATR_MULT": ("bb_breakout", "tp1_sell_atr_mult", "float", 0.1, 5.0),

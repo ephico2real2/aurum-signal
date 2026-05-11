@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.96"
+#property version "2.97"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.26";
+const string FORGE_VERSION = "2.7.27";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -172,6 +172,21 @@ datetime g_scalper_last_body_buy_log_bar  = 0;   // throttle entry_quality_body 
 datetime g_scalper_last_rsibuyceil_log_bar = 0;  // throttle entry_quality_rsi_buy_ceil (2.7.15)
 bool     g_scalper_prev_session_blocked = true; // session-start log: true = previous tick was session_off
 
+// 2.7.27 — Daily Direction Gate state (Filters 1+2+3) — Run 17 G5048 fix.
+// Cached per M5 bar to avoid recomputing D1 indicators every tick.
+datetime g_daily_bias_cache_bar     = 0;     // M5 bar time of last ComputeDailyBias() refresh
+double   g_daily_slope_pts          = 0.0;   // D1_SMA(0) − D1_SMA(daily_sma_lookback_days)
+double   g_daily_atr_pts            = 0.0;   // D1 ATR(14) at last refresh
+double   g_daily_move_pts           = 0.0;   // D1 close(0) − D1 open(0) — intraday cumulative move
+bool     g_daily_bear_bias          = false; // slope < −slope_block_atr × daily_atr  → block BUY
+bool     g_daily_bull_bias          = false; // slope > +slope_block_atr × daily_atr  → block SELL
+bool     g_daily_intraday_bear      = false; // intraday cumulative move < −move_block_atr × daily_atr
+bool     g_daily_intraday_bull      = false; // intraday cumulative move > +move_block_atr × daily_atr
+bool     g_daily_prev_intraday_bear = false; // hysteresis state for Filter 2 flip detection
+bool     g_daily_prev_intraday_bull = false; // hysteresis state for Filter 2 flip detection
+bool     g_daily_flip_now           = false; // one-tick flag set by ComputeDailyBias() when a flip is detected
+datetime g_scalper_last_dailybias_log_bar = 0; // throttle Filter 1 SKIP logs (once per M5 bar per direction)
+
 // Native news filter state
 datetime g_nf_next_refresh             = 0;
 datetime g_nf_block_start              = 0;
@@ -261,6 +276,28 @@ struct ScalperConfig {
    bool   breakout_tp2_sl_ratchet_enabled;  // 2.7.24: Milestone 2 — when TP2 reached, ratchet SL to TP1 level (locks +TP1-distance profit). SL invariant preserved (only ratchets into profit). Per FORGE_RATCHET_LOGIC_IDEAS.md spec section 5/6.
    bool   breakout_atr_trail_enabled;       // 2.7.25: ATR trail per spec — after TP1, track group peak/trough and trail SL at peak ∓ trail_mult×ATR. Runs every tick alongside discrete milestones; SL invariant preserved.
    double breakout_atr_trail_mult;          // 2.7.25: ATR multiplier for trail SL. Default 1.5 per spec.
+   // 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 fix.
+   // Filter 1: block BUY when D1 SMA slope is negative beyond threshold (multi-day rollover).
+   // Filter 2: track intraday cumulative move from D1 open and flag bull↔bear flips with hysteresis.
+   // Filter 3: when a flip fires, cancel pending stops/limits for our magic range so they don't fill
+   //   into the new regime (canonical OrdersTotal()-1→0 iterate-down per MQL5 forum 377826).
+   bool   daily_direction_gate_enabled;     // 2.7.27: master toggle for Filters 1+2+3. Default false until backtested.
+   int    daily_sma_period;                 // 2.7.27: D1 SMA period for slope bias (default 20).
+   int    daily_sma_lookback_days;          // 2.7.27: bars back for slope: slope = D1_sma(0) - D1_sma(N) (default 3).
+   double daily_slope_block_atr;            // 2.7.27: slope threshold as multiple of D1 ATR(14). Block BUY when slope < -threshold; block SELL when slope > +threshold (default 0.5).
+   double daily_move_block_atr;             // 2.7.27: intraday cumulative-move threshold as multiple of D1 ATR. Bear flag set when D1_close_now − D1_open < -threshold (default 0.5).
+   double daily_move_flip_hysteresis;       // 2.7.27: extra D1-ATR fraction required to cross before declaring flip (default 0.3) — prevents oscillation at the threshold.
+   bool   daily_cancel_pending_on_flip;     // 2.7.27: when flip detected, cancel pending orders (default true).
+   bool   daily_cancel_includes_cascade;    // 2.7.27: also cancel cascade SELL_STOP_CONT / BUY_LIMIT_RECOV pending orders (default true).
+   // 2.7.27 — Extended TP4/TP5 staging for BB_BREAKOUT runners (only in TRENDING regime).
+   // After TP3 reached, ratchet SL to TP2 and promote TP target to TP4 (4.0×ATR).
+   // After TP4 reached, ratchet SL to TP3 and promote TP target to TP5 (5.5×ATR).
+   // Captures the extended dump/rip moves that Run 17 cut off at TP3 — Apr 15 G5040 (+$218) had 53 pts of additional move after TP3 exit.
+   bool   breakout_tp4_staging_enabled;     // 2.7.27: enable TP3→TP4 staging (default false).
+   double breakout_tp5_atr_mult;            // 2.7.27: TP5 ATR multiplier (default 5.5).
+   int    breakout_tp4_min_adx;             // 2.7.27: minimum M5 ADX to stage to TP4 (default 25). Below this, runner exits at TP3.
+   bool   breakout_tp5_staging_enabled;     // 2.7.27: enable TP4→TP5 staging (default false).
+   int    breakout_tp5_min_adx;             // 2.7.27: minimum M5 ADX to stage to TP5 (default 30, stricter than TP4).
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -585,9 +622,13 @@ struct TradeGroup {
    int    id;
    string direction;
    double tp1, tp2, tp3;
+   double tp4;       // 2.7.27: TP4 price for runner staging (only set when breakout_tp4_staging_enabled)
+   double tp5;       // 2.7.27: TP5 price for runner staging (only set when breakout_tp5_staging_enabled)
    double tp1_close_pct;
    bool   tp1_hit;
    bool   tp2_hit;   // set when all TP2 runners are modified to target TP3
+   bool   tp3_hit;   // 2.7.27: set when all TP3 runners are modified to target TP4 (SL ratcheted to TP2)
+   bool   tp4_hit;   // 2.7.27: set when all TP4 runners are modified to target TP5 (SL ratcheted to TP3)
    bool   be_moved;
    bool   move_be_on_tp1;
    int    magic_offset;  // magic + id to differentiate groups
@@ -1205,9 +1246,13 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].tp1           = tp1;
    g_groups[gi].tp2           = tp2;
    g_groups[gi].tp3           = 0;   // BRIDGE path — tp3 not available from JSON
+   g_groups[gi].tp4           = 0;   // 2.7.27: BRIDGE path does not stage TP4
+   g_groups[gi].tp5           = 0;   // 2.7.27: BRIDGE path does not stage TP5
    g_groups[gi].tp1_close_pct = tp1_close_pct;
    g_groups[gi].tp1_hit       = false;
    g_groups[gi].tp2_hit       = false;
+   g_groups[gi].tp3_hit       = false;  // 2.7.27
+   g_groups[gi].tp4_hit       = false;  // 2.7.27
    g_groups[gi].be_moved      = false;
    g_groups[gi].move_be_on_tp1 = move_be;
    g_groups[gi].magic_offset  = group_magic;
@@ -1699,6 +1744,104 @@ void ManageOpenGroups() {
       }
    }
 
+   // ── 2.7.27 — TP3 → TP4 staging pass ──────────────────────────────────────────
+   // After TP2 runners reach TP3, promote remaining positions to target TP4 and
+   // ratchet SL to TP2 level. Run 17 G5040 captured only 12 pts at TP3 then
+   // missed 41 pts of further dump — TP4 staging recovers that capture.
+   // Gated by: TRENDING regime (TREND_BULL/TREND_BEAR/VOLATILE) + min ADX.
+   if(g_sc.breakout_tp4_staging_enabled) {
+      bool tp4_regime_ok = (g_regime_label == "TREND_BULL"
+                         || g_regime_label == "TREND_BEAR"
+                         || g_regime_label == "VOLATILE");
+      double m5_adx_now = 0.0;
+      { double _adx_b[1]; if(CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, _adx_b) == 1) m5_adx_now = _adx_b[0]; }
+      bool tp4_adx_ok = (m5_adx_now >= (double)g_sc.breakout_tp4_min_adx);
+      for(int gi3 = 0; gi3 < ArraySize(g_groups); gi3++) {
+         if(!g_groups[gi3].tp2_hit)    continue;   // not yet at TP3 staging level
+         if(g_groups[gi3].tp3_hit)     continue;   // already staged to TP4
+         if(g_groups[gi3].tp4 <= 0)    continue;   // TP4 not set for this group
+         if(!tp4_regime_ok || !tp4_adx_ok) continue; // chop / weak trend — leave at TP3
+         double tp3_price_m3 = g_groups[gi3].tp3;
+         double tp4_price_m3 = g_groups[gi3].tp4;
+         double tp2_price_m3 = g_groups[gi3].tp2;  // ratchet SL target
+         string dir3 = g_groups[gi3].direction;
+         double bid3 = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         double ask3 = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         bool tp3_reached = (dir3 == "BUY" && bid3 >= tp3_price_m3) || (dir3 == "SELL" && ask3 <= tp3_price_m3);
+         if(!tp3_reached) continue;
+         int pos4[];
+         GetGroupPositions(g_groups[gi3].magic_offset, pos4);
+         int promoted4 = 0;
+         int sl_ratcheted4 = 0;
+         for(int k = 0; k < ArraySize(pos4); k++) {
+            if(g_pos.SelectByTicket(pos4[k])) {
+               double cur_sl4 = g_pos.StopLoss();
+               double new_sl4 = cur_sl4;
+               // SL invariant: BUY raises only, SELL lowers only
+               if(dir3 == "BUY"  && tp2_price_m3 > cur_sl4) new_sl4 = tp2_price_m3;
+               else if(dir3 == "SELL" && tp2_price_m3 < cur_sl4) new_sl4 = tp2_price_m3;
+               if(g_trade.PositionModify(pos4[k], NormalizeDouble(new_sl4, _Digits), NormalizeDouble(tp4_price_m3, _Digits))) {
+                  promoted4++;
+                  if(new_sl4 != cur_sl4) sl_ratcheted4++;
+               }
+            }
+         }
+         g_groups[gi3].tp3_hit = true;
+         if(promoted4 > 0) {
+            PrintFormat("FORGE 2.7.27: Group %d TP3 reached — promoted %d runner(s) to TP4=%.2f, SL ratcheted to TP2=%.2f on %d leg(s) (regime=%s adx=%.1f)",
+                        g_groups[gi3].id, promoted4, tp4_price_m3, tp2_price_m3, sl_ratcheted4, g_regime_label, m5_adx_now);
+         }
+      }
+   }
+
+   // ── 2.7.27 — TP4 → TP5 staging pass ──────────────────────────────────────────
+   // After TP3 runners reach TP4, promote to TP5 and ratchet SL to TP3. Captures
+   // the deepest end of a dump/rip. Stricter ADX gate (tp5_min_adx, default 30)
+   // so only deeply trending moves qualify. RANGE regime never reaches here.
+   if(g_sc.breakout_tp5_staging_enabled) {
+      bool tp5_regime_ok = (g_regime_label == "TREND_BULL"
+                         || g_regime_label == "TREND_BEAR"
+                         || g_regime_label == "VOLATILE");
+      double m5_adx_now2 = 0.0;
+      { double _adx_b2[1]; if(CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, _adx_b2) == 1) m5_adx_now2 = _adx_b2[0]; }
+      bool tp5_adx_ok = (m5_adx_now2 >= (double)g_sc.breakout_tp5_min_adx);
+      for(int gi4 = 0; gi4 < ArraySize(g_groups); gi4++) {
+         if(!g_groups[gi4].tp3_hit)    continue;   // not yet at TP4 staging level
+         if(g_groups[gi4].tp4_hit)     continue;   // already staged to TP5
+         if(g_groups[gi4].tp5 <= 0)    continue;   // TP5 not set for this group
+         if(!tp5_regime_ok || !tp5_adx_ok) continue;
+         double tp4_price_m4 = g_groups[gi4].tp4;
+         double tp5_price_m4 = g_groups[gi4].tp5;
+         double tp3_price_m4 = g_groups[gi4].tp3;
+         string dir4 = g_groups[gi4].direction;
+         double bid4 = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         double ask4 = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         bool tp4_reached = (dir4 == "BUY" && bid4 >= tp4_price_m4) || (dir4 == "SELL" && ask4 <= tp4_price_m4);
+         if(!tp4_reached) continue;
+         int pos5[];
+         GetGroupPositions(g_groups[gi4].magic_offset, pos5);
+         int promoted5 = 0;
+         int sl_ratcheted5 = 0;
+         for(int k5 = 0; k5 < ArraySize(pos5); k5++) {
+            if(g_pos.SelectByTicket(pos5[k5])) {
+               double cur_sl5 = g_pos.StopLoss();
+               double new_sl5 = cur_sl5;
+               if(dir4 == "BUY"  && tp3_price_m4 > cur_sl5) new_sl5 = tp3_price_m4;
+               else if(dir4 == "SELL" && tp3_price_m4 < cur_sl5) new_sl5 = tp3_price_m4;
+               if(g_trade.PositionModify(pos5[k5], NormalizeDouble(new_sl5, _Digits), NormalizeDouble(tp5_price_m4, _Digits))) {
+                  promoted5++;
+                  if(new_sl5 != cur_sl5) sl_ratcheted5++;
+               }
+            }
+         }
+         g_groups[gi4].tp4_hit = true;
+         if(promoted5 > 0) {
+            PrintFormat("FORGE 2.7.27: Group %d TP4 reached — promoted %d runner(s) to TP5=%.2f, SL ratcheted to TP3=%.2f on %d leg(s) (regime=%s adx=%.1f)",
+                        g_groups[gi4].id, promoted5, tp5_price_m4, tp3_price_m4, sl_ratcheted5, g_regime_label, m5_adx_now2);
+         }
+      }
+   }
+
    // ── 2.7.25 — ATR trail (peak/trough ratchet) ─────────────────────────────────
    // Per FORGE_RATCHET_LOGIC_IDEAS.md section 5/6:
    //   after TP1 has been hit, track group peak (BUY) / trough (SELL) and trail SL
@@ -1842,6 +1985,66 @@ void ExecuteCloseGroup(const string &json) {
       }
    }
    Print("FORGE: CLOSE_GROUP magic=", target_magic, " — closed ", closed, " positions, cancelled ", cancelled, " pending");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CancelPendingOnDailyFlip — Filter 3 of v2.7.27 Daily Direction Gate
+//
+// PURPOSE: When ComputeDailyBias() detects an intraday flip (bull→bear or bear→bull),
+//   cancel any pending stops/limits still resting in the broker book within our
+//   magic range. Without this, a BUY_STOP placed during a bull morning would still
+//   fill in the afternoon dump, opening counter-trend exposure right as the regime
+//   has changed.
+//
+// EVALUATION ORDER:
+//   1. Caller checks g_daily_flip_now (one-tick edge flag from ComputeDailyBias)
+//   2. Iterate orders top-down (OrdersTotal()-1 → 0) per MQL5 forum 377826 pattern
+//   3. Filter by magic range [MagicNumber, MagicNumber+10000)
+//   4. Filter by order type — only pending types (limit/stop/stop_limit)
+//   5. Optionally skip cascade slot magics if daily_cancel_includes_cascade=false
+//
+// PARAMETERS: none — reads g_sc.daily_cancel_pending_on_flip / _includes_cascade
+//
+// RETURNS / SIDE EFFECTS:
+//   - Cancels matching pending orders via g_trade.OrderDelete
+//   - Prints a one-line journal record for telemetry
+//
+// CHANGELOG:
+//   2026-05-11  v2.7.27 — initial implementation. Pattern adapted from existing
+//               ExecuteCancelGroupPending (same iterate-down + magic-range + type filter).
+// ─────────────────────────────────────────────────────────────────────────────
+void CancelPendingOnDailyFlip() {
+   if(!g_sc.daily_direction_gate_enabled) return;
+   if(!g_sc.daily_cancel_pending_on_flip) return;
+   if(!g_daily_flip_now) return;
+
+   int cancelled = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      int om = (int)OrderGetInteger(ORDER_MAGIC);
+      if(om < MagicNumber || om >= MagicNumber + 10000) continue;
+      // Cascade slot magics are offset further (group_magic + 20002..20004) per the
+      // 2.7.10 design. Skip if operator opted out of cancelling those.
+      if(!g_sc.daily_cancel_includes_cascade) {
+         int slot_offset = om - MagicNumber;
+         if(slot_offset >= 20000) continue;
+      }
+      ENUM_ORDER_TYPE ot_type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      bool is_pending = (ot_type == ORDER_TYPE_BUY_LIMIT
+                      || ot_type == ORDER_TYPE_SELL_LIMIT
+                      || ot_type == ORDER_TYPE_BUY_STOP
+                      || ot_type == ORDER_TYPE_SELL_STOP
+                      || ot_type == ORDER_TYPE_BUY_STOP_LIMIT
+                      || ot_type == ORDER_TYPE_SELL_STOP_LIMIT);
+      if(!is_pending) continue;
+      if(g_trade.OrderDelete(ot)) cancelled++;
+   }
+   if(cancelled > 0) {
+      PrintFormat("FORGE 2.7.27: Daily regime flip — cancelled %d pending order(s). slope=%.2f move=%.2f daily_atr=%.2f",
+                  cancelled, g_daily_slope_pts, g_daily_move_pts, g_daily_atr_pts);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -2421,6 +2624,21 @@ void InitScalperConfig() {
    g_sc.breakout_tp2_sl_ratchet_enabled = false;  // 2.7.24: 0 = legacy TP2 only promotes TP→TP3. 1 = also ratchets SL to TP1 level.
    g_sc.breakout_atr_trail_enabled = false;       // 2.7.25: 0 = no ATR trail. 1 = continuous trail SL at peak∓trail_mult×ATR after TP1.
    g_sc.breakout_atr_trail_mult = 1.5;            // 2.7.25: ATR multiplier for trail (spec default).
+   // 2.7.27 — Daily Direction Gate defaults (Run 17 G5048 fix).
+   g_sc.daily_direction_gate_enabled  = false;    // 2.7.27: master toggle for Filters 1+2+3.
+   g_sc.daily_sma_period              = 20;       // 2.7.27: D1 SMA period.
+   g_sc.daily_sma_lookback_days       = 3;        // 2.7.27: slope lookback (bars back on D1).
+   g_sc.daily_slope_block_atr         = 0.5;      // 2.7.27: slope threshold = 0.5 × daily ATR.
+   g_sc.daily_move_block_atr          = 0.5;      // 2.7.27: intraday move threshold = 0.5 × daily ATR.
+   g_sc.daily_move_flip_hysteresis    = 0.3;      // 2.7.27: hysteresis on flip declaration.
+   g_sc.daily_cancel_pending_on_flip  = true;     // 2.7.27: cancel pendings when regime flips.
+   g_sc.daily_cancel_includes_cascade = true;     // 2.7.27: also cancel cascade SELL_STOP_CONT / BUY_LIMIT_RECOV pendings.
+   // 2.7.27 — Extended TP4/TP5 staging defaults.
+   g_sc.breakout_tp4_staging_enabled  = false;    // 2.7.27: off by default; runner stops at TP3 unless explicitly enabled.
+   g_sc.breakout_tp5_atr_mult         = 5.5;      // 2.7.27: TP5 = 5.5×ATR per spec.
+   g_sc.breakout_tp4_min_adx          = 25;       // 2.7.27: TP4 only stages when M5 ADX ≥ 25 (trending).
+   g_sc.breakout_tp5_staging_enabled  = false;    // 2.7.27: off by default; runner stops at TP4 unless explicitly enabled.
+   g_sc.breakout_tp5_min_adx          = 30;       // 2.7.27: TP5 stricter — only stages when M5 ADX ≥ 30 (deep trend).
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -2776,6 +2994,30 @@ void ReadScalperConfig() {
          v = JsonGetDouble(breakout_json, "atr_trail_mult");
          if(v >= 0.3 && v <= 5.0) g_sc.breakout_atr_trail_mult = v;
       }
+      // 2.7.27 — Extended TP4/TP5 staging (Run 17 G5040 +$218 winner had 53 pts of additional move after TP3).
+      // TP3→TP4 ratchets SL to TP2 and promotes TP target to TP4 (4.0×ATR by default).
+      // TP4→TP5 ratchets SL to TP3 and promotes TP target to TP5 (5.5×ATR default).
+      // Both gated by min ADX + TRENDING regime so chop entries don't over-hold.
+      if(JsonHasKey(breakout_json, "tp4_staging_enabled")) {
+         v = JsonGetDouble(breakout_json, "tp4_staging_enabled");
+         g_sc.breakout_tp4_staging_enabled = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "tp5_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "tp5_atr_mult");
+         if(v >= 3.0 && v <= 10.0) g_sc.breakout_tp5_atr_mult = v;
+      }
+      if(JsonHasKey(breakout_json, "tp4_min_adx")) {
+         v = JsonGetDouble(breakout_json, "tp4_min_adx");
+         if(v >= 0 && v <= 100) g_sc.breakout_tp4_min_adx = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "tp5_staging_enabled")) {
+         v = JsonGetDouble(breakout_json, "tp5_staging_enabled");
+         g_sc.breakout_tp5_staging_enabled = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "tp5_min_adx")) {
+         v = JsonGetDouble(breakout_json, "tp5_min_adx");
+         if(v >= 0 && v <= 100) g_sc.breakout_tp5_min_adx = (int)v;
+      }
       // Direction-specific TP1 — BUY gets more room (confirmed uptrend), SELL tighter (catch fast dip)
       // 0 = fall back to breakout_tp1_atr_mult (backward compat). CHANGELOG: 2026-05-10.
       if(JsonHasKey(breakout_json, "tp1_buy_atr_mult")) { v = JsonGetDouble(breakout_json,"tp1_buy_atr_mult");  if(v > 0.0) g_sc.breakout_tp1_buy_atr_mult  = v; }
@@ -2943,6 +3185,19 @@ void ReadScalperConfig() {
    v = JsonGetDouble(content, "max_trades_per_session"); if(v > 0) g_sc.max_trades_per_session = (int)v;
    v = JsonGetDouble(content, "loss_cooldown_sec"); if(v > 0) g_sc.loss_cooldown_sec = (int)v;
    if(JsonHasKey(content,"session_ny_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_ny_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_ny_sell_cutoff_utc = (int)v; }
+   // 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 fix.
+   // Filter 1 blocks BUY when D1 SMA slope < −threshold (multi-day rollover);
+   //   blocks SELL when slope > +threshold. Threshold = slope_block_atr × daily_ATR.
+   // Filter 2 tracks intraday cumulative move from D1 open; flips between bull/bear with hysteresis.
+   // Filter 3 cancels pending stops/limits within our magic range when a flip fires.
+   if(JsonHasKey(content,"daily_direction_gate_enabled"))  { v = JsonGetDouble(content,"daily_direction_gate_enabled");  g_sc.daily_direction_gate_enabled  = (v >= 0.5); }
+   if(JsonHasKey(content,"daily_sma_period"))               { v = JsonGetDouble(content,"daily_sma_period");              if(v >= 2 && v <= 200) g_sc.daily_sma_period = (int)v; }
+   if(JsonHasKey(content,"daily_sma_lookback_days"))        { v = JsonGetDouble(content,"daily_sma_lookback_days");       if(v >= 1 && v <= 30)  g_sc.daily_sma_lookback_days = (int)v; }
+   if(JsonHasKey(content,"daily_slope_block_atr"))          { v = JsonGetDouble(content,"daily_slope_block_atr");         if(v >= 0.0 && v <= 5.0) g_sc.daily_slope_block_atr = v; }
+   if(JsonHasKey(content,"daily_move_block_atr"))           { v = JsonGetDouble(content,"daily_move_block_atr");          if(v >= 0.0 && v <= 5.0) g_sc.daily_move_block_atr  = v; }
+   if(JsonHasKey(content,"daily_move_flip_hysteresis"))     { v = JsonGetDouble(content,"daily_move_flip_hysteresis");    if(v >= 0.0 && v <= 5.0) g_sc.daily_move_flip_hysteresis = v; }
+   if(JsonHasKey(content,"daily_cancel_pending_on_flip"))   { v = JsonGetDouble(content,"daily_cancel_pending_on_flip");  g_sc.daily_cancel_pending_on_flip  = (v >= 0.5); }
+   if(JsonHasKey(content,"daily_cancel_includes_cascade"))  { v = JsonGetDouble(content,"daily_cancel_includes_cascade"); g_sc.daily_cancel_includes_cascade = (v >= 0.5); }
    if(JsonHasKey(content,"session_london_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_london_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_london_sell_cutoff_utc = (int)v; }
    if(JsonHasKey(content,"breakout_near_floor_lot_factor")) { v = JsonGetDouble(content,"breakout_near_floor_lot_factor"); if(v > 0 && v <= 1.0) g_sc.breakout_near_floor_lot_factor = v; }
    if(JsonHasKey(content,"same_direction_stack_lot_factor")) { v = JsonGetDouble(content,"same_direction_stack_lot_factor"); if(v > 0 && v <= 1.0) g_sc.same_direction_stack_lot_factor = v; }
@@ -3742,6 +3997,108 @@ int ScalperCandlePatternScore(bool is_buy) {
       if(c1 < o1) return 1;
    }
    return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ComputeDailyBias — Daily Direction Gate state refresh (2.7.27)
+//
+// PURPOSE: Detect when the D1 (daily) trend is at odds with intended intraday
+//   direction. Run 17 G5048 BUY @ 4822.65 lost −$1,666 because no gate saw the
+//   multi-day rollover (Apr 14 close 4841 → Apr 16 mid-day 4810). All local M5/M15/H1
+//   indicators looked fine. This helper computes the daily SMA slope, daily ATR,
+//   and intraday cumulative move; flags bear/bull bias and flip events for the
+//   entry chain (Filter 1) and the pending-order cancel logic (Filter 3).
+//
+// EVALUATION ORDER:
+//   1. Per-M5-bar cache check — only recompute when M5 bar rolls over
+//   2. D1 SMA(period) at bar 0 and bar lookback_days → slope (pts/lookback period)
+//   3. D1 ATR(14) at bar 0
+//   4. Slope thresholds → set g_daily_bear_bias / g_daily_bull_bias
+//   5. D1 close(0) − open(0) → daily_move; threshold check → intraday flags
+//   6. Detect flip: if g_daily_prev_intraday_bull && intraday_bear → flip event
+//   7. Persist current intraday state into prev state
+//
+// PARAMETERS: none — reads g_sc daily_* fields.
+//
+// RETURNS / SIDE EFFECTS:
+//   - Updates globals: g_daily_slope_pts, g_daily_atr_pts, g_daily_move_pts,
+//     g_daily_bear_bias, g_daily_bull_bias, g_daily_intraday_bear/bull,
+//     g_daily_flip_now, g_daily_prev_intraday_bear/bull.
+//   - g_daily_flip_now is a one-tick edge flag — consumers must check it the
+//     same tick the function is called.
+//
+// CHANGELOG:
+//   2026-05-11  v2.7.27 — initial implementation (Run 17 G5048 fix).
+//               Cached per-M5-bar; reuses iMA/iATR pseudo-handles each call
+//               (cost is amortized since the per-bar gate keeps it to ~once/5min).
+// ─────────────────────────────────────────────────────────────────────────────
+void ComputeDailyBias() {
+   // Reset edge flag (consumers see it for one tick only)
+   g_daily_flip_now = false;
+   if(!g_sc.daily_direction_gate_enabled) {
+      g_daily_bear_bias    = false;
+      g_daily_bull_bias    = false;
+      g_daily_intraday_bear = false;
+      g_daily_intraday_bull = false;
+      g_daily_prev_intraday_bear = false;
+      g_daily_prev_intraday_bull = false;
+      return;
+   }
+
+   // Cache per M5 bar — the daily numbers don't change on every tick
+   datetime m5_now = iTime(_Symbol, PERIOD_M5, 0);
+   if(m5_now == g_daily_bias_cache_bar) return;
+   g_daily_bias_cache_bar = m5_now;
+
+   int sma_period = g_sc.daily_sma_period;
+   int lookback   = g_sc.daily_sma_lookback_days;
+   if(sma_period < 2)  sma_period = 2;
+   if(lookback   < 1)  lookback   = 1;
+
+   // D1 SMA(period) at bar 0 and bar lookback (using CopyBuffer-equivalent via iMA)
+   double sma_buf[];
+   ArraySetAsSeries(sma_buf, true);
+   int ma_handle = iMA(_Symbol, PERIOD_D1, sma_period, 0, MODE_SMA, PRICE_CLOSE);
+   if(ma_handle == INVALID_HANDLE) return;
+   int copied = CopyBuffer(ma_handle, 0, 0, lookback + 1, sma_buf);
+   IndicatorRelease(ma_handle);
+   if(copied < lookback + 1) return;
+   double sma_now  = sma_buf[0];
+   double sma_back = sma_buf[lookback];
+   g_daily_slope_pts = sma_now - sma_back;
+
+   // D1 ATR(14) at bar 0
+   double atr_buf[];
+   ArraySetAsSeries(atr_buf, true);
+   int atr_handle = iATR(_Symbol, PERIOD_D1, 14);
+   if(atr_handle == INVALID_HANDLE) return;
+   int atr_copied = CopyBuffer(atr_handle, 0, 0, 1, atr_buf);
+   IndicatorRelease(atr_handle);
+   if(atr_copied < 1) return;
+   g_daily_atr_pts = atr_buf[0];
+
+   // Filter 1 — slope bias
+   double slope_thresh = g_sc.daily_slope_block_atr * g_daily_atr_pts;
+   g_daily_bear_bias = (g_daily_slope_pts < -slope_thresh);
+   g_daily_bull_bias = (g_daily_slope_pts >  slope_thresh);
+
+   // Filter 2 — intraday cumulative move from D1 open
+   double d1_open  = iOpen (_Symbol, PERIOD_D1, 0);
+   double d1_close = iClose(_Symbol, PERIOD_D1, 0);
+   g_daily_move_pts = d1_close - d1_open;
+   double move_thresh = g_sc.daily_move_block_atr     * g_daily_atr_pts;
+   double hyst        = g_sc.daily_move_flip_hysteresis * g_daily_atr_pts;
+   // Apply hysteresis only on the bullish→bearish or bearish→bullish flip path —
+   // require an extra hyst margin in the new direction before flipping.
+   bool was_bull = g_daily_prev_intraday_bull;
+   bool was_bear = g_daily_prev_intraday_bear;
+   g_daily_intraday_bear = (g_daily_move_pts < -(move_thresh + (was_bull ? hyst : 0.0)));
+   g_daily_intraday_bull = (g_daily_move_pts >  (move_thresh + (was_bear ? hyst : 0.0)));
+   bool flipped_bull_to_bear = (was_bull && g_daily_intraday_bear);
+   bool flipped_bear_to_bull = (was_bear && g_daily_intraday_bull);
+   g_daily_flip_now = (flipped_bull_to_bear || flipped_bear_to_bull);
+   g_daily_prev_intraday_bear = g_daily_intraday_bear;
+   g_daily_prev_intraday_bull = g_daily_intraday_bull;
 }
 
 // ── V2: Volume Profile — lightweight POC from M5 tick volume ────
@@ -4981,6 +5338,14 @@ bool CheckEntryQuality(const string direction, const double atr,
 void CheckNativeScalperSetups() {
    EnsureIndicators();
    EnsureMTFIndicators();
+   // 2.7.27 — Daily Direction Gate refresh + Filter 3 cancel-pending-on-flip.
+   //   ComputeDailyBias() is cached per M5 bar; CancelPendingOnDailyFlip reads the
+   //   one-tick g_daily_flip_now edge flag and cancels stale pending orders in our
+   //   magic range. Both are no-ops when daily_direction_gate_enabled=false.
+   if(g_sc.daily_direction_gate_enabled) {
+      ComputeDailyBias();
+      CancelPendingOnDailyFlip();
+   }
    MqlDateTime dt;
    TimeGMT(dt);
    int hour = dt.hour;
@@ -5370,6 +5735,18 @@ void CheckNativeScalperSetups() {
          && bounce_tf_buy_ok && h4_ok_buy && fib_ok_buy && rsi_div_buy_bounce && buy_reject && buy_bar0_ok && liquidity_ok
          && !bounce_htf_blocks_buy
          && h1_trend_strength >= g_sc.bounce_min_h1_trend) {
+         // 2.7.27 — Daily Direction Gate Filter 1 (Run 17 G5048 fix, applied to BB_BOUNCE for symmetry).
+         //   Even though G5048 was a BB_BREAKOUT, the Apr 15 14:46 SELL cluster of BB_BOUNCEs lost
+         //   when daily was rolling bullish — so the same daily check applies here.
+         if(g_sc.daily_direction_gate_enabled) ComputeDailyBias();
+         if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) {
+            datetime _dbb_bar_bb = iTime(_Symbol, PERIOD_M5, 0);
+            if(_dbb_bar_bb != g_scalper_last_dailybias_log_bar) {
+               g_scalper_last_dailybias_log_bar = _dbb_bar_bb;
+               JournalRecordSignal("SKIP","entry_quality_daily_bear_block_buy","BB_BOUNCE","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else
          // 2.7.26 — PSAR alignment gate for BB_BOUNCE BUY (mirror of v2.7.20 BB_BREAKOUT gate).
          // Run 17 G5028 (Apr 10 18:45 BB_BOUNCE BUY @ 4766.27 PSAR=ABOVE) misread the signal — PSAR was
          // already bearish (dots above price), but BB_BOUNCE BUY fired anyway because PSAR gate was
@@ -5409,6 +5786,17 @@ void CheckNativeScalperSetups() {
       else if(mid >= m5_bb_u - proximity && m5_rsi > g_sc.bounce_rsi_sell_min
               && bounce_tf_sell_ok && h4_ok_sell && fib_ok_sell && rsi_div_sell_bounce && sell_reject && sell_bar0_ok && liquidity_ok
               && !bounce_htf_blocks_sell) {
+         // 2.7.27 — Daily Direction Gate Filter 1 SELL side (mirror of BUY block above).
+         //   Block BB_BOUNCE SELL when D1 SMA slope is positive beyond threshold (multi-day rip).
+         if(g_sc.daily_direction_gate_enabled) ComputeDailyBias();
+         if(g_sc.daily_direction_gate_enabled && g_daily_bull_bias) {
+            datetime _dbb_bar_bs = iTime(_Symbol, PERIOD_M5, 0);
+            if(_dbb_bar_bs != g_scalper_last_dailybias_log_bar) {
+               g_scalper_last_dailybias_log_bar = _dbb_bar_bs;
+               JournalRecordSignal("SKIP","entry_quality_daily_bull_block_sell","BB_BOUNCE","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else
          // 2.7.26 — PSAR alignment gate for BB_BOUNCE SELL (mirror of BUY). Block SELL when PSAR is not stable ABOVE.
          if(g_sc.breakout_require_psar_align && g_sc.psar_enabled && g_psar_state != "ABOVE") {
             datetime _pss_bar = iTime(_Symbol, PERIOD_M5, 0);
@@ -5469,11 +5857,26 @@ void CheckNativeScalperSetups() {
       bool strict_breakout_sell_ok = !high_vol_trend || !g_sc.high_vol_require_h1_h4_breakout_align || (h1_bear && h4_bear);
       double breakout_sl_mult_eff = g_sc.breakout_sl_atr_mult * ((high_vol_trend) ? g_sc.high_vol_breakout_sl_boost : 1.0);
 
+      // 2.7.27 — Daily Direction Gate refresh (cached per M5 bar).
+      //   Populates g_daily_bear_bias / g_daily_bull_bias / g_daily_flip_now.
+      //   When disabled in config, all flags remain false → no behavior change.
+      if(g_sc.daily_direction_gate_enabled) ComputeDailyBias();
+
       // BUY breakout: close above upper BB + RSI strong + aligned
       // rsi_buy_min=40: Cardwell Bull Support zone (RSI 40–80 in uptrend; 40 = dip re-entry floor)
       if(prev_close > (m5_bb_u + breakout_buffer) && m5_rsi > g_sc.breakout_rsi_buy_min
          && m5_bull && m15_ok_buy && h1_ok_buy && h4_ok_buy && strict_breakout_buy_ok) {
-         if(m5_rsi >= g_sc.breakout_rsi_buy_ceil) {
+         // 2.7.27 — Daily Direction Gate Filter 1 (Run 17 G5048 fix).
+         //   Block BUY when D1 SMA slope is negative beyond threshold (multi-day rollover).
+         //   Throttled per M5 bar to avoid journal flooding.
+         if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) {
+            datetime _dbb_bar_b = iTime(_Symbol, PERIOD_M5, 0);
+            if(_dbb_bar_b != g_scalper_last_dailybias_log_bar) {
+               g_scalper_last_dailybias_log_bar = _dbb_bar_b;
+               JournalRecordSignal("SKIP","entry_quality_daily_bear_block_buy","BB_BREAKOUT","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(m5_rsi >= g_sc.breakout_rsi_buy_ceil) {
             // Per-M5-bar throttle (2.7.15): prior runs flooded thousands of ticks per bar,
             // corrupting Q9 gate-precision math. Same pattern as direction/body throttles.
             datetime _rbc_bar = iTime(_Symbol, PERIOD_M5, 0);
@@ -5686,6 +6089,17 @@ void CheckNativeScalperSetups() {
               && m5_bear && m15_ok_sell && h1_ok_sell && h4_ok_sell && strict_breakout_sell_ok
               && (g_sc.breakout_min_h1_bear_strength <= 0.0
                   || h1_trend_strength <= -g_sc.breakout_min_h1_bear_strength)) {
+         // 2.7.27 — Daily Direction Gate Filter 1 SELL side (mirror of BUY block above).
+         //   Block SELL when D1 SMA slope is positive beyond threshold (multi-day rip).
+         //   Same throttle window as BUY side — at most one bias-block log per M5 bar.
+         if(g_sc.daily_direction_gate_enabled && g_daily_bull_bias) {
+            datetime _dbb_bar_s = iTime(_Symbol, PERIOD_M5, 0);
+            if(_dbb_bar_s != g_scalper_last_dailybias_log_bar) {
+               g_scalper_last_dailybias_log_bar = _dbb_bar_s;
+               JournalRecordSignal("SKIP","entry_quality_daily_bull_block_sell","BB_BREAKOUT","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else {
          // Session SELL cutoff (2.7.7): post-17:00 UTC = lower liquidity, wider spread, adverse for XAUUSD scalps
          // Research: TMGM, ACY, NordFX — ~70% of daily range occurs in London+NY overlap only (08:00-17:00 UTC)
          MqlDateTime _sdt; TimeToStruct(TimeTradeServer(), _sdt);
@@ -5984,6 +6398,7 @@ void CheckNativeScalperSetups() {
          }
          } // end ADX-sell-min else block (inner: if/else-if/else within session-OK else)
          } // end session-OK else block
+         } // 2.7.27 — end daily-bull-bias else block (SELL Filter 1 wrapper)
       }
    }
 
@@ -6362,9 +6777,24 @@ void CheckNativeScalperSetups() {
                           ? rr_entry_ref - m5_atr * g_sc.breakout_tp3_atr_mult
                           : rr_entry_ref + m5_atr * g_sc.breakout_tp3_atr_mult, _Digits)
                       : 0.0;
+   // 2.7.27 — TP4/TP5 levels for extended runner staging in TRENDING regime.
+   // TP4 = 4.0×ATR (already configured via breakout_tp4_atr_mult); TP5 = 5.5×ATR (breakout_tp5_atr_mult).
+   // Levels are precomputed at entry; staging activation is gated at runtime by ADX + regime.
+   g_groups[gi].tp4 = (is_breakout_setup && g_sc.breakout_tp4_staging_enabled && g_sc.breakout_tp4_atr_mult > 0.0)
+                      ? NormalizeDouble((direction == "SELL")
+                          ? rr_entry_ref - m5_atr * g_sc.breakout_tp4_atr_mult
+                          : rr_entry_ref + m5_atr * g_sc.breakout_tp4_atr_mult, _Digits)
+                      : 0.0;
+   g_groups[gi].tp5 = (is_breakout_setup && g_sc.breakout_tp5_staging_enabled && g_sc.breakout_tp5_atr_mult > 0.0)
+                      ? NormalizeDouble((direction == "SELL")
+                          ? rr_entry_ref - m5_atr * g_sc.breakout_tp5_atr_mult
+                          : rr_entry_ref + m5_atr * g_sc.breakout_tp5_atr_mult, _Digits)
+                      : 0.0;
    g_groups[gi].tp1_close_pct = tp1_split_pct;
    g_groups[gi].tp1_hit       = false;
    g_groups[gi].tp2_hit       = false;
+   g_groups[gi].tp3_hit       = false;  // 2.7.27
+   g_groups[gi].tp4_hit       = false;  // 2.7.27
    g_groups[gi].be_moved      = false;
    g_groups[gi].move_be_on_tp1 = is_breakout_setup ? g_sc.breakout_move_be : true;
    g_groups[gi].magic_offset  = group_magic;
@@ -6640,9 +7070,13 @@ void RebuildGroups() {
       g_groups[n].tp1 = g_pos.TakeProfit();
       g_groups[n].tp2 = g_pos.TakeProfit();
       g_groups[n].tp3 = 0;         // RebuildGroups path — tp3 not recomputed from live position
+      g_groups[n].tp4 = 0;         // 2.7.27: RebuildGroups path does not stage TP4/TP5 (no recompute from live)
+      g_groups[n].tp5 = 0;
       g_groups[n].tp1_close_pct = 50;
       g_groups[n].tp1_hit = false;
       g_groups[n].tp2_hit = false;
+      g_groups[n].tp3_hit = false;  // 2.7.27
+      g_groups[n].tp4_hit = false;  // 2.7.27
       g_groups[n].be_moved = false;
       g_groups[n].move_be_on_tp1 = true;
       g_groups[n].magic_offset = pm;

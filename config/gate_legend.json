@@ -280,5 +280,15 @@
     "label": "Order rejected — invalid stop levels",
     "explanation": "The broker rejected the order because the stop-loss or take-profit price violated the broker's minimum stop distance rule. This can happen during fast markets when prices move between FORGE calculating the stops and sending the order.",
     "category": "Warmup / System"
+  },
+  "entry_quality_daily_bear_block_buy": {
+    "label": "Daily bias bearish — BUY blocked",
+    "explanation": "FORGE's D1 SMA slope is negative beyond the configured threshold (daily_slope_block_atr × daily_ATR), indicating a multi-day rollover. BUY entries are blocked while this bias holds. Run 17 G5048 BUY @ 4822.65 lost $1,666 because no gate saw the Apr 14 4841 -> Apr 16 4810 rollover; this is the v2.7.27 fix.",
+    "category": "Regime"
+  },
+  "entry_quality_daily_bull_block_sell": {
+    "label": "Daily bias bullish — SELL blocked",
+    "explanation": "FORGE's D1 SMA slope is positive beyond the configured threshold (daily_slope_block_atr × daily_ATR), indicating a multi-day rip. SELL entries are blocked while this bias holds. Mirror of the BUY-block; prevents selling into a sustained upward trend.",
+    "category": "Regime"
   }
 }

@@ -42,6 +42,11 @@
     "tp2_sl_ratchet_enabled": 0,
     "atr_trail_enabled": 0,
     "atr_trail_mult": 1.5,
+    "tp4_staging_enabled": 0,
+    "tp5_staging_enabled": 0,
+    "tp4_min_adx": 25,
+    "tp5_min_adx": 30,
+    "tp5_atr_mult": 5.5,
     "tp1_atr_mult": 1.0,
     "tp1_buy_atr_mult": 0.0,
     "tp1_sell_atr_mult": 0.0,
@@ -220,7 +225,15 @@
     "breakout_adx_lot_factor_mid": 0.25,
     "breakout_adx_lot_factor_high": 0.125,
     "breakout_adx_sell_block_threshold": 55,
-    "block_hid_bull_sell": 0
+    "block_hid_bull_sell": 0,
+    "daily_direction_gate_enabled": 0,
+    "daily_sma_period": 20,
+    "daily_sma_lookback_days": 3,
+    "daily_slope_block_atr": 0.5,
+    "daily_move_block_atr": 0.5,
+    "daily_move_flip_hysteresis": 0.3,
+    "daily_cancel_pending_on_flip": 1,
+    "daily_cancel_includes_cascade": 1
   },
   "journal": {
     "journal_enabled": 1,
