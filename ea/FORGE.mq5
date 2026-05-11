@@ -185,7 +185,12 @@ bool     g_daily_intraday_bull      = false; // intraday cumulative move > +move
 bool     g_daily_prev_intraday_bear = false; // hysteresis state for Filter 2 flip detection
 bool     g_daily_prev_intraday_bull = false; // hysteresis state for Filter 2 flip detection
 bool     g_daily_flip_now           = false; // one-tick flag set by ComputeDailyBias() when a flip is detected
-datetime g_scalper_last_dailybias_log_bar = 0; // throttle Filter 1 SKIP logs (once per M5 bar per direction)
+// 2.7.27 codex-review fix #3 — single shared throttle was too restrictive (one log per
+// M5 bar across all 4 paths). Split per-direction so BUY and SELL blocks both get journaled
+// when both directions are blocked on the same bar. Per-setup granularity (breakout/bounce)
+// is not separated — bar-level dedup is enough.
+datetime g_scalper_last_dailybias_buy_log_bar  = 0; // throttle daily_bear_block_buy
+datetime g_scalper_last_dailybias_sell_log_bar = 0; // throttle daily_bull_block_sell
 
 // Native news filter state
 datetime g_nf_next_refresh             = 0;
@@ -2024,13 +2029,18 @@ void CancelPendingOnDailyFlip() {
       if(ot == 0 || !OrderSelect(ot)) continue;
       if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
       int om = (int)OrderGetInteger(ORDER_MAGIC);
-      if(om < MagicNumber || om >= MagicNumber + 10000) continue;
-      // Cascade slot magics are offset further (group_magic + 20002..20004) per the
-      // 2.7.10 design. Skip if operator opted out of cancelling those.
-      if(!g_sc.daily_cancel_includes_cascade) {
-         int slot_offset = om - MagicNumber;
-         if(slot_offset >= 20000) continue;
-      }
+      // 2.7.27 codex-review fix #2 — magic range was previously [MagicNumber, MagicNumber+10000)
+      // which silently EXCLUDED cascade slot magics (group_magic + 20000..20010), making
+      // daily_cancel_includes_cascade=true a no-op. Reworked to two named ranges:
+      //   - Core group magics: [MagicNumber+0, MagicNumber+10000)
+      //   - Cascade slot magics: [MagicNumber+20000, MagicNumber+30010)
+      // Anything outside both ranges is skipped (not ours).
+      if(om < MagicNumber) continue;
+      int offset = om - MagicNumber;
+      bool is_core    = (offset >= 0     && offset < 10000);
+      bool is_cascade = (offset >= 20000 && offset < 30010);
+      if(!is_core && !is_cascade) continue;
+      if(is_cascade && !g_sc.daily_cancel_includes_cascade) continue;
       ENUM_ORDER_TYPE ot_type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
       bool is_pending = (ot_type == ORDER_TYPE_BUY_LIMIT
                       || ot_type == ORDER_TYPE_SELL_LIMIT
@@ -3017,6 +3027,21 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "tp5_min_adx")) {
          v = JsonGetDouble(breakout_json, "tp5_min_adx");
          if(v >= 0 && v <= 100) g_sc.breakout_tp5_min_adx = (int)v;
+      }
+      // 2.7.27 codex-review fix: tp2/tp3/tp4 ATR multipliers were orphan keys —
+      // present in sync.py mapping + scalper_config.json but never parsed in the EA.
+      // Adding parse handlers so FORGE_BREAKOUT_TP{2,3,4}_ATR_MULT overrides actually apply.
+      if(JsonHasKey(breakout_json, "tp2_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "tp2_atr_mult");
+         if(v >= 0.1 && v <= 10.0) g_sc.breakout_tp2_atr_mult = v;
+      }
+      if(JsonHasKey(breakout_json, "tp3_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "tp3_atr_mult");
+         if(v >= 0.1 && v <= 20.0) g_sc.breakout_tp3_atr_mult = v;
+      }
+      if(JsonHasKey(breakout_json, "tp4_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "tp4_atr_mult");
+         if(v >= 0.1 && v <= 20.0) g_sc.breakout_tp4_atr_mult = v;
       }
       // Direction-specific TP1 — BUY gets more room (confirmed uptrend), SELL tighter (catch fast dip)
       // 0 = fall back to breakout_tp1_atr_mult (backward compat). CHANGELOG: 2026-05-10.
@@ -5741,8 +5766,8 @@ void CheckNativeScalperSetups() {
          if(g_sc.daily_direction_gate_enabled) ComputeDailyBias();
          if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) {
             datetime _dbb_bar_bb = iTime(_Symbol, PERIOD_M5, 0);
-            if(_dbb_bar_bb != g_scalper_last_dailybias_log_bar) {
-               g_scalper_last_dailybias_log_bar = _dbb_bar_bb;
+            if(_dbb_bar_bb != g_scalper_last_dailybias_buy_log_bar) {
+               g_scalper_last_dailybias_buy_log_bar = _dbb_bar_bb;
                JournalRecordSignal("SKIP","entry_quality_daily_bear_block_buy","BB_BOUNCE","BUY",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
@@ -5791,8 +5816,8 @@ void CheckNativeScalperSetups() {
          if(g_sc.daily_direction_gate_enabled) ComputeDailyBias();
          if(g_sc.daily_direction_gate_enabled && g_daily_bull_bias) {
             datetime _dbb_bar_bs = iTime(_Symbol, PERIOD_M5, 0);
-            if(_dbb_bar_bs != g_scalper_last_dailybias_log_bar) {
-               g_scalper_last_dailybias_log_bar = _dbb_bar_bs;
+            if(_dbb_bar_bs != g_scalper_last_dailybias_sell_log_bar) {
+               g_scalper_last_dailybias_sell_log_bar = _dbb_bar_bs;
                JournalRecordSignal("SKIP","entry_quality_daily_bull_block_sell","BB_BOUNCE","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
@@ -5871,8 +5896,8 @@ void CheckNativeScalperSetups() {
          //   Throttled per M5 bar to avoid journal flooding.
          if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) {
             datetime _dbb_bar_b = iTime(_Symbol, PERIOD_M5, 0);
-            if(_dbb_bar_b != g_scalper_last_dailybias_log_bar) {
-               g_scalper_last_dailybias_log_bar = _dbb_bar_b;
+            if(_dbb_bar_b != g_scalper_last_dailybias_buy_log_bar) {
+               g_scalper_last_dailybias_buy_log_bar = _dbb_bar_b;
                JournalRecordSignal("SKIP","entry_quality_daily_bear_block_buy","BB_BREAKOUT","BUY",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
@@ -6094,8 +6119,8 @@ void CheckNativeScalperSetups() {
          //   Same throttle window as BUY side — at most one bias-block log per M5 bar.
          if(g_sc.daily_direction_gate_enabled && g_daily_bull_bias) {
             datetime _dbb_bar_s = iTime(_Symbol, PERIOD_M5, 0);
-            if(_dbb_bar_s != g_scalper_last_dailybias_log_bar) {
-               g_scalper_last_dailybias_log_bar = _dbb_bar_s;
+            if(_dbb_bar_s != g_scalper_last_dailybias_sell_log_bar) {
+               g_scalper_last_dailybias_sell_log_bar = _dbb_bar_s;
                JournalRecordSignal("SKIP","entry_quality_daily_bull_block_sell","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }

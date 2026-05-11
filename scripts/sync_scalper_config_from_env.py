@@ -223,6 +223,9 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_TP1_CLOSE_PCT":    ("bb_breakout", "tp1_close_pct",    "int",   10.0, 100.0),
     "FORGE_BREAKOUT_TP2_ATR_MULT":          ("bb_breakout", "tp2_atr_mult",              "float", 0.1, 10.0),
     "FORGE_BREAKOUT_TP3_ATR_MULT":          ("bb_breakout", "tp3_atr_mult",              "float", 0.1, 20.0),
+    # 2.7.27 codex-review fix: tp4_atr_mult was an orphan key — present in defaults.json
+    # but no sync mapping. Adding so FORGE_BREAKOUT_TP4_ATR_MULT can override the 4.0×ATR default.
+    "FORGE_BREAKOUT_TP4_ATR_MULT":          ("bb_breakout", "tp4_atr_mult",              "float", 0.1, 20.0),
     # ADX lot reduction factors — set to 1.0 to disable (strong trend = full lot per leg)
     "FORGE_BREAKOUT_ADX_LOT_MID_THRESHOLD":  ("safety",     "breakout_adx_lot_mid_threshold",  "float", 10.0, 100.0),
     "FORGE_BREAKOUT_ADX_LOT_HIGH_THRESHOLD": ("safety",     "breakout_adx_lot_high_threshold", "float", 10.0, 100.0),
