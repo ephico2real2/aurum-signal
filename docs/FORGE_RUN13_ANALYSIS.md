@@ -235,6 +235,7 @@ Q9 shows 50% on 2 samples — not enough data to act. Keep at 78 for Run 14 and 
 | 21:40 | May 5 06:30 | Tick 5: 1,195 sigs, 6 TAKEN. **May 4 17:10 G5008 BLOCKED** ✓ by adx_spike_sell |
 | 21:42 | May 5 13:55 | Tick 6: 1,288 sigs, 6 TAKEN. No new TAKEN — May 5 is choppy/quiet (same as Run 12) |
 | 21:49 | May 5 23:55 | Tick 7: 1,411 sigs, 6 TAKEN, **final +$1,026.17** confirmed |
+| 21:55 | May 5 23:55 | Tick 8: no change. Run 13 frozen at completion. NY session cutoff disabled in .env for Run 14 — requires new tester run in MT5 to take effect (current run used old config). |
 
 ---
 

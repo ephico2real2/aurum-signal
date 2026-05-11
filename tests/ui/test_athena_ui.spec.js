@@ -121,7 +121,8 @@ test.describe('ATHENA — Backtest tab', () => {
   test('stat grid shows key labels', async ({ page }) => {
     // Give it time for the first fetch to complete
     await page.waitForTimeout(2000);
-    const labels = ['Total P&L', 'Win Rate', 'Trades', 'TAKEN', 'Skipped'];
+    // Labels use compact form in the 5-col grid (redesigned from 3-col)
+    const labels = ['RUN STATISTICS', 'P&L', 'WR', 'Trades', 'TAKEN', 'Skipped'];
     for (const label of labels) {
       await expect(page.getByText(label).first()).toBeVisible({ timeout: 10000 });
     }
@@ -132,7 +133,7 @@ test.describe('ATHENA — Backtest tab', () => {
     // Only check if there are runs (chart won't render with no data)
     const hasChart = await page.getByText('CUMULATIVE P&L').isVisible().catch(() => false);
     if (hasChart) {
-      await expect(page.locator('text=Equity ($)').first()).toBeVisible({ timeout: 5000 });
+      await expect(page.locator('text=P&L Yield ($)').first()).toBeVisible({ timeout: 5000 });
       await expect(page.locator('text=Trade #').first()).toBeVisible({ timeout: 5000 });
     }
   });

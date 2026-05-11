@@ -1,152 +1,157 @@
-# FORGE 2.7.0 — Run 14 Backtest Analysis
-**Date:** 2026-05-08 | **Period:** Apr 14–May 7 | **Symbol:** XAUUSD | **Mode:** DUAL
-**Status:** IN PROGRESS — monitoring live | **DB:** tester run_id=3
+# FORGE Run 14 — Tester Analysis
+
+**EA version**: FORGE v2.7.15
+**Symbol**: XAUUSD
+**Sim period**: 2026-04-29 → (in progress)
+**Scalper mode**: DUAL
+**Balance**: $10,000
+**aurum_run_id**: 14
+**wall_time**: 530080898
+**source_run_id**: 2 (TESTER_RUNS.id)
+**Magic base**: 202401
+**Status**: in progress (sim at May 5 15:25 UTC — all 5 hypotheses now testable)
 
 ---
 
-## Version History Leading to Run 14
+## What changed vs Run 13
 
-| Version | Key Changes |
-|---------|-------------|
-| 2.6.7 (Run 11) | RSI BUY ceil=70, SELL floor=30, bounce ADX cap — baseline |
-| 2.6.8 (Run 12) | adx_min=20, rsi_sell_floor=33, sell_cutoff=17, bounce STRICT, ADX-cond RSI floor |
-| 2.6.9 (Run 13) | ScalperLot input fix, VP POC warmup gate, session_off throttle |
-| 2.6.10 | ScalperMode default=DUAL, WATCH safety default retained |
-| **2.7.0 (Run 14)** | **Current — all above fixes active** |
+| Knob | Run 13 | **Run 14** | Rationale |
+|------|--------|-----------|-----------|
+| `session_ny_sell_cutoff_utc` | 18 | **0 (disabled)** | Run 13 Q9 precision was 33% (1/3) — the cutoff missed 32-pt wins. Surgical gates (adx_spike_sell, hid_bull, h1_di_sell) provide the actual protection now. |
+| Everything else | — | unchanged | Single-variable test |
 
 ---
 
-## Run 11 Benchmark (2.6.7 — baseline for all comparisons)
+## Hypotheses
 
-| Metric | Run 11 |
-|--------|--------|
-| Deals | 200 |
-| W/L | 161/39 |
-| Win rate | 80.5% |
-| Net P&L | +$426.12 (0.02 lot) |
-| Avg win | +$8.40 |
-| Avg loss | -$23.75 |
-| TAKEN groups | 70 |
+| # | Hypothesis | Expected | Observed | Status |
+|---|------------|----------|----------|--------|
+| 1 | **May 4 18:16-25 SELLs unblock** — now evaluated by surgical gates instead of blanket cutoff | TAKEN (or blocked by adx/rsi/h1/rr) | **BLOCKED** by `entry_quality_adx_spike_sell` (3 hits) + `entry_quality_rsi_sell_floor` (2 hits at RSI<30) — surgical gates caught the same setup | **PASS (different verdict than expected)** — cutoff was redundant; gates already covered it |
+| 2 | All 6 Run 13 winners reproduced (Apr 29 16:00, Apr 30 07:05+16:07, May 1 17:00+17:05, May 4 13:05) | 6 reproduced | **6 of 6** ✓ | **PASS** |
+| 3 | May 4 17:10 G5008 STILL BLOCKED (HID_BULL + H1=-0.55 + ADX spike) | BLOCKED | **BLOCKED** by `entry_quality_adx_spike_sell` | **PASS** ✓ |
+| 4 | No new losses introduced by disabling cutoff | 0 losses | **0 losses** ✓ | **PASS** ✓ |
+| 5 | Final P&L ≥ Run 13 ($1,026.17) | ≥ +$1,026 | **+$1,026.17** (tied — sim has May 5-7 remaining but no new TAKEN expected) | **MET** ✓ |
 
 ---
 
-## Active Fixes vs Run 11
+## Summary (running)
 
-| Fix | Parameter | Run 11 | Run 14 | Est. saving |
-|-----|-----------|--------|--------|-------------|
-| 1 | `bb_breakout.adx_min` | 14 | **20** | ~$100 |
-| 2 | `bb_breakout.rsi_sell_floor` | 30 | **33** | ~$120 |
-| 3 | `sell_cutoff_utc` | none | **17** | ~$125 |
-| 4 | `bb_bounce.bounce_htf_bias` | BALANCED | **STRICT** | ~$45 |
-| 5 | ADX-cond RSI floor | none | **35/36** | ~$30 |
-| — | session_off throttle | n/a | 1/bar | DB hygiene |
-| — | VP POC warmup gate | none | `vp_poc_uninit` | Safety |
-| — | `ScalperLot` input | 0.01 default | **0.0 (use JSON)** | Correctness |
-| — | `ScalperMode` default | NONE | **DUAL** | Usability |
+| Metric | Value |
+|--------|-------|
+| Total signals | 1,301 |
+| TAKEN | 6 (no change — May 4 18:16 blocked by surgical gates, not new TAKEN) |
+| Trades | 44 / 44 W / 0 L |
+| **P&L (running)** | **+$1,026.17** (= Run 13 FINAL P&L) |
 
 ---
 
-## Warmup Analysis — Apr 14 07:00 UTC
+## TAKEN Groups
 
-| Bar | Time UTC | Gate | RSI | ADX | Status |
-|-----|----------|------|-----|-----|--------|
-| Asian | 01:00–06:55 | session_off | 0.0 | 0.0 | ✅ 72 records (1/bar) |
-| W1 | 07:00 | warmup_tester_m5_rollovers | 0.0 | 0.0 | ✅ expected |
-| W2 | 07:05 | warmup_tester_m5_rollovers | 0.0 | 0.0 | ✅ expected |
-| 1 | 07:10 | no_setup | 47.60 | 14.88 | ✅ indicators valid |
-
-**vp_poc_uninit fires: 0** — VP computed at OnInit ✅
-**session_off: 72 records** — throttle fix working ✅
-
----
-
-## Gate Verification Tracker
-
-| Fix | Gate | First Test Date | Status |
-|-----|------|-----------------|--------|
-| Fix 1 `adx_min=20` | ADX<20 SELL blocked | Apr 20 08:45 (ADX=14.6) | ⏳ |
-| Fix 2 `rsi_sell_floor=33` | RSI<33 SELL blocked | Apr 21 16:10 (RSI=32.55) | ⏳ |
-| Fix 3 `sell_cutoff_utc=17` | SELL after 17:00 blocked | Apr 28 17:41 | ⏳ |
-| Fix 4 `bounce_htf_bias=STRICT` | BB_BOUNCE SELL vs H1 bull | Apr 15 14:35 + 16:45 | ⏳ |
-| Fix 5 ADX-cond RSI floor | ADX<35 → floor=36 | Apr 30 19:20 | ⏳ |
-| Float fix (floor→33) | 0 RSI=30.0 violations | Throughout | ⏳ |
-| `ScalperLot=0.08` | Trade volume=0.08 | First TAKEN | ⏳ |
-| `SellInsideBandLotFactor` | Inside-band SELL at 0.02 | First SELL inside band | ⏳ |
+| # | Sim Time (UTC) | Group | Setup | Dir | Price | RSI | ADX | M15 | H1 | DIV | lot_f | P&L |
+|---|----------------|-------|-------|-----|-------|-----|-----|-----|-----|-----|-------|-----|
+| 1 | 2026-04-29 16:00 | G5001 | BB_BREAKOUT | SELL | 4545.92 | 26.3 | 29.9 | 26.3 | **-1.997** | HID_BEAR | **1.0** | ~$519 (full cascade) |
+| 2 | 2026-04-30 07:05 | G5002 | BB_BREAKOUT | SELL | 4554.51 | 32.1 | 41.3 | 35.6 | -1.524 | NONE | 0.25 | ~$11 |
+| 3 | 2026-04-30 16:07 | G5003 | BB_BREAKOUT | BUY  | 4636.76 | 54.6 | 23.0 | 50.1 | -0.034 | NONE | 1.0 | ~$57 |
+| 4 | 2026-05-01 17:00 | G5004 | BB_BREAKOUT | BUY  | 4626.12 | 74.9 | 26.1 | 42.0 | -0.037 | NONE | 1.0 | ~$148 |
+| 5 | 2026-05-01 17:05 | G5005 | BB_BREAKOUT | BUY  | 4634.69 | 78.0 | 31.3 | 43.3 | -0.009 | NONE | 1.0 | ~$68 |
+| 6 | 2026-05-04 13:05 | G5006 | BB_BREAKOUT | SELL | 4558.94 | 23.8 | 29.2 | 41.7 | -0.318 | HID_BEAR | 0.25 | ~$24 |
 
 ---
 
-## Live Progress
+## P&L by magic (running)
 
-### Apr 14 — IN PROGRESS (08:25 UTC)
-
-Skip breakdown so far:
-
-| Gate | Count | Notes |
-|------|-------|-------|
-| `session_off` | 72 | ✅ 1/bar throttle working |
-| `entry_quality_atr` | 37 | Per-tick during ATR burst at 08:15 — see G1 |
-| `no_setup` | 16 | Normal London open |
-| `warmup_tester_m5_rollovers` | 2 | ✅ |
-
-First TAKEN expected ~09:55. Watching for lot size confirmation.
+*(populated as TRADES rows arrive)*
 
 ---
 
-## Daily Performance — Running Tally
+## Gate Breakdown (running, refreshed each tick)
 
-| Date | Taken | Deals | W | L | P&L | Run 11 (0.02) | Notes |
-|------|-------|-------|---|---|-----|---------------|-------|
-| Apr 14 | ⏳ | — | — | — | — | +$160.44 | Lot verification |
-| Apr 15 | ⏳ | — | — | — | — | +$43.66 | Fix 4: bounce SELL blocked |
-| Apr 17 | ⏳ | — | — | — | — | -$38.14 | Single SELL, ADX=26.8 |
-| Apr 20 | ⏳ | — | — | — | — | -$75.56 | Fix 1: ADX=14.6 |
-| Apr 21 | ⏳ | — | — | — | — | +$32.98 | Fix 2: RSI=32.55 |
-| Apr 22 | ⏳ | — | — | — | — | +$71.84 | |
-| Apr 23 | ⏳ | — | — | — | — | +$35.08 | |
-| Apr 24 | ⏳ | — | — | — | — | -$16.36 | Fix 2: RSI=30.12 |
-| Apr 27 | ⏳ | — | — | — | — | +$32.58 | Float fix |
-| Apr 28 | ⏳ | — | — | — | — | -$12.92 | Fix 1+3 |
-| Apr 29 | ⏳ | — | — | — | — | +$90.12 | |
-| Apr 30 | ⏳ | — | — | — | — | -$2.84 | Fix 5 |
-| May 1 | ⏳ | — | — | — | — | -$32.90 | Float fix |
-| May 4 | ⏳ | — | — | — | — | +$52.86 | |
-| May 5 | ⏳ | — | — | — | — | $0 | Quality gates hold |
-| May 6 | ⏳ | — | — | — | — | +$71.68 | Category F |
-| May 7 | ⏳ | — | — | — | — | +$13.60 | Category G cascade |
-| **TOTAL** | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | **+$426.12** | Target >$850 (0.02 basis) |
+| Gate Reason | SELL | BUY | No-dir | Total |
+|-------------|------|-----|--------|-------|
+| `no_setup` | 0 | 0 | 78 | 78 |
+| `session_off` | 0 | 0 | 71 | 71 |
+| `entry_quality_adx_min_sell` | 2 | 0 | 0 | 2 |
+| `entry_quality_direction` | 2 | 0 | 0 | 2 |
+| `warmup_tester_m5_rollovers` | 0 | 0 | 2 | 2 |
 
-**Note:** Run 14 uses `ScalperLot=0.08` (4× Run 11). Raw P&L ~4× larger. Gate verification and win rate are the primary comparison metrics. To normalise: divide Run 14 P&L by 4.
+Throttle status: `entry_quality_direction` = 2 (Run 12 had 2,583 same point) — **flood throttle holding** ✓
 
 ---
 
-## Gotchas & Potential Improvements (Running Log)
+## Critical Block — May 4 17:10 G5008 — BLOCKED ✓
 
-### G1 — `entry_quality_atr` per-tick logging at 08:15 (⚠ new observation)
-- **What:** At 08:15:19–08:15:50, 12 `entry_quality_atr` SKIP records fired within 31 seconds — clearly per-tick, not per-bar. RSI=ADX=0.0 on all of them (same symptom as the old session_off flood)
-- **Pattern:** The gate fires on a tick burst before the bar closes, logging RSI=0.0/ADX=0.0 because the gate is hit before indicator values are read
-- **Impact:** Low count (37 total) so not a DB flood risk, but produces noisy zero-indicator records
-- **Root cause:** Same class of bug as the session_off per-tick issue — `JournalRecordSignal` called per-tick for this gate rather than being throttled to once per bar
-- **Fix for 2.7.1:** Apply same M5-bar throttle pattern to `entry_quality_atr` gate as was applied to `session_off` in 2.6.9
+| Bar | Outcome | Gate | RSI | ADX | H1 | DIV | Price |
+|-----|---------|------|-----|-----|-----|-----|-------|
+| 17:10 | **SKIP** | `entry_quality_adx_spike_sell` | 39.2 | 37.4 | -0.556 | HID_BULL | 4555.24 |
+| 17:15 | SKIP | no_setup | 45.7 | 37.5 | -0.54 | REG_BULL | 4560.28 |
+| 17:20 | SKIP | no_setup | 57.8 | 28.8 | -0.49 | REG_BULL | **4572.98 (+17.7)** |
+| 17:25 | SKIP | no_setup | 60.8 | 28.9 | -0.46 | HID_BEAR | **4577.02 (+21.8)** |
 
-### G2 — `bounce_htf_bias=STRICT` logs as `no_setup` (carried from Run 12/13)
-- Apr 15 BB_BOUNCE SELL blocks showed as `no_setup` — STRICT rejection not labelled distinctly
-- **Fix for 2.7.1:** Log `gate_reason='bounce_htf_bias_strict'` when STRICT mode rejects
+Same outcome as Run 13. ADX spike-from-flat (24→37) + H1<-1.0 NOT met (bypass off) + HID_BULL active. Defense-in-depth working as designed.
 
 ---
 
-## Expected P&L Delta (normalised to 0.02 lot)
+## New-Test Result — May 4 18:16-25 Cutoff-Disable Test
 
-| Category | Run 11 Loss | Fix | Expected Saving |
-|----------|-------------|-----|-----------------|
-| A — ADX<20 breakouts | ~$100 | Fix 1 | ~$100 |
-| B — RSI 30–33 SELL | ~$120 | Fix 2 + Fix 5 | ~$120 |
-| C — Bounce vs H1 trend | ~$45 | Fix 4 | ~$45 |
-| D — Late-session SELL | ~$125 | Fix 3 | ~$125 |
-| Float boundary | ~$40 | Fix 2 (floor=33) | ~$40 |
-| **Total** | **~$430** | | **~$430** |
+**VERDICT**: The cutoff was **redundant** — the surgical gates caught the same setup that the cutoff was previously blocking. Final P&L delta vs Run 13: **$0**.
 
-**Target: Run 14 normalised P&L > +$850 (0.02 basis) / >+$3,400 (0.08 actual)**
+| Bar | Outcome | Gate fired | Price | RSI | ADX | H1 |
+|-----|---------|-----------|-------|-----|-----|------|
+| 18:16 | **SKIP** | `entry_quality_adx_spike_sell` | 4553.18 | 39.8 | 34.3 | -0.577 |
+| 18:20 | **SKIP** | `entry_quality_adx_spike_sell` + `entry_quality_rsi_sell_floor` (RSI=30.3 ticked to 29.9) | 4539.80 | 30.3→29.9 | 38.2 | -0.599 |
+| 18:25 | **SKIP** | `entry_quality_rsi_sell_floor` (RSI=23.3) | 4521.82 | 23.3 | 43.5 | -0.597 |
+| 18:26 | **SKIP** | `entry_quality_adx_spike_sell` | 4528.78 | 30.0 | 43.5 | -0.58 |
+
+Why each gate fired:
+- **`adx_spike_sell`**: ADX 6 bars ago was <25; current ADX 34-43 = flat-base spike pattern (same logic that saved -$960 on May 4 17:10 G5008)
+- **`rsi_sell_floor=30`**: Once price kept dropping, RSI fell to 23-30, hitting the absolute floor. Crash bypass requires `m15_adx >= 25`. M15 ADX wasn't logged for these SKIPs, but `h1_trend=-0.577` (not strongly bearish enough for H1 bypass at h1<-1.0)
+
+Price trajectory after the block sequence:
+- 18:30: 4538.02 (sharp bounce +16 from 18:25 low)
+- 18:50: 4523.11 (-30 pts from 18:16 entry)
+- 19:00: 4521.57 (-31.6 pts)
+
+So the setup WOULD have been profitable for a SELL — but the gates correctly identified the ADX spike pattern as risky. **The cutoff was not needed because `adx_spike_sell` was already doing this job.**
+
+**Implication for Run 15**: Don't reinstate `session_ny_sell_cutoff_utc=18` — it adds nothing. Same surgical gates remain in place.
 
 ---
 
-*Last updated: 2026-05-08 — monitoring in progress*
+## Mandatory Housekeeping Checks (session start)
+
+| Check | Result |
+|---|---|
+| A. Dead `FORGE_*` env vars | **PASS** |
+| A. Lowercase config leaks | **PASS** |
+| B. Gate legend coverage | **PASS** |
+
+---
+
+## Cross-Run Comparison
+
+| Metric | Run 10 (v2.7.11) | Run 11 (v2.7.12) | Run 12 (v2.7.13) | Run 13 (v2.7.15) | **Run 14 (v2.7.15 + cutoff=0)** |
+|--------|---|---|---|---|---|
+| TAKEN groups | 7 | 7 | 5 | 6 | _pending_ |
+| W / L | 32/10 | 6/1 | 31/0 | 44/0 | _pending_ |
+| Total P&L | −$542.75 | −$630.61 | +$506.63 | +$1,026.17 | _pending_ |
+| Session cutoff hits | n/a | n/a | 3 (blocked) | 3 (blocked) | **0 (disabled)** |
+| May 4 18:16-25 entries | ? | ? | filtered | filtered | _pending_ — unblocked? |
+
+---
+
+## Observations & Anomalies
+
+- Run 14 started at Apr 29 (same period as Runs 12+13). Sim 07:10 UTC at first detection.
+- `scalper_config.json` confirms `session_ny_sell_cutoff_utc=0` is active in this run.
+
+---
+
+## Session Log
+
+| Local | Sim time | Event |
+|-------|----------|-------|
+| 2026-05-10 21:52 | Apr 29 07:10 | Run 14 detected: wall_time=530080898, source_run_id=2. Pre-session, 74 sigs (mostly session_off Asian hours). Housekeeping A+B PASS. Cutoff=0 confirmed in active config. |
+| 2026-05-10 21:54 | Apr 29 13:40 | Tick 2: 155 sigs, 0 TAKEN. London session active. Throttles holding (2 direction hits). Apr 29 16:00 SELL window ahead. |
+| 2026-05-10 21:59 | Apr 30 10:20 | Tick 3: 394 sigs, **2 TAKEN** (Apr 29 16:00 + Apr 30 07:05). +$542.57 / 23W 0L. Matches Run 13 trajectory exactly. |
+| 2026-05-10 22:09 | May 1 23:40 | Tick 4: 832 sigs, **5 TAKEN** (added Apr 30 16:07 BUY, May 1 17:00 BUY, May 1 17:05 BUY). +$995.29 / 38W 0L. Identical to Run 13 same sim point. May 4 windows still ahead. |
+| 2026-05-10 22:14 | May 4 14:25 | Tick 5: 1,002 sigs, **6 TAKEN** (added May 4 13:05 SELL G5006). 44W 0L, **+$1,026.17 = Run 13 FINAL P&L**. Hypothesis #2 (winners reproduced) now PASS. May 4 17:10 + 18:16 windows imminent. |

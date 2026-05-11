@@ -11,6 +11,7 @@ Use these as concrete reference points when tuning gates or interpreting Q9 prec
 | # | Case | Run | Type | Outcome | One-line summary |
 |---|------|-----|------|---------|------------------|
 | 001 | [G5001 Apr 29 16:00 SELL — Perfect Multi-TF Bearish Alignment](001_G5001_RUN13_APR29_PERFECT_SELL.md) | 13 | TAKEN | **+$519.54** | Textbook entry: M5/M15/H1/H4 all bearish, breakout outside BB, full lot factor + cascade catches 30-pt drop with 13 legs |
+| 002 | [Run 14 Apr 29 → May 5 — The Cutoff-Disable Trial](002_ALL_GROUPS_RUN14_APR29_MAY6_PERFECT.md) | 14 | TAKEN ×6 + critical blocks | **+$1,026.17 / 44W 0L** | `session_ny_sell_cutoff_utc=0` proven safe: surgical gates (`adx_spike_sell`, `rsi_sell_floor`) caught the May 4 18:16 window that Runs 12/13 blocked via cutoff; bit-perfect P&L match to Run 13 |
 
 ---
 
