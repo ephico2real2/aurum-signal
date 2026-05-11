@@ -190,6 +190,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_ADX_LOT_HIGH_THRESHOLD": ("safety",     "breakout_adx_lot_high_threshold", "float", 10.0, 100.0),
     "FORGE_BREAKOUT_ADX_LOT_FACTOR_MID":     ("safety",     "breakout_adx_lot_factor_mid",     "float", 0.0,  1.0),
     "FORGE_BREAKOUT_ADX_LOT_FACTOR_HIGH":    ("safety",     "breakout_adx_lot_factor_high",    "float", 0.0,  1.0),
+    "FORGE_BREAKOUT_ADX_LOT_USE_M15":        ("safety",     "breakout_adx_lot_use_m15",        "bool01", None, None),
     "FORGE_PSAR_ENABLED": ("indicators", "psar_enabled", "bool01", None, None),
     "FORGE_PSAR_STEP": ("indicators", "psar_step", "float", 0.001, 0.5),
     "FORGE_PSAR_MAXIMUM": ("indicators", "psar_maximum", "float", 0.01, 5.0),

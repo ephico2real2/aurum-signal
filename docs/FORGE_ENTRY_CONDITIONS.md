@@ -1,9 +1,21 @@
-# FORGE Entry Conditions — v2.7.13
+# FORGE Entry Conditions — v2.7.15
 
-**EA version**: FORGE v2.7.13 | **Symbol**: XAUUSD M5  
-**Source**: ea/FORGE.mq5 + config/scalper_config.json  
-*All values read directly from code and config — not estimated.*  
-*Last updated: 2026-05-10 (Run 12 prep)*
+**EA version**: FORGE v2.7.15 | **Symbol**: XAUUSD M5
+**Source**: ea/FORGE.mq5 + config/scalper_config.json
+*All values read directly from code and config — not estimated.*
+*Last updated: 2026-05-10 (post-Run 12 + Codex review)*
+
+## Changelog since v2.7.13
+
+| Version | Change | Rationale |
+|---|---|---|
+| **v2.7.15** | M5-bar throttle for `entry_quality_rsi_buy_ceil` (global `g_scalper_last_rsibuyceil_log_bar`) | Run 12 logged 3,386 SKIPs from only 2 distinct M5 bars (per-tick flood) — corrupted Q9 gate-precision math to a false 0%. Throttle restores meaningful precision measurement. |
+| **v2.7.14** | H1 strong-bear bypass (`h1_trend < -1.0`) added to `entry_quality_rsi_sell_adx_floor` and `entry_quality_rsi_rising_sell` | Run 12 missed Apr 29 15:55/16:00 SELLs that had H1=-1.91/-1.99 (strongest bearish H1 of the period). The two-tier RSI floor and RSI-rising checks fire as if the trend is unconfirmed even when H1 dominates. Bypass keeps May 4 17:10 G5008 blocked (H1=-0.55, bypass inactive). |
+| **v2.7.14** | M5-bar throttle for `entry_quality_direction` + `entry_quality_body` (per direction — separate globals for SELL and BUY) | Two M5 bars on Apr 29 generated 2,583 direction SKIP rows from per-tick logging. Same flood-pattern fix as v1.8.6 session_off. |
+| **v2.7.13** | `block_hid_bull_sell=1` — `entry_quality_hid_bull_div_sell` gate | Blocks SELL when RSI_DIV=HID_BULL is active. Catches the G5008 May 4 17:10 -$940 catastrophe pattern. |
+| **v2.7.13** | `h1h4_crash_sell_min_m15_adx=25` added to `crash_sell_bypass` | Crash bypass now requires M15 ADX ≥25 (genuine multi-TF trend). Prevents M5 ADX spike-from-flat patterns from skipping the RSI floor gate. |
+| **v2.7.13** | `require_macd_buy=1` | Requires H1 MACD histogram positive before BUY breakout fires. |
+| **v2.7.13 bugfix** | HID_BULL throttle: `static datetime` inside if-block → global `g_scalper_last_hbd_log_bar` | MQL5 disallows static-in-nested-block; symptom was unclickable inputs dialog in MT5. |
 
 ---
 
@@ -38,10 +50,12 @@ Full lot = **0.08 per leg** when `combined_lot_factor = 1.0`.
 | `inside_band_factor` | BUY always. SELL: price below BB lower | SELL inside BB band → `breakout_sell_inside_band_lot_factor=0.25` |
 | `near_floor_factor` | No crash-bypass, or RSI > 25 | SELL crash-bypass + RSI 20–25 → `breakout_near_floor_lot_factor=0.25` |
 | `stack_factor` | First group open in that direction | 2nd concurrent same-direction group → `same_direction_stack_lot_factor=0.25` |
-| `adx_lot_factor` | BUY always 1.0. SELL: ADX < adx_lot_mid_threshold (35) | SELL ADX 35–45 → **0.5×** (`adx_lot_factor_high=0.5`). ADX > 45 → further reduction |
+| `adx_lot_factor` | BUY always 1.0. SELL: ADX < `adx_lot_mid_threshold` (35) | SELL ADX 35–44 → `adx_lot_factor_mid=1.0` (no reduction). SELL ADX ≥45 → **0.5×** (`adx_lot_factor_high=0.5`). EA checks **high first then mid** as `if(high) else if(mid)` at `FORGE.mq5:5875-5877` — non-overlapping thresholds make the order behaviorally identical. M5 vs M15 ADX selectable via `breakout_adx_lot_use_m15=1` (default — uses M15) |
 | `bounce_factor` | BB_BREAKOUT setup | BB_BOUNCE → `bounce_lot_factor=0.25` |
 
-**Lot factor note**: `adx_lot_factor_high=0.5` at ADX>35 for SELL — limits damage on high-ADX reversal entries. In Run 11 G5007 (ADX=37.4), this would have halved the loss from -$955 to -$477.
+**Lot factor note**: `adx_lot_factor_high=0.5` at M15 ADX ≥45 for SELL — limits damage on high-ADX reversal entries. In Run 11 G5007 (M5 ADX=37.4 at entry; M15 ADX retroactively unverifiable because SIGNALS logged m15_adx=0 for SKIP rows in v2.7.12), the tier was likely `factor_mid=1.0` (M5 ADX 35-44) — meaning the high-tier halving did NOT apply. Mid-tier currently does not reduce. If 0.5× was intended across 35-45 (covering G5007-class entries), set `FORGE_BREAKOUT_ADX_LOT_FACTOR_MID=0.5` in `.env`.
+
+**EA comment at `FORGE.mq5:5867` is stale** (`// ADX 35-44 → 0.25× | ADX 45-54 → 1/8th | ADX ≥55 → 1/16th`) — those were v2.7.7 values. Current actual behavior: mid=1.0, high=0.5, no ≥55 tier. Behavior is correct; only the comment lies.
 
 ---
 

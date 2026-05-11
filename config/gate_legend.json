@@ -106,6 +106,21 @@
     "explanation": "The 1-hour Directional Indicators show DI- (selling pressure) is still stronger than DI+ (buying pressure). A buy signal on M5 needs the hourly chart to confirm bullish direction before entry.",
     "category": "H4 Filters"
   },
+  "entry_quality_h1_di_sell": {
+    "label": "H1 DI- not above DI+ for sell",
+    "explanation": "The 1-hour Directional Indicators show DI+ (buying pressure) is still stronger than DI- (selling pressure). A sell signal on M5 needs the hourly chart to confirm bearish direction before entry. Added in 2.7.12 to catch false breakdowns where H1 is still bullish. No ADX bypass (unlike the BUY counterpart which bypasses at counter_buy_adx_threshold).",
+    "category": "H4 Filters"
+  },
+  "entry_quality_h1_macd_sell": {
+    "label": "H1 MACD histogram still bullish — blocks sell",
+    "explanation": "The 1-hour MACD histogram is >= 0, meaning hourly momentum is not yet bearish. FORGE blocks the SELL until H1 momentum confirms the breakdown. Paired with entry_quality_h1_di_sell as the H1 confirmation pair. Added in 2.7.12.",
+    "category": "MACD Gates"
+  },
+  "entry_quality_hid_bull_div_sell": {
+    "label": "Hidden bullish RSI divergence — pullback about to reverse up",
+    "explanation": "HID_BULL = price made a higher low while RSI made a lower low — the classic Cardwell signature for a downtrend pullback about to reverse upward. FORGE blocks SELL when this divergence is active. Added in 2.7.13 after the Run 11 G5008 catastrophe lost -$940 with HID_BULL active at entry.",
+    "category": "RSI / ADX Floors"
+  },
   "entry_quality_h4_rsi_sell_blocked": {
     "label": "H4 RSI already oversold — avoid new sell",
     "explanation": "The 4-hour RSI is below its lower threshold. Selling here would be adding to a position on the 4-hour timeframe that is already deeply oversold. Higher-timeframe exhaustion increases reversal risk.",
