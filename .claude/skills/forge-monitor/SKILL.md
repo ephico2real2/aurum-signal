@@ -559,6 +559,34 @@ rather than their own gate_reason. Check if BUY count is still low after looseni
 
 Every function block, gate, and structural change must follow this standard.
 
+### BUILD-BEFORE-COMMIT RULE (mandatory)
+
+**After every change to `ea/FORGE.mq5`, you MUST run `make forge-compile` before staging or committing.**
+
+The compile step:
+1. Stamps the current `VERSION` file into `FORGE.mq5` (so the `forge_version` column in TESTER_RUNS matches the source)
+2. Runs the MQL5 compiler — catches syntax errors and MQL-specific rules (e.g. static-inside-if-block) that aren't visible from reading the source
+3. Syncs the compiled `.ex5` into the MT5 Experts directory and `scalper_config.json` into Common Files
+4. Confirms the build is newer than the source
+
+If you commit without compiling and the build is broken, the EA in MT5 will silently keep running the previous `.ex5` (with the old `forge_version`). Subsequent backtests will look "wrong" and waste a debugging cycle.
+
+**Sequence for every change**:
+```bash
+# 1. Edit ea/FORGE.mq5
+# 2. (optionally) bump VERSION
+echo "X.Y.Z" > VERSION
+# 3. Compile + sync (REQUIRED before commit)
+make forge-compile
+# 4. Stage and commit
+git add ea/FORGE.mq5 VERSION config/scalper_config.json
+git commit -m "..."
+```
+
+If `make forge-compile` reports errors, FIX THEM before committing. Do not commit a broken FORGE.mq5.
+
+
+
 ### Function header comment block
 
 ```mql5
