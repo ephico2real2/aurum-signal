@@ -501,6 +501,38 @@ if wt:
 
 ---
 
+## LIVE-UPDATE THE ANALYSIS DOC EVERY TICK (mandatory)
+
+The analysis doc at `docs/FORGE_RUN<aurum_run_id>_ANALYSIS.md` is a **living document**, not a final report. After every monitoring tick, update the doc so an operator who opens the file mid-run sees the current state — not the state from 30 minutes ago.
+
+**What to refresh on each tick (every section above the Session Log):**
+
+| Section | Updated each tick |
+|---------|-------------------|
+| Summary headline (total signals, TAKEN, P&L, W/L, Δ vs prior runs) | ✓ |
+| Hypothesis validation table | ✓ — flip status to PASS as each becomes confirmed |
+| TAKEN Groups table | ✓ — append new rows; do NOT mutate historical rows |
+| P&L by magic | ✓ — rerun the per-magic aggregation |
+| Gate breakdown | ✓ — full breakdown counts only (Q9 deferred to stop condition) |
+| Critical-block sections (G5008, Apr 29 etc.) | ✓ — once sim crosses that timestamp |
+| Mandatory housekeeping checks A+B | once at session start (don't re-run every tick) |
+| Q9 gate precision | **deferred** — only run at stop condition (sample sizes meaningless mid-run) |
+| Recommended Parameter Changes | **deferred** — only at stop condition |
+| Cross-run comparison | ✓ — update Run-N column with current numbers |
+| Observations & Anomalies | append when something is observed (do not rewrite) |
+| Session Log | **append-only** — one row per tick (local time, sim time, what happened) |
+
+**Convention**: The doc header should say `**Status**: in progress (sim at <latest_sim_time>)` while running, switching to `**Status**: COMPLETE` at stop condition. Total P&L should be marked `(running total)` until stop.
+
+**Anti-patterns to avoid**:
+- Do NOT rewrite the Session Log every tick — it is append-only history. Each tick adds ONE new row at the bottom.
+- Do NOT mutate prior TAKEN rows. If a row's P&L was reported at tick 2, that value stays. Net P&L is computed by summing magic-aggregated rows from the TRADES table (which is the source of truth and gets new rows as TP/SL fills happen).
+- Do NOT mark hypotheses PASS until the supporting evidence is in the DB. Pre-run expectations stay as `_pending_` until the relevant sim timestamp has been crossed.
+
+**Tick cadence**: write doc updates after Q4 (P&L summary). If the tick had no new TAKEN AND no new trades AND no new gates seen for the first time, you may skip the doc update for that single tick (but still add a one-line entry to the Session Log).
+
+---
+
 ## STOP CONDITIONS
 
 Stop after **3 consecutive ticks with no new signals** — run is complete. Before stopping:
