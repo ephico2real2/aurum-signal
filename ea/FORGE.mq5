@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.87"
+#property version "2.96"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.17";
+const string FORGE_VERSION = "2.7.26";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -130,6 +130,12 @@ datetime g_scalper_last_h1macdbuy_log_bar = 0; // throttle entry_quality_h1_macd
 datetime g_scalper_last_bocooldown_log_bar = 0; // throttle entry_quality_breakout_cooldown (2.7.17)
 datetime g_scalper_last_bb_breakout_buy  = 0;  // wall time of last BB_BREAKOUT BUY entry (2.7.17 cooldown)
 datetime g_scalper_last_bb_breakout_sell = 0;  // wall time of last BB_BREAKOUT SELL entry (2.7.17 cooldown)
+// 2.7.19 — failed-breakout-pullback gate trackers (Run 15 G5013/G5015 fix)
+// RSI peak is computed fresh from M5 RSI buffer at gate-check time (no rolling global needed)
+datetime g_scalper_last_atrext_skip_bar_buy  = 0;   // M5 bar of last atr_ext SKIP for BUY
+double   g_scalper_last_atrext_skip_price_buy = 0.0; // mid price at that SKIP
+datetime g_scalper_last_brkfailed_log_bar     = 0;   // throttle entry_quality_breakout_failed (2.7.19)
+datetime g_scalper_last_psar_log_bar          = 0;   // throttle entry_quality_psar_misalign_* (2.7.20)
 datetime g_scalper_last_hbd_log_bar      = 0;  // throttle entry_quality_hid_bull_div_sell (2.7.13)
 datetime g_scalper_last_adxblk_log_bar   = 0;   // throttle entry_quality_adx_extreme_sell (2.7.7)
 double   g_last_combined_lot_factor      = 1.0; // last computed combined lot factor — written to SIGNALS.lot_factor
@@ -209,6 +215,17 @@ struct ScalperConfig {
    bool   breakout_require_h1_macd_sell;            // block SELL when H1 MACD histogram >= 0 (H1 bullish momentum; Run 12+ gate)
    bool   breakout_require_h1_macd_buy;             // block BUY when H1 MACD histogram < 0 (H1 momentum stalling; 2.7.17 Run 15 G5002 fix)
    int    breakout_same_dir_cooldown_seconds;       // block consecutive BB_BREAKOUT entries in same direction within N seconds (2.7.17 Run 15 G5002 fix)
+   // 2.7.19 — Failed-breakout-pullback gate (Run 15 G5013 -$1086 / G5015 -$875 fix).
+   // Blocks BB_BREAKOUT BUY when (a) an atr_ext SKIP fired within last N bars at a HIGHER price than entry,
+   // AND (b) RSI peaked >= min_peak_rsi within last N bars, AND (c) current RSI dropped >= min_rsi_drop from that peak.
+   bool   breakout_failed_gate_enabled;             // 0 = off (no behavior change)
+   int    breakout_failed_lookback_bars;            // M5 bars back to look for atr_ext SKIP + RSI peak (default 4 = 20min)
+   double breakout_failed_min_peak_rsi;             // require RSI peak >= this within lookback (default 75)
+   double breakout_failed_min_rsi_drop;             // require current RSI <= (peak - this) (default 3.0)
+   bool   breakout_failed_same_bar_hard_block;      // 2.7.20: when atr_ext SKIP fires in CURRENT M5 bar, hard-block BUY regardless of RSI (canonical wick-rejection guard from MQL5 Liquidity Sweep article). Catches G5018/G5022.
+   // 2.7.20 — PSAR alignment gate (LiteFinance: "wait for first/second dot after flip").
+   // Block BUY when psar_state != BELOW; block SELL when psar_state != ABOVE. Catches G5035 (FLIP_BEAR), G5036 (FLIP_BULL).
+   bool   breakout_require_psar_align;
    int    breakout_adx_min_sell_lookback_bars;       // ADX spike-from-flat gate: bars back to check (default 6 = 30min; 0=disabled)
    // Cardwell RSI Zone Theory (Andrew Cardwell):
    //   Uptrend range: RSI 40–80.  Bull Support floor = 40 (long re-entry on dip).
@@ -230,6 +247,7 @@ struct ScalperConfig {
    double breakout_sell_inside_band_lot_factor; // lot multiplier when SELL entry is above BB lower (default 0.5)
    double breakout_max_reentry_atr_ext;  // 0 = disabled; >0 = max ATR multiples price can be from first entry for re-entry
    double breakout_sl_atr_mult;
+   double breakout_buy_sl_atr_mult;   // BUY-only SL override (2.7.18, default 0 = use breakout_sl_atr_mult). Widens BUY SL to survive SL-hunt wicks (Run 15 G5015 lost -$875 with 2.0×ATR SL on a 2.49× ATR adverse wick that reversed cleanly).
    double breakout_tp1_atr_mult;      // fallback if direction-specific not set
    double breakout_tp1_buy_atr_mult;  // TP1 for BUY (0 = use breakout_tp1_atr_mult)
    double breakout_tp1_sell_atr_mult; // TP1 for SELL (0 = use breakout_tp1_atr_mult)
@@ -239,6 +257,10 @@ struct ScalperConfig {
    double breakout_tp1_close_pct;
    bool   breakout_require_m15;
    bool   breakout_move_be;
+   double breakout_be_cushion_atr_mult;  // 2.7.23: when >0, BE-trail moves SL to entry∓mult×ATR (cushion below/above entry) instead of tight entry±spread+5pts buffer. Run 17 G5002 ATR=7.59 clipped at BE+0.35 then market ran +18pts — wider cushion captures continuation. 0=legacy tight buffer.
+   bool   breakout_tp2_sl_ratchet_enabled;  // 2.7.24: Milestone 2 — when TP2 reached, ratchet SL to TP1 level (locks +TP1-distance profit). SL invariant preserved (only ratchets into profit). Per FORGE_RATCHET_LOGIC_IDEAS.md spec section 5/6.
+   bool   breakout_atr_trail_enabled;       // 2.7.25: ATR trail per spec — after TP1, track group peak/trough and trail SL at peak ∓ trail_mult×ATR. Runs every tick alongside discrete milestones; SL invariant preserved.
+   double breakout_atr_trail_mult;          // 2.7.25: ATR multiplier for trail SL. Default 1.5 per spec.
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -281,6 +303,7 @@ struct ScalperConfig {
    double sell_stop_cont_min_rsi;      // only arm when M5 RSI > this — blocks exhausted entries (default 25.0)
    double sell_stop_cont_min_adx;     // only arm when M5 ADX >= this — trend must be confirmed (default 25.0)
    bool   sell_stop_cont_require_h1_di; // only arm when H1 DI- > DI+ — H1 must be bearish (default true)
+   bool   sell_stop_cont_require_trend_regime; // 2.7.21: only arm when regime != "RANGE" (cascade SL-hunt protection — Run 15 G5040 lost -$1119 cascade in RANGE regime)
    int    sell_stop_cont_legs;         // number of cascade SELL STOP legs to place (default 5, max 7)
    // BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry after crash RSI bounce
    // Arms at SELL TP1 hit when RSI has recovered above min_rsi (> 35 = Cardwell Bull Support zone entered)
@@ -583,6 +606,9 @@ struct TradeGroup {
    // Post-TP1 ladder context (2.7.10 Day 2) — stored at entry, consumed by ArmPostTP1Ladder()
    double crash_low;   // bid (SELL) or ask (BUY) at market order execution
    double entry_atr;  // M5 ATR at entry — used for SELL STOP + BUY LIMIT placement offsets
+   // 2.7.25 — ATR trail peak/trough tracking (FORGE_RATCHET_LOGIC_IDEAS.md section 5/6)
+   double peak_price;     // highest bid seen since entry (BUY) — drives ATR trail SL
+   double trough_price;   // lowest ask seen since entry (SELL) — drives ATR trail SL
 };
 TradeGroup g_groups[];
 
@@ -1199,6 +1225,9 @@ void ExecuteOpenGroup(const string &json) {
    // crash_low/entry_atr: BRIDGE groups use current bid/ATR; native scalper groups set these at CheckScalperEntry
    g_groups[gi].crash_low = (direction == "SELL") ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    g_groups[gi].entry_atr = 0;  // BRIDGE path: ATR not available here; post-TP1 ladder disabled for BRIDGE groups
+   // 2.7.25 — ATR trail peak/trough init (per FORGE_RATCHET_LOGIC_IDEAS.md)
+   g_groups[gi].peak_price   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   g_groups[gi].trough_price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    int bridge_group_positions[];
    GetGroupPositions(group_magic, bridge_group_positions);
    g_groups[gi].had_positions = (ArraySize(bridge_group_positions) > 0);
@@ -1574,21 +1603,41 @@ void ManageOpenGroups() {
       if(g_groups[gi].move_be_on_tp1) {
          GetGroupPositions(gm, positions);  // refresh after closes
          double remaining_tp = (g_groups[gi].tp2 > 0) ? g_groups[gi].tp2 : tp1;
+         // 2.7.23 — ATR-aware BE-trail cushion (Run 17 G5002 fix).
+         // Legacy (cushion=0): SL → entry + spread+5pts (BUY) / entry - spread-5pts (SELL).
+         //   Result: tight lock that clips runners in volatile markets (G5002 ATR=7.59, clipped at +0.4pt
+         //   wick while market then ran +18pts to TP3).
+         // Cushion>0: SL → entry - cushion×ATR (BUY) / entry + cushion×ATR (SELL).
+         //   Gives breathing room proportional to volatility. Loses guaranteed "lock 0 pts" but captures
+         //   runners. Cushion 0.3-0.5 typical for breakout.
+         double cushion_mult = g_sc.breakout_be_cushion_atr_mult;
+         double grp_atr      = g_groups[gi].entry_atr;
+         bool   use_cushion  = (cushion_mult > 0.0 && grp_atr > 0.0);
          for(int j = 0; j < ArraySize(positions); j++) {
             if(g_pos.SelectByTicket(positions[j])) {
                double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
                double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
-               double buffer = spread + (5.0 * point);
-               double be = g_pos.PriceOpen();
-               if(g_pos.PositionType() == POSITION_TYPE_BUY) be += buffer;
-               else be -= buffer;
-               // Move SL to breakeven + set TP to TP2 for remaining runners
+               double legacy_buffer = spread + (5.0 * point);
+               double entry_px = g_pos.PriceOpen();
+               double be;
+               if(use_cushion) {
+                  // ATR cushion: SL below entry for BUY, above for SELL (gives breathing room)
+                  if(g_pos.PositionType() == POSITION_TYPE_BUY) be = entry_px - cushion_mult * grp_atr;
+                  else                                          be = entry_px + cushion_mult * grp_atr;
+               } else {
+                  // Legacy tight BE+ buffer
+                  if(g_pos.PositionType() == POSITION_TYPE_BUY) be = entry_px + legacy_buffer;
+                  else                                          be = entry_px - legacy_buffer;
+               }
+               // Move SL to breakeven (or cushion) + set TP to TP2 for remaining runners
                g_trade.PositionModify(positions[j], NormalizeDouble(be, _Digits), NormalizeDouble(remaining_tp, _Digits));
             }
          }
          g_groups[gi].be_moved = true;
          Print("FORGE: Group ", g_groups[gi].id, " remaining ", ArraySize(positions),
-               " trades: SL→BE, TP→", DoubleToString(remaining_tp, 2));
+               " trades: SL→", (use_cushion ? "cushion" : "BE+"), " (mult=",
+               DoubleToString(cushion_mult, 2), " atr=", DoubleToString(grp_atr, 2), ") TP→",
+               DoubleToString(remaining_tp, 2));
       }
    }
 
@@ -1614,21 +1663,83 @@ void ManageOpenGroups() {
       bool tp2_reached = (dir2 == "BUY" && bid2 >= tp2_price) || (dir2 == "SELL" && ask2 <= tp2_price);
       if(!tp2_reached) continue;
 
-      // Promote runners to TP3
+      // 2.7.24 — Milestone 2 SL ratchet (FORGE_RATCHET_LOGIC_IDEAS.md): when TP2 reached, ratchet SL up
+      // to TP1 level (locks +TP1-distance of profit on remaining runners). SL invariant: BUY only raises
+      // SL, SELL only lowers. Falls back to legacy behavior (SL unchanged) when ratchet disabled.
+      double tp1_price_m2 = g_groups[gi2].tp1;
+      bool   use_m2_ratchet = (g_sc.breakout_tp2_sl_ratchet_enabled && tp1_price_m2 > 0.0);
+      // Promote runners to TP3 (and optionally ratchet SL to TP1)
       int pos3[];
       GetGroupPositions(gm2, pos3);
       int promoted = 0;
+      int sl_ratcheted = 0;
       for(int j = 0; j < ArraySize(pos3); j++) {
          if(g_pos.SelectByTicket(pos3[j])) {
             double cur_sl = g_pos.StopLoss();
-            if(g_trade.PositionModify(pos3[j], cur_sl, NormalizeDouble(tp3_price, _Digits)))
+            double new_sl = cur_sl;
+            if(use_m2_ratchet) {
+               // SL invariant: BUY raises only, SELL lowers only
+               if(dir2 == "BUY"  && tp1_price_m2 > cur_sl) new_sl = tp1_price_m2;
+               else if(dir2 == "SELL" && tp1_price_m2 < cur_sl) new_sl = tp1_price_m2;
+            }
+            if(g_trade.PositionModify(pos3[j], NormalizeDouble(new_sl, _Digits), NormalizeDouble(tp3_price, _Digits))) {
                promoted++;
+               if(new_sl != cur_sl) sl_ratcheted++;
+            }
          }
       }
       g_groups[gi2].tp2_hit = true;
-      if(promoted > 0)
-         PrintFormat("FORGE: Group %d TP2 reached — promoted %d runner(s) to TP3=%.2f",
-                     g_groups[gi2].id, promoted, tp3_price);
+      if(promoted > 0) {
+         if(use_m2_ratchet)
+            PrintFormat("FORGE: Group %d TP2 reached — promoted %d runner(s) to TP3=%.2f, SL ratcheted to TP1=%.2f on %d leg(s)",
+                        g_groups[gi2].id, promoted, tp3_price, tp1_price_m2, sl_ratcheted);
+         else
+            PrintFormat("FORGE: Group %d TP2 reached — promoted %d runner(s) to TP3=%.2f",
+                        g_groups[gi2].id, promoted, tp3_price);
+      }
+   }
+
+   // ── 2.7.25 — ATR trail (peak/trough ratchet) ─────────────────────────────────
+   // Per FORGE_RATCHET_LOGIC_IDEAS.md section 5/6:
+   //   after TP1 has been hit, track group peak (BUY) / trough (SELL) and trail SL
+   //   at peak ∓ trail_mult × ATR. Continuous between milestones — coexists with
+   //   the M1 cushion and M2 ratchet-to-TP1. SL invariant preserved (only moves into profit).
+   if(g_sc.breakout_atr_trail_enabled) {
+      double bid_at = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask_at = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double trail_mult = g_sc.breakout_atr_trail_mult;
+      for(int gt = 0; gt < ArraySize(g_groups); gt++) {
+         // Update peak/trough every tick regardless of TP1 state (cheap, useful for restart audit)
+         if(bid_at > g_groups[gt].peak_price)   g_groups[gt].peak_price   = bid_at;
+         if(ask_at > 0 && (g_groups[gt].trough_price <= 0 || ask_at < g_groups[gt].trough_price))
+            g_groups[gt].trough_price = ask_at;
+         // Trail only kicks in after TP1
+         if(!g_groups[gt].tp1_hit) continue;
+         double grp_atr_t = g_groups[gt].entry_atr;
+         if(grp_atr_t <= 0) continue;  // BRIDGE groups without ATR — skip
+         string dir_t = g_groups[gt].direction;
+         double trail_sl;
+         if(dir_t == "BUY")  trail_sl = g_groups[gt].peak_price   - trail_mult * grp_atr_t;
+         else                trail_sl = g_groups[gt].trough_price + trail_mult * grp_atr_t;
+         // Apply to each open position in the group with SL invariant
+         int trail_pos[];
+         GetGroupPositions(g_groups[gt].magic_offset, trail_pos);
+         for(int tj = 0; tj < ArraySize(trail_pos); tj++) {
+            if(!g_pos.SelectByTicket(trail_pos[tj])) continue;
+            double cur_sl_t = g_pos.StopLoss();
+            double cur_tp_t = g_pos.TakeProfit();
+            bool   would_improve = false;
+            if(g_pos.PositionType() == POSITION_TYPE_BUY  && trail_sl > cur_sl_t)
+               would_improve = true;
+            if(g_pos.PositionType() == POSITION_TYPE_SELL && (cur_sl_t == 0 || trail_sl < cur_sl_t))
+               would_improve = true;
+            if(!would_improve) continue;
+            // Skip tiny moves to avoid OrderModify spam (≥ 1 point change required)
+            double point_t = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            if(MathAbs(trail_sl - cur_sl_t) < point_t) continue;
+            g_trade.PositionModify(trail_pos[tj], NormalizeDouble(trail_sl, _Digits), NormalizeDouble(cur_tp_t, _Digits));
+         }
+      }
    }
 }
 
@@ -2274,6 +2385,12 @@ void InitScalperConfig() {
    g_sc.breakout_require_h1_macd_sell         = false;
    g_sc.breakout_require_h1_macd_buy          = false; // 2.7.17: disabled by default; .env override enables
    g_sc.breakout_same_dir_cooldown_seconds    = 0;     // 2.7.17: 0=disabled; .env override sets (e.g. 900 = 15 min)
+   g_sc.breakout_failed_gate_enabled          = false; // 2.7.19: 0=disabled by default
+   g_sc.breakout_failed_lookback_bars         = 4;     // 4 M5 bars = 20 min memory window
+   g_sc.breakout_failed_min_peak_rsi          = 75.0;  // RSI must have peaked at least this in window
+   g_sc.breakout_failed_min_rsi_drop          = 3.0;   // current RSI must be >= 3pts below peak
+   g_sc.breakout_failed_same_bar_hard_block   = false; // 2.7.20: 0=off; 1=hard-block BUY in same M5 bar as atr_ext SKIP
+   g_sc.breakout_require_psar_align           = false; // 2.7.20: 0=off; 1=require psar BELOW for BUY, ABOVE for SELL
    g_sc.breakout_adx_min_sell_lookback_bars   = 6;
    g_sc.breakout_rsi_buy_min = 40;
    g_sc.breakout_rsi_sell_max = 60;
@@ -2289,6 +2406,7 @@ void InitScalperConfig() {
    g_sc.breakout_sell_inside_band_lot_factor = 0.25;
    g_sc.breakout_max_reentry_atr_ext = 0.0;
    g_sc.breakout_sl_atr_mult = 2.0;
+   g_sc.breakout_buy_sl_atr_mult = 0.0;  // 2.7.18: 0 = use breakout_sl_atr_mult (no BUY override)
    g_sc.breakout_tp1_atr_mult       = 1.0;
    g_sc.breakout_tp1_buy_atr_mult   = 0.0;  // 0 = use breakout_tp1_atr_mult
    g_sc.breakout_tp1_sell_atr_mult  = 0.0;  // 0 = use breakout_tp1_atr_mult
@@ -2298,6 +2416,11 @@ void InitScalperConfig() {
    g_sc.breakout_tp1_close_pct = 40;
    g_sc.breakout_require_m15 = true;
    g_sc.breakout_move_be = true;
+   // (peak/trough initialized at group creation in two paths below)
+   g_sc.breakout_be_cushion_atr_mult = 0.0;  // 2.7.23: 0 = legacy tight BE+spread+5pts buffer. >0 enables ATR cushion.
+   g_sc.breakout_tp2_sl_ratchet_enabled = false;  // 2.7.24: 0 = legacy TP2 only promotes TP→TP3. 1 = also ratchets SL to TP1 level.
+   g_sc.breakout_atr_trail_enabled = false;       // 2.7.25: 0 = no ATR trail. 1 = continuous trail SL at peak∓trail_mult×ATR after TP1.
+   g_sc.breakout_atr_trail_mult = 1.5;            // 2.7.25: ATR multiplier for trail (spec default).
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -2336,6 +2459,7 @@ void InitScalperConfig() {
    g_sc.sell_stop_cont_min_rsi       = 25.0;
    g_sc.sell_stop_cont_min_adx      = 25.0;  // same floor as primary SELL entry gate
    g_sc.sell_stop_cont_require_h1_di = true; // H1 DI- > DI+ — same check as require_h1_di_sell gate
+   g_sc.sell_stop_cont_require_trend_regime = false; // 2.7.21: 0=off; 1=require regime != RANGE before arming cascade
    g_sc.sell_stop_cont_legs          = 5;     // 5 legs = same as typical ADX-tiered primary entry
    // BUY LIMIT recovery — off by default; enable via FORGE_BUY_LIMIT_RECOVERY_ENABLED=1
    g_sc.buy_limit_recovery_enabled      = false;
@@ -2623,6 +2747,35 @@ void ReadScalperConfig() {
          v = JsonGetDouble(breakout_json, "sl_atr_mult");
          if(v >= 0.5 && v <= 5.0) g_sc.breakout_sl_atr_mult = v;
       }
+      // 2.7.18 — BUY-only SL widen (Run 15 G5015 fix). 0 = use breakout_sl_atr_mult; >0 = override for BUY only.
+      // Range 0..6 allows up to 6×ATR for severe SL-hunt protection while bounded against runaway losses.
+      if(JsonHasKey(breakout_json, "buy_sl_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "buy_sl_atr_mult");
+         if(v >= 0.0 && v <= 6.0) g_sc.breakout_buy_sl_atr_mult = v;
+      }
+      // 2.7.23 — BE-trail cushion (Run 17 G5002 fix). 0 = legacy tight BE+spread+5pts buffer.
+      // >0 = SL moves to entry∓mult×ATR cushion below/above entry, giving breathing room in volatile markets.
+      // Range 0..3: 0.3-0.5 typical; >2.0 effectively disables BE-trail.
+      if(JsonHasKey(breakout_json, "be_cushion_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "be_cushion_atr_mult");
+         if(v >= 0.0 && v <= 3.0) g_sc.breakout_be_cushion_atr_mult = v;
+      }
+      // 2.7.24 — TP2 SL ratchet to TP1 (per FORGE_RATCHET_LOGIC_IDEAS.md Milestone 2).
+      // When TP2 reached, ratchet SL up to TP1 level (locks TP1-distance of profit).
+      // SL invariant preserved by ratchet helper (only moves SL into profit direction).
+      if(JsonHasKey(breakout_json, "tp2_sl_ratchet_enabled")) {
+         v = JsonGetDouble(breakout_json, "tp2_sl_ratchet_enabled");
+         g_sc.breakout_tp2_sl_ratchet_enabled = (v >= 0.5);
+      }
+      // 2.7.25 — ATR trail (per FORGE_RATCHET_LOGIC_IDEAS.md). After TP1, trail SL at group peak∓mult×ATR.
+      if(JsonHasKey(breakout_json, "atr_trail_enabled")) {
+         v = JsonGetDouble(breakout_json, "atr_trail_enabled");
+         g_sc.breakout_atr_trail_enabled = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "atr_trail_mult")) {
+         v = JsonGetDouble(breakout_json, "atr_trail_mult");
+         if(v >= 0.3 && v <= 5.0) g_sc.breakout_atr_trail_mult = v;
+      }
       // Direction-specific TP1 — BUY gets more room (confirmed uptrend), SELL tighter (catch fast dip)
       // 0 = fall back to breakout_tp1_atr_mult (backward compat). CHANGELOG: 2026-05-10.
       if(JsonHasKey(breakout_json, "tp1_buy_atr_mult")) { v = JsonGetDouble(breakout_json,"tp1_buy_atr_mult");  if(v > 0.0) g_sc.breakout_tp1_buy_atr_mult  = v; }
@@ -2685,6 +2838,7 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_stop_cont_min_rsi"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_min_rsi");    if(v >= 0 && v < 50)  g_sc.sell_stop_cont_min_rsi    = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_min_adx"))   { v = JsonGetDouble(breakout_json,"sell_stop_cont_min_adx");   if(v >= 0 && v <= 80) g_sc.sell_stop_cont_min_adx   = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_require_h1_di")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_require_h1_di"); g_sc.sell_stop_cont_require_h1_di = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_require_trend_regime")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_require_trend_regime"); g_sc.sell_stop_cont_require_trend_regime = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "sell_stop_cont_legs"))       { v = JsonGetDouble(breakout_json,"sell_stop_cont_legs");       if(v >= 1 && v <= 7)  g_sc.sell_stop_cont_legs       = (int)v; }
       // BUY LIMIT recovery (2.7.10 Day 3) — disabled by default
       if(JsonHasKey(breakout_json, "buy_limit_recovery_enabled"))    { v = JsonGetDouble(breakout_json,"buy_limit_recovery_enabled");    g_sc.buy_limit_recovery_enabled    = (v >= 0.5); }
@@ -2742,6 +2896,32 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "same_dir_cooldown_seconds")) {
          v = JsonGetDouble(breakout_json, "same_dir_cooldown_seconds");
          if(v >= 0 && v <= 3600) g_sc.breakout_same_dir_cooldown_seconds = (int)v;
+      }
+      // 2.7.19 — failed-breakout-pullback gate config parse (Run 15 G5013/G5015 fix)
+      if(JsonHasKey(breakout_json, "failed_gate_enabled")) {
+         v = JsonGetDouble(breakout_json, "failed_gate_enabled");
+         g_sc.breakout_failed_gate_enabled = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "failed_lookback_bars")) {
+         v = JsonGetDouble(breakout_json, "failed_lookback_bars");
+         if(v >= 1 && v <= 20) g_sc.breakout_failed_lookback_bars = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "failed_min_peak_rsi")) {
+         v = JsonGetDouble(breakout_json, "failed_min_peak_rsi");
+         if(v >= 50.0 && v <= 90.0) g_sc.breakout_failed_min_peak_rsi = v;
+      }
+      if(JsonHasKey(breakout_json, "failed_min_rsi_drop")) {
+         v = JsonGetDouble(breakout_json, "failed_min_rsi_drop");
+         if(v >= 0.0 && v <= 30.0) g_sc.breakout_failed_min_rsi_drop = v;
+      }
+      // 2.7.20 — same-bar hard block + PSAR alignment
+      if(JsonHasKey(breakout_json, "failed_same_bar_hard_block")) {
+         v = JsonGetDouble(breakout_json, "failed_same_bar_hard_block");
+         g_sc.breakout_failed_same_bar_hard_block = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "require_psar_align")) {
+         v = JsonGetDouble(breakout_json, "require_psar_align");
+         g_sc.breakout_require_psar_align = (v >= 0.5);
       }
       if(JsonHasKey(breakout_json, "require_h1_macd_sell")) {
          v = JsonGetDouble(breakout_json, "require_h1_macd_sell");
@@ -5190,6 +5370,18 @@ void CheckNativeScalperSetups() {
          && bounce_tf_buy_ok && h4_ok_buy && fib_ok_buy && rsi_div_buy_bounce && buy_reject && buy_bar0_ok && liquidity_ok
          && !bounce_htf_blocks_buy
          && h1_trend_strength >= g_sc.bounce_min_h1_trend) {
+         // 2.7.26 — PSAR alignment gate for BB_BOUNCE BUY (mirror of v2.7.20 BB_BREAKOUT gate).
+         // Run 17 G5028 (Apr 10 18:45 BB_BOUNCE BUY @ 4766.27 PSAR=ABOVE) misread the signal — PSAR was
+         // already bearish (dots above price), but BB_BOUNCE BUY fired anyway because PSAR gate was
+         // BB_BREAKOUT-only. Price then crashed −12 pts. Block BUY when PSAR is not stable BELOW.
+         if(g_sc.breakout_require_psar_align && g_sc.psar_enabled && g_psar_state != "BELOW") {
+            datetime _psb_bar = iTime(_Symbol, PERIOD_M5, 0);
+            if(_psb_bar != g_scalper_last_psar_log_bar) {
+               g_scalper_last_psar_log_bar = _psb_bar;
+               JournalRecordSignal("SKIP","entry_quality_psar_misalign_buy","BB_BOUNCE","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else {
          direction = "BUY";
          double atr_sl_buy = NormalizeDouble(bid - m5_atr * g_sc.bounce_sl_atr_mult, _Digits);
          sl  = FindStructuralSL(true, bid, atr_sl_buy, point);
@@ -5211,11 +5403,21 @@ void CheckNativeScalperSetups() {
          if(tp2 < min_tp2) tp2 = NormalizeDouble(min_tp2, _Digits);
          if(tp2 <= tp1) tp2 = NormalizeDouble(tp1 + (m5_atr * 0.25), _Digits);
          setup_type = "BB_BOUNCE";
+         } // end PSAR-ok-buy-bounce else
       }
       // SELL: price near BB upper + RSI overbought + H1 not bullish
       else if(mid >= m5_bb_u - proximity && m5_rsi > g_sc.bounce_rsi_sell_min
               && bounce_tf_sell_ok && h4_ok_sell && fib_ok_sell && rsi_div_sell_bounce && sell_reject && sell_bar0_ok && liquidity_ok
               && !bounce_htf_blocks_sell) {
+         // 2.7.26 — PSAR alignment gate for BB_BOUNCE SELL (mirror of BUY). Block SELL when PSAR is not stable ABOVE.
+         if(g_sc.breakout_require_psar_align && g_sc.psar_enabled && g_psar_state != "ABOVE") {
+            datetime _pss_bar = iTime(_Symbol, PERIOD_M5, 0);
+            if(_pss_bar != g_scalper_last_psar_log_bar) {
+               g_scalper_last_psar_log_bar = _pss_bar;
+               JournalRecordSignal("SKIP","entry_quality_psar_misalign_sell","BB_BOUNCE","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else {
          direction = "SELL";
          double atr_sl_sell = NormalizeDouble(ask + m5_atr * g_sc.bounce_sl_atr_mult, _Digits);
          sl  = FindStructuralSL(false, ask, atr_sl_sell, point);
@@ -5237,6 +5439,7 @@ void CheckNativeScalperSetups() {
          if(tp2 > max_tp2) tp2 = NormalizeDouble(max_tp2, _Digits);
          if(tp2 >= tp1) tp2 = NormalizeDouble(tp1 - (m5_atr * 0.25), _Digits);
          setup_type = "BB_BOUNCE";
+         } // end PSAR-ok-sell-bounce else
       }
       }
    }
@@ -5371,17 +5574,85 @@ void CheckNativeScalperSetups() {
                }
                bo_cooldown_buy_ok = false;
             }
+            // 2.7.19 — Failed-breakout-pullback gate (Run 15 G5013 -$1086 / G5015 -$875 fix):
+            // Block BUY when (a) an atr_ext SKIP fired within last N bars at a HIGHER price than entry,
+            // AND (b) RSI peaked >= min_peak_rsi in the lookback window, AND (c) current RSI is below
+            // peak by at least min_rsi_drop. Catches the "fake breakout / buy the pullback / reversal" pattern.
+            // 2.7.20 — added same-bar hard-block (canonical wick-rejection guard, MQL5 Liquidity Sweep article):
+            // when atr_ext SKIP fired in the CURRENT M5 bar, hard-block BUY regardless of RSI (catches G5018/G5022).
+            bool brk_failed_buy_ok = true;
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok
+               && g_sc.breakout_failed_gate_enabled
+               && g_scalper_last_atrext_skip_bar_buy > 0) {
+               datetime _bf_now_bar = iTime(_Symbol, PERIOD_M5, 0);
+               int _bf_bars_since = (int)((_bf_now_bar - g_scalper_last_atrext_skip_bar_buy) / PeriodSeconds(PERIOD_M5));
+               bool _bf_recent      = (_bf_bars_since >= 0 && _bf_bars_since <= g_sc.breakout_failed_lookback_bars);
+               bool _bf_lower_entry = (mid < g_scalper_last_atrext_skip_price_buy);
+               // 2.7.20 — Same-bar hard block: if atr_ext SKIP fired in the same M5 bar as this entry attempt,
+               // block BUY unconditionally. The bar has already shown wick-rejection structure.
+               if(_bf_bars_since == 0 && _bf_lower_entry && g_sc.breakout_failed_same_bar_hard_block) {
+                  if(_bf_now_bar != g_scalper_last_brkfailed_log_bar) {
+                     g_scalper_last_brkfailed_log_bar = _bf_now_bar;
+                     JournalRecordSignal("SKIP","entry_quality_breakout_failed_samebar","BB_BREAKOUT","BUY",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0,g_scalper_last_atrext_skip_price_buy);
+                  }
+                  brk_failed_buy_ok = false;
+               } else if(_bf_recent && _bf_lower_entry && g_mtf[0].h_rsi != INVALID_HANDLE) {
+                  // Compute RSI peak over last lookback_bars (current bar + history)
+                  double _bf_rsi_peak = m5_rsi;
+                  int _bf_lb = g_sc.breakout_failed_lookback_bars;
+                  if(_bf_lb > 20) _bf_lb = 20;
+                  double _bf_rbuf[20];
+                  if(CopyBuffer(g_mtf[0].h_rsi, 0, 0, _bf_lb, _bf_rbuf) == _bf_lb) {
+                     for(int _bf_i = 0; _bf_i < _bf_lb; _bf_i++) {
+                        if(_bf_rbuf[_bf_i] > _bf_rsi_peak) _bf_rsi_peak = _bf_rbuf[_bf_i];
+                     }
+                  }
+                  bool _bf_rsi_rollover = (_bf_rsi_peak >= g_sc.breakout_failed_min_peak_rsi)
+                                          && (m5_rsi <= _bf_rsi_peak - g_sc.breakout_failed_min_rsi_drop);
+                  if(_bf_rsi_rollover) {
+                     if(_bf_now_bar != g_scalper_last_brkfailed_log_bar) {
+                        g_scalper_last_brkfailed_log_bar = _bf_now_bar;
+                        JournalRecordSignal("SKIP","entry_quality_breakout_failed","BB_BREAKOUT","BUY",
+                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0,_bf_rsi_peak);
+                     }
+                     brk_failed_buy_ok = false;
+                  }
+               }
+            }
+            // 2.7.20 — PSAR alignment gate (LiteFinance: "wait for first/second dot after flip").
+            // BUY requires psar_state == BELOW (stable bullish regime). Block FLIP_BEAR/FLIP_BULL transitional
+            // states (G5036 at FLIP_BULL) and ABOVE (G5035 had FLIP_BEAR — bear flip just printed).
+            bool psar_align_buy_ok = true;
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && brk_failed_buy_ok
+               && g_sc.breakout_require_psar_align && g_sc.psar_enabled) {
+               if(g_psar_state != "BELOW") {
+                  datetime _ps_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_ps_bar != g_scalper_last_psar_log_bar) {
+                     g_scalper_last_psar_log_bar = _ps_bar;
+                     JournalRecordSignal("SKIP","entry_quality_psar_misalign_buy","BB_BREAKOUT","BUY",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  psar_align_buy_ok = false;
+               }
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_buy_ok = true;
-            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && brk_failed_buy_ok && psar_align_buy_ok
                && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","BUY",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_buy_ok = false;
             }
-            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && nf_buy_ok)
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && brk_failed_buy_ok && psar_align_buy_ok && nf_buy_ok)
             { // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
-            double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
+            // 2.7.18 — BUY-only SL override: when breakout_buy_sl_atr_mult > 0, replace base mult to widen
+            // BUY SL against SL-hunt wicks (Run 15 G5015: 2.49×ATR adverse wick wiped 11 legs at 2.0×ATR SL,
+            // price reversed cleanly to entry within 70 min). SELL path uses the unmodified breakout_sl_mult_eff.
+            double bo_sl_mult_buy = (g_sc.breakout_buy_sl_atr_mult > 0.0)
+               ? g_sc.breakout_buy_sl_atr_mult * ((high_vol_trend) ? g_sc.high_vol_breakout_sl_boost : 1.0)
+               : breakout_sl_mult_eff;
+            double bo_sl = NormalizeDouble(bid - m5_atr * bo_sl_mult_buy, _Digits);
             double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
             if(bo_sl > bo_sl_floor) bo_sl = bo_sl_floor;
             double _tp1_buy_mult = (g_sc.breakout_tp1_buy_atr_mult > 0.0) ? g_sc.breakout_tp1_buy_atr_mult : g_sc.breakout_tp1_atr_mult;
@@ -5661,16 +5932,30 @@ void CheckNativeScalperSetups() {
                }
                bo_cooldown_sell_ok = false;
             }
+            // 2.7.20 — PSAR alignment gate (mirror of BUY path): SELL requires psar_state == ABOVE.
+            bool psar_align_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok
+               && g_sc.breakout_require_psar_align && g_sc.psar_enabled) {
+               if(g_psar_state != "ABOVE") {
+                  datetime _pss_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_pss_bar != g_scalper_last_psar_log_bar) {
+                     g_scalper_last_psar_log_bar = _pss_bar;
+                     JournalRecordSignal("SKIP","entry_quality_psar_misalign_sell","BB_BREAKOUT","SELL",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  psar_align_sell_ok = false;
+               }
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok && psar_align_sell_ok
                && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
                && m5_rsi <= g_nf_eff_rsi_sell_min) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_sell_ok = false;
             }
-            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok && nf_sell_ok) {
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok && psar_align_sell_ok && nf_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -5771,6 +6056,12 @@ void CheckNativeScalperSetups() {
                mid, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m,
                0, h1_trend_strength, 0);
          }
+         // 2.7.19 — failed-breakout-pullback gate tracker: record price + bar of THIS atr_ext SKIP for BUY
+         // so a later lower-priced entry within breakout_failed_lookback_bars can be blocked.
+         if(direction == "BUY" && setup_type == "BB_BREAKOUT") {
+            g_scalper_last_atrext_skip_bar_buy   = m5bar;
+            g_scalper_last_atrext_skip_price_buy = mid;
+         }
          return;
       }
    }
@@ -5802,7 +6093,15 @@ void CheckNativeScalperSetups() {
                (setup_type == "BB_BOUNCE") ? g_sc.bounce_sl_atr_mult : g_sc.breakout_sl_atr_mult,
                g_sc.min_sl_atr_mult, g_sc.native_sl_extra_buffer_points, g_ob_zone_count);
    double rr_entry_ref = (direction == "BUY") ? ask : bid;
-   double risk = MathAbs(rr_entry_ref - sl);
+   // 2.7.22 — R:R uses BASE breakout_sl_atr_mult (with high_vol boost) instead of the actually-placed sl.
+   // Run 16 (v2.7.21) revealed: breakout_buy_sl_atr_mult=3.0 widens BUY SL placement for SL-hunt protection,
+   // but the R:R gate then computed risk=3.0×ATR vs max TP4=4.0×ATR → R:R=1.33 < min_rr_floor=1.5 → 100%
+   // BUY breakouts blocked rr_too_low (G5001/G5002/G5003 all blocked Apr 1 Run 16). buy_sl_atr_mult is a
+   // tail-risk protection (worst-case wick survival); the R:R gate evaluates expected-MAE risk. Decouple.
+   double rr_base_sl_mult = (setup_type == "BB_BOUNCE")
+      ? g_sc.bounce_sl_atr_mult
+      : g_sc.breakout_sl_atr_mult * ((high_vol_trend) ? g_sc.high_vol_breakout_sl_boost : 1.0);
+   double risk = m5_atr * rr_base_sl_mult;
    double reward_tp1 = (direction == "BUY") ? (tp1 - rr_entry_ref) : (rr_entry_ref - tp1);
    double reward_tp2 = (tp2 > 0.0) ? ((direction == "BUY") ? (tp2 - rr_entry_ref) : (rr_entry_ref - tp2)) : 0.0;
    double reward = reward_tp1;
@@ -5810,7 +6109,7 @@ void CheckNativeScalperSetups() {
       reward = MathMax(reward_tp1, reward_tp2);
    if(setup_type == "BB_BREAKOUT" || setup_type == "BB_BREAKOUT_RETEST") {
       // Breakout scales out across 4 TPs — use the best reachable TP for the RR gate.
-      // TP1(1.0x) and TP2(1.5x) always give RR<1.0 at 2.0x SL; TP3(2.5x) gives RR=1.25, TP4(4.0x)=2.0.
+      // At base 2.0× SL: TP1(0.5x)=0.25 RR, TP2(1.5x)=0.75, TP3(2.5x)=1.25, TP4(4.0x)=2.0.
       double reward_tp3 = m5_atr * g_sc.breakout_tp3_atr_mult;
       double reward_tp4 = m5_atr * g_sc.breakout_tp4_atr_mult;
       reward = MathMax(reward_tp1, MathMax(reward_tp2, MathMax(reward_tp3, reward_tp4)));
@@ -6083,6 +6382,9 @@ void CheckNativeScalperSetups() {
    // Post-TP1 ladder context: execution price is crash_low for SELL (bid) or entry_high for BUY (ask)
    g_groups[gi].crash_low  = (direction == "SELL") ? bid : ask;
    g_groups[gi].entry_atr  = m5_atr;
+   // 2.7.25 — ATR trail peak/trough init (per FORGE_RATCHET_LOGIC_IDEAS.md)
+   g_groups[gi].peak_price   = bid;
+   g_groups[gi].trough_price = ask;
    int native_group_positions[];
    GetGroupPositions(group_magic, native_group_positions);
    g_groups[gi].had_positions = (ArraySize(native_group_positions) > 0);
@@ -6411,6 +6713,18 @@ void ArmPostTP1Ladder(const int gi) {
          double arm_di_minus = (CopyBuffer(g_h_adx, 2, 0, 1, _di) == 1) ? _di[0] : 0;
          if(arm_di_plus > 0 && arm_di_minus > 0 && arm_di_plus >= arm_di_minus) {
             PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped H1 DI+=%.1f >= DI-=%.1f (H1 bullish, counter-trend)", grp_id, arm_di_plus, arm_di_minus);
+            cascade_ok = false;
+         }
+      }
+      // Gate 4 — Regime (2.7.21, Run 15 G5040 fix): cascade is a TREND amplifier. In RANGE regime the
+      // typical post-TP1 continuation is a mean-reversal stop-hunt that fills cascade at the move's
+      // extreme low, then reverses through SL. G5040 cascade lost -$1119 in RANGE regime when SELL @
+      // 4768.81 hit TP1 at 4766, armed cascade at 4761.23, then market reversed to 4789 (cascade SL).
+      // Canonical gold-trading literature: "Trade after the liquidity grab, not before" — chasing
+      // continuation in RANGE is exactly buying the liquidity grab.
+      if(cascade_ok && g_sc.sell_stop_cont_require_trend_regime) {
+         if(g_regime_label == "RANGE" || g_regime_label == "") {
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d — skipped regime='%s' (require_trend_regime=1, only arm in TREND_BULL/TREND_BEAR/VOLATILE)", grp_id, g_regime_label);
             cascade_ok = false;
          }
       }

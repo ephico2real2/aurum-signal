@@ -126,6 +126,26 @@
     "explanation": "A prior BB_BREAKOUT entry in the same direction fired recently (within `same_dir_cooldown_seconds`, default 900s = 15 min). FORGE blocks consecutive same-direction breakouts to avoid the 'double-tap' failure mode where the second entry stacks onto fading momentum and stops out. Added in 2.7.17 after Run 15 G5002 lost -$400 firing 5 minutes after G5001's same-direction breakout.",
     "category": "Cooldowns"
   },
+  "entry_quality_breakout_failed": {
+    "label": "Failed breakout — buying the pullback of an overextended move",
+    "explanation": "Within the last `failed_lookback_bars` (default 4 = 20 min), an `entry_quality_atr_ext` SKIP fired at a HIGHER price than the current entry candidate, AND RSI peaked >= `failed_min_peak_rsi` (default 75) in the lookback window, AND current RSI is at least `failed_min_rsi_drop` (default 3) points below that peak. This is the fake-breakout signature: market refused to sustain the high, then retraced into the band, and the EA would otherwise buy the very first bar of the reversal. Added in 2.7.19 after Run 15 G5013 lost -$1086 (5 min after G5012's win, RSI 78→74.9, atr_ext SKIP at higher price) and G5015 lost -$875 (RSI 78→60.6, two prior atr_ext SKIPs).",
+    "category": "Structural / Breakout"
+  },
+  "entry_quality_breakout_failed_samebar": {
+    "label": "Same-bar wick rejection — atr_ext SKIP earlier in current M5 bar",
+    "explanation": "An `entry_quality_atr_ext` SKIP fired earlier in the SAME M5 bar as the current entry attempt, AND the current entry price is BELOW the SKIP price. Canonical wick-rejection guard from the MQL5 Liquidity Sweep article: 'h > h1 AND c < o1 = bearish sweep'. The bar already pierced higher and is retracing; the EA would be buying into a developing fake breakout. Added in 2.7.20 after Run 15 G5018 lost -$960 (atr_ext SKIP at 4780.63, TAKEN 36 sec later at 4779.05 in same bar) and G5022 lost -$1035 (atr_ext SKIP at 4793.74, TAKEN 58 sec later at 4789.36 in same bar).",
+    "category": "Structural / Breakout"
+  },
+  "entry_quality_psar_misalign_buy": {
+    "label": "PSAR not aligned for BUY — transitional or bearish regime",
+    "explanation": "Parabolic SAR is not in the stable BELOW state at entry. PSAR=ABOVE means bearish regime (don't BUY); PSAR=FLIP_BEAR means a bear-flip just printed (catastrophic-reversal warning); PSAR=FLIP_BULL means a bull-flip just printed (LiteFinance: 'wait for first or second dot after flip' — transitional state is unstable). Added in 2.7.20 after Run 15 G5035 lost -$1139 entering at FLIP_BEAR with H1 MACD already negative.",
+    "category": "Structural / Breakout"
+  },
+  "entry_quality_psar_misalign_sell": {
+    "label": "PSAR not aligned for SELL — transitional or bullish regime",
+    "explanation": "Mirror of BUY gate: PSAR must be in stable ABOVE state for SELL entries. Blocks FLIP_BULL (bull-flip just printed = warning), FLIP_BEAR (transitional), and BELOW (bullish regime).",
+    "category": "Structural / Breakout"
+  },
   "entry_quality_hid_bull_div_sell": {
     "label": "Hidden bullish RSI divergence — pullback about to reverse up",
     "explanation": "HID_BULL = price made a higher low while RSI made a lower low — the classic Cardwell signature for a downtrend pullback about to reverse upward. FORGE blocks SELL when this divergence is active. Added in 2.7.13 after the Run 11 G5008 catastrophe lost -$940 with HID_BULL active at entry.",

@@ -101,6 +101,14 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_REQUIRE_H1_MACD_BUY":        ("bb_breakout", "require_h1_macd_buy",         "bool01", None, None),
     # BB_BREAKOUT same-direction cooldown in seconds (2.7.17 Run 15 G5002 fix); 0 = disabled
     "FORGE_BREAKOUT_SAME_DIR_COOLDOWN_SECONDS":  ("bb_breakout", "same_dir_cooldown_seconds",   "int",    0.0,  3600.0),
+    # 2.7.19 — Failed-breakout-pullback gate (Run 15 G5013/G5015 fix); 0 = disabled
+    "FORGE_BREAKOUT_FAILED_GATE_ENABLED":        ("bb_breakout", "failed_gate_enabled",         "bool01", None, None),
+    "FORGE_BREAKOUT_FAILED_LOOKBACK_BARS":       ("bb_breakout", "failed_lookback_bars",        "int",    1.0,  20.0),
+    "FORGE_BREAKOUT_FAILED_MIN_PEAK_RSI":        ("bb_breakout", "failed_min_peak_rsi",         "float",  50.0, 90.0),
+    "FORGE_BREAKOUT_FAILED_MIN_RSI_DROP":        ("bb_breakout", "failed_min_rsi_drop",         "float",  0.0,  30.0),
+    # 2.7.20 — same-bar hard block + PSAR alignment
+    "FORGE_BREAKOUT_FAILED_SAME_BAR_HARD_BLOCK": ("bb_breakout", "failed_same_bar_hard_block",  "bool01", None, None),
+    "FORGE_BREAKOUT_REQUIRE_PSAR_ALIGN":         ("bb_breakout", "require_psar_align",          "bool01", None, None),
     # ADX ceiling above which the H1 DI gate auto-disables (strong trend overrides the DI check)
     "FORGE_BREAKOUT_COUNTER_BUY_ADX_THRESHOLD":  ("bb_breakout", "counter_buy_adx_threshold",   "float", 0.0,  80.0),
     # Max ATR multiples price can extend from first entry before re-entry is blocked (0=disabled)
@@ -144,6 +152,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_SELL_STOP_CONT_MIN_RSI":      ("bb_breakout", "sell_stop_cont_min_rsi",      "float", 0.0, 50.0),
     "FORGE_SELL_STOP_CONT_MIN_ADX":      ("bb_breakout", "sell_stop_cont_min_adx",      "float", 0.0, 80.0),
     "FORGE_SELL_STOP_CONT_REQUIRE_H1_DI": ("bb_breakout", "sell_stop_cont_require_h1_di", "bool01", None, None),
+    # 2.7.21 — Cascade regime guard (Run 15 G5040 -$1119 cascade fix)
+    "FORGE_SELL_STOP_CONT_REQUIRE_TREND_REGIME": ("bb_breakout", "sell_stop_cont_require_trend_regime", "bool01", None, None),
     # BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry at crash low after SELL TP1
     # Captures May-1-style parabolic reversals: RSI bounces from 20 back through 35 = recovery confirmed
     "FORGE_BUY_LIMIT_RECOVERY_ENABLED":      ("bb_breakout", "buy_limit_recovery_enabled",      "bool01", None, None),
@@ -184,6 +194,14 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BOUNCE_LOT_FACTOR": ("bb_bounce", "bounce_lot_factor", "float", 0.01, 1.0),
     "FORGE_BOUNCE_SL_ATR_MULT": ("bb_bounce", "sl_atr_mult", "float", 0.5, 5.0),
     "FORGE_BREAKOUT_SL_ATR_MULT":      ("bb_breakout", "sl_atr_mult",      "float", 0.5, 5.0),
+    "FORGE_BREAKOUT_BUY_SL_ATR_MULT":  ("bb_breakout", "buy_sl_atr_mult",  "float", 0.0, 6.0),
+    # 2.7.23 — BE-trail cushion (Run 17 G5002 ATR=7.59 fix). 0 = legacy tight BE+. >0 = SL∓mult×ATR.
+    "FORGE_BREAKOUT_BE_CUSHION_ATR_MULT": ("bb_breakout", "be_cushion_atr_mult", "float", 0.0, 3.0),
+    # 2.7.24 — TP2 SL ratchet to TP1 (Milestone 2 per FORGE_RATCHET_LOGIC_IDEAS.md).
+    "FORGE_BREAKOUT_TP2_SL_RATCHET_ENABLED": ("bb_breakout", "tp2_sl_ratchet_enabled", "bool01", None, None),
+    # 2.7.25 — ATR trail (FORGE_RATCHET_LOGIC_IDEAS.md spec). Continuous SL trail at peak∓mult×ATR after TP1.
+    "FORGE_BREAKOUT_ATR_TRAIL_ENABLED": ("bb_breakout", "atr_trail_enabled", "bool01", None, None),
+    "FORGE_BREAKOUT_ATR_TRAIL_MULT": ("bb_breakout", "atr_trail_mult", "float", 0.3, 5.0),
     "FORGE_BREAKOUT_TP1_ATR_MULT":      ("bb_breakout", "tp1_atr_mult",      "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_BUY_ATR_MULT":  ("bb_breakout", "tp1_buy_atr_mult",  "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_SELL_ATR_MULT": ("bb_breakout", "tp1_sell_atr_mult", "float", 0.1, 5.0),
