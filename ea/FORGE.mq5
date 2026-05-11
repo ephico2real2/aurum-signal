@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.84"
+#property version "2.85"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.14";
+const string FORGE_VERSION = "2.7.15";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -159,6 +159,7 @@ datetime g_scalper_last_dir_sell_log_bar  = 0;   // throttle entry_quality_direc
 datetime g_scalper_last_dir_buy_log_bar   = 0;   // throttle entry_quality_direction BUY (2.7.14)
 datetime g_scalper_last_body_sell_log_bar = 0;   // throttle entry_quality_body SELL (2.7.14)
 datetime g_scalper_last_body_buy_log_bar  = 0;   // throttle entry_quality_body BUY (2.7.14)
+datetime g_scalper_last_rsibuyceil_log_bar = 0;  // throttle entry_quality_rsi_buy_ceil (2.7.15)
 bool     g_scalper_prev_session_blocked = true; // session-start log: true = previous tick was session_off
 
 // Native news filter state
@@ -5250,8 +5251,14 @@ void CheckNativeScalperSetups() {
       if(prev_close > (m5_bb_u + breakout_buffer) && m5_rsi > g_sc.breakout_rsi_buy_min
          && m5_bull && m15_ok_buy && h1_ok_buy && h4_ok_buy && strict_breakout_buy_ok) {
          if(m5_rsi >= g_sc.breakout_rsi_buy_ceil) {
-            JournalRecordSignal("SKIP","entry_quality_rsi_buy_ceil","BB_BREAKOUT","BUY",
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            // Per-M5-bar throttle (2.7.15): prior runs flooded thousands of ticks per bar,
+            // corrupting Q9 gate-precision math. Same pattern as direction/body throttles.
+            datetime _rbc_bar = iTime(_Symbol, PERIOD_M5, 0);
+            if(_rbc_bar != g_scalper_last_rsibuyceil_log_bar) {
+               g_scalper_last_rsibuyceil_log_bar = _rbc_bar;
+               JournalRecordSignal("SKIP","entry_quality_rsi_buy_ceil","BB_BREAKOUT","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
          } else {
             // H1 DI directional gate (2.7.5): block weak-ADX BUY when H1 DI- dominates DI+ (Wilder's directional check)
             bool h1_di_ok = true;
