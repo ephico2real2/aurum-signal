@@ -242,7 +242,9 @@
     "dump_require_psar": 1,
     "dump_require_d1_bias": 1,
     "dump_cooldown_seconds": 600,
-    "dump_lot_factor": 0.7
+    "dump_lot_factor": 0.7,
+    "regime_h1_override_factor": 0,
+    "regime_h1_override_adx_min": 30
   },
   "journal": {
     "journal_enabled": 1,

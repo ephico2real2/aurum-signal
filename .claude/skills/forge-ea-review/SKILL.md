@@ -201,9 +201,37 @@ Lowercase config-looking keys (must be empty for PASS):
 | # | Severity | Section | Description | Action |
 |---|----------|---------|-------------|--------|
 
+## Recommendations & Proposed Fixes
+<!-- For each FAIL or WARNING that requires a code/config change, append a structured fix
+     proposal here. Follow the same pattern as forge-monitor's RECOMMENDATIONS PATTERN:
+
+     ### Issue N — <title>
+     **Evidence**: <concrete file:line cites or config diff>
+     **Root cause**: <explanation rooted in code>
+     **Industry pattern** (per WebSearch): "<quote>" — Source: [link](url)
+
+     #### Option A — <name>
+     ```pseudocode
+     <diff>
+     ```
+     Defaults: <new knobs>
+     Risk: <blast radius>
+
+     #### Option B / C — <alternatives>
+
+     **Preferred**: Option <X>. Reason: <trade-off rationale>
+     **Backward compatibility**: ships behind FORGE_<FLAG>=0 (default-OFF). -->
+
 ## Overall Verdict
 [Summary paragraph: what is working, what needs fixing, confidence level in the EA logic]
 ```
+
+**Hard rules for the Recommendations section**:
+1. **No hallucination** — every code reference must include `file:line` cites. Every claim about behavior must be backed by a query result or compiled code.
+2. **WebSearch BEFORE proposing** — for every fix candidate, search "MQL5 <topic>" first. Quote the canonical pattern with source URL. Adapt to FORGE's specifics. Never invent novel approaches when established MT5/MQL5 patterns exist.
+3. **Multiple options required** — at least 2 alternatives per issue, each with pseudocode + risk assessment. Operator picks; reviewer doesn't impose.
+4. **Backward compatibility mandatory** — every proposal ships behind a default-OFF env flag. Specify the flag name and default value.
+5. **Rooted in this run's data** — recommendations must cite evidence from the CURRENT review's findings, not generic best practices.
 
 ---
 

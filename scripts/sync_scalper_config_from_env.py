@@ -227,6 +227,9 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_DUMP_REQUIRE_D1_BIAS":    ("safety", "dump_require_d1_bias",    "bool01", None, None),
     "FORGE_DUMP_COOLDOWN_SECONDS":   ("safety", "dump_cooldown_seconds",   "int",    0,    7200),
     "FORGE_DUMP_LOT_FACTOR":         ("safety", "dump_lot_factor",         "float",  0.01, 2.0),
+    # 2.7.29 — Regime H1-strong override (Run 18 Issue 1 fix). 0 = disabled, 2.0 typical when enabled.
+    "FORGE_REGIME_H1_OVERRIDE_FACTOR":  ("safety", "regime_h1_override_factor",  "float", 0.0, 10.0),
+    "FORGE_REGIME_H1_OVERRIDE_ADX_MIN": ("safety", "regime_h1_override_adx_min", "float", 0.0, 100.0),
     "FORGE_BREAKOUT_TP1_ATR_MULT":      ("bb_breakout", "tp1_atr_mult",      "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_BUY_ATR_MULT":  ("bb_breakout", "tp1_buy_atr_mult",  "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_SELL_ATR_MULT": ("bb_breakout", "tp1_sell_atr_mult", "float", 0.1, 5.0),

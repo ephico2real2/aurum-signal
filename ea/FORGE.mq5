@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.98"
+#property version "2.99"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.28";
+const string FORGE_VERSION = "2.7.29";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -322,6 +322,19 @@ struct ScalperConfig {
    bool   dump_require_d1_bias;             // 2.7.28: require v2.7.27 Filter 1 daily bias to agree. Default true.
    int    dump_cooldown_seconds;            // 2.7.28: minimum gap between consecutive dump entries per direction (default 600 = 10min).
    double dump_lot_factor;                  // 2.7.28: lot multiplier vs fixed_lot — smaller than BB (default 0.7).
+   // 2.7.29 — Regime classifier H1-strong override (Run 18 Issue 1 fix).
+   // The inline regime classifier (FORGE.mq5:5658-5661) requires unanimous H1+H4 agreement for TREND_*.
+   // H4 EMA20-EMA50 lags H1 by 3-5 hours after a regime turn, so perfect M5/H1 setups get
+   // capped at 5 legs (native_legs_max_when_unclear) because regime stays RANGE.
+   // Run 18 G5001 Apr 1 08:40: h1_trend=+2.15, ADX=40, but regime=RANGE → only 5 legs fired
+   //   despite the market then moving +41pts (8×ATR) in 2 hours.
+   // Override: when M5+H1 signal "unambiguously trending" (h1_trend >> threshold AND m5_adx high),
+   //   force TREND_BULL/TREND_BEAR regardless of H4. Default OFF via factor=0.
+   double regime_h1_override_factor;        // 2.7.29: multiplier on trend_thr_eff for the override.
+                                            // 0 = disabled (legacy). 2.0 = h1_trend must be 2× the threshold to override.
+                                            // Apr 1 G5001 sim: thr≈0.5, h1_trend=2.15 → 2.15/0.5=4.3× → triggers at 2.0×.
+   double regime_h1_override_adx_min;       // 2.7.29: minimum M5 ADX to confirm strong trend (default 30).
+                                            //         Both conditions must be true (factor + adx_min) for override to fire.
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -2678,6 +2691,9 @@ void InitScalperConfig() {
    g_sc.dump_require_d1_bias          = true;     // require v2.7.27 Filter 1 bias agreement
    g_sc.dump_cooldown_seconds         = 600;      // 10-min cooldown per direction
    g_sc.dump_lot_factor               = 0.7;      // 0.7× fixed_lot per leg
+   // 2.7.29 — Regime H1-strong override defaults (Run 18 Issue 1 fix).
+   g_sc.regime_h1_override_factor     = 0.0;      // 0 = disabled (legacy unanimous AND-gating). 2.0 typical when enabled.
+   g_sc.regime_h1_override_adx_min    = 30.0;     // Minimum M5 ADX for override to fire.
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3262,6 +3278,9 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"dump_require_d1_bias"))     { v = JsonGetDouble(content,"dump_require_d1_bias");     g_sc.dump_require_d1_bias = (v >= 0.5); }
    if(JsonHasKey(content,"dump_cooldown_seconds"))    { v = JsonGetDouble(content,"dump_cooldown_seconds");    if(v >= 0 && v <= 7200)  g_sc.dump_cooldown_seconds = (int)v; }
    if(JsonHasKey(content,"dump_lot_factor"))          { v = JsonGetDouble(content,"dump_lot_factor");          if(v > 0 && v <= 2.0)    g_sc.dump_lot_factor       = v; }
+   // 2.7.29 — Regime H1-strong override (Run 18 Issue 1 fix).
+   if(JsonHasKey(content,"regime_h1_override_factor"))  { v = JsonGetDouble(content,"regime_h1_override_factor");  if(v >= 0.0 && v <= 10.0) g_sc.regime_h1_override_factor  = v; }
+   if(JsonHasKey(content,"regime_h1_override_adx_min")) { v = JsonGetDouble(content,"regime_h1_override_adx_min"); if(v >= 0.0 && v <= 100.0) g_sc.regime_h1_override_adx_min = v; }
    if(JsonHasKey(content,"session_london_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_london_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_london_sell_cutoff_utc = (int)v; }
    if(JsonHasKey(content,"breakout_near_floor_lot_factor")) { v = JsonGetDouble(content,"breakout_near_floor_lot_factor"); if(v > 0 && v <= 1.0) g_sc.breakout_near_floor_lot_factor = v; }
    if(JsonHasKey(content,"same_direction_stack_lot_factor")) { v = JsonGetDouble(content,"same_direction_stack_lot_factor"); if(v > 0 && v <= 1.0) g_sc.same_direction_stack_lot_factor = v; }
@@ -5654,10 +5673,28 @@ void CheckNativeScalperSetups() {
                       && (trend_mag >= g_sc.high_vol_trend_strength_min);
 
    // In tester, BRIDGE does not push regime updates — derive it from native indicators so the journal is populated.
+   //
+   // 2.7.29 — H1-strong override clause (Run 18 Issue 1 fix).
+   //   The legacy 3 clauses require unanimous H1+H4 agreement. H4 EMA20-EMA50 lags H1 by 3-5 hours
+   //   after a regime turn, so perfect M5/H1 setups get capped at 5 legs (native_legs_max_when_unclear)
+   //   because regime stays RANGE.
+   //   Run 18 G5001 Apr 1 08:40: h1_trend=+2.15, m5_adx=40.1, but regime=RANGE → 5 legs fired
+   //     when 10 would have been appropriate (market then moved +41 pts in 2 hours = 8×ATR).
+   //   Override: when |h1_trend| >= regime_h1_override_factor × trend_thr_eff AND m5_adx >= regime_h1_override_adx_min,
+   //     force TREND_BULL or TREND_BEAR regardless of H4.
+   //   Default OFF: regime_h1_override_factor=0 → override clause never triggers, behavior matches legacy.
+   //   Operator opt-in via FORGE_REGIME_H1_OVERRIDE_FACTOR=2.0 in .env.
    if(in_tester) {
       if(high_vol_trend)                              g_regime_label = "VOLATILE";
       else if(h1_bull && (h4_bull || h4_flat))        g_regime_label = "TREND_BULL";
       else if(h1_bear && (h4_bear || h4_flat))        g_regime_label = "TREND_BEAR";
+      // 2.7.29 — H1-strong override: unlock TREND_BULL/TREND_BEAR when M5+H1 unambiguously trending
+      //          even if H4 EMA hasn't caught up yet.
+      else if(g_sc.regime_h1_override_factor > 0.0
+              && m5_adx >= g_sc.regime_h1_override_adx_min
+              && MathAbs(h1_trend_strength) >= g_sc.regime_h1_override_factor * trend_thr_eff) {
+         g_regime_label = (h1_trend_strength > 0.0) ? "TREND_BULL" : "TREND_BEAR";
+      }
       else                                             g_regime_label = "RANGE";
       g_regime_confidence = 1.0;
    }

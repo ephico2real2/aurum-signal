@@ -521,6 +521,8 @@ The analysis doc at `docs/FORGE_RUN<aurum_run_id>_ANALYSIS.md` is a **living doc
 | Cross-run comparison | ✓ — update Run-N column with current numbers |
 | Observations & Anomalies | append when something is observed (do not rewrite) |
 | Session Log | **append-only** — one row per tick (local time, sim time, what happened) |
+| **Recommendations & Open Issues** | append when an issue is identified — see "RECOMMENDATIONS PATTERN" section below |
+| **Operator Q&A Log** | append every time the operator asks a question and you investigate — see "OPERATOR Q&A LOG" section below |
 
 **Convention**: The doc header should say `**Status**: in progress (sim at <latest_sim_time>)` while running, switching to `**Status**: COMPLETE` at stop condition. Total P&L should be marked `(running total)` until stop.
 
@@ -530,6 +532,100 @@ The analysis doc at `docs/FORGE_RUN<aurum_run_id>_ANALYSIS.md` is a **living doc
 - Do NOT mark hypotheses PASS until the supporting evidence is in the DB. Pre-run expectations stay as `_pending_` until the relevant sim timestamp has been crossed.
 
 **Tick cadence**: write doc updates after Q4 (P&L summary). If the tick had no new TAKEN AND no new trades AND no new gates seen for the first time, you may skip the doc update for that single tick (but still add a one-line entry to the Session Log).
+
+---
+
+## OPERATOR Q&A LOG (mandatory)
+
+Every time the operator asks a question during monitoring — about a specific trade, a regime decision, why something fired or didn't, what a gate is doing, whether a fix is possible, etc. — append a chronological entry to the **Operator Q&A Log** section of the run's analysis doc.
+
+Each entry MUST include:
+1. **The question** (verbatim or paraphrased, with sim time context)
+2. **The investigation path** — what queries you ran, what files you read, what greps you did
+3. **The data evidence** — actual numbers from the DB, not paraphrased
+4. **The answer** — your conclusion, with the limits of certainty stated
+5. **Forward link** — if the question surfaces an issue that needs fixing, link to the relevant entry in the Recommendations & Open Issues section
+
+**Why this matters**: The conversation between operator and the monitoring agent surfaces the highest-value insights of any run. If those insights are lost in the chat scrollback, the next analysis run starts cold. The Q&A Log preserves the *reasoning* behind every proposal — without it, future operators (or your future self) won't know why a specific knob was chosen.
+
+**Template** (copy into the analysis doc):
+
+```markdown
+## Operator Q&A Log
+
+### Q1 (sim YYYY-MM-DD HH:MM): "<operator question verbatim or summary>"
+**Investigation**: <queries run, files read, hypotheses tested>
+**Evidence**: <key numbers from DB, file:line cites if code-related>
+**Answer**: <your conclusion, with uncertainty bounds>
+**Forward link**: <if applicable, "See Issue N in Recommendations">
+
+### Q2 (sim ...): "<next question>"
+...
+```
+
+**Never paraphrase the operator's question into something vague.** "Operator asked about Apr 1 entries" is useless; "Operator asked: 'check the apr 2 entries — were they TAKEN, or blocked by entry_quality_daily_bear_block_buy?'" is what future analysis needs.
+
+---
+
+## RECOMMENDATIONS PATTERN (mandatory)
+
+When investigation surfaces a fix candidate — a config tweak, a code change, a knob to tune — append a structured entry to the **Recommendations & Open Issues** section of the run's analysis doc. Do NOT scatter recommendations across the Session Log or Observations — they belong in their own section so the post-run decision-maker can find them.
+
+Each Recommendation MUST include:
+1. **Issue title** (one-line description of the problem)
+2. **Evidence** — concrete numbers/timestamps/prices from the current run, NOT generic claims. "G5001 fired 5 legs at Apr 1 08:40 with regime=RANGE despite h1_trend=+2.15" — not "regime classifier seems conservative."
+3. **Root cause** — verified via reading the EA code with file:line cites. If you haven't read the code, say "UNVERIFIED — speculation."
+4. **Options A / B / C** — at least two alternatives, each with:
+   - Brief description (1-2 sentences)
+   - Concrete pseudocode showing the diff
+   - Default values for any new knobs
+   - Risk / blast radius (what downstream consumers are affected)
+5. **Industry research** — REQUIRED: Google for canonical patterns ("MQL5 multi-timeframe regime classifier", "MQL5 PSAR scalping confirmation", etc.). Quote one canonical pattern. Adapt to FORGE — do NOT copy-paste code that won't compile. Include source URLs in markdown link format.
+6. **Preferred option** — your pick, with the trade-off rationale (why this option over the others, what data would change your mind)
+7. **Backward compatibility** — REQUIRED: every fix must ship behind a default-OFF env flag so the running code is not broken. Specify the flag name and default value.
+
+**Anti-hallucination rule**: every claim about EA behavior must cite `ea/FORGE.mq5:<line>` or a SIGNALS-table query that proves it. Speculation without code or DB evidence belongs in Observations, not Recommendations.
+
+**Industry-research requirement**: BEFORE proposing a fix, do a WebSearch for the canonical pattern. The MT5/MQL5 community has worked on most of these problems for 15+ years. Adapt the canonical pattern to FORGE's specifics — do not invent novel approaches when established ones exist. Always cite sources.
+
+**Template** (copy into the analysis doc):
+
+```markdown
+## Recommendations & Open Issues
+
+### Issue N — <title>
+
+**Evidence**:
+- <bullet — concrete numbers from this run>
+- <bullet>
+
+**Root cause** (verified):
+- `ea/FORGE.mq5:<line>`: <relevant code>
+- Mechanism: <one paragraph explanation>
+
+**Industry pattern** (per <source>):
+> "<quote>"
+Source: [<title>](<url>)
+
+#### Option A — <name> (effort/risk)
+```pseudocode
+<diff or function sketch>
+```
+Defaults: <new env knobs>
+Risk: <blast radius>
+
+#### Option B — <name>
+<same structure>
+
+#### Option C — <name>
+<same structure>
+
+**Preferred**: Option <X>. Reason: <why this beats the others, what data would change the call>.
+
+**Backward compatibility**: ships behind `FORGE_<FLAG>=0` (default-OFF). Existing behavior preserved.
+```
+
+**Real example**: see Issue 1 in `docs/FORGE_RUN18_ANALYSIS.md` (inline regime classifier H4 lag) — that entry is the canonical example of this section's format.
 
 ---
 
@@ -811,6 +907,16 @@ For each loss, document:
 | Overnight-hold | Massively in profit, held past expiry, reversed next day | Expiry_bars not enforced — investigate |
 
 ## Observations & Anomalies
+
+## Recommendations & Open Issues
+<!-- Append every Recommendation here per the RECOMMENDATIONS PATTERN section in SKILL.md.
+     Each entry needs: Issue title → Evidence → Root cause (file:line) → Industry pattern
+     (with WebSearch citation) → Options A/B/C with pseudocode → Preferred → Backward-compat flag. -->
+
+## Operator Q&A Log
+<!-- Append every operator question encountered during monitoring per the OPERATOR Q&A LOG
+     section in SKILL.md. Each entry: Q# (sim time): question → Investigation → Evidence →
+     Answer → Forward link to Recommendations. -->
 
 ## Session Log
 ```
