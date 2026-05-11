@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.83"
+#property version "2.84"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.13";
+const string FORGE_VERSION = "2.7.14";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -155,6 +155,10 @@ datetime g_scalper_last_rsidecl_log_bar = 0;   // throttle entry_quality_rsi_ris
 datetime g_scalper_last_m30bear_log_bar = 0;   // throttle entry_quality_m30_not_bearish journal (2.7.9)
 datetime g_scalper_last_h1dibuy_log_bar = 0;   // throttle entry_quality_h1_di_buy journal (once per M5 bar)
 datetime g_scalper_last_rsisellfloor_log_bar = 0; // throttle entry_quality_rsi_sell_floor/adx_floor (once per M5 bar)
+datetime g_scalper_last_dir_sell_log_bar  = 0;   // throttle entry_quality_direction SELL (2.7.14)
+datetime g_scalper_last_dir_buy_log_bar   = 0;   // throttle entry_quality_direction BUY (2.7.14)
+datetime g_scalper_last_body_sell_log_bar = 0;   // throttle entry_quality_body SELL (2.7.14)
+datetime g_scalper_last_body_buy_log_bar  = 0;   // throttle entry_quality_body BUY (2.7.14)
 bool     g_scalper_prev_session_blocked = true; // session-start log: true = previous tick was session_off
 
 // Native news filter state
@@ -4732,13 +4736,27 @@ bool CheckEntryQuality(const string direction, const double atr,
    double avg_body_ratio = total_body_ratio / n;
    // rsi/adx now logged correctly — previously hardcoded 0 (fix: 2026-05-10)
    if(g_sc.min_body_ratio > 0.0 && avg_body_ratio < g_sc.min_body_ratio) {
-      JournalRecordSignal("SKIP","entry_quality_body","",direction,
-         SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,rsi,adx,bb_upper_now,bb_lower_now,0,0,0,0);
+      datetime _body_bar = iTime(_Symbol, PERIOD_M5, 0);
+      bool _body_new = (direction=="SELL") ? (_body_bar != g_scalper_last_body_sell_log_bar)
+                                           : (_body_bar != g_scalper_last_body_buy_log_bar);
+      if(_body_new) {
+         if(direction=="SELL") g_scalper_last_body_sell_log_bar = _body_bar;
+         else                  g_scalper_last_body_buy_log_bar  = _body_bar;
+         JournalRecordSignal("SKIP","entry_quality_body","",direction,
+            SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,rsi,adx,bb_upper_now,bb_lower_now,0,0,0,0);
+      }
       return false;
    }
    if(g_sc.min_directional_bars > 0 && directional_count < g_sc.min_directional_bars) {
-      JournalRecordSignal("SKIP","entry_quality_direction","",direction,
-         SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,rsi,adx,bb_upper_now,bb_lower_now,0,0,0,0);
+      datetime _dir_bar = iTime(_Symbol, PERIOD_M5, 0);
+      bool _dir_new = (direction=="SELL") ? (_dir_bar != g_scalper_last_dir_sell_log_bar)
+                                          : (_dir_bar != g_scalper_last_dir_buy_log_bar);
+      if(_dir_new) {
+         if(direction=="SELL") g_scalper_last_dir_sell_log_bar = _dir_bar;
+         else                  g_scalper_last_dir_buy_log_bar  = _dir_bar;
+         JournalRecordSignal("SKIP","entry_quality_direction","",direction,
+            SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,rsi,adx,bb_upper_now,bb_lower_now,0,0,0,0);
+      }
       return false;
    }
    // 4. BB band expansion — reject entries when bands are contracting (< 95% of previous width).
@@ -5405,10 +5423,15 @@ void CheckNativeScalperSetups() {
                                   && (g_sc.h1h4_crash_sell_adx_max <= 0 || m5_adx <= g_sc.h1h4_crash_sell_adx_max)
                                   && crash_m15_ok;
          // Two-tier RSI floor — absolute + ADX-conditioned stricter floor (skipped on crash bypass)
+         // strong_h1_bear bypass (2.7.14): when H1 DI- strongly dominates (h1_trend<-1.0),
+         // the M5 ADX may still be building (early breakout) — the ADX-conditioned floor would
+         // incorrectly block genuine trend entries. Apr29 15:55 example: H1=-1.912, ADX=25.9 →
+         // weak_adx_floor raised floor to 36, blocked a 30-pt SELL. Bypass restores normal floor.
          bool rsi_floor_ok = true;
          if(!crash_sell_bypass) {
             double sell_floor_eff = g_sc.breakout_rsi_sell_floor;
-            bool weak_adx_floor = (m5_adx < g_sc.breakout_adx_sell_floor_threshold);
+            bool strong_h1_bear = (h1_trend_strength < -1.0);
+            bool weak_adx_floor = (m5_adx < g_sc.breakout_adx_sell_floor_threshold) && !strong_h1_bear;
             if(weak_adx_floor)
                sell_floor_eff = MathMax(sell_floor_eff, g_sc.breakout_rsi_sell_floor_weak_adx);
             if(m5_rsi <= sell_floor_eff) {
@@ -5440,9 +5463,12 @@ void CheckNativeScalperSetups() {
                }
             }
             // RSI-declining gate (2.7.4): block SELL if RSI rising bar-over-bar (auto-off at ADX≥threshold)
+            // strong_h1_bear bypass (2.7.14): when H1 is strongly bearish (h1_trend<-1.0), a one-bar
+            // RSI tick-up is noise in a genuine downtrend — Apr29 16:00 H1=-1.997 blocked a 30-pt move.
             bool rsi_decl_ok = true;
             if(adx_dur_ok && g_sc.breakout_require_rsi_declining_sell
-               && m5_adx < g_sc.breakout_rsi_decl_sell_adx_threshold) {
+               && m5_adx < g_sc.breakout_rsi_decl_sell_adx_threshold
+               && h1_trend_strength >= -1.0) {  // bypass when H1 strongly bearish
                double rsi_prev_buf[1];
                if(CopyBuffer(g_mtf[0].h_rsi, 0, 1, 1, rsi_prev_buf) == 1 && m5_rsi > rsi_prev_buf[0]) {
                   datetime _rsidecl_bar = iTime(_Symbol, PERIOD_M5, 0);
