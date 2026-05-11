@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.97"
+#property version "2.98"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.27";
+const string FORGE_VERSION = "2.7.28";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -192,6 +192,11 @@ bool     g_daily_flip_now           = false; // one-tick flag set by ComputeDail
 datetime g_scalper_last_dailybias_buy_log_bar  = 0; // throttle daily_bear_block_buy
 datetime g_scalper_last_dailybias_sell_log_bar = 0; // throttle daily_bull_block_sell
 
+// 2.7.28 — Momentum dump-catch state
+datetime g_scalper_last_dump_sell_time = 0;   // wall time of last dump SELL entry — cooldown anchor
+datetime g_scalper_last_dump_buy_time  = 0;   // wall time of last dump BUY entry  — cooldown anchor
+datetime g_scalper_last_dump_log_bar   = 0;   // throttle dump SKIP logs (once per M5 bar)
+
 // Native news filter state
 datetime g_nf_next_refresh             = 0;
 datetime g_nf_block_start              = 0;
@@ -303,6 +308,20 @@ struct ScalperConfig {
    int    breakout_tp4_min_adx;             // 2.7.27: minimum M5 ADX to stage to TP4 (default 25). Below this, runner exits at TP3.
    bool   breakout_tp5_staging_enabled;     // 2.7.27: enable TP4→TP5 staging (default false).
    int    breakout_tp5_min_adx;             // 2.7.27: minimum M5 ADX to stage to TP5 (default 30, stricter than TP4).
+   // 2.7.28 — Momentum dump-catch market entry (non-BB setup).
+   // Fires when M5 shows a fast directional impulse that BB_BREAKOUT/BB_BOUNCE conditions miss.
+   // Single-shot scalp — no cascade arming, smaller lot than BB setups.
+   // Run 17 evidence: Apr 22-29 lost ~208 pts in straight bear, FORGE caught only 6 BB_BREAKOUT SELLs
+   // because most dump bars never re-broke the BB lower band after the initial break.
+   bool   dump_catch_enabled;               // 2.7.28: master toggle. Default false until backtested.
+   int    dump_lookback_bars;               // 2.7.28: M5 bars to measure impulse (default 3 = 15min window).
+   double dump_atr_mult;                    // 2.7.28: move threshold = atr_mult × M5_ATR. Default 1.5.
+   double dump_max_rsi;                     // 2.7.28: SELL only when M5 RSI < this (BUY: > 100−this). Default 50.
+   double dump_min_adx;                     // 2.7.28: M5 ADX must exceed this for sustained move (default 25).
+   bool   dump_require_psar;                // 2.7.28: require PSAR alignment (ABOVE for SELL, BELOW for BUY). Default true.
+   bool   dump_require_d1_bias;             // 2.7.28: require v2.7.27 Filter 1 daily bias to agree. Default true.
+   int    dump_cooldown_seconds;            // 2.7.28: minimum gap between consecutive dump entries per direction (default 600 = 10min).
+   double dump_lot_factor;                  // 2.7.28: lot multiplier vs fixed_lot — smaller than BB (default 0.7).
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -2649,6 +2668,16 @@ void InitScalperConfig() {
    g_sc.breakout_tp4_min_adx          = 25;       // 2.7.27: TP4 only stages when M5 ADX ≥ 25 (trending).
    g_sc.breakout_tp5_staging_enabled  = false;    // 2.7.27: off by default; runner stops at TP4 unless explicitly enabled.
    g_sc.breakout_tp5_min_adx          = 30;       // 2.7.27: TP5 stricter — only stages when M5 ADX ≥ 30 (deep trend).
+   // 2.7.28 — Momentum dump-catch defaults (off by default).
+   g_sc.dump_catch_enabled            = false;
+   g_sc.dump_lookback_bars            = 3;        // 3 M5 bars = 15-min impulse window
+   g_sc.dump_atr_mult                 = 1.5;      // move > 1.5×ATR over lookback fires the trigger
+   g_sc.dump_max_rsi                  = 50.0;     // SELL when RSI<50, BUY when RSI>50 (mirror)
+   g_sc.dump_min_adx                  = 25.0;     // require ADX>25 to confirm sustained move
+   g_sc.dump_require_psar             = true;     // PSAR must agree with dump direction
+   g_sc.dump_require_d1_bias          = true;     // require v2.7.27 Filter 1 bias agreement
+   g_sc.dump_cooldown_seconds         = 600;      // 10-min cooldown per direction
+   g_sc.dump_lot_factor               = 0.7;      // 0.7× fixed_lot per leg
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3223,6 +3252,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"daily_move_flip_hysteresis"))     { v = JsonGetDouble(content,"daily_move_flip_hysteresis");    if(v >= 0.0 && v <= 5.0) g_sc.daily_move_flip_hysteresis = v; }
    if(JsonHasKey(content,"daily_cancel_pending_on_flip"))   { v = JsonGetDouble(content,"daily_cancel_pending_on_flip");  g_sc.daily_cancel_pending_on_flip  = (v >= 0.5); }
    if(JsonHasKey(content,"daily_cancel_includes_cascade"))  { v = JsonGetDouble(content,"daily_cancel_includes_cascade"); g_sc.daily_cancel_includes_cascade = (v >= 0.5); }
+   // 2.7.28 — Momentum dump-catch parses
+   if(JsonHasKey(content,"dump_catch_enabled"))       { v = JsonGetDouble(content,"dump_catch_enabled");       g_sc.dump_catch_enabled       = (v >= 0.5); }
+   if(JsonHasKey(content,"dump_lookback_bars"))       { v = JsonGetDouble(content,"dump_lookback_bars");       if(v >= 1 && v <= 20)    g_sc.dump_lookback_bars    = (int)v; }
+   if(JsonHasKey(content,"dump_atr_mult"))            { v = JsonGetDouble(content,"dump_atr_mult");            if(v >= 0.3 && v <= 5.0) g_sc.dump_atr_mult         = v; }
+   if(JsonHasKey(content,"dump_max_rsi"))             { v = JsonGetDouble(content,"dump_max_rsi");             if(v >= 0 && v <= 100)   g_sc.dump_max_rsi          = v; }
+   if(JsonHasKey(content,"dump_min_adx"))             { v = JsonGetDouble(content,"dump_min_adx");             if(v >= 0 && v <= 100)   g_sc.dump_min_adx          = v; }
+   if(JsonHasKey(content,"dump_require_psar"))        { v = JsonGetDouble(content,"dump_require_psar");        g_sc.dump_require_psar    = (v >= 0.5); }
+   if(JsonHasKey(content,"dump_require_d1_bias"))     { v = JsonGetDouble(content,"dump_require_d1_bias");     g_sc.dump_require_d1_bias = (v >= 0.5); }
+   if(JsonHasKey(content,"dump_cooldown_seconds"))    { v = JsonGetDouble(content,"dump_cooldown_seconds");    if(v >= 0 && v <= 7200)  g_sc.dump_cooldown_seconds = (int)v; }
+   if(JsonHasKey(content,"dump_lot_factor"))          { v = JsonGetDouble(content,"dump_lot_factor");          if(v > 0 && v <= 2.0)    g_sc.dump_lot_factor       = v; }
    if(JsonHasKey(content,"session_london_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_london_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_london_sell_cutoff_utc = (int)v; }
    if(JsonHasKey(content,"breakout_near_floor_lot_factor")) { v = JsonGetDouble(content,"breakout_near_floor_lot_factor"); if(v > 0 && v <= 1.0) g_sc.breakout_near_floor_lot_factor = v; }
    if(JsonHasKey(content,"same_direction_stack_lot_factor")) { v = JsonGetDouble(content,"same_direction_stack_lot_factor"); if(v > 0 && v <= 1.0) g_sc.same_direction_stack_lot_factor = v; }
@@ -6427,6 +6466,144 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // ─────────────────────────────────────────────────────────────────────────────
+   // 2.7.28 — Momentum dump-catch market entry
+   //
+   // PURPOSE: Fire market entries on fast M5 impulses that BB_BREAKOUT and BB_BOUNCE
+   //   conditions miss. Run 17 lost ~208 pts of Apr 22-29 bear move because most
+   //   dump bars never re-broke the BB lower band after the initial break.
+   //
+   // EVALUATION ORDER (only runs when direction is still empty after BB checks):
+   //   1. Master toggle (dump_catch_enabled) — skip block entirely if false
+   //   2. Compute move_3bars = M5_close(0) − M5_close(lookback_bars)
+   //   3. SELL trigger: move < -atr_mult × m5_atr
+   //      BUY trigger:  move > +atr_mult × m5_atr
+   //   4. Filter chain (logs SKIP per gate when trigger fires but filter blocks):
+   //      a. RSI bound (SELL: rsi < max; BUY: rsi > 100−max)
+   //      b. ADX min (sustained move)
+   //      c. PSAR alignment (optional)
+   //      d. Daily bias agreement (optional, depends on v2.7.27 Filter 1)
+   //      e. Cooldown (per-direction wall-time gate)
+   //   5. On pass: set direction + setup_type="MOMENTUM_DUMP" + SL/TP for downstream.
+   //
+   // GEOMETRY (single-shot scalp):
+   //   SL = 1.5 × ATR
+   //   TP1 = 0.4 × ATR (scalp banker)
+   //   TP2 = 1.0 × ATR
+   //   TP3 = 2.0 × ATR
+   //   Lot = fixed_lot × dump_lot_factor (0.7 default)
+   //   No cascade arming — ArmPostTP1Ladder checks setup_type at top.
+   //
+   // CHANGELOG:
+   //   2026-05-11  v2.7.28 — initial implementation (Run 17 trend-capture gap fix).
+   // ─────────────────────────────────────────────────────────────────────────────
+   if(direction == "" && g_sc.dump_catch_enabled && m5_atr > 0.0) {
+      int dump_lb = MathMax(1, g_sc.dump_lookback_bars);
+      double m5_close_now  = iClose(_Symbol, PERIOD_M5, 0);
+      double m5_close_back = iClose(_Symbol, PERIOD_M5, dump_lb);
+      double move_pts      = m5_close_now - m5_close_back;
+      double dump_thresh   = g_sc.dump_atr_mult * m5_atr;
+      bool   dump_sell_trig = (move_pts < -dump_thresh);
+      bool   dump_buy_trig  = (move_pts >  dump_thresh);
+      datetime _dump_bar = iTime(_Symbol, PERIOD_M5, 0);
+      datetime _now_t    = TimeCurrent();
+
+      if(dump_sell_trig) {
+         // SELL filter chain — log SKIP on first blocking gate, throttled per M5 bar.
+         bool _logged = (_dump_bar == g_scalper_last_dump_log_bar);
+         if(m5_rsi >= g_sc.dump_max_rsi) {
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_rsi_block","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(m5_adx < g_sc.dump_min_adx) {
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_adx_block","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.dump_require_psar && g_sc.psar_enabled && g_psar_state != "ABOVE") {
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_psar_block","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.dump_require_d1_bias && g_sc.daily_direction_gate_enabled && !g_daily_bear_bias) {
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_d1_bias_block","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.dump_cooldown_seconds > 0
+                && g_scalper_last_dump_sell_time > 0
+                && (_now_t - g_scalper_last_dump_sell_time) < g_sc.dump_cooldown_seconds) {
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_cooldown","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else {
+            // All filters pass — fire market SELL entry
+            direction = "SELL";
+            setup_type = "MOMENTUM_DUMP";
+            sl  = NormalizeDouble(ask + m5_atr * 1.5, _Digits);
+            tp1 = NormalizeDouble(bid - m5_atr * 0.4, _Digits);
+            tp2 = NormalizeDouble(bid - m5_atr * 1.0, _Digits);
+            g_scalper_last_dump_sell_time = _now_t;
+            PrintFormat("FORGE 2.7.28: MOMENTUM_DUMP SELL fired @ %.2f (move=%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f)",
+                        bid, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx);
+         }
+      } else if(dump_buy_trig) {
+         // BUY mirror — same filter chain with sign flips.
+         bool _logged_b = (_dump_bar == g_scalper_last_dump_log_bar);
+         double buy_rsi_min = 100.0 - g_sc.dump_max_rsi;  // mirror: RSI > 100−max
+         if(m5_rsi <= buy_rsi_min) {
+            if(!_logged_b) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_rsi_block","MOMENTUM_DUMP","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(m5_adx < g_sc.dump_min_adx) {
+            if(!_logged_b) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_adx_block","MOMENTUM_DUMP","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.dump_require_psar && g_sc.psar_enabled && g_psar_state != "BELOW") {
+            if(!_logged_b) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_psar_block","MOMENTUM_DUMP","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.dump_require_d1_bias && g_sc.daily_direction_gate_enabled && !g_daily_bull_bias) {
+            if(!_logged_b) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_d1_bias_block","MOMENTUM_DUMP","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.dump_cooldown_seconds > 0
+                && g_scalper_last_dump_buy_time > 0
+                && (_now_t - g_scalper_last_dump_buy_time) < g_sc.dump_cooldown_seconds) {
+            if(!_logged_b) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_cooldown","MOMENTUM_DUMP","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else {
+            // All filters pass — fire market BUY entry
+            direction = "BUY";
+            setup_type = "MOMENTUM_DUMP";
+            sl  = NormalizeDouble(bid - m5_atr * 1.5, _Digits);
+            tp1 = NormalizeDouble(ask + m5_atr * 0.4, _Digits);
+            tp2 = NormalizeDouble(ask + m5_atr * 1.0, _Digits);
+            g_scalper_last_dump_buy_time = _now_t;
+            PrintFormat("FORGE 2.7.28: MOMENTUM_DUMP BUY fired @ %.2f (move=+%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f)",
+                        ask, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -6691,10 +6868,13 @@ void CheckNativeScalperSetups() {
    // BB_BOUNCE fractional lot — allows smaller position sizing for mean-reversion entries.
    double bounce_factor = (!is_breakout_setup && g_sc.bounce_lot_factor > 0.0 && g_sc.bounce_lot_factor < 1.0)
                           ? g_sc.bounce_lot_factor : 1.0;
+   // 2.7.28 — MOMENTUM_DUMP fractional lot. Dump-catch is a scalp; smaller per-leg exposure than BB setups.
+   double dump_factor = (setup_type == "MOMENTUM_DUMP" && g_sc.dump_lot_factor > 0.0 && g_sc.dump_lot_factor < 1.0)
+                        ? g_sc.dump_lot_factor : 1.0;
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor);
+   double combined_lot_factor = MathMax(0.125, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
    double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);
@@ -7132,6 +7312,8 @@ void ArmPostTP1Ladder(const int gi) {
    if(gi < 0 || gi >= ArraySize(g_groups)) return;
    // Day 2 only arms for SELL groups — BUY recovery is Day 3
    if(g_groups[gi].direction != "SELL") return;
+   // 2.7.28 — MOMENTUM_DUMP is a single-shot scalp; never arm cascade for it.
+   if(g_groups[gi].scalper_setup == "MOMENTUM_DUMP") return;
    double crash_low = g_groups[gi].crash_low;
    double entry_atr = g_groups[gi].entry_atr;
    int    grp_id    = g_groups[gi].id;

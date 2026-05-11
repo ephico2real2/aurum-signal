@@ -290,5 +290,30 @@
     "label": "Daily bias bullish — SELL blocked",
     "explanation": "FORGE's D1 SMA slope is positive beyond the configured threshold (daily_slope_block_atr × daily_ATR), indicating a multi-day rip. SELL entries are blocked while this bias holds. Mirror of the BUY-block; prevents selling into a sustained upward trend.",
     "category": "Regime"
+  },
+  "dump_rsi_block": {
+    "label": "Dump-catch — RSI outside bound",
+    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired (M5 impulse > atr_mult × ATR over lookback bars) but the M5 RSI was outside the dump_max_rsi bound (SELL requires RSI < max; BUY requires RSI > 100−max). Prevents fading exhaustion moves.",
+    "category": "Entry Quality"
+  },
+  "dump_adx_block": {
+    "label": "Dump-catch — ADX below minimum",
+    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but M5 ADX was below dump_min_adx. Filters whipsaw spikes that lack trend confirmation.",
+    "category": "Entry Quality"
+  },
+  "dump_psar_block": {
+    "label": "Dump-catch — PSAR misaligned",
+    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but PSAR was on the wrong side of price (SELL requires PSAR ABOVE, BUY requires PSAR BELOW). Structural confirmation gate.",
+    "category": "Entry Quality"
+  },
+  "dump_d1_bias_block": {
+    "label": "Dump-catch — daily bias disagrees",
+    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but the v2.7.27 daily direction gate did not confirm the same bias (SELL requires d1_bear_bias, BUY requires d1_bull_bias). Prevents counter-daily momentum entries.",
+    "category": "Regime"
+  },
+  "dump_cooldown": {
+    "label": "Dump-catch — cooldown active",
+    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired within dump_cooldown_seconds of a prior dump entry in the same direction. Prevents serial entries on a single multi-bar impulse.",
+    "category": "Cooldowns"
   }
 }

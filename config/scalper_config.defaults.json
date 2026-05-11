@@ -233,7 +233,16 @@
     "daily_move_block_atr": 0.5,
     "daily_move_flip_hysteresis": 0.3,
     "daily_cancel_pending_on_flip": 1,
-    "daily_cancel_includes_cascade": 1
+    "daily_cancel_includes_cascade": 1,
+    "dump_catch_enabled": 0,
+    "dump_lookback_bars": 3,
+    "dump_atr_mult": 1.5,
+    "dump_max_rsi": 50,
+    "dump_min_adx": 25,
+    "dump_require_psar": 1,
+    "dump_require_d1_bias": 1,
+    "dump_cooldown_seconds": 600,
+    "dump_lot_factor": 0.7
   },
   "journal": {
     "journal_enabled": 1,
