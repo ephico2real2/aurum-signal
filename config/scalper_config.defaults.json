@@ -81,6 +81,7 @@
     "sell_limit_l2_lot_factor": 0.125,
     "sell_stop_cont_enabled": 0,
     "sell_stop_cont_atr_mult": 0.4,
+    "sell_stop_cont_sl_atr_mult": 1.5,
     "sell_stop_cont_lot_factor": 1.0,
     "sell_stop_cont_tp_atr_mult": 1.5,
     "sell_stop_cont_expiry_bars": 2,

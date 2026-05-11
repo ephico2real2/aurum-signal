@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.85"
+#property version "2.86"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.15";
+const string FORGE_VERSION = "2.7.16";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -268,6 +268,7 @@ struct ScalperConfig {
    // Enable via .env: FORGE_SELL_STOP_CONT_ENABLED=1; disabled by default to preserve pre-2.7.10 behavior
    bool   sell_stop_cont_enabled;      // arm SELL STOP below TP1 after TP1 hit (default false)
    double sell_stop_cont_atr_mult;     // SELL STOP price: tp1 - ATR × this (default 0.40)
+   double sell_stop_cont_sl_atr_mult;  // SELL STOP SL: cascade_entry + ATR × this (2.7.16, default 1.5; 0 = fall back to legacy 'tp1+atr_mult' geometry)
    double sell_stop_cont_lot_factor;   // lot factor per continuation leg — 1.0 = full lot, same as primary (default 1.0)
    double sell_stop_cont_tp_atr_mult;  // TP: cascade_entry - ATR×mult (default 1.5 = ~9pts @ ATR=6)
    int    sell_stop_cont_expiry_bars;  // cancel if not triggered within N M5 bars (default 2 = 10 min)
@@ -2319,6 +2320,8 @@ void InitScalperConfig() {
    // SELL STOP continuation — off by default; enable via FORGE_SELL_STOP_CONT_ENABLED=1
    g_sc.sell_stop_cont_enabled       = false;
    g_sc.sell_stop_cont_atr_mult      = 0.40;
+   g_sc.sell_stop_cont_sl_atr_mult   = 1.5;   // 2.7.16: SL anchored to cascade entry, default 1.5×ATR; protects against SL-hunt wicks
+
    g_sc.sell_stop_cont_lot_factor    = 1.0;   // full lot — cascade is a confirmed continuation entry
    g_sc.sell_stop_cont_tp_atr_mult   = 1.5;   // ~9pts at ATR=6 — captures the continuation leg
    g_sc.sell_stop_cont_expiry_bars   = 2;     // 10 min — scalpers don't wait; if no fill in 10min, dead
@@ -2667,6 +2670,7 @@ void ReadScalperConfig() {
       // SELL STOP continuation (2.7.10 Day 2) — disabled by default
       if(JsonHasKey(breakout_json, "sell_stop_cont_enabled"))    { v = JsonGetDouble(breakout_json,"sell_stop_cont_enabled");    g_sc.sell_stop_cont_enabled    = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "sell_stop_cont_atr_mult"))   { v = JsonGetDouble(breakout_json,"sell_stop_cont_atr_mult");   if(v > 0 && v <= 5.0)  g_sc.sell_stop_cont_atr_mult   = v; }
+      if(JsonHasKey(breakout_json, "sell_stop_cont_sl_atr_mult")){ v = JsonGetDouble(breakout_json,"sell_stop_cont_sl_atr_mult"); if(v >= 0.0 && v <= 10.0) g_sc.sell_stop_cont_sl_atr_mult = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_lot_factor")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_lot_factor"); if(v > 0 && v <= 2.0)  g_sc.sell_stop_cont_lot_factor = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_tp_atr_mult")) { v = JsonGetDouble(breakout_json,"sell_stop_cont_tp_atr_mult"); if(v >= 0.0) g_sc.sell_stop_cont_tp_atr_mult = v; }
       if(JsonHasKey(breakout_json, "sell_stop_cont_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_stop_cont_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_stop_cont_expiry_bars = (int)v; }
@@ -6343,7 +6347,14 @@ void ArmPostTP1Ladder(const int gi) {
       if(cascade_ok) {
          double tp1_ref  = g_groups[gi].tp1;
          double ss_price = NormalizeDouble(tp1_ref - entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
-         double ss_sl    = NormalizeDouble(tp1_ref + entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
+         // SL geometry (2.7.16): anchored to cascade entry, sized by sell_stop_cont_sl_atr_mult.
+         // Decoupled from entry trigger to prevent SL-hunt wicks (Run 13 cascade survived only because
+         // h1_trend=-1.997 trend was maximally strong; weaker continuations would wick out at the old 0.8×ATR SL).
+         // Fallback to legacy geometry (sl_atr_mult=0 → tp1 + atr_mult×ATR) preserves backward compatibility.
+         double _ss_sl_mult = g_sc.sell_stop_cont_sl_atr_mult;
+         double ss_sl    = (_ss_sl_mult > 0.0)
+                           ? NormalizeDouble(ss_price + entry_atr * _ss_sl_mult, _Digits)
+                           : NormalizeDouble(tp1_ref + entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
          double ss_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                                                 g_sc.lot_fixed * g_sc.sell_stop_cont_lot_factor));
          datetime ss_exp = TimeCurrent() + (datetime)(g_sc.sell_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));

@@ -1,5 +1,5 @@
 {
-  "version": "2.7.15",
+  "version": "2.7.16",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -81,6 +81,7 @@
     "sell_limit_l2_lot_factor": 0.125,
     "sell_stop_cont_enabled": 1,
     "sell_stop_cont_atr_mult": 0.4,
+    "sell_stop_cont_sl_atr_mult": 3.5,
     "sell_stop_cont_lot_factor": 1.0,
     "sell_stop_cont_tp_atr_mult": 1.5,
     "sell_stop_cont_expiry_bars": 2,

@@ -132,6 +132,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # SELL STOP continuation (2.7.10 Day 2) — disabled by default; enable to capture second impulse after TP1
     "FORGE_SELL_STOP_CONT_ENABLED":      ("bb_breakout", "sell_stop_cont_enabled",      "bool01", None, None),
     "FORGE_SELL_STOP_CONT_ATR_MULT":     ("bb_breakout", "sell_stop_cont_atr_mult",     "float", 0.1, 3.0),
+    "FORGE_SELL_STOP_CONT_SL_ATR_MULT":  ("bb_breakout", "sell_stop_cont_sl_atr_mult",  "float", 0.0, 10.0),
     "FORGE_SELL_STOP_CONT_LOT_FACTOR":   ("bb_breakout", "sell_stop_cont_lot_factor",   "float", 0.0, 2.0),
     "FORGE_SELL_STOP_CONT_LEGS":         ("bb_breakout", "sell_stop_cont_legs",         "int",   1.0, 7.0),
     "FORGE_SELL_STOP_CONT_EXPIRY_BARS":  ("bb_breakout", "sell_stop_cont_expiry_bars",  "int",   1.0, 50.0),
