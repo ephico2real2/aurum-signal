@@ -1,5 +1,5 @@
 {
-  "version": "2.7.16",
+  "version": "2.7.17",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -63,6 +63,8 @@
     "counter_buy_adx_threshold": 28.0,
     "require_h1_di_sell": 1,
     "require_h1_macd_sell": 0,
+    "require_h1_macd_buy": 1,
+    "same_dir_cooldown_seconds": 900,
     "max_reentry_atr_ext": 2,
     "min_h1_bear_strength": 0.2,
     "require_m30_bear_sell": 1,

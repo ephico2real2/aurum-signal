@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.86"
+#property version "2.87"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.16";
+const string FORGE_VERSION = "2.7.17";
 
 // ── INPUT PARAMETERS (shown in EA dialog when attaching to chart) ──
 input string  FilesPath      = "";           // Override MT5 Files path (leave blank for auto)
@@ -126,6 +126,10 @@ datetime g_scalper_last_sesscut_log_bar  = 0;   // throttle entry_quality_sessio
 datetime g_scalper_last_macd_log_bar     = 0;   // throttle entry_quality_macd_* gates (2.7.7)
 datetime g_scalper_last_h1disell_log_bar = 0;  // throttle entry_quality_h1_di_sell (2.7.12)
 datetime g_scalper_last_h1macd_log_bar   = 0;  // throttle entry_quality_h1_macd_sell (2.7.12)
+datetime g_scalper_last_h1macdbuy_log_bar = 0; // throttle entry_quality_h1_macd_buy (2.7.17)
+datetime g_scalper_last_bocooldown_log_bar = 0; // throttle entry_quality_breakout_cooldown (2.7.17)
+datetime g_scalper_last_bb_breakout_buy  = 0;  // wall time of last BB_BREAKOUT BUY entry (2.7.17 cooldown)
+datetime g_scalper_last_bb_breakout_sell = 0;  // wall time of last BB_BREAKOUT SELL entry (2.7.17 cooldown)
 datetime g_scalper_last_hbd_log_bar      = 0;  // throttle entry_quality_hid_bull_div_sell (2.7.13)
 datetime g_scalper_last_adxblk_log_bar   = 0;   // throttle entry_quality_adx_extreme_sell (2.7.7)
 double   g_last_combined_lot_factor      = 1.0; // last computed combined lot factor — written to SIGNALS.lot_factor
@@ -203,6 +207,8 @@ struct ScalperConfig {
    double breakout_counter_buy_adx_threshold;       // h1_di_buy gate active only when m5_adx < this (default 28; auto-off in strong trend)
    bool   breakout_require_h1_di_sell;              // block SELL when H1 DI+ >= DI- (bullish H1 — no ADX bypass; catches false breakdowns)
    bool   breakout_require_h1_macd_sell;            // block SELL when H1 MACD histogram >= 0 (H1 bullish momentum; Run 12+ gate)
+   bool   breakout_require_h1_macd_buy;             // block BUY when H1 MACD histogram < 0 (H1 momentum stalling; 2.7.17 Run 15 G5002 fix)
+   int    breakout_same_dir_cooldown_seconds;       // block consecutive BB_BREAKOUT entries in same direction within N seconds (2.7.17 Run 15 G5002 fix)
    int    breakout_adx_min_sell_lookback_bars;       // ADX spike-from-flat gate: bars back to check (default 6 = 30min; 0=disabled)
    // Cardwell RSI Zone Theory (Andrew Cardwell):
    //   Uptrend range: RSI 40–80.  Bull Support floor = 40 (long re-entry on dip).
@@ -2266,6 +2272,8 @@ void InitScalperConfig() {
    g_sc.breakout_counter_buy_adx_threshold    = 28.0;
    g_sc.breakout_require_h1_di_sell           = false;
    g_sc.breakout_require_h1_macd_sell         = false;
+   g_sc.breakout_require_h1_macd_buy          = false; // 2.7.17: disabled by default; .env override enables
+   g_sc.breakout_same_dir_cooldown_seconds    = 0;     // 2.7.17: 0=disabled; .env override sets (e.g. 900 = 15 min)
    g_sc.breakout_adx_min_sell_lookback_bars   = 6;
    g_sc.breakout_rsi_buy_min = 40;
    g_sc.breakout_rsi_sell_max = 60;
@@ -2726,6 +2734,14 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "require_h1_di_sell")) {
          v = JsonGetDouble(breakout_json, "require_h1_di_sell");
          g_sc.breakout_require_h1_di_sell = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "require_h1_macd_buy")) {
+         v = JsonGetDouble(breakout_json, "require_h1_macd_buy");
+         g_sc.breakout_require_h1_macd_buy = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "same_dir_cooldown_seconds")) {
+         v = JsonGetDouble(breakout_json, "same_dir_cooldown_seconds");
+         if(v >= 0 && v <= 3600) g_sc.breakout_same_dir_cooldown_seconds = (int)v;
       }
       if(JsonHasKey(breakout_json, "require_h1_macd_sell")) {
          v = JsonGetDouble(breakout_json, "require_h1_macd_sell");
@@ -5319,15 +5335,51 @@ void CheckNativeScalperSetups() {
                   h4_adx_buy_ok = false;
                }
             }
+            // H1 MACD histogram gate (2.7.17, Run 15 G5002 fix): block BUY when H1 MACD histogram < 0 (H1 momentum stalling).
+            // Mirror of require_h1_macd_sell — Run 15 G5002 lost -$400 with h1_trend=+2.139 (max bullish DI) but H1 MACD=-2.11
+            // (momentum stalled). DI says "trend up", MACD says "momentum gone" → classic trend-exhaustion BUY-the-top trap.
+            bool h1_macd_buy_ok = true;
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok
+               && g_sc.breakout_require_h1_macd_buy && g_h_macd != INVALID_HANDLE) {
+               double _h1mb[1], _h1sb[1];
+               if(CopyBuffer(g_h_macd, 0, 0, 1, _h1mb) == 1 && CopyBuffer(g_h_macd, 1, 0, 1, _h1sb) == 1) {
+                  double _h1_hist_b = _h1mb[0] - _h1sb[0];
+                  if(_h1_hist_b < 0.0) {
+                     datetime _h1mcdb_bar = iTime(_Symbol, PERIOD_M5, 0);
+                     if(_h1mcdb_bar != g_scalper_last_h1macdbuy_log_bar) {
+                        g_scalper_last_h1macdbuy_log_bar = _h1mcdb_bar;
+                        JournalRecordSignal("SKIP","entry_quality_h1_macd_buy","BB_BREAKOUT","BUY",
+                           mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0,_h1_hist_b);
+                     }
+                     h1_macd_buy_ok = false;
+                  }
+               }
+            }
+            // BB_BREAKOUT same-direction cooldown (2.7.17, Run 15 G5002 fix): block consecutive BB_BREAKOUT BUY entries
+            // within N seconds of the prior same-direction BB_BREAKOUT TAKEN. Targets the "double-tap stack onto fading
+            // momentum" failure mode. Set FORGE_BREAKOUT_SAME_DIR_COOLDOWN_SECONDS=900 (15 min) in .env to enable.
+            bool bo_cooldown_buy_ok = true;
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok
+               && g_sc.breakout_same_dir_cooldown_seconds > 0
+               && g_scalper_last_bb_breakout_buy > 0
+               && (TimeCurrent() - g_scalper_last_bb_breakout_buy) < g_sc.breakout_same_dir_cooldown_seconds) {
+               datetime _boc_bar = iTime(_Symbol, PERIOD_M5, 0);
+               if(_boc_bar != g_scalper_last_bocooldown_log_bar) {
+                  g_scalper_last_bocooldown_log_bar = _boc_bar;
+                  JournalRecordSignal("SKIP","entry_quality_breakout_cooldown","BB_BREAKOUT","BUY",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+               bo_cooldown_buy_ok = false;
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_buy_ok = true;
-            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok
                && g_nf_eff_rsi_buy_ceil < g_sc.breakout_rsi_buy_ceil && m5_rsi >= g_nf_eff_rsi_buy_ceil) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","BUY",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_buy_ok = false;
             }
-            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && nf_buy_ok)
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && nf_buy_ok)
             { // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(bid - m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_floor = NormalizeDouble(bid - m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -5595,16 +5647,30 @@ void CheckNativeScalperSetups() {
                   h4_adx_sell_ok = false;
                }
             }
+            // BB_BREAKOUT same-direction cooldown (2.7.17) — mirror of BUY-side cooldown
+            bool bo_cooldown_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok
+               && g_sc.breakout_same_dir_cooldown_seconds > 0
+               && g_scalper_last_bb_breakout_sell > 0
+               && (TimeCurrent() - g_scalper_last_bb_breakout_sell) < g_sc.breakout_same_dir_cooldown_seconds) {
+               datetime _bocs_bar = iTime(_Symbol, PERIOD_M5, 0);
+               if(_bocs_bar != g_scalper_last_bocooldown_log_bar) {
+                  g_scalper_last_bocooldown_log_bar = _bocs_bar;
+                  JournalRecordSignal("SKIP","entry_quality_breakout_cooldown","BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+               bo_cooldown_sell_ok = false;
+            }
             // News RSI tighten — independent additive check (last line of defense before entry)
             bool nf_sell_ok = true;
-            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok
                && g_nf_eff_rsi_sell_min > g_sc.breakout_rsi_sell_floor
                && m5_rsi <= g_nf_eff_rsi_sell_min) {
                JournalRecordSignal("SKIP","entry_quality_news_rsi_tighten","BB_BREAKOUT","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_sell_ok = false;
             }
-            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && nf_sell_ok) {
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok && nf_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -6196,6 +6262,11 @@ void CheckNativeScalperSetups() {
       direction=="BUY" ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID),
       spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,entry_candle_score,h1_trend_strength,0,
       _taken_macd, _taken_m15adx, g_last_combined_lot_factor);
+   // 2.7.17: track last BB_BREAKOUT entry time per direction for the breakout cooldown gate
+   if(setup_type == "BB_BREAKOUT") {
+      if(direction == "BUY")  g_scalper_last_bb_breakout_buy  = TimeCurrent();
+      if(direction == "SELL") g_scalper_last_bb_breakout_sell = TimeCurrent();
+   }
    double entry_price = (direction == "BUY") ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID);
    if(direction == "BUY" && g_first_buy_entry_price <= 0.0)
       g_first_buy_entry_price = entry_price;

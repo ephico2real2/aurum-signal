@@ -116,6 +116,16 @@
     "explanation": "The 1-hour MACD histogram is >= 0, meaning hourly momentum is not yet bearish. FORGE blocks the SELL until H1 momentum confirms the breakdown. Paired with entry_quality_h1_di_sell as the H1 confirmation pair. Added in 2.7.12.",
     "category": "MACD Gates"
   },
+  "entry_quality_h1_macd_buy": {
+    "label": "H1 MACD histogram already bearish — blocks buy",
+    "explanation": "The 1-hour MACD histogram is < 0, meaning hourly momentum is stalling even though DI may say the trend is still up. Classic trend-exhaustion BUY-the-top trap. Added in 2.7.17 after Run 15 G5002 lost -$400 with H1 trend=+2.139 (max bullish DI) but H1 MACD=-2.112 (momentum gone).",
+    "category": "MACD Gates"
+  },
+  "entry_quality_breakout_cooldown": {
+    "label": "BB_BREAKOUT same-direction cooldown — stacking onto fading momentum",
+    "explanation": "A prior BB_BREAKOUT entry in the same direction fired recently (within `same_dir_cooldown_seconds`, default 900s = 15 min). FORGE blocks consecutive same-direction breakouts to avoid the 'double-tap' failure mode where the second entry stacks onto fading momentum and stops out. Added in 2.7.17 after Run 15 G5002 lost -$400 firing 5 minutes after G5001's same-direction breakout.",
+    "category": "Cooldowns"
+  },
   "entry_quality_hid_bull_div_sell": {
     "label": "Hidden bullish RSI divergence — pullback about to reverse up",
     "explanation": "HID_BULL = price made a higher low while RSI made a lower low — the classic Cardwell signature for a downtrend pullback about to reverse upward. FORGE blocks SELL when this divergence is active. Added in 2.7.13 after the Run 11 G5008 catastrophe lost -$940 with HID_BULL active at entry.",
