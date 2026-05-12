@@ -296,6 +296,16 @@
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired (M5 impulse > atr_mult × ATR over lookback bars) but the M5 RSI was outside the dump_max_rsi bound (SELL requires RSI < max; BUY requires RSI > 100−max). Prevents fading exhaustion moves.",
     "category": "Entry Quality"
   },
+  "dump_rsi_buy_ceil": {
+    "label": "Dump-catch BUY — RSI overbought ceiling",
+    "explanation": "v2.7.34 MOMENTUM_DUMP BUY trigger fired but M5 RSI is at or above dump_max_rsi_buy (default 70). At RSI ≥ 70 the up-move is wave-exhausted and likely to retrace down — the same chop-retrace principle as the SELL-side dump_max_rsi, inverted. Run 20 G5009 (RSI 72.2 BUY → −$305 in 10-leg cascade) is the canonical case this gate prevents.",
+    "category": "Entry Quality"
+  },
+  "dump_h1_trend_block_sell": {
+    "label": "Dump-catch SELL — h1_trend too bullish (counter-trend block)",
+    "explanation": "v2.7.35 MOMENTUM_DUMP SELL trigger fired but H1 trend strength is at or above dump_sell_h1_max (default 2.0 when enabled). At very strong H1 bullish bias, counter-trend SELLs into a bull rally have negative expectancy. Run 23 G5004 (h1=2.06 -$19), G5008 (h1=2.27 -$47), G5020 (h1=1.05 -$21) — equivalent winners at similar h1_trend banked only $3-5 each. Net trade-off strongly positive.",
+    "category": "Entry Quality"
+  },
   "dump_adx_block": {
     "label": "Dump-catch — ADX below minimum",
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but M5 ADX was below dump_min_adx. Filters whipsaw spikes that lack trend confirmation.",
@@ -315,5 +325,15 @@
     "label": "Dump-catch — cooldown active",
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired within dump_cooldown_seconds of a prior dump entry in the same direction. Prevents serial entries on a single multi-bar impulse.",
     "category": "Cooldowns"
+  },
+  "dump_chop_block": {
+    "label": "Dump-catch — RANGE regime chop filter",
+    "explanation": "v2.7.32 MOMENTUM_DUMP blocked because regime_label='RANGE' — chop/whipsaw zone where dump-catch SLs get wicked out on noise. Run 20 Mar 31 showed 4/7 RANGE-regime dumps lost on this pattern. Allow only TREND_BULL/TREND_BEAR/VOLATILE.",
+    "category": "Setup gates"
+  },
+  "dump_bar_confirm_missing": {
+    "label": "Dump-catch — prior bar direction confirmation missing (Option B, default OFF)",
+    "explanation": "v2.7.32 Option B: MOMENTUM_DUMP trigger fired but the immediately prior closed bar (bar 1) did NOT move in trade direction vs bar 2. Filters single-wick triggers in chop. Default OFF via FORGE_DUMP_REQUIRE_BAR_CONFIRM=0. Run 20 analysis showed 16 of 24 BUY losses were IMMEDIATE-SL direction failures that this gate would filter.",
+    "category": "Setup gates"
   }
 }

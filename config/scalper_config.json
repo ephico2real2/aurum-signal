@@ -1,5 +1,5 @@
 {
-  "version": "2.7.29",
+  "version": "2.7.35",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -240,15 +240,28 @@
     "daily_cancel_includes_cascade": 1,
     "dump_catch_enabled": 1,
     "dump_lookback_bars": 3,
-    "dump_atr_mult": 1.5,
-    "dump_max_rsi": 50,
-    "dump_min_adx": 25,
+    "dump_atr_mult": 1,
+    "dump_max_rsi": 41,
+    "dump_min_adx": 20,
     "dump_require_psar": 1,
     "dump_require_d1_bias": 0,
     "dump_cooldown_seconds": 600,
     "dump_lot_factor": 0.5,
     "regime_h1_override_factor": 2,
-    "regime_h1_override_adx_min": 30
+    "regime_h1_override_adx_min": 30,
+    "dump_max_rsi_buy": 70,
+    "dump_buy_lot_factor": 1,
+    "dump_sell_lot_factor": 0.5,
+    "dump_sell_h1_max": 2,
+    "dump_require_bar_confirm": 1,
+    "pullback_scalp_enabled": 1,
+    "pullback_scalp_fresh_flip_bars": 3,
+    "pullback_scalp_lot_factor": 0.5,
+    "pullback_scalp_sl_atr_mult": 2.5,
+    "pullback_scalp_tp1_atr_mult": 0.3,
+    "pullback_scalp_tp2_atr_mult": 0.7,
+    "pullback_scalp_cooldown_seconds": 600,
+    "pullback_scalp_max_adx": 30
   },
   "journal": {
     "journal_enabled": 1,
@@ -271,9 +284,9 @@
     "min_num_trades": 2,
     "max_num_trades": 30,
     "staged_entry_enabled": 1,
-    "staged_initial_legs": 10,
+    "staged_initial_legs": 1,
     "staged_add_interval_sec": 25,
-    "staged_add_min_favorable_points": 5,
+    "staged_add_min_favorable_points": 500,
     "staged_favorable_from_entry_only": 0,
     "recovery_leg_boost_enabled": 1,
     "recovery_leg_boost_dd_pct_min": 1.0,
@@ -285,6 +298,7 @@
     "native_scalper_use_limit_entry": 0,
     "pending_ladder_abort_enabled": 1,
     "pending_ladder_abort_adverse_points": 25,
-    "pending_ladder_abort_require_negative_float": 1
+    "pending_ladder_abort_require_negative_float": 1,
+    "wave_confirmation_lot_mult": 2
   }
 }
