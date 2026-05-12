@@ -1,5 +1,38 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [FORGE 2.7.39] — 2026-05-12 (R:R bypass hotfix for v2.7.38 composites)
+
+### Context
+Codex v2.7.38 review surfaced 1 FAIL: the new setup types
+**FRACTIONAL_SELL_IN_BULL** and **BULL_DAY_DIP_BUY** would never fire even
+when their `FORGE_*_ENABLED` flags were set, because the `rr_too_low` gate
+(`scalper_min_rr_ratio`, default floor 1.5) only bypassed `MOMENTUM_DUMP`
+and `BB_PULLBACK_SCALP`. Both new composites have intrinsic single-TP1 /
+no-TP2 scalp geometry per atlas §5.1 V3 and §5.3:
+- FRACTIONAL_SELL_IN_BULL: SL 1.5×ATR / TP1 0.3×ATR → R:R = 0.20
+- BULL_DAY_DIP_BUY: SL 1.0×ATR / TP1 0.65×ATR → R:R = 0.65
+
+Both R:Rs are below the 1.5 floor, so the gate would always reject these
+trades. Same rationale as the v2.7.31 MOMENTUM_DUMP bypass: trigger atoms
++ composite gates ARE the safety net, the geometry is intrinsically scalp.
+
+### Change
+
+| File | Change |
+|---|---|
+| `ea/FORGE.mq5:8055` | R:R bypass extended from 2 → 4 setup types via `_rr_bypass` boolean. |
+| `VERSION` | 2.7.38 → 2.7.39 (auto-stamps `#property version "2.109"`). |
+
+### Acceptance verified
+- `make forge-compile`: clean → FORGE.ex5 built, `#property version "2.109"`
+- Tests: 37/37 pass
+
+### Side note
+SYSTEM_VERSION stays 1.10.1 — codex's WARN was a false-positive (SYSTEM_VERSION
+is a Python-only artefact, not referenced from `ea/FORGE.mq5`).
+
+---
+
 ## [FORGE 2.7.38] — 2026-05-12 (Tier 1 Boolean Composite shipment)
 
 ### Context

@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.108"
+#property version "2.109"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.38";
+const string FORGE_VERSION = "2.7.39";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -8052,7 +8052,19 @@ void CheckNativeScalperSetups() {
    //   (Run 19 Apr 8): "open more orders on the bearish run — it was a great day to milk money"
    //   — Apr 8 had 30+ MOMENTUM_DUMP SELL triggers all blocked downstream by rr_too_low.
    //   Bypass is structural, not env-tunable, because the dump geometry is intrinsically scalp.
-   if(setup_type != "MOMENTUM_DUMP" && setup_type != "BB_PULLBACK_SCALP" && (risk <= 0 || reward / risk < rr_min_eff)) {
+   //
+   // 2.7.39 — Extend bypass to FRACTIONAL_SELL_IN_BULL and BULL_DAY_DIP_BUY:
+   //   Both are intrinsic single-TP1 / no-TP2 scalps per atlas §5.3 and §5.1 V3.
+   //   FRACTIONAL_SELL_IN_BULL: SL 1.5×ATR / TP1 0.3×ATR → R:R=0.2 (structural, no TP2).
+   //   BULL_DAY_DIP_BUY: SL 1.0×ATR / TP1 0.65×ATR → R:R=0.65 (still < 1.5 floor).
+   //   Codex v2.7.38 review FAIL #1: without this bypass both new setup types are
+   //   silently rejected by rr_too_low even when their composite enable flag is set.
+   //   Same rationale as MOMENTUM_DUMP: trigger atoms + composite gates ARE the safety net.
+   bool _rr_bypass = (setup_type == "MOMENTUM_DUMP"
+                   || setup_type == "BB_PULLBACK_SCALP"
+                   || setup_type == "FRACTIONAL_SELL_IN_BULL"
+                   || setup_type == "BULL_DAY_DIP_BUY");
+   if(!_rr_bypass && (risk <= 0 || reward / risk < rr_min_eff)) {
       double rr_calc = (risk > 0.0) ? (reward / risk) : 0.0;
       Print("FORGE SCALPER: ", setup_type, " ", direction, " skipped — R:R ",
             DoubleToString(rr_calc, 2), " < ", DoubleToString(rr_min_eff, 2),
