@@ -120,13 +120,24 @@ double trend_mag;
 
 ### §1.5 Total
 
-| Category | Count |
-|---|---|
-| Global state vars | 13 |
-| Indicator handles | 6 |
-| g_sc struct fields (config) | 22 |
-| Per-tick locals | 15 |
-| **TOTAL** | **~56** |
+| Category | Yesterday | After v2.7.36→v2.7.39 (audit 2026-05-12) | Δ | Why |
+|---|---|---|---|---|
+| Global state vars (regime/daily/ADX) | 13 | 13 | 0 | unchanged |
+| Indicator handles (regime path) | 6 | 6 | 0 | unchanged |
+| g_sc struct fields (regime-specific) | 22 | 22 | 0 | unchanged — §1.3 inventory stayed pure regime |
+| Per-tick locals (regime trend) | 15 | 15 | 0 | unchanged |
+| **Regime subtotal** | **~56** | **~56** | **0** | **§1 scope unchanged** |
+| — — — — — — — — | | | | |
+| Session/killzone g_sc fields (v2.7.36 — NEW category) | 0 | 19 | +19 | minute-precision windows + NY-anchor + KZ atoms |
+| Killzone state globals (v2.7.36) | 0 | 3 | +3 | `g_scalper_last_killzone_label`, `g_scalper_killzone_start_time`, `g_scalper_killzone_trades` |
+| Atom telemetry globals `g_eval_*` (v2.7.37 — NEW category) | 0 | 70 | +70 | 69 multi-TF/OHLC atoms + 1 `g_eval_last_tick` idempotency guard. Per-tick scope but stored as globals (avoids 52-call-site signature change) |
+| Composite g_sc fields (v2.7.38 — NEW category) | 0 | 12 | +12 | 4 enable flags + 8 geometry/lot/cooldown knobs |
+| Composite state globals (v2.7.38) | 0 | 4 | +4 | 2 cooldown anchors + 2 log throttles |
+| **Extension subtotal** | **0** | **108** | **+108** | new categories from v2.7.36–v2.7.39 |
+| | | | | |
+| **GRAND TOTAL** | **~56** | **~164** | **+108** | regime core stayed flat; 3 new categories added |
+
+**Key insight**: the regime/trend/daily core (§1.1-§1.4) **did not grow** despite three releases. The +108 came from net-new concept categories (session/KZ, atom telemetry, boolean composites) that didn't exist in the original 56-var inventory. The Phase 2-4 RegimeState consolidation (§3-§5) reduces the regime subset to ~16 fields (-40); env-knob renames (§10.5) clean up naming for 36 of the knobs. Atom telemetry (`g_eval_*`) is intentionally per-tick global by design (single point of computation, 52-call-site avoidance — see v2.7.37 CHANGELOG) and is NOT in scope for the RegimeState consolidation.
 
 ---
 
