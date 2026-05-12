@@ -165,6 +165,409 @@ The cheat sheet and analysis docs are writable.
 
 ---
 
+## BOOLEAN COMPOSITE ANALYSIS (mandatory for every setup/signal decision)
+
+**Going-forward rule:** every analytical claim about whether a setup should fire — or
+why it failed — must follow the boolean-composite pattern. Single indicators in isolation
+are not sufficient. Use existing FORGE globals first; only define a new global if no
+existing combination expresses the principle.
+
+### BEFORE doing any composite analysis — pull research-ops + decision stack + atlas + playbook
+
+**FOUR documents** are mandatory reads / writes for entry-logic work:
+
+**−1. `FORGE_RESEARCH_OPS.md` (root folder)** — the vision + operating loop. Read when
+you need the WHY behind the workflow. Anti-patterns are codified there. If you find
+yourself about to take a tactical shortcut, check §8 anti-patterns first.
+
+Update `FORGE_RESEARCH_OPS.md` when:
+- Operator articulates a new process principle (new mandate / new constraint)
+- A "what's NOT aligned" item from §5 resolves (or new gap emerges)
+- A new next-action priority enters the loop (§7)
+- A new anti-pattern surfaces worth codifying (§8)
+- Append §11 changelog with the change
+
+**0. `FORGE_DECISION_STACK.md` (root folder)** — canonical naming + the 5-layer
+entry-decision architecture (Setup Trigger / Filter Chain / Boolean Composite / Atoms /
+Entry Geometry). **Read SECOND (after research-ops)** — every analytical claim must
+use these terms exactly (no synonyms, no "rule" vs "composite" confusion).
+
+**0.5. `FORGE_COMPOSITE_ROADMAP.md` (root folder)** — living planning view of what
+composites exist, day-type coverage, what ships in each FORGE EA version, candidate
+composites under research. Complement to atlas §5 (the static spec).
+
+**0.6. `FORGE_NAMING_CONVENTIONS.md` (root folder)** — config surface naming policy.
+When adding ANY new FORGE_* env knob (or struct field, or sync mapping), follow §4
+prefix hierarchy: `FORGE_SETUP_/COMPOSITE_/GATE_/ATOM_/GEOMETRY_/TIMING_/GLOBAL_`.
+Direction suffix (`_BUY`/`_SELL`) always LAST. `_MULT` for ATR-derived multipliers,
+`_FACTOR` for lot multipliers. Existing 146 knobs grandfathered — don't rename.
+
+**Two more policies in this doc**:
+- **§4.6 Timeframe vocabulary** — use HTF/MTF/LTF/DAILY (not "macro") in new knob names
+- **§4.7 Gate Code naming** — when adding a NEW `gate_reason` to `config/gate_legend.json`:
+  use `<setup_or_composite>_<gate_concept>_<direction?>` (e.g.,
+  `bull_day_dip_buy_fib_below`, `intraday_reversal_sell_rsi_above`).
+  Use `_block` not `_blocked`. Direction LAST. Existing 65 codes grandfathered.
+- **§5.0.1 Python-contract preservation** — ANY rename must preserve JSON keys + screening
+  logic + Python-app consumers. Three-grep audit checklist.
+- **§5.0.2 LEGACY_ALIASES backward-compat pattern** — canonical rename mechanism.
+
+Update `FORGE_NAMING_CONVENTIONS.md` when:
+- A new naming pattern category emerges (e.g., new prefix needed)
+- An open question from §7 is resolved (e.g., REQUIRE→BLOCK polarity decision)
+- A consensus policy refinement after using the policy in practice
+- New gate code added to `config/gate_legend.json` (verify it follows §4.7)
+- Append §9 changelog.
+
+**0.7. `FORGE_REGIME_TAXONOMY.md` (root folder)** — regime state model + migration plan.
+When reading or writing regime/trend variables (currently 56 across globals / handles /
+struct fields / per-tick locals), consult this doc to find the canonical answer. Phase 1
+(v2.7.36) uses existing variables; Phase 2+ migrates to `g_regime` struct.
+
+**Vocabulary reminder** (defined in `FORGE_REGIME_TAXONOMY.md §2.6` — read once, internalize):
+- **HTF** = Higher Time Frame (H1 + H4) — what we previously called "macro"
+- **MTF** = Middle Time Frame (M15 + M30)
+- **LTF** = Lower Time Frame (M1 + M5, execution)
+- Industry-standard from Murphy / Tradeciety / Markets4you / most modern intraday literature.
+- Field names in `RegimeState` use HTF prefix (`htf_label`, `htf_confidence`, `htf_h1_strong`)
+  and `intraday_counter_htf` for the Apr 8 PM-class divergence detector.
+- Avoid "macro" / "divergence" in code — terminology collisions (macro = economics; divergence = RSI/MACD).
+
+Update `FORGE_REGIME_TAXONOMY.md` when:
+- A new regime concept added or removed
+- A migration phase completes (Phase 1 → 2 → 3 → 4)
+- Industry-terminology research lands rename decisions (renames the `g_regime.*` fields)
+- A conceptual gap closes (intraday-vs-macro, news regime, session regime)
+- A new code path is migrated from old globals to `g_regime.*`
+- Append §11 changelog.
+
+Update `FORGE_COMPOSITE_ROADMAP.md` when:
+- New composite designed → add to §1 inventory + §8 status dashboard
+- Composite ships in an EA version → move from "design" to "validated" status
+- Composite superseded by another → mark in §1 (and atlas §5)
+- New day-type analyzed in a case study → add row to §2 coverage matrix
+- A research candidate from §6 shows statistical edge → promote to Tier 2 in §5
+- Append §10 changelog with the change.
+
+After ANY of the following, update `FORGE_DECISION_STACK.md`:
+- New setup type added to `ea/FORGE.mq5` → cite in §5 (Setup Type row)
+- New gate code in a filter chain → reference in §4 if it introduces a new naming pattern
+- New boolean composite created → register in atlas §5, cross-reference in §6 usage examples
+- New atom (indicator predicate) — add to atlas §1 inventory; if it changes the 5-layer model, update here
+- Entry geometry changes (SL/TP/lot multipliers) — Playbook §5 is canonical; ensure §5 here still aligned
+
+Append a one-line entry to `FORGE_DECISION_STACK.md` §9 changelog with the change.
+
+**1. `docs/FORGE_INDICATOR_ATLAS.md`** (renumbered: was #1, now #2 — but #0 above is now FORGE_DECISION_STACK.md) — canonical, continuously-updated source of truth for:
+- Every FORGE indicator (with `ea/FORGE.mq5:NNNN` cite + SIGNALS-table population status)
+- Every validated boolean composite (with calibration history + cross-day truth tables)
+- Logging gaps (computed live but not logged → not yet validatable)
+- Day-type pattern coverage matrix
+- **Scribe DB schema** (§11) — `python/data/aurum_intelligence.db` table inventory
+- **Cross-DB join patterns** (§12) — for post-mortem on live trades
+
+**2. `FORGE_SETUP_PLAYBOOK.md`** — canonical setup catalog and **boolean composite design pattern** (§10).
+Every new setup type MUST follow the 8-step pattern in §10 (inventory check → boolean spec
+→ cross-day validation → atom map → MQL5 translation → env wiring → atlas register → post-mortem hook).
+
+**Read both FIRST** before constructing a new composite or critiquing an existing one.
+- Reuse atoms from already-validated composites where applicable
+- Check if the indicator is populated in SIGNALS or only computed live (affects validation strategy)
+- Avoid re-deriving inventory you'll find in atlas §1
+
+**After completing any composite work**, append/update BOTH docs:
+- Atlas §5 — composite registry entry with calibration history
+- Atlas §6 — day-type pattern coverage row
+- Atlas §10 — changelog one-liner
+- Playbook §1 / §5 / §7 — update setup matrix and SKIP-gate tables if new setup or gate
+- Playbook §12 — changelog one-liner
+
+Atlas §5/§6/§10 and playbook §12 are append-only (historical). Atlas §1/§3 and playbook §1
+are live-updated (current state).
+
+### MANDATORY: log every verification command to atlas §13 (append-only)
+
+Every time you run a shell/SQL command to verify a fact that will be cited in the atlas,
+a case study, or a run analysis doc — **append the literal command to atlas §13 Command Log**.
+No "verified", "confirmed", or "the data shows" claim without a corresponding command-log entry.
+
+**Format** (atlas §13 template):
+
+```markdown
+### YYYY-MM-DD HH:MM — <one-line purpose>
+**Doc/section referencing this**: <atlas §X, case study §Y, run analysis §Z>
+**Command**:
+\`\`\`bash
+<paste the literal command, no truncation>
+\`\`\`
+**Output sample** (first 5-10 lines if non-trivial):
+\`\`\`
+<output>
+\`\`\`
+**Conclusion drawn**: <one sentence>
+```
+
+**Why mandatory**: a future analyst (or future-you) MUST be able to re-run the exact
+command and reproduce the result. Paraphrased "I checked the data" is not auditable.
+Pasted command + output + date = auditable.
+
+**Anti-pattern**: writing "confirmed via .schema" without listing the .schema command run,
+the timestamp, and the output observed. Always paste.
+
+### MANDATORY: verification-first principle (don't assume data is available)
+
+**Before adding a new indicator atom to a composite or implementation plan, VERIFY from production sources that the data actually flows.** Don't assume.
+
+The 3-source verification check:
+
+1. **FORGE.mq5 production usage** — grep `ea/FORGE.mq5` for the function/timeframe.
+   If FORGE already calls e.g. `iHigh(_Symbol, PERIOD_D1, 0)` somewhere in working code,
+   that confirms the data is broker-provided and accessible.
+
+```bash
+grep -nE "iHigh\(_Symbol,|iLow\(_Symbol,|iOpen\(_Symbol,|iClose\(_Symbol," ea/FORGE.mq5
+# All timeframes that appear in working code are verified-available.
+```
+
+2. **market_data.json** — the live broker data FORGE writes every tick at
+   `/Users/olasumbo/Library/Application Support/.../Terminal/Common/Files/market_data.json`.
+   Inspect to see what indicators/timeframes the broker is actually serving:
+
+```bash
+cat "/Users/olasumbo/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/market_data.json" | python3 -m json.tool
+# Look for indicators_m1 / m5 / m15 / m30 / h1 / h4 sections.
+# Confirms what's exposed live by THIS broker on THIS account.
+```
+
+3. **broker_info.json** — confirms broker capabilities and account type:
+
+```bash
+cat "/Users/olasumbo/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/broker_info.json" | python3 -m json.tool
+# Note: trading hours, leverage, account currency may affect indicator behavior.
+```
+
+**Anti-pattern**: writing "we will use macd_hist on H4" without first verifying that the
+broker provides H4 MACD data — different brokers/accounts have different feed coverage.
+
+**Verified-available baseline as of 2026-05-12** (Vantage International Demo, XAUUSD):
+
+| Data class | Confirmed available | Source |
+|---|---|---|
+| Tick: bid, ask, spread, digits | ✓ | market_data.json `price` |
+| Volume profile: poc_price, vwap_price, fib_50/382/618, fib_high/low | ✓ | market_data.json `volume_profile` |
+| Per-TF indicators (M1/M5/M15/M30/H1/H4): rsi_14, ema_20, ema_50, atr_14, bb_upper/mid/lower, adx | ✓ | market_data.json `indicators_*` |
+| MACD histogram | ✓ on M5/M15/M30/H1 (✗ not on M1, not on H4) | market_data.json |
+| RSI divergence, PSAR state | ✓ | market_data.json |
+| OHLC via iHigh/iLow/iOpen/iClose on M1/M5/M15/M30/H1/H4/D1 | ✓ | verified by production code in FORGE.mq5 |
+| Account: balance, equity, margin | ✓ | market_data.json `account` |
+| Open positions, pending orders, recent_closed_deals | ✓ | market_data.json |
+| H1 DI+/DI− (iADX buffer 1/2) | ✓ | FORGE.mq5 `:5700-5704` confirms working |
+
+**Always re-verify before relying on this list** — broker changes, account changes,
+or new symbols may shift coverage. Treat this table as "as of date verified", not eternal.
+
+---
+
+### MANDATORY: case study file for date-range / multi-day pattern analyses
+
+Whenever the analysis spans **2 or more trading days** (e.g. day-typing, cross-day composite
+calibration, "what worked vs what failed last week"), **create a dedicated case study file**
+in `docs/`. Pattern: `docs/FORGE_CASE_STUDY_YYYY_MM_DD_to_MM_DD.md` (or single-date variant
+for one-day deep-dives). This is the SOURCE-OF-TRUTH record for the analytical work, NOT
+the run-N analysis doc.
+
+**Case study file MUST include** (template — see `docs/FORGE_CASE_STUDY_2026_03_31_to_04_08.md`):
+
+1. **Header**: type, source data (run_id, scribe table refs), method, trigger event, creation date
+2. **§1 Day-by-day summary**: open/close/range/h1_trend stats/regime mix per day
+3. **§2 Per-day boolean composite derivation**: hourly indicator table + composite that matches the day
+4. **§3 Synthesis**: consolidated composite set + day-type coverage matrix
+5. **§4 Critical-day deep-dive** if applicable: exact-pivot identification with hour-by-hour walk
+6. **§4b Enhanced composites V2**: use the FULL indicator toolkit (atlas §1), not just the 5-6 obvious ones — POC, Fib 50, VWAP gaps, BB width, divergence are often the decisive atoms
+7. **§5 Open questions / next-run implementation needs**: what's required to ship the composite
+8. **§6 References**: atlas sections, playbook sections, related run analyses
+9. **§7 Changelog**: append-only
+
+**After creating the case study**:
+- Reference it from atlas §5 (per-composite "Enhanced V2 in [case study]" link)
+- Reference from atlas §6 (pattern coverage matrix row pointing to case study)
+- Reference from atlas §10 changelog
+- Reference from any affected run analysis doc
+
+**Anti-pattern to avoid**: stuffing multi-day analysis into a run analysis doc. The case
+study is the analytical record; the run analysis is the per-tester-run timeline. Keep
+these separated.
+
+### BEFORE doing any post-mortem on live trades — query scribe
+
+Scribe DB at `python/data/aurum_intelligence.db` holds LIVE trade data — separate from the
+tester DB (`aurum_tester.db`). For any "why did this live trade fail" or "what was the
+indicator state when this fired" question:
+
+1. **First** run `sqlite3 -readonly <scribe_db> ".tables"` to list current tables
+2. **Then** run `sqlite3 -readonly <scribe_db> ".schema <table_name>"` for each relevant table
+3. Cross-check against atlas §11 — if columns differ, the schema has evolved; **update atlas §11**
+4. Use the four join patterns in atlas §12 (indicator state, trade outcome, regime audit, external correlation)
+
+**Anti-hallucination rule** — the atlas §11 schema is verified-at-write-time. Schema evolves via
+ALTER TABLE migrations as new FORGE versions ship. Always re-verify before relying on column
+names; if you find a discrepancy with atlas §11, update the atlas immediately so the next
+analyst sees current truth.
+
+**If post-mortem reveals a logging gap** (a column needed for analysis is empty / missing):
+- Append to atlas §3 with the proposed extension
+- Surface as a Recommendation (per the RECOMMENDATIONS PATTERN below) in the relevant run analysis doc
+- Cite the post-mortem evidence — never propose a logging extension speculatively
+
+### The standard workflow (operator-mandated)
+
+```
+1. ANALYZE the day's data
+     → query SIGNALS / forge_signals: prices, indicators, regime, h1_trend per hour
+     → narrate what the market did (range, net direction, intraday chop/trend phases)
+
+2. COME UP WITH A BOOLEAN that matches the entry pattern for that day
+     → which combination of indicators would have signaled "TAKE" at the right hours
+     → which would have correctly said "SKIP" at the wrong hours
+
+3. CHECK FOR PATTERN ACROSS DAYS
+     → apply the same composite to other similar days (e.g. Mar 31, Apr 1, Apr 8)
+     → does it work on all of them? Or does the threshold need to flex (e.g. h1_trend 1.0 → 0.5)?
+     → if a single composite doesn't cover the spectrum, identify the differentiator
+       and either narrow scope (multiple composites for different day-types)
+       or relax the strictest atom
+
+4. MAP TO EXISTING FORGE INDICATORS
+     → every atom in the composite → existing FORGE struct/global (file:line cite)
+     → if anything new is needed, add it as `add` and minimize new globals
+
+5. TRANSLATE TO MQL5
+     → write the composite as MQL5 syntax exactly as it will appear in the filter chain
+     → identify which file/line gets the new filter (`ea/FORGE.mq5:NNNN`)
+     → choose: NEW setup (new entry trigger function) OR filter on existing setup
+       (insert composite check into existing chain)
+
+6. RECOMMEND
+     → concrete change (config knob, new struct field, filter chain insert, new setup)
+     → with risk/benefit one-liner
+```
+
+This is the meta-loop: **data → boolean → cross-day pattern → existing indicators → MQL5 → ship**.
+Skipping any step produces fragile analysis. Especially step 3 (cross-day pattern check) —
+a composite that works on one day but fails on similar days is not yet a strategy.
+
+### Required output format (5 parts)
+
+**1. Indicator table** — hourly snapshot at the candidate timestamps:
+
+```
+| Time  | Price   | RSI  | ADX  | M15 ADX | PSAR  | h1_trend | Regime     | BB upper gap | BB lower gap | macd | psar_state |
+|-------|---------|------|------|---------|-------|----------|------------|--------------|--------------|------|------------|
+| 16:00 | 4721.73 | 39.9 | 30.3 | 0       | BELOW | +2.32    | TREND_BULL | 43.97        | 1.43         | ...  | BELOW      |
+```
+
+Pull exact values from `forge_signals` (aurum_tester.db post-run) or `SIGNALS` (source DB live).
+
+**2. Boolean composite** — the rule, in MQL5-syntax pseudocode using existing globals:
+
+```mql5
+bool MY_SETUP_NAME =
+     (h1_trend_strength       >= 1.0)                    // existing global
+  && (psar_state              == "BELOW")                 // existing global
+  && (g_regime_label IN ["TREND_BULL", "VOLATILE"])       // existing global
+  && (!g_daily_bear_bias)                                 // existing global
+  && (m5_rsi >= 40 && m5_rsi <= 70)                       // existing per-tick
+  && (m5_adx                  >= 20)                      // existing per-tick
+  && (m5_close > iClose(_Symbol, PERIOD_M5, 1));          // MQL5 builtin
+```
+
+**3. Truth table** — evaluate composite at each candidate hour:
+
+```
+| Hour  | h1≥1 | PSAR=BELOW | Regime OK | NOT bear daily | RSI 40-70 | ADX≥20 | Close>prev | RESULT |
+|-------|------|------------|-----------|----------------|-----------|--------|------------|--------|
+| 14:00 | ✓    | ✓          | ✓         | ✓              | ✓ 56.8    | ✓      | ✓          | TAKE   |
+| 16:00 | ✓    | ✓          | ✓         | ✓              | ✗ 39.9    | ✓      | ✓          | edge   |
+| 17:00 | ✓    | ✓          | ✓         | ✓              | ✓ 46.4    | ✗ 17   | ✓          | SKIP   |
+```
+
+**4. Mapping** — each atom → existing FORGE source. Mark new globals with **add**:
+
+```
+| Boolean atom                  | FORGE source                | Status   |
+|-------------------------------|-----------------------------|----------|
+| g_regime_label                | EA global                   | ✓ exists |
+| h1_trend_strength             | computed each tick (l. 5770) | ✓ exists |
+| g_last_chop_buy_exit_time     | NEW state variable          | **add**  |
+```
+
+**5. Recommendation** — concrete next step (new setup, knob change, code edit), with
+file:line cite and one-line risk/benefit.
+
+### Why this discipline matters
+
+Single-indicator claims hide multivariate truth. The same RSI=72 can be:
+- A losing G5009-class BUY in TREND_BULL with bearish daily (block it)
+- A winning trend-continuation BUY in TREND_BULL with bullish daily (deploy)
+
+Only the composite distinguishes them. The boolean format is also directly
+copyable into `ea/FORGE.mq5` — analysis → implementation is mechanical.
+
+### Globals available out of the box (no need to compute)
+
+`g_regime_label`, `g_regime_confidence`, `g_daily_bear_bias`, `g_daily_bull_bias`,
+`g_adx_trend_regime`, `g_psar_state`, `g_rsi_div_type`, `h1_trend_strength`,
+`h4_trend_strength`, `m1_trend_strength`, `m15_trend_strength`, `m5_rsi`, `m5_adx`,
+`m5_atr`, `m5_bb_u`, `m5_bb_l`, `m5_bb_m`, `m5_close`, `prev_close`, `mid`, `bid`, `ask`,
+`spread`, `h1_di_plus`, `h1_di_minus`, `m15_adx`, `macd_histogram`, `high_vol_trend`.
+
+If your composite needs something not in this list, you may **add a new global** to
+`g_sc` struct + ReadConfig. Prefer reusing existing data over recomputing.
+
+### Trading principles encoded as composites (canonical reference)
+
+| Principle | Composite name | Direction | Lot scale |
+|---|---|---|---|
+| Choppy + bullish-macro day (Mar 31, Apr 1) — dip-buy with re-entry | `CHOP_IN_BULL_TREND_BUY` | BUY | regime-aligned amplifier ×3-5, TP1-only (30-40 pips), 5-min cooldown |
+| Choppy + bearish-macro day (mirror) | `CHOP_IN_BEAR_TREND_SELL` | SELL | mirror of above |
+| Strong trend continuation in confirmed bull (Apr 8 NY rally) | `TREND_CONTINUATION_BUY` | BUY | full × wave-confirmation amplifier, TP1+TP2 staged |
+| Strong trend continuation in confirmed bear | `TREND_CONTINUATION_SELL` | SELL | full × wave-confirmation amplifier |
+| Pure range day (no macro direction) | `CHOP_LADDER` (4-leg BUY LIMIT) | BUY-biased | small lot, basket kills |
+| Counter-regime SELL probe (overbought in bull) | `FRACTIONAL_SELL_IN_BULL` | SELL | fractional (0.25× base), single leg, tight TP |
+| Block SELL in chop (universal) | `BLOCK_SELL_IN_CHOP` | — | gate (no trade) |
+| Fast impulse capture | `MOMENTUM_DUMP` (existing) | both | dump_lot_factor with chop_block + RSI gates |
+
+**Canonical `CHOP_IN_BULL_TREND_BUY` composite (covers Mar 31, Apr 1 — apply daily):**
+
+```mql5
+bool CHOP_IN_BULL_TREND_BUY =
+     (h1_trend_strength       >= 0.5)              // bullish macro (~3× tester trend_thr_eff)
+  && (!g_daily_bear_bias)                           // daily not bearish
+  && (m5_rsi                  <= 50)                // dip zone (oversold-of-the-chop)
+  && (price <= m5_bb_m + 0.5*m5_atr)                // price below or near BB middle
+  && (m5_adx                  >= 12)                // some life (not dead flat)
+  && ((TimeCurrent() - g_last_chop_buy_exit_time) >= 300)  // 5-min re-entry cooldown
+  ;
+```
+
+Validation: Mar 31 (h1 avg +0.57, 63% RANGE) → 3-4 dip-buy entries. Apr 1 (h1 avg +2.26, 38% RANGE) → 2-3 entries. Same composite, different days, both work.
+
+PSAR deliberately excluded from this composite — too noisy on M5 in choppy markets (flips with every dip). h1_trend + daily + BB structure + RSI is sufficient direction confirmation for chop-in-bull days.
+
+### Chop vs trend geometry — operator-mandated
+
+- **Chop scalping**: TP1 ONLY (30-40 pips / ~0.5-0.7×ATR), no TP2/TP3 chasing.
+  Re-entry on next dip after TP1 banking. Gold retraces UP — re-entry capability
+  is structural, not opportunistic.
+- **Trend wave-riding**: TP1 (0.6×ATR) + TP2 (1.0×ATR) per leg, staged-add with
+  `staged_add_min_favorable_points` proof, `wave_confirmation_lot_mult` amplifier on
+  legs 2+.
+
+Mixing these (e.g. TP3 chasing on a chop BUY) is wrong. The composite tells you which
+regime you're in; the geometry follows.
+
+---
+
 ## DB ARCHITECTURE (updated 2026-05-10)
 
 ### Source journal DB (written by FORGE EA during backtest)

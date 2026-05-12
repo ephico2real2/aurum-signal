@@ -19,6 +19,11 @@ For full installation and configuration flow, see [docs/SETUP.md](docs/SETUP.md)
 
 ## Architecture
 Core architecture and operations docs:
+- **🌟 FORGE Research-Ops (vision + operating loop)**: [FORGE_RESEARCH_OPS.md](FORGE_RESEARCH_OPS.md) — the WHY. The meta-document describing how this project compounds knowledge into a self-improving system. Read when you want context for the iteration loop, anti-patterns, or "why are we doing it this way."
+- **🎯 FORGE Decision Stack (terminology + 5-layer entry-decision architecture)**: [FORGE_DECISION_STACK.md](FORGE_DECISION_STACK.md) — canonical naming for Setup Trigger / Filter Chain / Boolean Composite / Atoms / Entry Geometry. Read FIRST when designing or analyzing entry logic.
+- **📋 FORGE Composite Roadmap (inventory + shipping plan)**: [FORGE_COMPOSITE_ROADMAP.md](FORGE_COMPOSITE_ROADMAP.md) — living planning view of what composites exist, day-type coverage, what ships in each version, and candidate composites under research. Complement to atlas §5 (static spec).
+- **📐 FORGE Naming Conventions (config surface audit + policy)**: [FORGE_NAMING_CONVENTIONS.md](FORGE_NAMING_CONVENTIONS.md) — inventory of 146 FORGE_* env knobs, identified inconsistencies, going-forward naming policy (FORGE_SETUP_ / COMPOSITE_ / GATE_ / ATOM_ / GEOMETRY_ prefixes). Old knobs grandfathered, new knobs follow policy.
+- **🧭 FORGE Regime Taxonomy (state model + migration)**: [FORGE_REGIME_TAXONOMY.md](FORGE_REGIME_TAXONOMY.md) — inventory of 56 regime/trend EA variables across 4 categories, identified 3-4-answers-per-question overlap, proposed unified `RegimeState` struct (13 fields replacing ~20 globals), 4-phase migration plan (strangler-fig pattern). Phase 1 = no refactor (ship V3 composites first); Phase 2 = additive struct; Phase 3 = migrate callers; Phase 4 = cleanup.
 - **AI/automation:** do not hand-edit **`config/scalper_config.json`** — see **`AGENTS.md`** and **`docs/SCALPER_CONFIG_PIPELINE.md`**
 - **Scalper + regime phased roadmap** (execution prompts, testing, MT5 Tester, doc checklist): [docs/SCALPER_REGIME_PHASED_PLAN.md](docs/SCALPER_REGIME_PHASED_PLAN.md)
 - **System architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
