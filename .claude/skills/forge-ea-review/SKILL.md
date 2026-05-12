@@ -51,7 +51,24 @@ Every `/forge-ea-review` run MUST emit explicit results for these two checks. Th
 - Any EA-emitted gate without a legend entry or wildcard match is a **FAIL** — monitoring tools and analysis reports show raw codes with no human label
 - Report exact missing codes and the EA file:line where each is emitted
 
-Both checks must appear in the report's "Validation Summary" header AND in their own dedicated section before the section-by-section breakdown.
+#### Mandatory Check C — Sync mapping ↔ .env.example parity (must PASS or list all failures)
+- Extract every `FORGE_*` key declared in `scripts/sync_scalper_config_from_env.py` MAPPING
+- For each: confirm a matching `# FORGE_*=` or `FORGE_*=` line appears in `.env.example`
+- Any sync-mapped key missing from `.env.example` is a **FAIL** — operators discover knobs from `.env.example`; a sync mapping without a hint is silently undiscoverable
+- Also report the reverse: any `FORGE_*=` in `.env.example` that has no sync mapping (likely a stale doc entry that the sync script will silently drop). Treat as **WARNING** if the key has a comment indicating it's consumed outside sync (e.g. MT5 input, BRIDGE-direct), otherwise **FAIL**
+- Use this exact one-liner for the audit:
+  ```python
+  import re, pathlib
+  sync = pathlib.Path('scripts/sync_scalper_config_from_env.py').read_text()
+  example = pathlib.Path('.env.example').read_text()
+  mapping = set(re.findall(r'"(FORGE_[A-Z0-9_]+)":\s*\(', sync))
+  example_keys = set(re.findall(r'^[# ]*(FORGE_[A-Z0-9_]+)=', example, re.MULTILINE))
+  missing_doc = sorted(mapping - example_keys)
+  missing_map = sorted(example_keys - mapping)
+  ```
+- Historical context: 2026-05-12 audit found 16 FORGE_* vars in sync mapping but missing from `.env.example` — including `FORGE_BREAKOUT_BLOCK_HID_BULL_SELL`, `FORGE_DUMP_SELL_LOT_FACTOR`, `FORGE_SELL_STOP_CONT_*`, `FORGE_WAVE_CONFIRMATION_LOT_MULT`. Several were ACTIVE in `.env` (`=1` / `=2.0` etc.) yet had no hint in `.env.example` — operators couldn't discover what knobs existed without reading the sync script directly.
+
+All three checks must appear in the report's "Validation Summary" header AND in their own dedicated section before the section-by-section breakdown.
 
 Historical context: Sessions 2026-05-10 found 8 dead env vars (renamed/unused), 4 case-mismatch env vars, and 3 missing gate codes (`h1_di_sell`, `h1_macd_sell`, `hid_bull_div_sell`) across consecutive reviews. The fixes were trivial; the value lost from missing them was significant (silent config drift, undecoded gates in monitoring).
 
@@ -294,7 +311,7 @@ ACCEPTED — DO NOT FLAG AS ISSUES (per SKILL.md "ACCEPTED — DO NOT FLAG" sect
 - Redundant `.env` overrides that set a value identical to defaults.json — operator
   intentionally keeps these as a visible inventory of "I know this knob exists."
 
-MANDATORY CHECKS (REPORT EXPLICIT PASS/FAIL FOR BOTH — DO NOT SKIP):
+MANDATORY CHECKS (REPORT EXPLICIT PASS/FAIL FOR ALL THREE — DO NOT SKIP):
 A. Dead FORGE_* env vars: enumerate every FORGE_* key in .env, confirm each maps in
    sync_scalper_config_from_env.py OR appears in the FORGE_ENV_VARS_NOT_IN_SYNC
    whitelist in tests/api/test_forge_27x_gates.py. Also flag any lowercase config-
@@ -303,10 +320,17 @@ A. Dead FORGE_* env vars: enumerate every FORGE_* key in .env, confirm each maps
 B. Gate legend completeness: enumerate every JournalRecordSignal("SKIP","<code>",...)
    in ea/FORGE.mq5, confirm <code> has a key in config/gate_legend.json OR matches a
    _patterns wildcard. Each missing code = FAIL.
+C. Sync mapping ↔ .env.example parity: enumerate every "FORGE_*" key in
+   sync_scalper_config_from_env.py MAPPING, confirm each has a matching
+   `# FORGE_*=` or `FORGE_*=` line in .env.example. Each sync-mapped key missing
+   from .env.example = FAIL (operators discover knobs only from .env.example;
+   silent undiscoverable knobs created real configuration-blindness — 16 such
+   gaps found in 2026-05-12 audit). Also flag the reverse (in .env.example but
+   no sync mapping) as WARNING (likely stale doc).
 
-These two checks have caught real silent-config-drift and undecoded-gate bugs in
-every recent review. They MUST appear in the report's Validation Summary AND in
-their own dedicated sections.
+These three checks have caught real silent-config-drift, undecoded-gate, and
+discovery-blindness bugs in every recent review. They MUST appear in the
+report's Validation Summary AND in their own dedicated sections.
 6. Check dashboard/app.js field names against athena_api.py response shapes.
 7. Flag tests/ referencing stale gate codes or removed config keys.
 8. After writing the file, output a brief summary of PASS/WARNING/FAIL counts.
