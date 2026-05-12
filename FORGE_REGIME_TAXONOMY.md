@@ -297,6 +297,115 @@ vs the current version which queries 7+ different globals/locals.
 
 ---
 
+### §3.3 What does NOT go into `RegimeState` (out of scope for consolidation)
+
+> **Critical**: this section exists to prevent future-engineer instinct from folding
+> the wrong variables into `RegimeState`. Each excluded category is excluded for a
+> specific reason that survives across refactors. Same protect-design-intent flavor
+> as `FORGE_NAMING_CONVENTIONS.md §5` ("never rename" rule).
+
+#### §3.3.1 Atom telemetry globals (`g_eval_*`) — 70 vars, v2.7.37
+
+**Status**: explicitly out of scope. Stays as global-scope per-tick variables.
+
+**Why they look like they should be consolidated**:
+- They're declared as 70 global variables in `ea/FORGE.mq5`
+- Many overlap conceptually with `RegimeState` fields (`g_eval_h1_atr` vs `htf` info,
+  `g_eval_d1_open` vs `daily_*` info, etc.)
+- A "consolidate state" pass would naturally target them
+
+**Why they MUST stay where they are**:
+1. **Lifetime is one tick, not persistent**: every value is overwritten in
+   `ForgeEvalAtoms()` at the top of `CheckNativeScalperSetups`. `RegimeState` is
+   designed to hold values that persist BETWEEN ticks (regime label, hysteresis
+   state, daily bias snapshots that update per-bar not per-tick).
+2. **Single point of computation**: `ForgeEvalAtoms()` populates all 70 in one
+   pass. Moving them into `RegimeState` either (a) keeps the same pattern with
+   different syntax (no benefit) or (b) scatters the computation across
+   `ScalperEvaluate` / `CheckEntryQuality` (regression).
+3. **52-call-site avoidance**: `JournalRecordSignal` is invoked from 52 places.
+   The original v2.7.37 design considered passing the 70 atoms as params and
+   rejected it — globals avoid the signature ripple. Folding them into
+   `RegimeState` re-introduces the question because `RegimeState` is a struct,
+   not a free pass — every call site that emits a signal needs the struct.
+4. **Schema invariance**: the 70 atom names are the column names in
+   `forge_signals`. Renaming them via consolidation would force a schema
+   migration in scribe + atlas updates + dashboard binding changes.
+
+**Decision**: `g_eval_*` is a separate concept category. If consolidation is
+needed later, the unit is `ForgeEvalAtoms()` itself (the function), not the
+70 globals.
+
+#### §3.3.2 Log-throttle globals (`g_scalper_last_*_log_bar`, `g_last_*_log_bar`)
+
+**Status**: out of scope. Micro-state, not regime state.
+
+These globals (currently ~30 of them) exist solely to throttle SKIP logs to
+once-per-M5-bar so monitoring tools don't see thousands of duplicate rows.
+They have:
+- No analytical value (never queried for regime decisions)
+- No semantic relationship to regime concepts
+- Fixed pattern: store `iTime(_Symbol, PERIOD_M5, 0)` at first emit, compare
+  on subsequent emits
+
+Putting them in `RegimeState` would pollute the struct with concerns unrelated
+to the trading decision.
+
+**If a future refactor wants to reduce them**: the unit is a `LogThrottle`
+utility (e.g. `static map<string, datetime>` keyed by gate code), not
+`RegimeState`.
+
+#### §3.3.3 Cooldown anchors (`g_last_*_time`)
+
+**Status**: out of scope. Operational state, not regime state.
+
+Examples: `g_scalper_last_dump_sell_time`, `g_pullback_scalp_last_buy_time`,
+`g_last_chop_buy_exit_time`. These track wall-clock times for setup-specific
+re-entry cooldowns. They:
+- Are setup-scoped, not regime-scoped (each tied to one specific trigger)
+- Have a single purpose: `(now - last_time) >= cooldown_seconds` checks
+- Don't inform regime classification
+
+**Where they belong long-term**: alongside their owning setup's config, not in
+`RegimeState`. If a `SetupState` struct emerges in a future refactor, that's
+their home.
+
+#### §3.3.4 Indicator handles (`g_h_*`, `g_h4_*`, `g_m1_*`, `g_mtf[].h_*`)
+
+**Status**: out of scope. They're handles to MT5 indicator buffers, not state.
+
+Counted in §1.2 because they participate in the regime computation pipeline,
+but they're externally-allocated resources from `iRSI()`, `iADX()`, etc.
+`RegimeState` holds COMPUTED values from CopyBuffer'd handles, not the handles
+themselves.
+
+#### §3.3.5 Setup-config knobs (`g_sc.dump_*`, `g_sc.breakout_*`, `g_sc.bb_bounce_*`, etc.)
+
+**Status**: out of scope. They're config inputs, not regime state.
+
+These ~200+ fields in `ScalperConfig` (excluding the §1.3 regime subset) define
+what triggers, thresholds, and geometry the setups use. They're operator-tunable
+via `.env` + `sync_scalper_config_from_env.py`. They don't change based on
+market regime; they're the rules regime decisions ARE evaluated against.
+
+**Phase 2 env-knob rename plan** (§10.5) renames some of these for clarity but
+does NOT migrate them into `RegimeState`.
+
+#### Summary table — what each category is for
+
+| Category | Lifetime | Owner | Belongs in RegimeState? |
+|---|---|---|---|
+| Regime/trend/daily/HTF state (§1.1) | persistent | regime classifier | ✅ YES — this is exactly what RegimeState is for |
+| Regime-related g_sc fields (§1.3) | config | operator | ❌ NO — RegimeState reads these but doesn't own them |
+| Per-tick regime locals (§1.4) | one tick | `ScalperEvaluate` | ✅ YES (transitionally) — Phase 3 migrates callers to `g_regime.htf_label` etc., locals get inlined |
+| Atom telemetry `g_eval_*` (§3.3.1) | one tick | `ForgeEvalAtoms()` | ❌ NO — by design, see §3.3.1 |
+| Log throttles `g_last_*_log_bar` (§3.3.2) | persistent (last-fire stamp) | log emitter | ❌ NO — micro-state |
+| Cooldown anchors `g_last_*_time` (§3.3.3) | persistent (last-fire stamp) | setup-specific | ❌ NO — setup state, not regime |
+| Indicator handles (§3.3.4) | EA lifetime | MT5 runtime | ❌ NO — handles to external resources |
+| Setup-config knobs (§3.3.5) | EA lifetime | operator config | ❌ NO — config, not state |
+
+---
+
 ## §4. Count reduction
 
 | Category | Current | Proposed | Delta |
