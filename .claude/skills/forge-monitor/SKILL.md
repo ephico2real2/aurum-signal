@@ -237,9 +237,25 @@ Update `FORGE_REGIME_TAXONOMY.md` when:
 - A new regime concept added or removed
 - A migration phase completes (Phase 1 → 2 → 3 → 4)
 - Industry-terminology research lands rename decisions (renames the `g_regime.*` fields)
-- A conceptual gap closes (intraday-vs-macro, news regime, session regime)
+- A conceptual gap closes (intraday-vs-macro, news regime, session regime, killzone)
 - A new code path is migrated from old globals to `g_regime.*`
-- Append §11 changelog.
+- A killzone-aware composite gating change (per §11.4 table) — update the table + add an entry in §12 changelog
+- Append §12 changelog.
+
+**0.7.1. `docs/research/ICT_KILLZONES.md`** — research source-of-truth for the ICT killzone
+framework (4 windows: Asian, London Open, NY Open, London Close). The MQL5 reference
+implementation (Approach A `TimeGMT()` + Approach B manual broker-offset) lives here.
+
+The **authoritative integration point** for FORGE is `FORGE_REGIME_TAXONOMY.md §11` —
+Layer 5 atoms `g_regime.killzone` + `g_regime.minutes_into_kz`. Read both when:
+- Designing a killzone-aware composite filter chain (cite §11.4 table)
+- Computing the `killzone` SIGNALS column (v2.7.36 schema item per §11.6)
+- Adding a per-killzone gate code to `config/gate_legend.json` (§11.5)
+- Debugging DST or NY-time offset issues (use Approach B; tester is unreliable for `TimeGMT()`)
+- Validating against the Mar 31 → Apr 8 case study (must run §11.8 checklist before merge)
+
+When researching new killzone behavior, append findings to `docs/research/ICT_KILLZONES.md`
+§11 changelog with the citation + the FORGE integration impact.
 
 Update `FORGE_COMPOSITE_ROADMAP.md` when:
 - New composite designed → add to §1 inventory + §8 status dashboard

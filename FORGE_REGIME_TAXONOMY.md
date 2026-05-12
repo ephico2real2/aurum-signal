@@ -619,7 +619,125 @@ This is the same strangler-fig pattern as the struct refactor — additive Phase
 
 ---
 
-## §11. Changelog
+## §11. Time-of-day classifier — ICT killzones (Layer 5 atom)
+
+**Status**: design approved 2026-05-12. Implementation target: v2.7.37 alongside Phase 2 struct rollout.
+
+**Source-of-truth research doc**: [`docs/research/ICT_KILLZONES.md`](docs/research/ICT_KILLZONES.md) — 13 cross-confirmed sources, MQL5 reference code, validation checklist. Always read that doc before changing killzone behavior.
+
+### §11.1 Why killzones live in Layer 5
+
+The existing Layer 5 field `session` is a broad bucket (LONDON / NY / ASIA / OFF). ICT killzones are the **finer-grained sub-windows inside those sessions** where institutional volume actually clusters. Same conceptual layer, narrower precision. Composites need both: `session` for coarse "are we in NY at all," `killzone` for "are we in the prime 60-70%-of-daily-range window."
+
+### §11.2 Killzone reference table (XAUUSD-tuned)
+
+Anchored to NY-local time so DST is handled by the timezone itself. From research doc §2.2:
+
+| Killzone (gold) | NY Time         | What gold typically does                                                | Typical move size               |
+|-----------------|-----------------|-------------------------------------------------------------------------|---------------------------------|
+| Asian KZ        | 20:00 – 00:00   | Accumulation, false breakouts, Asian-range high/low set                 | Low — < 30 pips most days       |
+| London Open KZ  | 02:00 – 05:00   | **Judas Swing** ≈ 02:30 sweeps Asian high/low, then reversal            | 50 – 100 pips per candle        |
+| NY Open KZ      | 07:00 – 10:00   | Continuation OR reversal of London move; biggest daily move often here  | 50 – 150 pips during overlap    |
+| London Close KZ | 10:00 – 12:00   | Profit-taking, retracement to daily mean, reversal of morning trend     | 30 – 60 pips of retrace         |
+
+**Gold prime window**: London-NY overlap (≈ 13:00 – 17:00 GMT) carries **60-70% of gold's daily range** (EBC Financial, TradingView ProjectSyndicate 2025 edition). FORGE prioritizes this window.
+
+### §11.3 RegimeState struct extension — Layer 5
+
+Adds 2 fields to the approved `RegimeState` struct (§3):
+
+```mql5
+struct RegimeState {
+   // ... Layers 1-4 unchanged ...
+
+   // Layer 5: Session / killzone / news context
+   string session;              // existing — LONDON, NY, ASIA, OFF
+   string killzone;             // NEW — ASIAN_KZ, LONDON_OPEN_KZ, NY_OPEN_KZ, LONDON_CLOSE_KZ, OFF_KZ
+   int    minutes_into_kz;      // NEW — minutes since current killzone started (for first-60-min Judas detection)
+   bool   news_active;
+};
+```
+
+Struct grows from 14 → 16 fields. No other layer touched.
+
+**Atom usage examples**:
+
+```mql5
+bool in_prime_window = (g_regime.killzone == "NY_OPEN_KZ"
+                     || g_regime.killzone == "LONDON_CLOSE_KZ");
+
+bool judas_swing_risk = (g_regime.killzone == "LONDON_OPEN_KZ"
+                     && g_regime.minutes_into_kz < 60);
+
+bool gold_active = (g_regime.killzone != "OFF_KZ"
+                 && g_regime.killzone != "ASIAN_KZ");
+```
+
+### §11.4 Killzone-as-atom in composite specs
+
+Each Tier 1 composite (per `FORGE_COMPOSITE_ROADMAP.md`) gets a killzone-aware refinement:
+
+| Composite                  | Killzone gating / amplification                                             |
+|----------------------------|-----------------------------------------------------------------------------|
+| `BULL_DAY_DIP_BUY`         | Amplify lot ×1.5 inside prime window (`NY_OPEN_KZ` ∪ `LONDON_CLOSE_KZ`)     |
+| `INTRADAY_REVERSAL_SELL`   | Only fire inside `NY_OPEN_KZ` ∪ `LONDON_CLOSE_KZ` (institutional flip)      |
+| `MOMENTUM_DUMP_SELL`       | Add caution filter in first 60 min of `LONDON_OPEN_KZ` (Judas Swing risk)   |
+| `BLOCK_SELL_IN_CHOP`       | Always-on regardless of killzone                                            |
+| `CHOP_LADDER_BUY_GRID`     | Disable inside `LONDON_CLOSE_KZ` (institutions square — reversal risk)      |
+
+### §11.5 Per-killzone trade caps (new gate code candidate)
+
+Adding `MaxTradesPerKZ` as an env knob + `killzone_trade_cap` as a new entry in `gate_legend.json` prevents over-trading the same window. Default 3-5 per killzone. **Defer to v2.7.38** — not v2.7.36 / v2.7.37 scope. Logged here as a known follow-up.
+
+### §11.6 Logging mandate — `killzone` column in SIGNALS
+
+The v2.7.36 SIGNALS schema extension (`docs/FORGE_LOGGING_EXTENSION_DESIGN.md`) should add `killzone TEXT DEFAULT 'OFF_KZ'` as a new column. Mandatory for retrospective composite validation against the Mar 31 → Apr 8 case study — without it, we can't tell whether a given TAKEN entry landed in the prime window or a low-edge bucket.
+
+**Migration**:
+```sql
+ALTER TABLE SIGNALS ADD COLUMN killzone TEXT DEFAULT 'OFF_KZ';
+ALTER TABLE SIGNALS ADD COLUMN minutes_into_kz INTEGER DEFAULT 0;
+```
+
+Bridge mirror (`python/bridge.py`):
+```sql
+ALTER TABLE forge_signals ADD COLUMN killzone TEXT DEFAULT 'OFF_KZ';
+ALTER TABLE forge_signals ADD COLUMN minutes_into_kz INTEGER DEFAULT 0;
+```
+
+### §11.7 DST handling — reference implementation
+
+Two MQL5 approaches documented in `docs/research/ICT_KILLZONES.md` §5:
+
+- **Approach A** (`TimeGMT()`-based): recommended for live trading. DST detection for US (2nd Sun Mar → 1st Sun Nov) baked in.
+- **Approach B** (manual broker-offset inputs + EU DST detection): recommended for FORGE because Strategy Tester's `TimeGMT()` behavior is less reliable than live. Works identically in both environments.
+
+FORGE will adopt **Approach B** by default; Approach A is the live-trading fallback for the eventual live-broker deployment.
+
+### §11.8 Validation checklist (mandatory before v2.7.37 ships)
+
+Mirrored from research doc §9 — must all pass before killzone code merges:
+
+| # | Check                                                                          |
+|---|--------------------------------------------------------------------------------|
+| 1 | NY time correct in live + tester (print `TimeGMT() / TimeCurrent() / GetNYTimeNow()` at OnInit) |
+| 2 | DST flips work both directions (tester across 2nd Sun Mar + 1st Sun Nov)       |
+| 3 | Killzone transitions logged (exactly 4 transitions per weekday)                |
+| 4 | No off-by-one at boundaries (10:00 NY: only one killzone active)               |
+| 5 | Weekend handling (`GetActiveKillzone() == KZ_NONE` Saturday + early Sunday)    |
+| 6 | Cross-day backtest of FORGE existing TAKEN trades (Mar 31 → Apr 8 case study)  |
+
+### §11.9 Cross-references
+
+- **Research doc**: `docs/research/ICT_KILLZONES.md` — full citation set, MQL5 reference code, Judas Swing detail
+- **Composite Roadmap**: `FORGE_COMPOSITE_ROADMAP.md` — killzone-aware composite gating extensions added per §11.4
+- **Logging Design**: `docs/FORGE_LOGGING_EXTENSION_DESIGN.md` — `killzone` column added per §11.6
+- **Naming Conventions**: `FORGE_NAMING_CONVENTIONS.md` — `KILLZONE_*` prefix policy slot (open — to be added in next naming-conv update)
+- **Decision Stack**: `FORGE_DECISION_STACK.md` — Layer 5 atoms now include `g_regime.killzone`
+
+---
+
+## §12. Changelog
 
 | Date | Change |
 |---|---|
@@ -628,3 +746,4 @@ This is the same strangler-fig pattern as the struct refactor — additive Phase
 | 2026-05-11 | Industry-terminology research complete — see `docs/RESEARCH_NOTES_regime_terminology.md`. Findings: 1 strong rename recommended (`intraday_vs_macro_diverged` -> `intraday_counter_macro`; "divergence" canonically means RSI/MACD-vs-price per Babypips/Elliott/Murphy, not timeframe-conflict — canonical term is "counter-trend"). 1 optional rename (`macro_label` -> `htf_label` for MTF-vocabulary consistency — defer to Phase 2 PR review). 3 fields keep names: `intraday_label`, `daily_slope_atr`, `high_vol` align with Murphy/Weinstein/Bollinger canonical concepts. Closes open question §7.1. |
 | 2026-05-12 | **Both renames applied** after operator review. `macro_*` → `htf_*` cascade across 4 fields (`macro_label/confidence/h1_strong` + `intraday_counter_macro`). New §2.6 glossary added explaining HTF/MTF/LTF vocabulary inline for future readers. All §3 code examples + §5 migration steps + §8 cross-references updated. Field names now FROZEN for Phase 2. |
 | 2026-05-12 | **§10.5 Env-knob rename plan added** — 20 regime-related FORGE_* knobs in scope for Phase 2 rename (14 active + 6 documented-only). Mapping table aligns each to FORGE_NAMING_CONVENTIONS.md §4 policy (ATOM/GATE prefixes, HTF vocabulary, direction at end). Implementation strategy: backward-compatible aliases for one EA version (v2.7.37) then hard-cut in v2.7.39. NO EA code changes required — purely .env → sync-mapping layer. Cross-referenced from FORGE_NAMING_CONVENTIONS.md §5. |
+| 2026-05-12 | **§11 ICT killzones added as Layer 5 atom**. RegimeState struct grows 14 → 16 fields (`killzone` + `minutes_into_kz`). XAUUSD-tuned killzone table (gold prime window = London-NY overlap = 60-70% of daily range per EBC/TradingView ProjectSyndicate). Judas Swing pattern documented (02:30 NY first 60 min of London Open KZ). 5 killzone-aware composite refinements specified (BULL_DAY_DIP_BUY ×1.5 amplifier in prime window; INTRADAY_REVERSAL_SELL gated to NY_OPEN/LONDON_CLOSE; MOMENTUM_DUMP_SELL caution filter in Judas window; CHOP_LADDER_BUY_GRID disabled in London Close; BLOCK_SELL_IN_CHOP always-on). v2.7.36 logging mandate: add `killzone` + `minutes_into_kz` columns to SIGNALS + scribe forge_signals. Implementation target v2.7.37. Per-killzone trade caps deferred to v2.7.38. Full research with 13 sources in `docs/research/ICT_KILLZONES.md`. |
