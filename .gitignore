@@ -68,7 +68,10 @@ Agent.md
 .claude/scheduled_tasks.lock
 
 # ── IDE ────────────────────────────────────────────────────────────
-.cursor/
+# Track shared Cursor rules; keep other .cursor paths local.
+.cursor/**
+!.cursor/rules/
+!.cursor/rules/**
 .vscode/
 .idea/
 .warp/

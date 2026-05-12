@@ -1,0 +1,20 @@
+---
+description: Bridge Cursor agents to repo-local Claude Code skills under .claude/skills
+alwaysApply: true
+---
+
+# Claude skills in this repo (Cursor)
+
+Project-specific workflows live under **`.claude/skills/`** (Claude Code plugin format). **When a task matches a skill’s domain, read that skill’s `SKILL.md` with the Read tool and follow it** for workflow, outputs, and guardrails — the same as Claude Code would.
+
+| Skill | Path | When to load |
+|-------|------|----------------|
+| FORGE EA review / validation | `.claude/skills/forge-ea-review/SKILL.md` | Reviewing `ea/FORGE.mq5`, entry logic vs `docs/FORGE_ENTRY_CONDITIONS.md`, config pipeline, codex-style audits, updating `docs/FORGE_ENTRY_CONDITIONS_CODEX_REVIEW.md` |
+| FORGE tester monitor | `.claude/skills/forge-monitor/SKILL.md` | Monitoring Strategy Tester journals, skip/taken deltas, run analysis docs, journal SQL |
+| Research (MQL5 / indicators / composites) | `.claude/skills/research/SKILL.md` | External validation, canonical patterns, `docs/RESEARCH_NOTES_*.md` output |
+
+**`.claude/commands/*.md`** are slash-command wrappers for Claude Code only; in Cursor, use the **`SKILL.md`** files above as the source of truth.
+
+If a user rule conflicts with a skill, **project maintainer intent in `SKILL.md` wins for that workflow** unless the user explicitly overrides in chat.
+
+Do not duplicate long skill text into chat — **read the file** and apply it.
