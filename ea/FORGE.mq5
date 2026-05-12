@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.109"
+#property version "2.111"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.39";
+const string FORGE_VERSION = "2.7.41";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -107,7 +107,7 @@ input string  InputMode      = "WATCH";      // Startup mode: OFF|WATCH|SIGNAL|S
 input int     BrokerInfoEveryCycles = 20;    // Re-write broker_info.json every N timer cycles (0=OnInit only)
 // ── NATIVE SCALPER — Inputs (see also config/scalper_config.json lot_sizing) ──
 input string  ScalperMode    = "DUAL";       // Native scalper: NONE|BB_BOUNCE|BB_BREAKOUT|DUAL
-input double  ScalperLot     = 0.0;          // Lot per leg (0=use scalper_config.json fixed_lot; >0 overrides JSON — same semantics as SellInsideBandLotFactor)
+input double  ScalperLotFactor = 1.0;        // Global lot multiplier on JSON lot_sizing.fixed_lot. 1.0=no override (full size). 0.5=half-sizing (risk-off). 2.0=double (size-up day). Renamed from absolute ScalperLot (v2.7.40) — old .set entries silently ignored, default 1.0 = safe no-op.
 input int     ScalperTrades  = 4;            // Default leg count when lot source = Inputs only (ignored when using JSON min/max envelope)
 input int     ScalperMinTrades = 0;          // Min legs 1..30 for native group; 0 = use scalper_config.json min_num_trades only
 input int     ScalperMaxTrades = 0;          // Max legs 1..30 for native group; 0 = use scalper_config.json max_num_trades only
@@ -121,7 +121,7 @@ input bool    NativeScalperAutoLotByTrend = false;  // Optional: scale lot size 
 input bool    NativeScalperAutoLotBreakoutOnly = true; // When true, trend auto-lot applies to BB_BREAKOUT only
 input double  NativeScalperAutoLotMaxMultiplier = 2.0; // Hard cap multiplier (1.0..5.0)
 input double  NativeScalperAutoLotTrendRef = 1.0;   // Trend strength that reaches max multiplier
-input bool    NativeScalperInputsOverrideLotSizing = false; // true = force ScalperLot + ScalperTrades from Inputs; false = prefer scalper_config.json (fixed_lot, min/max legs, resolver)
+input bool    NativeScalperInputsOverrideLotSizing = false; // true = force ScalperTrades-driven leg count from Inputs; false = prefer scalper_config.json (min/max legs, resolver). 2.7.40: lot value always comes from JSON fixed_lot × ScalperLotFactor — this toggle only affects leg COUNT now.
 input bool    NewsFilterInputsOverride = false; // true = use NewsFilterEnabled input over config
 input bool    NewsFilterEnabled        = true;  // Enable native news filter (when NewsFilterInputsOverride=true)
 input double  SellInsideBandLotFactor = 0.0;               // Lot fraction for BB_BREAKOUT SELL when price inside BB band (0=use scalper_config.json sell_inside_band_lot_factor; 0.1–1.0 overrides)
@@ -148,6 +148,12 @@ string g_scalper_mode = "NONE";  // NONE | BB_BOUNCE | BB_BREAKOUT | DUAL
 int    g_scalper_group_counter = 5000;  // native groups start at 5000+ to avoid BRIDGE collision
 int    g_scalper_session_trades = 0;
 datetime g_scalper_last_loss_time   = 0;
+// 2.7.41 — Track last TP1 win per direction. Used by regime-aware cooldown bypass:
+//   when a setup is gated by a per-setup cooldown (BB_BREAKOUT same-dir, BB_PULLBACK_SCALP,
+//   BULL_DAY_DIP_BUY reentry), bypass the cooldown if the last group in this direction
+//   won TP1 recently AND regime + ADX confirm trend. Don't bypass after a loss.
+datetime g_scalper_last_tp1_buy_time  = 0;
+datetime g_scalper_last_tp1_sell_time = 0;
 datetime g_last_sl_time_buy         = 0;  // last SL hit on a BUY group — for post-SL direction cooldown
 datetime g_last_sl_time_sell        = 0;  // last SL hit on a SELL group
 datetime g_scalper_last_entry_bar = 0;  // prevent multiple entries on same bar
@@ -565,6 +571,17 @@ struct ScalperConfig {
    int    max_open_groups;
    int    max_trades_per_session;
    int    loss_cooldown_sec;
+   // 2.7.41 — Regime-aware cooldown bypass. When a setup is throttled by a per-setup cooldown
+   //   (BB_BREAKOUT same-dir, BB_PULLBACK_SCALP, BULL_DAY_DIP_BUY reentry), allow the entry
+   //   anyway if: (1) last TP1 win in this direction was within `cooldown_bypass_window_sec`,
+   //   (2) direction matches g_regime_label, (3) M5 ADX >= cooldown_bypass_min_adx,
+   //   (4) min refire-floor passed (anti-flicker). This stops cooldowns from killing
+   //   second-leg continuations on strong trend days (Apr 1 NY rally, Apr 2 crash).
+   bool   cooldown_bypass_on_tp_with_trend;
+   int    cooldown_bypass_window_sec;     // how recently the last TP1 must have hit
+   double cooldown_bypass_min_adx;        // M5 ADX floor for bypass
+   int    cooldown_bypass_min_refire_sec; // anti-flicker — min gap between same-direction fires
+   string cooldown_bypass_setups;         // comma-list — these setups bypass UNCONDITIONALLY
    int    post_sl_cooldown_sec;         // extended cooldown per-direction after SL hit (default 3600s = 60min)
    double breakout_near_floor_lot_factor;  // Cardwell RSI 20-25 zone: lot factor when crash bypass + RSI near floor (default 0.25)
    double same_direction_stack_lot_factor; // lot factor for 2nd concurrent group in same direction (default 0.25)
@@ -670,6 +687,11 @@ struct ScalperConfig {
    // Entry Quality Gate — M5 bar-based pre-entry validation
    double min_entry_atr;           // reject entries when ATR < this (default 3.5)
    int    max_open_same_direction; // max concurrent open groups per direction (default 1)
+   // 2.7.41 — Comma-separated setup_type list that BYPASSES max_open_same_direction. Risk-1
+   //   setups (BB_BREAKOUT_RETEST, BUY_LIMIT_RECOVERY) can stack beyond the cap so their
+   //   high-confidence signals are not throttled by a low default. Setups outside this list
+   //   continue to respect max_open_same_direction.
+   string max_open_same_direction_bypass_setups;
    int    entry_quality_bars;      // look-back bars for body/direction checks (default 3)
    double min_body_ratio;          // min avg body/candle ratio — filters doji/wick bars (default 0.40)
    int    min_directional_bars;    // min bars agreeing with trade direction out of entry_quality_bars (default 2)
@@ -679,6 +701,10 @@ struct ScalperConfig {
    // Lot sizing precedence: config/scalper_config.json lot_sizing by default,
    // optionally overridden by MT5 Inputs when NativeScalperInputsOverrideLotSizing=true.
    double lot_fixed;
+   // 2.7.40 — Env-side mirror of MT5 input ScalperLotFactor (FORGE_GLOBAL_SCALPER_LOT_FACTOR).
+   // Sits at top of combined_lot_factor chain as a global scaler. 1.0 = no-op.
+   // MT5 input wins when non-default; env value wins when MT5 input stays at 1.0.
+   double scalper_lot_factor;
    int    lot_num_trades;
    int    lot_min_trades;
    int    lot_max_trades;
@@ -1918,6 +1944,9 @@ void ManageOpenGroups() {
          }
       }
       g_groups[gi].tp1_hit = true;
+      // 2.7.41 — track last TP1 win per direction for regime-aware cooldown bypass
+      if(dir == "BUY")  g_scalper_last_tp1_buy_time  = TimeCurrent();
+      if(dir == "SELL") g_scalper_last_tp1_sell_time = TimeCurrent();
       ArmPostTP1Ladder(gi);  // 2.7.10 Day 2: arm SELL STOP continuation (off by default: sell_stop_cont_enabled=false)
       Print("FORGE: Group ", g_groups[gi].id, " TP1 — closed ", closed, "/", total);
 
@@ -2970,6 +2999,12 @@ void InitScalperConfig() {
    g_sc.max_open_groups = 2;
    g_sc.max_trades_per_session = 3;
    g_sc.loss_cooldown_sec = 300;
+   // 2.7.41 — regime-aware cooldown bypass defaults (default-ON; opt out via env)
+   g_sc.cooldown_bypass_on_tp_with_trend = true;
+   g_sc.cooldown_bypass_window_sec       = 600;   // 10 min — recent TP1 still counts
+   g_sc.cooldown_bypass_min_adx          = 25.0;  // same floor as cascade arming
+   g_sc.cooldown_bypass_min_refire_sec   = 5;     // anti-flicker floor
+   g_sc.cooldown_bypass_setups           = "";    // empty = no unconditional bypass
    // 2.7.7 defaults
    g_sc.session_ny_sell_cutoff_utc      = 17;
    g_sc.session_london_sell_cutoff_utc  = 0;
@@ -3113,13 +3148,18 @@ void InitScalperConfig() {
    g_sc.native_sl_extra_buffer_points = 5.0;
    g_sc.min_entry_atr = 3.5;
    g_sc.max_open_same_direction = 1;
+   g_sc.max_open_same_direction_bypass_setups = "";  // empty = no bypass; operator opts in via FORGE_*
    g_sc.entry_quality_bars = 3;
    g_sc.min_body_ratio = 0.40;
    g_sc.min_directional_bars = 2;
    g_sc.require_bb_expansion = true;
    g_sc.lot_sizing_source = "AUTO";
    g_sc.lot_inputs_override = false;
-   g_sc.lot_fixed = (ScalperLot > 0.0) ? ScalperLot : 0.02;
+   // 2.7.40 — fixed_lot is the single absolute base. Seed at safe broker-min until JSON loads;
+   //   real value comes from lot_sizing.fixed_lot in scalper_config.json (typically 0.25).
+   //   ScalperLotFactor flows through combined_lot_factor at compute time, NOT here.
+   g_sc.lot_fixed = 0.02;
+   g_sc.scalper_lot_factor = 1.0;  // no-op default; env override via FORGE_GLOBAL_SCALPER_LOT_FACTOR
    g_sc.lot_num_trades = MathMax(1, ScalperTrades);
    g_sc.lot_min_trades = 0;
    g_sc.lot_max_trades = 0;
@@ -3221,8 +3261,10 @@ void ApplyScalperLotInputOverrides() {
       if(tlo2 > thi2) { int sw2 = tlo2; tlo2 = thi2; thi2 = sw2; }
       g_sc.lot_num_trades = MathMax(1, MathMin(30, (tlo2 + thi2) / 2));
    }
-   // ScalperLot > 0 overrides scalper_config.json fixed_lot (0 = keep JSON value)
-   if(ScalperLot > 0.0) g_sc.lot_fixed = ScalperLot;
+   // 2.7.40 — ScalperLot (absolute) removed. ScalperLotFactor (multiplier, default 1.0) now folds
+   //   into combined_lot_factor at the compute site; it does NOT mutate g_sc.lot_fixed here.
+   //   This unifies the lot pipeline: fixed_lot stays the single absolute base; every other
+   //   knob is a multiplier — including the MT5-input lever.
    // SellInsideBandLotFactor input overrides scalper_config.json when in range (0, 1]
    if(SellInsideBandLotFactor > 0.0 && SellInsideBandLotFactor <= 1.0)
       g_sc.breakout_sell_inside_band_lot_factor = SellInsideBandLotFactor;
@@ -3241,7 +3283,7 @@ void ReadScalperConfig() {
       if(!g_scalper_config_missing_logged) {
          Print("FORGE: scalper_config.json not readable (copy to MT5 Common ",
                TerminalInfoString(TERMINAL_COMMONDATA_PATH), " or terminal Files; optional FilesPath input). ",
-               "Lot/legs fall back to ScalperLot/ScalperTrades until the file is available.");
+               "Lot/legs fall back to seed (lot_fixed=0.02, ScalperLotFactor=1.0, ScalperTrades) until the file is available.");
          g_scalper_config_missing_logged = true;
       }
       ApplyScalperLotInputOverrides();
@@ -3557,6 +3599,26 @@ void ReadScalperConfig() {
    v = JsonGetDouble(content, "max_open_groups"); if(v > 0) g_sc.max_open_groups = (int)v;
    v = JsonGetDouble(content, "max_trades_per_session"); if(v > 0) g_sc.max_trades_per_session = (int)v;
    v = JsonGetDouble(content, "loss_cooldown_sec"); if(v > 0) g_sc.loss_cooldown_sec = (int)v;
+   // 2.7.41 — regime-aware cooldown bypass
+   if(JsonHasKey(content, "cooldown_bypass_on_tp_with_trend")) {
+      v = JsonGetDouble(content, "cooldown_bypass_on_tp_with_trend");
+      g_sc.cooldown_bypass_on_tp_with_trend = (v >= 0.5);
+   }
+   if(JsonHasKey(content, "cooldown_bypass_window_sec")) {
+      v = JsonGetDouble(content, "cooldown_bypass_window_sec");
+      if(v >= 30 && v <= 7200) g_sc.cooldown_bypass_window_sec = (int)v;
+   }
+   if(JsonHasKey(content, "cooldown_bypass_min_adx")) {
+      v = JsonGetDouble(content, "cooldown_bypass_min_adx");
+      if(v >= 0 && v <= 80) g_sc.cooldown_bypass_min_adx = v;
+   }
+   if(JsonHasKey(content, "cooldown_bypass_min_refire_sec")) {
+      v = JsonGetDouble(content, "cooldown_bypass_min_refire_sec");
+      if(v >= 0 && v <= 600) g_sc.cooldown_bypass_min_refire_sec = (int)v;
+   }
+   if(JsonHasKey(content, "cooldown_bypass_setups")) {
+      g_sc.cooldown_bypass_setups = JsonGetString(content, "cooldown_bypass_setups");
+   }
    if(JsonHasKey(content,"session_ny_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_ny_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_ny_sell_cutoff_utc = (int)v; }
    // 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 fix.
    // Filter 1 blocks BUY when D1 SMA slope < −threshold (multi-day rollover);
@@ -3752,6 +3814,11 @@ void ReadScalperConfig() {
       v = JsonGetDouble(lot_json, "inputs_override_lot_sizing");
       g_sc.lot_inputs_override = (v >= 0.5);
    }
+   // 2.7.40 — env-side mirror of MT5 input ScalperLotFactor. Sits at top of combined_lot_factor.
+   if(JsonHasKey(lot_json, "scalper_lot_factor")) {
+      v = JsonGetDouble(lot_json, "scalper_lot_factor");
+      if(v >= 0.05 && v <= 10.0) g_sc.scalper_lot_factor = v;
+   }
    if(JsonHasKey(lot_json, "staged_entry_enabled")) {
       v = JsonGetDouble(lot_json, "staged_entry_enabled");
       g_sc.staged_entry_enabled = (v >= 0.5);
@@ -3921,6 +3988,9 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "max_open_same_direction")) {
       v = JsonGetDouble(content, "max_open_same_direction");
       if(v >= 0) g_sc.max_open_same_direction = (int)v;
+   }
+   if(JsonHasKey(content, "max_open_same_direction_bypass_setups")) {
+      g_sc.max_open_same_direction_bypass_setups = JsonGetString(content, "max_open_same_direction_bypass_setups");
    }
    if(JsonHasKey(content, "entry_quality_bars")) {
       v = JsonGetDouble(content, "entry_quality_bars");
@@ -4110,16 +4180,21 @@ void ReadScalperConfig() {
    if(lot_source_mode == "INPUTS") lot_inputs_override_eff = true;
    else if(lot_source_mode == "CONFIG") lot_inputs_override_eff = false;
    else lot_inputs_override_eff = NativeScalperInputsOverrideLotSizing ? true : g_sc.lot_inputs_override;
-   PrintFormat("FORGE lot sizing profile: mode=%s source=%s input_lot=%.2f input_trades=%d config_min_legs=%d config_max_legs=%d config_lot=%.2f config_trades_mid=%d effective_lot=%.2f effective_trades=%d",
+   // 2.7.40 — ScalperLotFactor (multiplier) replaces ScalperLot (absolute). Effective lot now
+   //   shows base × factor (pre-combined-factor) so operators see the size-up/down at a glance.
+   double _slf_eff_log = (ScalperLotFactor != 1.0) ? ScalperLotFactor : g_sc.scalper_lot_factor;
+   PrintFormat("FORGE lot sizing profile: mode=%s source=%s scalper_lot_factor_input=%.2f scalper_lot_factor_env=%.2f effective_factor=%.2f input_trades=%d config_min_legs=%d config_max_legs=%d config_lot=%.2f config_trades_mid=%d effective_lot=%.4f effective_trades=%d",
                lot_source_mode,
                lot_inputs_override_eff ? "inputs" : "config",
-               ScalperLot,
+               ScalperLotFactor,
+               g_sc.scalper_lot_factor,
+               _slf_eff_log,
                ScalperTrades,
                g_sc.lot_min_trades,
                g_sc.lot_max_trades,
                g_sc.lot_fixed,
                g_sc.lot_num_trades,
-               lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed,
+               g_sc.lot_fixed * _slf_eff_log,
                lot_inputs_override_eff ? MathMax(1, ScalperTrades) : MathMax(1, g_sc.lot_num_trades));
    PrintFormat("FORGE staged entry: enabled=%s initial_legs=%d add_interval_sec=%d min_favorable_pts=%.1f from_entry_only=%s | recovery boost: enabled=%s dd_min_pct=%.2f extra_legs=%d",
                g_sc.staged_entry_enabled ? "true" : "false",
@@ -4640,9 +4715,10 @@ bool IsBullDayDipBuyActive(const double h1_trend_strength) {
    // Session: LONDON or NY (use EA session label, not Python)
    string sess = ComputeCurrentSessionLabel();
    if(sess != "LONDON" && sess != "NY") return false;
-   // Re-entry cooldown
+   // Re-entry cooldown — 2.7.41 honors regime-aware bypass (m5_adx already computed above)
    if(g_last_chop_buy_exit_time > 0
-      && (TimeCurrent() - g_last_chop_buy_exit_time) < g_sc.bull_day_dip_buy_reentry_cooldown_sec)
+      && (TimeCurrent() - g_last_chop_buy_exit_time) < g_sc.bull_day_dip_buy_reentry_cooldown_sec
+      && !CooldownBypassActive("BUY", "BULL_DAY_DIP_BUY", m5_adx))
       return false;
    return true;
 }
@@ -6127,6 +6203,58 @@ int ScalperOpenGroupCountByDirection(const string direction) {
    return count;
 }
 
+// 2.7.41 — Returns true if `setup_type` appears in the comma-separated
+// `max_open_same_direction_bypass_setups` list. Risk-1 setups bypass the
+// concurrent-open cap. Match is whole-token (commas as delimiters), case-sensitive.
+// Example list value: "BB_BREAKOUT_RETEST,BUY_LIMIT_RECOVERY" — both bypass; raw
+// "BB_BREAKOUT" does NOT match "BB_BREAKOUT_RETEST" (different setup_type).
+bool SetupBypassesDirectionCap(const string setup_type) {
+   if(StringLen(g_sc.max_open_same_direction_bypass_setups) == 0) return false;
+   if(StringLen(setup_type) == 0) return false;
+   string padded_list = "," + g_sc.max_open_same_direction_bypass_setups + ",";
+   string padded_setup = "," + setup_type + ",";
+   return (StringFind(padded_list, padded_setup) >= 0);
+}
+
+// 2.7.41 — Regime-aware cooldown bypass.
+// Returns true when a per-setup cooldown (BB_BREAKOUT same-dir, BB_PULLBACK_SCALP,
+// BULL_DAY_DIP_BUY reentry) should be IGNORED for this entry attempt.
+//
+// Bypass conditions (ALL must hold for the trend-aware path):
+//   1. cooldown_bypass_on_tp_with_trend = 1 (master switch, default ON)
+//   2. Last TP1 win in this direction was within `cooldown_bypass_window_sec` (10 min default)
+//   3. Direction matches g_regime_label (BUY ↔ TREND_BULL, SELL ↔ TREND_BEAR)
+//   4. M5 ADX ≥ cooldown_bypass_min_adx (default 25 — trend confirmed)
+//   5. ≥ cooldown_bypass_min_refire_sec since last TP1 (anti-flicker, default 5s)
+//
+// Alternate path: setup_type appears in cooldown_bypass_setups list (unconditional).
+// Designed for highest-confidence setups (BB_BREAKOUT_RETEST, BUY_LIMIT_RECOVERY).
+//
+// Use case (Apr 1 2024 NY rally): BB_BREAKOUT BUY G5001 → TP1 → cooldown active →
+//   regime=TREND_BULL, ADX=38, 13s since TP1 → bypass returns TRUE → G5002 fires.
+//   Without bypass, the 30-min cooldown would block 4-5 continuation entries.
+bool CooldownBypassActive(const string direction, const string setup_type, const double m5_adx) {
+   // Unconditional bypass list (checked first — applies regardless of master switch)
+   if(StringLen(g_sc.cooldown_bypass_setups) > 0 && StringLen(setup_type) > 0) {
+      string padded_list = "," + g_sc.cooldown_bypass_setups + ",";
+      string padded_setup = "," + setup_type + ",";
+      if(StringFind(padded_list, padded_setup) >= 0) return true;
+   }
+   if(!g_sc.cooldown_bypass_on_tp_with_trend) return false;
+   datetime last_tp = (direction == "BUY") ? g_scalper_last_tp1_buy_time
+                    : (direction == "SELL") ? g_scalper_last_tp1_sell_time
+                    : (datetime)0;
+   if(last_tp == 0) return false;
+   long since_tp = (long)(TimeCurrent() - last_tp);
+   if(since_tp < (long)g_sc.cooldown_bypass_min_refire_sec) return false;     // anti-flicker
+   if(since_tp > (long)g_sc.cooldown_bypass_window_sec)     return false;     // win too stale
+   bool with_trend = (direction == "BUY"  && g_regime_label == "TREND_BULL")
+                  || (direction == "SELL" && g_regime_label == "TREND_BEAR");
+   if(!with_trend) return false;
+   if(m5_adx > 0 && m5_adx < g_sc.cooldown_bypass_min_adx) return false;
+   return true;
+}
+
 bool IsTesting() {
    return (MQLInfoInteger(MQL_TESTER) != 0);
 }
@@ -6359,7 +6487,8 @@ int ScalperNewsUpdateEffectiveThresholds(string &ev_label) {
 // ─────────────────────────────────────────────────────────────────────────────
 bool CheckEntryQuality(const string direction, const double atr,
                        const double bb_upper_now, const double bb_lower_now,
-                       const double rsi, const double adx) {
+                       const double rsi, const double adx,
+                       const string setup_type = "") {
    // -1. Native news filter — hard block only
    {
       string nf_ev = "";
@@ -6377,10 +6506,13 @@ bool CheckEntryQuality(const string direction, const double atr,
       // state 1 (TIGHTEN) or 0 (ALLOW): g_nf_eff_rsi_buy_ceil/sell_min updated, passed to BB gates below
    }
    // 0. Per-direction open group cap — prevent stacking same-direction exposure
-   if(g_sc.max_open_same_direction > 0) {
+   //    2.7.41 — Risk-1 setups in `max_open_same_direction_bypass_setups` skip this gate.
+   //    Example: BB_BREAKOUT_RETEST + BUY_LIMIT_RECOVERY can fire even when 1 BUY group
+   //    is already open, letting high-confidence signals stack past the default cap.
+   if(g_sc.max_open_same_direction > 0 && !SetupBypassesDirectionCap(setup_type)) {
       int dir_open = ScalperOpenGroupCountByDirection(direction);
       if(dir_open >= g_sc.max_open_same_direction) {
-         JournalRecordSignal("SKIP","entry_quality_direction_cap","",direction,
+         JournalRecordSignal("SKIP","entry_quality_direction_cap",setup_type,direction,
             SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,rsi,adx,bb_upper_now,bb_lower_now,0,0,0,0);
          return false;
       }
@@ -6935,7 +7067,8 @@ void CheckNativeScalperSetups() {
                && m5_adx < g_sc.pullback_scalp_max_adx                    // exhausting, not accelerating
                && (g_sc.pullback_scalp_cooldown_seconds <= 0
                    || g_pullback_scalp_last_buy_time == 0
-                   || (_now_psb - g_pullback_scalp_last_buy_time) >= g_sc.pullback_scalp_cooldown_seconds);
+                   || (_now_psb - g_pullback_scalp_last_buy_time) >= g_sc.pullback_scalp_cooldown_seconds
+                   || CooldownBypassActive("BUY", "BB_PULLBACK_SCALP", m5_adx));  // 2.7.41 — bypass when last TP1 + TREND_BULL + ADX ok
             if(pullback_buy_ok) {
                direction = "BUY";
                double pb_sl  = NormalizeDouble(bid - m5_atr * g_sc.pullback_scalp_sl_atr_mult, _Digits);
@@ -7019,7 +7152,8 @@ void CheckNativeScalperSetups() {
                && m5_adx < g_sc.pullback_scalp_max_adx
                && (g_sc.pullback_scalp_cooldown_seconds <= 0
                    || g_pullback_scalp_last_sell_time == 0
-                   || (_now_pss - g_pullback_scalp_last_sell_time) >= g_sc.pullback_scalp_cooldown_seconds);
+                   || (_now_pss - g_pullback_scalp_last_sell_time) >= g_sc.pullback_scalp_cooldown_seconds
+                   || CooldownBypassActive("SELL", "BB_PULLBACK_SCALP", m5_adx));  // 2.7.41 — bypass when last TP1 + TREND_BEAR + ADX ok
             if(pullback_sell_ok) {
                direction = "SELL";
                double pb_sl_s  = NormalizeDouble(ask + m5_atr * g_sc.pullback_scalp_sl_atr_mult, _Digits);
@@ -7212,7 +7346,8 @@ void CheckNativeScalperSetups() {
             if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok
                && g_sc.breakout_same_dir_cooldown_seconds > 0
                && g_scalper_last_bb_breakout_buy > 0
-               && (TimeCurrent() - g_scalper_last_bb_breakout_buy) < g_sc.breakout_same_dir_cooldown_seconds) {
+               && (TimeCurrent() - g_scalper_last_bb_breakout_buy) < g_sc.breakout_same_dir_cooldown_seconds
+               && !CooldownBypassActive("BUY", "BB_BREAKOUT", m5_adx)) {  // 2.7.41 — bypass on TP+TREND_BULL+ADX
                datetime _boc_bar = iTime(_Symbol, PERIOD_M5, 0);
                if(_boc_bar != g_scalper_last_bocooldown_log_bar) {
                   g_scalper_last_bocooldown_log_bar = _boc_bar;
@@ -7591,7 +7726,8 @@ void CheckNativeScalperSetups() {
             if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok
                && g_sc.breakout_same_dir_cooldown_seconds > 0
                && g_scalper_last_bb_breakout_sell > 0
-               && (TimeCurrent() - g_scalper_last_bb_breakout_sell) < g_sc.breakout_same_dir_cooldown_seconds) {
+               && (TimeCurrent() - g_scalper_last_bb_breakout_sell) < g_sc.breakout_same_dir_cooldown_seconds
+               && !CooldownBypassActive("SELL", "BB_BREAKOUT", m5_adx)) {  // 2.7.41 — bypass on TP+TREND_BEAR+ADX
                datetime _bocs_bar = iTime(_Symbol, PERIOD_M5, 0);
                if(_bocs_bar != g_scalper_last_bocooldown_log_bar) {
                   g_scalper_last_bocooldown_log_bar = _bocs_bar;
@@ -8000,7 +8136,7 @@ void CheckNativeScalperSetups() {
 
    // Entry Quality Gate — M5 bar body/direction/ATR/BB-expansion pre-filter
    // rsi/adx passed for logging only (not used in gate logic — OHLC-only checks)
-   if(!CheckEntryQuality(direction, m5_atr, m5_bb_u, m5_bb_l, m5_rsi, m5_adx)) return;
+   if(!CheckEntryQuality(direction, m5_atr, m5_bb_u, m5_bb_l, m5_rsi, m5_adx, setup_type)) return;
 
    // DD event: tighten TP
    if(sentinel_tight) {
@@ -8260,12 +8396,21 @@ void CheckNativeScalperSetups() {
    double bull_day_dip_factor = (setup_type == "BULL_DAY_DIP_BUY" && direction == "BUY"
                                  && g_sc.bull_day_dip_buy_lot_mult > 0.0)
                                  ? g_sc.bull_day_dip_buy_lot_mult : 1.0;
+   // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
+   //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
+   //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
+   //   touching fixed_lot. Lot pipeline is now ONE absolute base × N multipliers.
+   double scalper_lot_factor_eff = (ScalperLotFactor != 1.0) ? ScalperLotFactor : g_sc.scalper_lot_factor;
+   if(scalper_lot_factor_eff <= 0.0) scalper_lot_factor_eff = 1.0;
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor);
    g_last_combined_lot_factor = combined_lot_factor;
-   double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
+   // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
+   //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
+   //   ScalperLotFactor multiplier above. INPUTS lot_sizing_source still controls leg count.
+   double base_lot = g_sc.lot_fixed;
    double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);
    double tp2_price = (tp2 > 0) ? tp2 : tp1;
    double tp1_split_pct = is_breakout_setup ? g_sc.breakout_tp1_close_pct : g_sc.bounce_tp1_close_pct;

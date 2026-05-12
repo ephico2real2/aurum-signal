@@ -640,6 +640,43 @@ they are multi-atom predicates that gate/amplify existing setups, not new setup-
 **Combined Phase 2 batch: 45 renames** (20 regime + 16 setup-specific backfill + 9 v2.7.38 composite split).
 All 45 conform to `FORGE_<scope>_<setup|HTF|M5|DAILY>_<indicator|param>_<role>_<direction?>` per `FORGE_NAMING_CONVENTIONS.md §4`. Each ships with backward-compatible alias resolution per §10.5.2.
 
+### §10.5.1d v2.7.40 MT5-input rename — `ScalperLot` → `ScalperLotFactor` (lot pipeline unification)
+
+Decision logged 2026-05-12. The v2.7.39 lot pipeline had **two absolute sources of truth**:
+`lot_sizing.fixed_lot` (JSON) AND `ScalperLot` (MT5 input — overrode JSON when > 0). Every
+other lot knob in `combined_lot_factor` was a multiplier; `ScalperLot` was the only outlier.
+Per §4.9 scope-precision and the design principle "one absolute base, all else is a factor",
+the MT5 input is renamed and re-semanticized to a multiplier:
+
+| Surface | Before (v2.7.39) | After (v2.7.40) | Migration |
+|---|---|---|---|
+| MT5 input | `ScalperLot=0.0` (absolute; >0 overrides JSON) | `ScalperLotFactor=1.0` (multiplier on `fixed_lot`) | **Rename, no alias.** Old `.set` entries (`ScalperLot=0.08`) silently fall to new input's default 1.0 = safe no-op. |
+| JSON key | `lot_sizing.fixed_lot` (unchanged, still THE base) | `lot_sizing.fixed_lot` (unchanged, single absolute) + NEW `lot_sizing.scalper_lot_factor` (1.0 default) | Additive. `fixed_lot` keeps full authority. |
+| Env knob | `FORGE_FIXED_LOT` (unchanged) | `FORGE_FIXED_LOT` (unchanged) + NEW `FORGE_GLOBAL_SCALPER_LOT_FACTOR` (env mirror of MT5 input) | Per §4 GLOBAL scope. New mapping in `sync_scalper_config_from_env.py`. |
+| EA compute site | `base_lot = ScalperLot if override else g_sc.lot_fixed`; combined_lot_factor = product of 10 multipliers | `base_lot = g_sc.lot_fixed` always; `combined_lot_factor` = `scalper_lot_factor_eff ×` (previous 10) | One absolute base, 11 multipliers. Floor 0.125 unchanged. |
+
+**Rename = safe-default migration.** Because MQL5 parses unknown `.set` keys as ignored, the
+rename guarantees no silent reinterpretation: an old `ScalperLot=0.08` line cannot be loaded
+as a `0.08`-multiplier (which would mean 8% of fixed_lot, an unintended size-down). Operators
+must explicitly set the new `ScalperLotFactor` to opt in to non-default behavior.
+
+**No LEGACY_ALIASES entry needed** for the MT5 input — input rename is enforced at MQL5
+load-time, not at config-parse-time. For the new JSON key `scalper_lot_factor`, no alias
+needed either (it's strictly additive; absence = default 1.0).
+
+**Combined Phase 2 batch after v2.7.40: 46 renames** (20 regime + 16 backfill + 9 v2.7.38 composite split + 1 MT5-input unification).
+
+Half-sizing / double-sizing scenarios this unlocks:
+
+| ScalperLotFactor | fixed_lot=0.25 → effective | Use case |
+|---:|:---:|---|
+| 0.1 | 0.025 | Emergency halt-size (high-impact news) |
+| 0.5 | 0.125 | Half-sizing / risk-off |
+| 1.0 | 0.25  | Default no-op (full size) |
+| 2.0 | 0.50  | Double-sizing / size-up validated day |
+
+Cross-reference: `docs/FORGE_LOT_SIZING_REFERENCE.md §0`, §1.1, §6, §7 Step 1 (all updated 2026-05-12 for v2.7.40).
+
 ### §10.5.2 Implementation strategy (Phase 2 — v2.7.37)
 
 **Backward-compatible aliases** — old + new names BOTH read by `sync_scalper_config_from_env.py`
@@ -969,3 +1006,4 @@ Mirrored from research doc §9 — must all pass before killzone code merges:
 | 2026-05-12 | **§11 ICT killzones added as Layer 5 atom**. RegimeState struct grows 14 → 16 fields (`killzone` + `minutes_into_kz`). XAUUSD-tuned killzone table (gold prime window = London-NY overlap = 60-70% of daily range per EBC/TradingView ProjectSyndicate). Judas Swing pattern documented (02:30 NY first 60 min of London Open KZ). 5 killzone-aware composite refinements specified (BULL_DAY_DIP_BUY ×1.5 amplifier in prime window; INTRADAY_REVERSAL_SELL gated to NY_OPEN/LONDON_CLOSE; MOMENTUM_DUMP_SELL caution filter in Judas window; CHOP_LADDER_BUY_GRID disabled in London Close; BLOCK_SELL_IN_CHOP always-on). v2.7.36 logging mandate: add `killzone` + `minutes_into_kz` columns to SIGNALS + scribe forge_signals. Implementation target v2.7.37. Per-killzone trade caps deferred to v2.7.38. Full research with 13 sources in `docs/research/ICT_KILLZONES.md`. |
 | 2026-05-12 | **§10.5.1b added — Phase 2 rename batch grows 20 → 36 knobs.** `.env.example` coverage audit on 2026-05-12 surfaced 16 FORGE_* keys mapped in `sync_scalper_config_from_env.py` but missing from `.env.example` (9 ACTIVE in `.env`, never documented). Backfilled in commit `db10e34` under legacy names + added to the Phase 2 rename plan. Categories: 4 BB_BREAKOUT additional gates, 4 SELL_STOP_CONT cascade knobs, 4 MOMENTUM_DUMP per-direction overrides, 4 lot-sizing internals. 4 of the 16 use names already cited as canonical examples in `FORGE_NAMING_CONVENTIONS.md §4` (`FORGE_GEOMETRY_DUMP_LOT_FACTOR*`, `FORGE_ATOM_DUMP_RSI_MAX_BUY`, `FORGE_ATOM_DUMP_H1_TREND_MAX_SELL`). Python-safety re-verified — zero hits across all 36. LEGACY_ALIASES dict in §10.5.2 expanded accordingly. SKILL.md gained Mandatory Check C to prevent recurrence. |
 | 2026-05-12 | **§10.5.1c added — v2.7.38 composites split (Phase 2 batch grows 36 → 45 knobs).** Operator Option B locked in: `composites.*` was overloaded in v2.7.38, lumping 2 GATE-acting composites (BLOCK_SELL_IN_CHOP, INTRADAY_REVERSAL_TO_SELL_V3) together with 2 NEW SETUP-TYPES (FRACTIONAL_SELL_IN_BULL, BULL_DAY_DIP_BUY). Per the new §4.9 scope-precision rule in `FORGE_NAMING_CONVENTIONS.md`, the 2 setup-types get split out: enable flags → `setup.*` (2), lot/SL/TP knobs → `geometry.*` (6), re-entry cooldown → `timing.*` (1). 9 new renames added to §10.5.2 LEGACY_ALIASES (total now 45). BLOCK_SELL_IN_CHOP + INTRADAY_REVERSAL_TO_SELL stay under `composites.*` — they are multi-atom predicates that gate/amplify existing setups, not new setup types. Decision committed before any code rollout, so the v2.7.38 shipped names remain valid via alias resolution. |
+| 2026-05-12 | **§10.5.1d added — v2.7.40 `ScalperLot` → `ScalperLotFactor` lot pipeline unification.** Phase 2 batch grows 45 → 46. The pre-v2.7.40 lot pipeline had two absolute sources of truth (`lot_sizing.fixed_lot` JSON and `ScalperLot` MT5 input). Per the "one absolute base, everything else is a multiplier" principle, the MT5 input is renamed `ScalperLotFactor` and re-semanticized as a multiplier sitting at the top of `combined_lot_factor` (default 1.0 = no-op). `fixed_lot` retains full authority as THE absolute base — fully tunable via `.env` (`FORGE_FIXED_LOT`). New env mirror `FORGE_GLOBAL_SCALPER_LOT_FACTOR` (GLOBAL scope per §4) for headless control. **No LEGACY_ALIASES** for the MT5 input — rename = safe-default fallback (MQL5 ignores unknown `.set` keys, so old `ScalperLot=0.08` lines silently lose effect, falling back to the new input's default 1.0). Unlocks ad-hoc half/double-sizing (0.5/2.0) without touching `fixed_lot`. Run 24's 0.01-lot trap (`0.08 × 0.125 floor`) explained and fixed in one change. Cross-referenced from `docs/FORGE_LOT_SIZING_REFERENCE.md §0/§1.1/§6/§7`. |

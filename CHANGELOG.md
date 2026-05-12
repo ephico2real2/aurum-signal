@@ -1,5 +1,93 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [FORGE 2.7.41] — 2026-05-12 (cooldown bypass on TP1 + trend; max_open bypass list)
+
+### Added (`ea/FORGE.mq5`)
+
+- **Regime-aware cooldown bypass** — optional re-fire when a per-setup cooldown would block, if last **TP1** in the same direction was recent, **M5 ADX** clears a floor, regime aligns, and anti-flicker refire gap passes. Config: `cooldown_bypass_on_tp_with_trend`, `cooldown_bypass_window_sec`, `cooldown_bypass_min_adx`, `cooldown_bypass_min_refire_sec`, `cooldown_bypass_setups` (safety JSON + env sync).
+- **`max_open_same_direction_bypass_setups`** — comma list of `setup_type` values that may exceed same-direction open cap (e.g. retest / recovery).
+- Tracks **`g_scalper_last_tp1_buy_time` / `g_scalper_last_tp1_sell_time`** on TP1 hit.
+
+### Config / tooling
+
+- **`config/scalper_config.defaults.json`**, **`scripts/sync_scalper_config_from_env.py`**, **`.env.example`** — new keys and `FORGE_*` mappings as implemented.
+- **`#property version`** → **`2.111`**, **`FORGE_VERSION`** **`2.7.41`**, **`VERSION`** file.
+
+---
+
+## [FORGE 2.7.40] — 2026-05-12 (lot pipeline unification: `ScalperLot` → `ScalperLotFactor`)
+
+### Context
+
+The v2.7.39 lot pipeline had **two absolute sources of truth**: `lot_sizing.fixed_lot`
+(JSON) AND `ScalperLot` (MT5 input — when > 0, overrode JSON directly with an absolute
+value). Every other knob in `combined_lot_factor` was a multiplier; `ScalperLot` was the
+only outlier — same room as 10 multipliers (`adx_lot_factor`, `bounce_lot_factor`,
+`dump_lot_factor`, etc.), but it was a competing absolute.
+
+Run 24 audit revealed the consequence: MT5 input `ScalperLot=0.08` overrode `fixed_lot=0.25`,
+then the `combined_lot_factor` 0.125 floor compressed it: `0.08 × 0.125 = 0.01` lot/leg.
+The whole portfolio sized 12.5× smaller than configured, silently. Operators wanting
+half-sizing or double-sizing had to edit `fixed_lot` directly and redeploy.
+
+Per the design principle "one absolute base, everything else is a factor", and per the new
+§4.9 scope-precision rule in `FORGE_NAMING_CONVENTIONS.md`, the MT5 input is renamed and
+re-semanticized as a multiplier.
+
+### Change
+
+| File | Change |
+|---|---|
+| `ea/FORGE.mq5:110` | Input `ScalperLot=0.0` (absolute) → `ScalperLotFactor=1.0` (multiplier on `fixed_lot`). |
+| `ea/FORGE.mq5:124` | Comment on `NativeScalperInputsOverrideLotSizing` updated — toggle now controls leg COUNT only. |
+| `ea/FORGE.mq5:~685` | `ScalperConfig` struct gains `double scalper_lot_factor` (env-side mirror). |
+| `ea/FORGE.mq5:~3122` | Seed simplified: `g_sc.lot_fixed = 0.02` (decoupled from `ScalperLot`). `scalper_lot_factor = 1.0` seeded. |
+| `ea/FORGE.mq5:~3225` | Removed: `if(ScalperLot > 0.0) g_sc.lot_fixed = ScalperLot` — the absolute-override path. |
+| `ea/FORGE.mq5:~3765` | New JSON parse: `lot_sizing.scalper_lot_factor` (range 0.05..10.0). |
+| `ea/FORGE.mq5:~4128` | `FORGE lot sizing profile` log line shows `scalper_lot_factor_input`, `_env`, effective product. |
+| `ea/FORGE.mq5:~8266` | `combined_lot_factor` chain grows 10 → 11 multipliers: `scalper_lot_factor_eff` at the top. `base_lot = g_sc.lot_fixed` always (single absolute source). MT5-input wins when != 1.0; env value wins when MT5 input stays at default 1.0. |
+| `config/scalper_config.defaults.json` | `lot_sizing.scalper_lot_factor: 1.0` added. |
+| `scripts/sync_scalper_config_from_env.py` | `FORGE_GLOBAL_SCALPER_LOT_FACTOR → (lot_sizing, scalper_lot_factor, float, 0.05, 10.0)` mapping added. |
+| `.env.example` | New section "GLOBAL LOT SCALER (v2.7.40)" with usage scenarios (0.5/1.0/2.0/0.1). |
+| `~/.../Documents/forge_tester.set` | `ScalperLot=0.0` → `ScalperLotFactor=1.0`. |
+| `~/.../Profiles/Tester/FORGE.set` | `ScalperLot=0.08\|\|0.01\|\|0.001\|\|0.1\|\|N` → `ScalperLotFactor=1.0\|\|0.5\|\|0.1\|\|2.0\|\|N` (optimization range covers half→double). |
+| `VERSION` | 2.7.39 → 2.7.40 (auto-stamps `#property version "2.110"` + `scalper_config.json "version"`). |
+
+### Migration: rename = safe-default fallback (NO `LEGACY_ALIASES` needed)
+
+MQL5 silently ignores unknown `.set` entries. Old `.set` files with `ScalperLot=0.08` no
+longer load that line, so the new input `ScalperLotFactor` stays at its default `1.0` =
+safe no-op. **No silent reinterpretation** of `0.08` as "8% multiplier". Operators must
+explicitly set `ScalperLotFactor` in the new `.set` (or `FORGE_GLOBAL_SCALPER_LOT_FACTOR`
+in `.env`) to opt in to non-default sizing.
+
+### Effective lot scenarios
+
+| `ScalperLotFactor` | `fixed_lot=0.25` → effective base | Use case |
+|---:|:---:|---|
+| **0.1** | 0.025 | Emergency halt-size (high-impact news) |
+| **0.5** | 0.125 | Half-sizing / risk-off |
+| **1.0** | 0.25  | Default no-op (full size) |
+| **2.0** | 0.50  | Double-sizing / size-up validated day |
+
+`fixed_lot` retains full authority as the absolute base — tune it via `FORGE_FIXED_LOT` in
+`.env` for durable base changes. Use `ScalperLotFactor` for ad-hoc session-level scaling
+without git/redeploy.
+
+### Docs touched
+
+- `docs/FORGE_LOT_SIZING_REFERENCE.md` — §0 pipeline summary rewritten; §1.1 adds `scalper_lot_factor` row; §6 explains 12.5× shrinkage; §7 Step 1 reflects auto-fix.
+- `FORGE_REGIME_TAXONOMY.md` — new §10.5.1d ScalperLot→ScalperLotFactor unification; §12 changelog. Phase 2 batch 45 → 46.
+- `.env.example` — new "GLOBAL LOT SCALER (v2.7.40)" section under FORGE_FIXED_LOT.
+
+### Acceptance verified
+
+- `make forge-compile`: clean → FORGE.ex5 built, `#property version "2.110"`, scalper_config.json `"version": "2.7.40"`, 66 env override syncs.
+- New JSON key `lot_sizing.scalper_lot_factor: 1.0` confirmed in active config.
+- Zero remaining `= ScalperLot[^a-zA-Z]` orphan references in `ea/FORGE.mq5` (grep clean).
+
+---
+
 ## [FORGE 2.7.39] — 2026-05-12 (R:R bypass hotfix for v2.7.38 composites)
 
 ### Context

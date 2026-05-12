@@ -22,8 +22,8 @@
     "category": "Entry Quality"
   },
   "entry_quality_direction_cap": {
-    "label": "Directional bias too strong — counter-move risk",
-    "explanation": "The last N bars have all moved in the same direction — price may be overextended. FORGE caps stacked directional bars to avoid entering at the end of a one-sided move.",
+    "label": "Per-direction concurrent-open cap reached",
+    "explanation": "FORGE limits how many groups can be open at the same time in the same direction (max_open_same_direction, default 1). This signal hit the cap and was skipped. v2.7.41: risk-1 setups in max_open_same_direction_bypass_setups (e.g. BB_BREAKOUT_RETEST, BUY_LIMIT_RECOVERY) bypass this gate so high-confidence signals are never throttled.",
     "category": "Entry Quality"
   },
   "entry_quality_body": {

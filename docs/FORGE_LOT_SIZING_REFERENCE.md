@@ -18,10 +18,23 @@ n_legs      = ForgeResolveNumTrades(...)  →  capped by gold/unclear/recovery r
 total_per_signal = lot_per_leg × n_legs   (each leg is opened separately)
 ```
 
-Where:
-- **`base_lot`** = `ScalperLot` (MT5 input, if > 0) OR `lot_sizing.fixed_lot` (JSON config)
+Where (v2.7.40+):
+- **`base_lot`** = `lot_sizing.fixed_lot` (JSON config) — **the single absolute source of truth**. Set via `FORGE_FIXED_LOT` in `.env`. MT5 input no longer overrides this; it's a pure multiplier (see below).
 - **`lot_mult`** = 1.0 by default; raised to 1.0–5.0 when `NativeScalperAutoLotByTrend=true` (BB_BREAKOUT only by default)
-- **`combined_lot_factor`** = product of 10 per-setup multipliers, floored at **0.125**
+- **`combined_lot_factor`** = product of **11** multipliers (was 10), floored at **0.125**. The new 11th is `scalper_lot_factor` at the top — see §1.1.
+
+### Half-sizing / double-sizing (v2.7.40)
+
+Operators no longer change `fixed_lot` for temporary scale adjustments. Use **`ScalperLotFactor`** (MT5 input) or **`FORGE_GLOBAL_SCALPER_LOT_FACTOR`** (env):
+
+| `ScalperLotFactor` | `fixed_lot=0.25` → effective | Use case |
+|---:|:---:|---|
+| **0.1** | 0.025 | Emergency halt-size (high-impact news) |
+| **0.5** | 0.125 | Half-sizing / risk-off |
+| **1.0** | 0.25  | Default no-op (full size) |
+| **2.0** | 0.50  | Double-sizing / size-up validated day |
+
+MT5 input wins when `!=1.0`; env value wins when MT5 input stays at default. Both default 1.0.
 
 ---
 
@@ -31,7 +44,8 @@ Where:
 
 | Knob | Default | Role |
 |---|---|---|
-| `lot_sizing.fixed_lot` | 0.25 | Base lot per leg (when `ScalperLot` MT5 input = 0) |
+| `lot_sizing.fixed_lot` | 0.25 | **Absolute base lot per leg — the single source of truth (v2.7.40+).** |
+| `lot_sizing.scalper_lot_factor` | 1.0 | **Global multiplier on `fixed_lot`** (env-side mirror of MT5 input `ScalperLotFactor`). 0.5=half, 2.0=double. Sits at top of `combined_lot_factor`. |
 | `lot_sizing.min_num_trades` | 2 | Minimum legs per signal |
 | `lot_sizing.max_num_trades` | 30 | Maximum legs per signal |
 | `lot_sizing.staged_entry_enabled` | 1 | 1 = stage legs over time / 0 = fire all at entry |
@@ -141,7 +155,7 @@ Multiple penalty factors multiply together. The `combined_lot_factor` floor of *
 
 | Reason | Effect | How to fix |
 |---|---|---|
-| MT5 input `ScalperLot` ≈ 0.02 (suspected per Run 24 audit) | Every setup's lot/leg is reduced ~12.5× from §2 table values | Set `ScalperLot = 0.0` in MT5 EA inputs panel |
+| MT5 input `ScalperLot=0.08` (legacy, pre-v2.7.40) absolute override | Every setup's lot/leg reduced ~12.5× from §2 (0.08 × 0.125 floor = 0.01) | **Fixed in v2.7.40** — `ScalperLot` renamed to `ScalperLotFactor` (multiplier, default 1.0). Old `.set` entries silently ignored. |
 | `lot_sizing.staged_initial_legs=1` + `staged_add_min_favorable_points=500` | Only 1 leg fires per signal — `wave_confirmation_lot_mult=2` never amplifies | Set `FORGE_STAGED_INITIAL_LEGS=N` (fire N at entry) OR lower threshold to ~20 pts |
 | All 4 v2.7.38 composites default-OFF | INTRADAY_REVERSAL amplifier, FRACTIONAL_SELL probe, BULL_DAY_DIP not contributing | Set `FORGE_*_ENABLED=1` per composite |
 | `safety.regime_h1_override_adx_min=30` | Skipped on lower-ADX setups; only fires on a few entries | Lower if you want broader regime-amplifier coverage |
@@ -160,9 +174,13 @@ From `forge_signals` + `TRADES` for Run 24 (aurum_run_id=24, v2.7.39):
 | BB_BREAKOUT BUY (G5007 Apr 1, G5017 Apr 6) | 0.25 | **0.02** | 12.5× small |
 | BB_PULLBACK_SCALP BUY (G5014 Apr 2) | 0.125 | **0.01** | 12.5× small |
 
-**Constant 12.5× reduction across all setups** strongly suggests `ScalperLot ≈ 0.02` is set in the MT5 EA inputs panel, overriding `fixed_lot=0.25` (since 0.25/0.02 = 12.5).
+**Constant 12.5× reduction across all setups** is now explained:
+- MT5 input `ScalperLot=0.08` (legacy absolute, pre-v2.7.40) overrode `fixed_lot=0.25` to `0.08`.
+- Then `combined_lot_factor` hit the `MathMax(0.125, ...)` floor: `0.08 × 0.125 = 0.01`.
 
-Plus: every TAKEN fires only 1 leg (per `staged_initial_legs=1` + unreachable `staged_add_min_favorable_points=500`).
+**v2.7.40 fix**: `ScalperLot` renamed to `ScalperLotFactor` (multiplier, default 1.0). Old `.set` entries no longer load — MT5 silently uses the new input's default. Effective lot now = `fixed_lot (0.25) × ScalperLotFactor (1.0) × combined_lot_factor` = full configured size.
+
+Plus: every TAKEN fires only 1 leg (per `staged_initial_legs=1` + unreachable `staged_add_min_favorable_points=500`). **Staging bug separate** — see §7 Step 2.
 
 ---
 
@@ -170,12 +188,19 @@ Plus: every TAKEN fires only 1 leg (per `staged_initial_legs=1` + unreachable `s
 
 To go from current run state (≈0.01-0.02 per leg, 1 leg per signal) to configured table values (0.0625-0.25 per leg, 2-10 legs per signal):
 
-### Step 1 — Restore base_lot
-In MT5: Right-click FORGE on chart → Expert Advisors → Properties → Inputs:
-- Set **`ScalperLot = 0.0`** (so `fixed_lot=0.25` takes effect)
-- Verify **`NativeScalperInputsOverrideLotSizing = false`**
+### Step 1 — Restore base_lot (v2.7.40 — auto-fixed by rename)
 
-This alone scales every TAKEN by 12.5×.
+The v2.7.40 rename `ScalperLot → ScalperLotFactor` already restores base_lot to `fixed_lot=0.25`:
+- MT5 input `ScalperLotFactor=1.0` (new default) — no override → `g_sc.lot_fixed=0.25` used directly
+- Old `.set` files with `ScalperLot=0.08` are silently ignored (the input no longer exists)
+- Verify in MT5 panel: `ScalperLotFactor` should show `1.0`; `NativeScalperInputsOverrideLotSizing=false`
+
+For ad-hoc scaling without redeploying config:
+- **De-risk a session**: set `ScalperLotFactor=0.5` (halves every per-leg lot)
+- **Size-up validated day**: set `ScalperLotFactor=2.0` (doubles every per-leg lot)
+- **Permanent base change**: edit `FORGE_FIXED_LOT` in `.env`, redeploy
+
+This alone scales every TAKEN by 12.5× vs the pre-v2.7.40 0.01-lot trap.
 
 ### Step 2 — Enable multi-leg simultaneous
 
@@ -251,7 +276,7 @@ These ship with backward-compatible aliases per §10.5.2 LEGACY_ALIASES.
 - **Setup playbook**: `FORGE_SETUP_PLAYBOOK.md §5` — TP/SL geometry per setup
 - **Indicator atlas**: `docs/FORGE_INDICATOR_ATLAS.md §5` — composite registry (incl. lot multipliers)
 - **Naming conventions**: `FORGE_NAMING_CONVENTIONS.md §4` — going-forward `FORGE_<scope>_*` policy
-- **Regime taxonomy**: `FORGE_REGIME_TAXONOMY.md §10.5` — env-knob rename plan (36 knobs Phase 2)
+- **Regime taxonomy**: `FORGE_REGIME_TAXONOMY.md §10.5` — env-knob rename plan (Phase 2 batch: 45 + v2.7.40 MT5-input rename in §10.5.1d)
 - **Validation evidence**: `docs/FORGE_RUN24_ANALYSIS.md` — Run 24 actuals confirming 12.5× lot shrinkage
 
 ---
@@ -261,3 +286,4 @@ These ship with backward-compatible aliases per §10.5.2 LEGACY_ALIASES.
 | Date | Change |
 |---|---|
 | 2026-05-12 | Initial doc created. Captures complete lot pipeline post-v2.7.39: 30 lot-related knobs across 5 sections (lot_sizing, safety, bb_breakout, bb_bounce, composites), per-setup table for 17 setup×direction combinations, compound-penalty scenarios, growth multipliers, and "off the menu" gap analysis. Validated against Run 24 actuals — constant 12.5× shrinkage confirmed `ScalperLot` MT5 input override. Cross-referenced from FORGE_NAMING_CONVENTIONS.md, FORGE_REGIME_TAXONOMY.md §10.5, FORGE_DECISION_STACK_INVENTORY.md §5. |
+| 2026-05-12 | **v2.7.40 — `ScalperLot` → `ScalperLotFactor`.** Lot pipeline unified: `lot_sizing.fixed_lot` is now the SINGLE absolute base. The MT5 input is no longer an absolute override; it's a multiplier at the top of `combined_lot_factor` (default 1.0 = no-op). New env knob `FORGE_GLOBAL_SCALPER_LOT_FACTOR` mirrors it for headless/CI control. Old `.set` lines with `ScalperLot=0.08` are silently ignored — clean break, no LEGACY_ALIASES needed (rename = safe default fallback). §0 pipeline summary updated, §1.1 adds `scalper_lot_factor` row, §6 audit explains the 12.5× shrinkage as `0.08 × 0.125 floor = 0.01`, §7 Step 1 updated to reflect auto-fix. Half/double-sizing scenarios documented (0.5 / 1.0 / 2.0 / 0.1 emergency). |

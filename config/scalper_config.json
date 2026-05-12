@@ -1,5 +1,5 @@
 {
-  "version": "2.7.39",
+  "version": "2.7.41",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -215,6 +215,12 @@
     "native_sl_extra_buffer_points": 5,
     "min_entry_atr": 1,
     "max_open_same_direction": 5000,
+    "max_open_same_direction_bypass_setups": "",
+    "cooldown_bypass_on_tp_with_trend": 1,
+    "cooldown_bypass_window_sec": 600,
+    "cooldown_bypass_min_adx": 25.0,
+    "cooldown_bypass_min_refire_sec": 5,
+    "cooldown_bypass_setups": "",
     "entry_quality_bars": 3,
     "min_body_ratio": 0.25,
     "min_directional_bars": 1,
@@ -300,6 +306,7 @@
     "lot_sizing_source": "AUTO",
     "inputs_override_lot_sizing": 0,
     "fixed_lot": 0.25,
+    "scalper_lot_factor": 1.0,
     "min_num_trades": 2,
     "max_num_trades": 30,
     "staged_entry_enabled": 1,

@@ -59,6 +59,23 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_INPUTS_OVERRIDE_LOT_SIZING": ("lot_sizing", "inputs_override_lot_sizing", "bool01", None, None),
     "FORGE_LOT_SIZING_SOURCE": ("lot_sizing", "lot_sizing_source", "lot_source", None, None),
     "FORGE_FIXED_LOT": ("lot_sizing", "fixed_lot", "float", 0.01, None),
+    # 2.7.40 — Global lot multiplier on fixed_lot. Env-side mirror of MT5 input ScalperLotFactor.
+    # 1.0 = no-op (default). 0.5 = half-sizing (de-risk). 2.0 = double (size-up day).
+    # MT5 input wins when != 1.0; this env value wins when MT5 input stays at default 1.0.
+    "FORGE_GLOBAL_SCALPER_LOT_FACTOR": ("lot_sizing", "scalper_lot_factor", "float", 0.05, 10.0),
+    # 2.7.41 — Comma-separated setup_type list that BYPASSES max_open_same_direction.
+    # Risk-1 setups (BB_BREAKOUT_RETEST, BUY_LIMIT_RECOVERY) bypass the per-direction
+    # concurrent-open cap so high-confidence signals are not throttled.
+    "FORGE_MAX_OPEN_SAME_DIRECTION_BYPASS_SETUPS": ("safety", "max_open_same_direction_bypass_setups", "string", None, None),
+    # 2.7.41 — Regime-aware cooldown bypass. When a per-setup cooldown (BB_BREAKOUT same-dir,
+    # BB_PULLBACK_SCALP, BULL_DAY_DIP_BUY reentry) is active, allow the entry if the last
+    # group in this direction WON TP1 recently AND direction matches g_regime_label AND M5
+    # ADX confirms trend. Bypasses do NOT apply after a loss (loss cooldown still respected).
+    "FORGE_COOLDOWN_BYPASS_ON_TP_WITH_TREND": ("safety", "cooldown_bypass_on_tp_with_trend", "bool01", None, None),
+    "FORGE_COOLDOWN_BYPASS_WINDOW_SEC":       ("safety", "cooldown_bypass_window_sec",       "int",   30.0, 7200.0),
+    "FORGE_COOLDOWN_BYPASS_MIN_ADX":          ("safety", "cooldown_bypass_min_adx",          "float", 0.0, 80.0),
+    "FORGE_COOLDOWN_BYPASS_MIN_REFIRE_SEC":   ("safety", "cooldown_bypass_min_refire_sec",   "int",   0.0, 600.0),
+    "FORGE_COOLDOWN_BYPASS_SETUPS":           ("safety", "cooldown_bypass_setups",           "string", None, None),
     "FORGE_MIN_NUM_TRADES": ("lot_sizing", "min_num_trades", "int", 1.0, 30.0),
     "FORGE_MAX_NUM_TRADES": ("lot_sizing", "max_num_trades", "int", 1.0, 30.0),
     "FORGE_GOLD_NATIVE_MAX_SELL_LEGS": ("lot_sizing", "gold_native_max_sell_legs", "int", 0.0, 30.0),
