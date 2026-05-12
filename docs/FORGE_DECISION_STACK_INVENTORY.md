@@ -539,6 +539,7 @@ This is the **debugging lookup table**. Use to answer: "When I see `SKIP gate=X`
 - **Boolean Composite registry**: `docs/FORGE_INDICATOR_ATLAS.md` §5
 - **Gate dictionary**: `config/gate_legend.json`
 - **Entry geometry quick-ref**: `FORGE_SETUP_PLAYBOOK.md` §5
+- **Lot sizing reference** (NEW): `docs/FORGE_LOT_SIZING_REFERENCE.md` — full lot pipeline per setup × direction (17 rows), compound penalty scenarios, growth multipliers
 - **Logging Extension v2.7.37 plan**: `docs/FORGE_LOGGING_EXTENSION_DESIGN.md`
 - **EA source**: `ea/FORGE.mq5` (8460 lines @ v2.7.36)
 
