@@ -457,7 +457,43 @@ where scope ∈ {SETUP, COMPOSITE, GATE, ATOM, GEOMETRY, TIMING, GLOBAL}.
 | `FORGE_ADX_TREND_EXIT` | `FORGE_ATOM_M5_ADX_TREND_EXIT` | ATOM | hysteresis exit threshold |
 | `FORGE_ADX_HYSTERESIS_APPLY_IN_TESTER` | `FORGE_GATE_M5_ADX_HYSTERESIS_APPLY_IN_TESTER` | GATE | tester-only override |
 
-**20 renames** all conform to: `FORGE_<scope>_<HTF|M5|DAILY>_<indicator>_<MIN|MAX|FACTOR|ENABLE|...>_<direction?>`.
+**20 regime/trend/daily/HTF renames** conform to: `FORGE_<scope>_<HTF|M5|DAILY>_<indicator>_<MIN|MAX|FACTOR|ENABLE|...>_<direction?>`.
+
+### §10.5.1b Additional renames — setup-specific knobs backfilled 2026-05-12
+
+`.env.example` coverage audit on 2026-05-12 surfaced 16 FORGE_* keys that were
+mapped in `sync_scalper_config_from_env.py` but had no hint in `.env.example`
+(9 of them ACTIVE in `.env`). Backfilled in commit `db10e34` under their current
+legacy names. To keep the naming-convention migration coherent these 16 are
+included in the Phase 2 rename batch alongside the 20 regime knobs above.
+
+The §5 "never rename" rule in `FORGE_NAMING_CONVENTIONS.md` applies to
+setup-specific knobs *that the operator already relies on via documented
+muscle memory*. These 16 have ZERO documented operator dependence (they were
+literally missing from `.env.example` until the backfill); renaming them now,
+with backward-compat aliases per §10.5.2, costs ~nothing.
+
+| Current | Proposed | Scope | Notes |
+|---|---|---|---|
+| `FORGE_BREAKOUT_BLOCK_HID_BULL_SELL` | `FORGE_GATE_BREAKOUT_HID_BULL_DIV_BLOCK_SELL` | GATE | Blocks SELL when RSI_DIV=HID_BULL |
+| `FORGE_BREAKOUT_H1H4_CRASH_SELL_MIN_M15_ADX` | `FORGE_ATOM_BREAKOUT_CRASH_BYPASS_M15_ADX_MIN_SELL` | ATOM | M15 ADX floor for crash-sell bypass eligibility |
+| `FORGE_BREAKOUT_REQUIRE_H1_MACD_BUY` | `FORGE_GATE_BREAKOUT_H1_MACD_REQUIRE_BUY` | GATE | Mirror of existing `FORGE_GATE_BREAKOUT_H1_MACD_REQUIRE_SELL` pattern |
+| `FORGE_BREAKOUT_SAME_DIR_COOLDOWN_SECONDS` | `FORGE_TIMING_BREAKOUT_SAME_DIR_COOLDOWN_SEC` | TIMING | Wall-time cooldown — TIMING scope |
+| `FORGE_SELL_STOP_CONT_LEGS` | `FORGE_GEOMETRY_SELL_STOP_CONT_LEGS` | GEOMETRY | Cascade leg count |
+| `FORGE_SELL_STOP_CONT_MIN_ADX` | `FORGE_ATOM_SELL_STOP_CONT_M5_ADX_MIN` | ATOM | M5 ADX gate at arm-time |
+| `FORGE_SELL_STOP_CONT_REQUIRE_H1_DI` | `FORGE_GATE_SELL_STOP_CONT_H1_DI_REQUIRE` | GATE | H1 DI alignment requirement |
+| `FORGE_SELL_STOP_CONT_SL_ATR_MULT` | `FORGE_GEOMETRY_SELL_STOP_CONT_SL_ATR_MULT` | GEOMETRY | SL = entry + ATR × this |
+| `FORGE_DUMP_BUY_LOT_FACTOR` | `FORGE_GEOMETRY_DUMP_LOT_FACTOR_BUY` | GEOMETRY | Mirrors existing `FORGE_GEOMETRY_DUMP_LOT_FACTOR` policy (already in naming-conv §4) |
+| `FORGE_DUMP_SELL_LOT_FACTOR` | `FORGE_GEOMETRY_DUMP_LOT_FACTOR_SELL` | GEOMETRY | (same pattern) |
+| `FORGE_DUMP_SELL_H1_MAX` | `FORGE_ATOM_DUMP_H1_TREND_MAX_SELL` | ATOM | Already cited in `FORGE_NAMING_CONVENTIONS.md §4` line 173 as the target form |
+| `FORGE_DUMP_MAX_RSI_BUY` | `FORGE_ATOM_DUMP_RSI_MAX_BUY` | ATOM | Already cited in `FORGE_NAMING_CONVENTIONS.md §4` line 157 |
+| `FORGE_NATIVE_FORCE_STAGED_SCALE_IN` | `FORGE_GEOMETRY_STAGED_SCALE_IN_FORCE` | GEOMETRY | Geometry/lot-pipeline behavior |
+| `FORGE_NATIVE_LEGS_CLEAR_TREND_FACTOR` | `FORGE_GEOMETRY_LEGS_CLEAR_TREND_FACTOR` | GEOMETRY | Leg-count amplifier when ForgeResolveNumTrades returns clear-trend |
+| `FORGE_NATIVE_SCALPER_USE_LIMIT_ENTRY` | `FORGE_GEOMETRY_NATIVE_USE_LIMIT_ENTRY` | GEOMETRY | Entry order-type toggle |
+| `FORGE_WAVE_CONFIRMATION_LOT_MULT` | `FORGE_GEOMETRY_WAVE_CONFIRM_LOT_MULT` | GEOMETRY | Wave-atom-confirmation lot amplifier |
+
+**Combined Phase 2 batch: 36 renames** (20 regime + 16 setup-specific backfill).
+All 36 conform to `FORGE_<scope>_<setup|HTF|M5|DAILY>_<indicator|param>_<role>_<direction?>` per `FORGE_NAMING_CONVENTIONS.md §4`. Each ships with backward-compatible alias resolution per §10.5.2.
 
 ### §10.5.2 Implementation strategy (Phase 2 — v2.7.37)
 
@@ -467,11 +503,31 @@ for one EA version. Migration script logs a deprecation warning when the OLD nam
 ```python
 # In scripts/sync_scalper_config_from_env.py:
 LEGACY_ALIASES = {
+    # ── Regime/HTF/Daily group (§10.5.1) — 20 ──
     "FORGE_REGIME_H1_OVERRIDE_FACTOR":     "FORGE_ATOM_HTF_H1_STRONG_FACTOR",
     "FORGE_REGIME_H1_OVERRIDE_ADX_MIN":    "FORGE_ATOM_HTF_H1_STRONG_ADX_MIN",
     "FORGE_DAILY_DIRECTION_GATE_ENABLED":  "FORGE_GATE_DAILY_DIRECTION_ENABLE",
-    # ... 17 more entries
+    # ... 17 more regime/HTF/daily entries (full list per §10.5.1 table) ...
+
+    # ── Setup-specific backfill group (§10.5.1b, 2026-05-12) — 16 ──
+    "FORGE_BREAKOUT_BLOCK_HID_BULL_SELL":          "FORGE_GATE_BREAKOUT_HID_BULL_DIV_BLOCK_SELL",
+    "FORGE_BREAKOUT_H1H4_CRASH_SELL_MIN_M15_ADX":  "FORGE_ATOM_BREAKOUT_CRASH_BYPASS_M15_ADX_MIN_SELL",
+    "FORGE_BREAKOUT_REQUIRE_H1_MACD_BUY":          "FORGE_GATE_BREAKOUT_H1_MACD_REQUIRE_BUY",
+    "FORGE_BREAKOUT_SAME_DIR_COOLDOWN_SECONDS":    "FORGE_TIMING_BREAKOUT_SAME_DIR_COOLDOWN_SEC",
+    "FORGE_SELL_STOP_CONT_LEGS":                   "FORGE_GEOMETRY_SELL_STOP_CONT_LEGS",
+    "FORGE_SELL_STOP_CONT_MIN_ADX":                "FORGE_ATOM_SELL_STOP_CONT_M5_ADX_MIN",
+    "FORGE_SELL_STOP_CONT_REQUIRE_H1_DI":          "FORGE_GATE_SELL_STOP_CONT_H1_DI_REQUIRE",
+    "FORGE_SELL_STOP_CONT_SL_ATR_MULT":            "FORGE_GEOMETRY_SELL_STOP_CONT_SL_ATR_MULT",
+    "FORGE_DUMP_BUY_LOT_FACTOR":                   "FORGE_GEOMETRY_DUMP_LOT_FACTOR_BUY",
+    "FORGE_DUMP_SELL_LOT_FACTOR":                  "FORGE_GEOMETRY_DUMP_LOT_FACTOR_SELL",
+    "FORGE_DUMP_SELL_H1_MAX":                      "FORGE_ATOM_DUMP_H1_TREND_MAX_SELL",
+    "FORGE_DUMP_MAX_RSI_BUY":                      "FORGE_ATOM_DUMP_RSI_MAX_BUY",
+    "FORGE_NATIVE_FORCE_STAGED_SCALE_IN":          "FORGE_GEOMETRY_STAGED_SCALE_IN_FORCE",
+    "FORGE_NATIVE_LEGS_CLEAR_TREND_FACTOR":        "FORGE_GEOMETRY_LEGS_CLEAR_TREND_FACTOR",
+    "FORGE_NATIVE_SCALPER_USE_LIMIT_ENTRY":        "FORGE_GEOMETRY_NATIVE_USE_LIMIT_ENTRY",
+    "FORGE_WAVE_CONFIRMATION_LOT_MULT":            "FORGE_GEOMETRY_WAVE_CONFIRM_LOT_MULT",
 }
+# Total: 36 legacy → modern aliases.
 # When sync runs:
 #   if NEW name is set → use NEW value
 #   elif OLD name is set → use OLD value + log deprecation warning
@@ -488,25 +544,31 @@ This lets us:
 
 **Operator constraint**: "don't touch anything used by the Python apps."
 
-**Audit result: ZERO Python apps touch any of the 20 regime knobs.** The rename is
-guaranteed Python-safe. Three independent verification queries:
+**Audit result: ZERO Python apps touch any of the 36 knobs** (20 regime + 16 setup-specific
+backfill). The rename is guaranteed Python-safe. Three independent verification queries
+across both groups:
 
 ```bash
-# Query 1 — any Python file reading the 20 env-var NAMES directly:
-for KNOB in <20 knob names>; do
+# Query 1 — any Python file reading the 36 env-var NAMES directly:
+for KNOB in <36 knob names>; do
   grep -rl "$KNOB" /Users/olasumbo/signal_system/python/ 2>/dev/null
 done
-# Result: zero hits in python/
+# Result: zero hits in python/ for all 36
 
-# Query 2 — any Python file reading the resulting JSON keys (daily_direction_gate_enabled etc):
-grep -rE "daily_direction_gate_enabled|regime_h1_override_factor|h4_rsi_gate_enabled|adx_hysteresis_enabled|adx_trend_enter" /Users/olasumbo/signal_system/python/
+# Query 2 — any Python file reading the resulting JSON keys (daily_direction_gate_enabled,
+# breakout_block_hid_bull_sell, dump_sell_lot_factor, sell_stop_cont_*, wave_confirmation_*):
+grep -rE "daily_direction_gate_enabled|regime_h1_override_factor|h4_rsi_gate_enabled|adx_hysteresis_enabled|adx_trend_enter|block_hid_bull_sell|h1h4_crash_sell_min_m15_adx|require_h1_macd_buy|same_dir_cooldown_seconds|sell_stop_cont_legs|sell_stop_cont_min_adx|dump_buy_lot_factor|dump_sell_lot_factor|dump_sell_h1_max|dump_max_rsi_buy|wave_confirmation_lot_mult" /Users/olasumbo/signal_system/python/
 # Result: zero hits
 
 # Query 3 — Python files that DO read scalper_config.json (3 of them):
 #   athena_api.py, aurum.py, bridge.py
-# Checked each for any of the 20 keys: ZERO matches.
-# (They read other sections — lot_sizing, news_filter, etc. — but not regime/daily/H4/ADX_TREND.)
+# Checked each for any of the 36 keys: ZERO matches.
+# (They read other sections — lot_sizing.fixed_lot, news_filter, etc. — but not the renamed knobs.)
 ```
+
+**2026-05-12 second pass** (post-backfill): re-verified the 16 setup-specific
+backfill knobs via the same query pattern. All Python-safe. Audit log in
+commit `db10e34` and `FORGE_NAMING_CONVENTIONS.md §4` (mirror entries).
 
 **Why this matters**: the rename touches ONLY:
 - `.env` (operator's local file)
@@ -747,3 +809,4 @@ Mirrored from research doc §9 — must all pass before killzone code merges:
 | 2026-05-12 | **Both renames applied** after operator review. `macro_*` → `htf_*` cascade across 4 fields (`macro_label/confidence/h1_strong` + `intraday_counter_macro`). New §2.6 glossary added explaining HTF/MTF/LTF vocabulary inline for future readers. All §3 code examples + §5 migration steps + §8 cross-references updated. Field names now FROZEN for Phase 2. |
 | 2026-05-12 | **§10.5 Env-knob rename plan added** — 20 regime-related FORGE_* knobs in scope for Phase 2 rename (14 active + 6 documented-only). Mapping table aligns each to FORGE_NAMING_CONVENTIONS.md §4 policy (ATOM/GATE prefixes, HTF vocabulary, direction at end). Implementation strategy: backward-compatible aliases for one EA version (v2.7.37) then hard-cut in v2.7.39. NO EA code changes required — purely .env → sync-mapping layer. Cross-referenced from FORGE_NAMING_CONVENTIONS.md §5. |
 | 2026-05-12 | **§11 ICT killzones added as Layer 5 atom**. RegimeState struct grows 14 → 16 fields (`killzone` + `minutes_into_kz`). XAUUSD-tuned killzone table (gold prime window = London-NY overlap = 60-70% of daily range per EBC/TradingView ProjectSyndicate). Judas Swing pattern documented (02:30 NY first 60 min of London Open KZ). 5 killzone-aware composite refinements specified (BULL_DAY_DIP_BUY ×1.5 amplifier in prime window; INTRADAY_REVERSAL_SELL gated to NY_OPEN/LONDON_CLOSE; MOMENTUM_DUMP_SELL caution filter in Judas window; CHOP_LADDER_BUY_GRID disabled in London Close; BLOCK_SELL_IN_CHOP always-on). v2.7.36 logging mandate: add `killzone` + `minutes_into_kz` columns to SIGNALS + scribe forge_signals. Implementation target v2.7.37. Per-killzone trade caps deferred to v2.7.38. Full research with 13 sources in `docs/research/ICT_KILLZONES.md`. |
+| 2026-05-12 | **§10.5.1b added — Phase 2 rename batch grows 20 → 36 knobs.** `.env.example` coverage audit on 2026-05-12 surfaced 16 FORGE_* keys mapped in `sync_scalper_config_from_env.py` but missing from `.env.example` (9 ACTIVE in `.env`, never documented). Backfilled in commit `db10e34` under legacy names + added to the Phase 2 rename plan. Categories: 4 BB_BREAKOUT additional gates, 4 SELL_STOP_CONT cascade knobs, 4 MOMENTUM_DUMP per-direction overrides, 4 lot-sizing internals. 4 of the 16 use names already cited as canonical examples in `FORGE_NAMING_CONVENTIONS.md §4` (`FORGE_GEOMETRY_DUMP_LOT_FACTOR*`, `FORGE_ATOM_DUMP_RSI_MAX_BUY`, `FORGE_ATOM_DUMP_H1_TREND_MAX_SELL`). Python-safety re-verified — zero hits across all 36. LEGACY_ALIASES dict in §10.5.2 expanded accordingly. SKILL.md gained Mandatory Check C to prevent recurrence. |

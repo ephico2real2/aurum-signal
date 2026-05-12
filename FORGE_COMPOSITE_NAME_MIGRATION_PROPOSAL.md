@@ -258,3 +258,4 @@ If operator approves, execute in this order:
 | Date | Change |
 |---|---|
 | 2026-05-12 | Initial proposal authored. Canonical registry (§1) + policy (§2) + 9-doc / 39-edit execution plan (§3-§6) + zero-code-impact confirmation (§5). Awaits operator decision (§8). |
+| 2026-05-12 | **Note**: this doc covers **composite-name** renames only (e.g. `CHOP_IN_BULL_TREND_BUY` → `BULL_DAY_DIP_BUY`). The parallel **env-knob** rename plan lives in `FORGE_REGIME_TAXONOMY.md §10.5` and grew from 20 → 36 knobs on 2026-05-12 after the `.env.example` coverage backfill (commit `db10e34`) surfaced 16 more undocumented `FORGE_*` keys. Composite names and env-knob names are independently scoped — neither rename plan blocks the other. |
