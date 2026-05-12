@@ -305,6 +305,43 @@ FORGE_GATE_*       — filter-chain gate toggles (REQUIRE/BLOCK)
 FORGE_GLOBAL_*     — system-wide (lot fixed, max trades, etc.)
 ```
 
+### 4.9 Scope precision — choose by primary identity, not secondary effect
+
+When a knob has multiple plausible scopes, pick the one matching its **primary identity**,
+not its secondary effect. Many knobs DO multiple things — the scope rule is "what does
+it primarily configure?"
+
+| Knob primarily | Scope |
+|---|---|
+| Enables a new entry trigger (new `setup_type` string) | `SETUP` (even if internally implemented as a composite of atoms) |
+| Combines multiple atoms into a TRUE/FALSE rule that gates or amplifies existing setups | `COMPOSITE` |
+| Defines a single indicator predicate / threshold (RSI floor, ADX min, etc.) | `ATOM` |
+| Adds a single if/else rung that emits a SKIP gate code | `GATE` |
+| Computes SL / TP / lot / leg count / order type | `GEOMETRY` |
+| Defines a wall-time cooldown, expiry window, or polling interval | `TIMING` |
+| System-wide config not tied to any specific setup/gate | `GLOBAL` |
+
+**Concrete examples** (from the v2.7.38 split decision, 2026-05-12):
+
+| Knob | Primary identity | Wrong scope | Right scope |
+|---|---|---|---|
+| `FORGE_FRACTIONAL_SELL_IN_BULL_ENABLED` | Enables a NEW `setup_type="FRACTIONAL_SELL_IN_BULL"` | `composites.*` (overload) | **`setup.*`** |
+| `FORGE_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR` | Lot multiplier for that setup's entries | `composites.*` (overload) | **`geometry.*`** |
+| `FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC` | Wall-time cooldown between re-entries | `composites.*` (overload) | **`timing.*`** |
+| `FORGE_BLOCK_SELL_IN_CHOP_ENABLED` | Multi-atom predicate that gates SELL on RANGE | `safety.*` (legacy) / `gate.*` | **`composites.*`** (multi-atom predicate is the primary identity) |
+| `FORGE_INTRADAY_REVERSAL_SELL_LOT_MULT` | Amplifier ON A COMPOSITE; secondary effect is lot | mixed | **`composites.*`** (it's a composite-specific knob; if it were a generic lot factor, `geometry.*`) |
+
+**Why this rule exists**: `composites.*` was overloaded in v2.7.38 — it housed both gate-acting
+composites (BLOCK_SELL_IN_CHOP, INTRADAY_REVERSAL_TO_SELL_V3) AND new setup-types
+(FRACTIONAL_SELL_IN_BULL, BULL_DAY_DIP_BUY). The latter created their own `setup_type` string
+in `JournalRecordSignal` — they are setups, not composites in disguise. Scheduled for split
+under Phase 2 rename plan (`FORGE_REGIME_TAXONOMY.md §10.5.1c`).
+
+**Anti-pattern**: NEVER use the legacy `safety.*` section for new knobs. It is a grandfathered
+catchall (mixing lot factors + atom thresholds + gate flags + amplifiers) scheduled for migration
+per `FORGE_REGIME_TAXONOMY.md §10.5`. Adding to it would entrench the catchall and create
+migration debt.
+
 ---
 
 ## §5. Migration strategy (existing 146 knobs)
@@ -454,3 +491,4 @@ If this verbosity feels excessive after a few weeks of use, revisit.
 | 2026-05-12 | **§5.0.1 Python-contract preservation rule** added — promoted from regime-specific concern to global policy. ANY future env rename must preserve JSON keys + screening logic + Python-app consumers. Pre-rename audit checklist included. |
 | 2026-05-12 | **§5.0.2 Backward-compatible alias pattern** added — canonical mechanism for all env renames: ship via `LEGACY_ALIASES` dict in sync script (Phase A), remove later (Phase B). Strangler-fig pattern at the env-var layer. |
 | 2026-05-12 | **§4.7 Gate Code naming policy** added — `config/gate_legend.json` audit found 65 codes with parallel inconsistencies to env knobs (`_block` vs `_blocked`, direction-suffix position, generic `entry_quality_*` not setup-distinguishable). Forward-going policy: `<setup_or_composite>_<gate_concept>_<direction?>`. New gate codes from v2.7.36 V3 composites onward follow policy; existing 65 grandfathered. Migration via `LEGACY_GATE_ALIASES` in `_patterns` section if forced. |
+| 2026-05-12 | **§4.9 Scope precision rule added** — when a knob has multiple plausible scopes, pick by PRIMARY identity not secondary effect. Concrete table: new entry-trigger flag → `SETUP`; multi-atom predicate → `COMPOSITE`; threshold → `ATOM`; SKIP rung → `GATE`; SL/TP/lot → `GEOMETRY`; cooldown/expiry → `TIMING`. Triggered by v2.7.38 `composites.*` overload (lumped 2 gate-composites + 2 setup-types together). Decision: split FRACTIONAL_SELL_IN_BULL + BULL_DAY_DIP_BUY out to `setup.*` / `geometry.*` / `timing.*` per Phase 2 rename plan (`FORGE_REGIME_TAXONOMY.md §10.5.1c` — 9 new aliases, Phase 2 batch grows 36 → 45). Anti-pattern reaffirmed: never add new knobs to `safety.*` (legacy catchall, scheduled for migration). |

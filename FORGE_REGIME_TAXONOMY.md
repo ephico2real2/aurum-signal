@@ -612,8 +612,33 @@ with backward-compat aliases per §10.5.2, costs ~nothing.
 | `FORGE_NATIVE_SCALPER_USE_LIMIT_ENTRY` | `FORGE_GEOMETRY_NATIVE_USE_LIMIT_ENTRY` | GEOMETRY | Entry order-type toggle |
 | `FORGE_WAVE_CONFIRMATION_LOT_MULT` | `FORGE_GEOMETRY_WAVE_CONFIRM_LOT_MULT` | GEOMETRY | Wave-atom-confirmation lot amplifier |
 
-**Combined Phase 2 batch: 36 renames** (20 regime + 16 setup-specific backfill).
-All 36 conform to `FORGE_<scope>_<setup|HTF|M5|DAILY>_<indicator|param>_<role>_<direction?>` per `FORGE_NAMING_CONVENTIONS.md §4`. Each ships with backward-compatible alias resolution per §10.5.2.
+### §10.5.1c v2.7.38 composite split — `composites.*` → `setup.*` + `geometry.*` + `timing.*`
+
+Decision logged 2026-05-12 (operator Option B): the `composites.*` section shipped in
+v2.7.38 was overloaded — it lumped GATE-acting composites (BLOCK_SELL_IN_CHOP,
+INTRADAY_REVERSAL_TO_SELL_V3) together with **new setup-types** (FRACTIONAL_SELL_IN_BULL,
+BULL_DAY_DIP_BUY). Per the §4.9 scope-precision rule (in `FORGE_NAMING_CONVENTIONS.md`),
+new entry triggers belong under `setup.*`, lot/SL/TP computations under `geometry.*`,
+and cooldown timers under `timing.*`. The split makes the canonical identity of each
+knob unambiguous.
+
+**BLOCK_SELL_IN_CHOP** and **INTRADAY_REVERSAL_TO_SELL_V3** stay under `composites.*` —
+they are multi-atom predicates that gate/amplify existing setups, not new setup-types.
+
+| Current | Proposed | Scope | Why |
+|---|---|---|---|
+| `FORGE_FRACTIONAL_SELL_IN_BULL_ENABLED` | `FORGE_SETUP_FRACTIONAL_SELL_IN_BULL_ENABLED` | SETUP | New `setup_type` — enable flag is SETUP-scoped |
+| `FORGE_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR` | `FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR` | GEOMETRY | Lot factor is geometry |
+| `FORGE_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT` | `FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT` | GEOMETRY | SL multiplier is geometry |
+| `FORGE_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT` | `FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT` | GEOMETRY | TP multiplier is geometry |
+| `FORGE_BULL_DAY_DIP_BUY_ENABLED` | `FORGE_SETUP_BULL_DAY_DIP_BUY_ENABLED` | SETUP | New `setup_type` — enable flag is SETUP-scoped |
+| `FORGE_BULL_DAY_DIP_BUY_LOT_MULT` | `FORGE_GEOMETRY_BULL_DAY_DIP_BUY_LOT_MULT` | GEOMETRY | Lot multiplier is geometry |
+| `FORGE_BULL_DAY_DIP_BUY_SL_ATR_MULT` | `FORGE_GEOMETRY_BULL_DAY_DIP_BUY_SL_ATR_MULT` | GEOMETRY | SL multiplier is geometry |
+| `FORGE_BULL_DAY_DIP_BUY_TP1_ATR_MULT` | `FORGE_GEOMETRY_BULL_DAY_DIP_BUY_TP1_ATR_MULT` | GEOMETRY | TP multiplier is geometry |
+| `FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC` | `FORGE_TIMING_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC` | TIMING | Wall-time cooldown is TIMING |
+
+**Combined Phase 2 batch: 45 renames** (20 regime + 16 setup-specific backfill + 9 v2.7.38 composite split).
+All 45 conform to `FORGE_<scope>_<setup|HTF|M5|DAILY>_<indicator|param>_<role>_<direction?>` per `FORGE_NAMING_CONVENTIONS.md §4`. Each ships with backward-compatible alias resolution per §10.5.2.
 
 ### §10.5.2 Implementation strategy (Phase 2 — v2.7.37)
 
@@ -646,8 +671,21 @@ LEGACY_ALIASES = {
     "FORGE_NATIVE_LEGS_CLEAR_TREND_FACTOR":        "FORGE_GEOMETRY_LEGS_CLEAR_TREND_FACTOR",
     "FORGE_NATIVE_SCALPER_USE_LIMIT_ENTRY":        "FORGE_GEOMETRY_NATIVE_USE_LIMIT_ENTRY",
     "FORGE_WAVE_CONFIRMATION_LOT_MULT":            "FORGE_GEOMETRY_WAVE_CONFIRM_LOT_MULT",
+
+    # ── v2.7.38 composites split (§10.5.1c, 2026-05-12) — 9 ──
+    "FORGE_FRACTIONAL_SELL_IN_BULL_ENABLED":        "FORGE_SETUP_FRACTIONAL_SELL_IN_BULL_ENABLED",
+    "FORGE_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR":     "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR",
+    "FORGE_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT":    "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT",
+    "FORGE_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT":   "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_ENABLED":               "FORGE_SETUP_BULL_DAY_DIP_BUY_ENABLED",
+    "FORGE_BULL_DAY_DIP_BUY_LOT_MULT":              "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_LOT_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_SL_ATR_MULT":           "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_SL_ATR_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_TP1_ATR_MULT":          "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_TP1_ATR_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC":  "FORGE_TIMING_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC",
+    # Note: BLOCK_SELL_IN_CHOP + INTRADAY_REVERSAL_TO_SELL stay under composites.* —
+    #   they are multi-atom predicates that gate/amplify existing setups (not new setup types).
 }
-# Total: 36 legacy → modern aliases.
+# Total: 45 legacy → modern aliases (20 regime + 16 setup-backfill + 9 v2.7.38 split).
 # When sync runs:
 #   if NEW name is set → use NEW value
 #   elif OLD name is set → use OLD value + log deprecation warning
@@ -930,3 +968,4 @@ Mirrored from research doc §9 — must all pass before killzone code merges:
 | 2026-05-12 | **§10.5 Env-knob rename plan added** — 20 regime-related FORGE_* knobs in scope for Phase 2 rename (14 active + 6 documented-only). Mapping table aligns each to FORGE_NAMING_CONVENTIONS.md §4 policy (ATOM/GATE prefixes, HTF vocabulary, direction at end). Implementation strategy: backward-compatible aliases for one EA version (v2.7.37) then hard-cut in v2.7.39. NO EA code changes required — purely .env → sync-mapping layer. Cross-referenced from FORGE_NAMING_CONVENTIONS.md §5. |
 | 2026-05-12 | **§11 ICT killzones added as Layer 5 atom**. RegimeState struct grows 14 → 16 fields (`killzone` + `minutes_into_kz`). XAUUSD-tuned killzone table (gold prime window = London-NY overlap = 60-70% of daily range per EBC/TradingView ProjectSyndicate). Judas Swing pattern documented (02:30 NY first 60 min of London Open KZ). 5 killzone-aware composite refinements specified (BULL_DAY_DIP_BUY ×1.5 amplifier in prime window; INTRADAY_REVERSAL_SELL gated to NY_OPEN/LONDON_CLOSE; MOMENTUM_DUMP_SELL caution filter in Judas window; CHOP_LADDER_BUY_GRID disabled in London Close; BLOCK_SELL_IN_CHOP always-on). v2.7.36 logging mandate: add `killzone` + `minutes_into_kz` columns to SIGNALS + scribe forge_signals. Implementation target v2.7.37. Per-killzone trade caps deferred to v2.7.38. Full research with 13 sources in `docs/research/ICT_KILLZONES.md`. |
 | 2026-05-12 | **§10.5.1b added — Phase 2 rename batch grows 20 → 36 knobs.** `.env.example` coverage audit on 2026-05-12 surfaced 16 FORGE_* keys mapped in `sync_scalper_config_from_env.py` but missing from `.env.example` (9 ACTIVE in `.env`, never documented). Backfilled in commit `db10e34` under legacy names + added to the Phase 2 rename plan. Categories: 4 BB_BREAKOUT additional gates, 4 SELL_STOP_CONT cascade knobs, 4 MOMENTUM_DUMP per-direction overrides, 4 lot-sizing internals. 4 of the 16 use names already cited as canonical examples in `FORGE_NAMING_CONVENTIONS.md §4` (`FORGE_GEOMETRY_DUMP_LOT_FACTOR*`, `FORGE_ATOM_DUMP_RSI_MAX_BUY`, `FORGE_ATOM_DUMP_H1_TREND_MAX_SELL`). Python-safety re-verified — zero hits across all 36. LEGACY_ALIASES dict in §10.5.2 expanded accordingly. SKILL.md gained Mandatory Check C to prevent recurrence. |
+| 2026-05-12 | **§10.5.1c added — v2.7.38 composites split (Phase 2 batch grows 36 → 45 knobs).** Operator Option B locked in: `composites.*` was overloaded in v2.7.38, lumping 2 GATE-acting composites (BLOCK_SELL_IN_CHOP, INTRADAY_REVERSAL_TO_SELL_V3) together with 2 NEW SETUP-TYPES (FRACTIONAL_SELL_IN_BULL, BULL_DAY_DIP_BUY). Per the new §4.9 scope-precision rule in `FORGE_NAMING_CONVENTIONS.md`, the 2 setup-types get split out: enable flags → `setup.*` (2), lot/SL/TP knobs → `geometry.*` (6), re-entry cooldown → `timing.*` (1). 9 new renames added to §10.5.2 LEGACY_ALIASES (total now 45). BLOCK_SELL_IN_CHOP + INTRADAY_REVERSAL_TO_SELL stay under `composites.*` — they are multi-atom predicates that gate/amplify existing setups, not new setup types. Decision committed before any code rollout, so the v2.7.38 shipped names remain valid via alias resolution. |
