@@ -16,6 +16,8 @@
 > `FORGE_DAILY_CANCEL_PENDING_ON_FLIP=1`). TP4/TP5 staging and v2.7.28 dump-catch are
 > default-OFF — Run 18 measures **only the daily-direction-gate effect**.
 
+> **All regime-related discussion has been moved** to [`docs/FORGE_REGIME_PREDICTOR_DESIGN.md`](FORGE_REGIME_PREDICTOR_DESIGN.md) — phased architecture (data collection / library / classification / interpretation / transport / payload), historical Q&A (Q3b, Q8-Q10, Q16-Q22), and superseded proposals (Issue 1 v2.7.29 inline override, Issue 7 file-driven stream). The Run 18 doc retains stubs in their original positions.
+
 ---
 
 ## Comparison target — Run 17 (v2.7.22 baseline)
@@ -124,88 +126,9 @@ This is expected — v2.7.26 was added to prevent G5028-class losses (Apr 10 18:
 
 ### Issue 1 — Inline regime classifier H4 lag → over-conservative leg sizing
 
-**Evidence**:
-- Apr 1 08:40 G5001 entry: `h1_trend = +2.15` (very bullish), `m5_adx = 40.1`, `psar = BELOW`, `regime_label = RANGE`. Only **5 legs** fired (capped at `native_legs_max_when_unclear=5`) instead of the 10-leg max (`gold_native_max_sell_legs=10`).
-- Price moved **+41 pts (≈8.1×ATR)** within 2 hours after entry.
-- `regime_label` only flipped to `TREND_BULL` at Apr 1 12:00 — **3 hours 20 min** after entry, when the move was already topping out.
-- Apr 6 G5005 entry: same 5-leg cap, same `regime=RANGE` despite ADX=31.4 + H1 bullish.
+**Status**: Option A shipped as **v2.7.29** (H1-strong override). Full options analysis (A/B/C with code, defaults, risk analysis, Apr 1 sim math) **moved to** [`docs/FORGE_REGIME_PREDICTOR_DESIGN.md`](FORGE_REGIME_PREDICTOR_DESIGN.md) (Pre-design Issue 1 section).
 
-**Root cause** (verified in code):
-- `regime.py` (AURUM layer) **NOT used in tester** — `ea/FORGE.mq5:1080` gates the JSON read with `if(!in_tester) {...}`.
-- FORGE has an **inline classifier at lines 5658-5661**:
-  ```mql5
-  if(high_vol_trend)                         g_regime_label = "VOLATILE";
-  else if(h1_bull && (h4_bull || h4_flat))   g_regime_label = "TREND_BULL";
-  else if(h1_bear && (h4_bear || h4_flat))   g_regime_label = "TREND_BEAR";
-  else                                        g_regime_label = "RANGE";
-  ```
-- Requires **unanimous H1 + H4 agreement** for trend label. H4 EMA20 vs EMA50 (≈80h vs 200h smoothing) lags H1 by 3-5 hours after a regime turn.
-
-**Industry pattern (per MQL5 article 20097 — Multi-Timeframe Harmony Index)**:
-> "Weighted bias scoring per timeframe (+1/0/-1). HI = (Σ bias_i × weight_i) / (Σ weight_i). No blocking conditions or vetoes exist — all enabled timeframes contribute proportionally."
-
-This is the opposite of FORGE's unanimous-AND model.
-
-#### Option A — H1-strong override (minimal, ~5 lines)
-
-Add a fourth clause that trusts a very-strong H1 even when H4 disagrees:
-
-```mql5
-else if(MathAbs(h1_trend_strength) >= trend_thr_eff * g_sc.regime_h1_override_factor
-        && m5_adx >= g_sc.regime_h1_override_adx_min) {
-   g_regime_label = (h1_trend_strength > 0) ? "TREND_BULL" : "TREND_BEAR";
-}
-```
-
-Defaults: `regime_h1_override_factor=2.0`, `regime_h1_override_adx_min=30`. Apr 1 08:40 → h1=2.15 ÷ thr~0.5 = 4.3× → trigger.
-
-**Risk**: Affects ALL downstream consumers (cascade arming, TP staging, counter-trend block). Cascade may arm earlier.
-
-#### Option B — Swap H4 for M15 in the secondary timeframe
-
-```mql5
-// Replace: h1_bull && (h4_bull || h4_flat)
-// With:    h1_bull && !m15_bear_htf
-```
-
-M15 reacts in ~30 min vs H4 ~3-5 hr. EA already computes `m15_bull_htf` / `m15_bear_htf`.
-
-**Risk**: Semantically changes "macro trend confirmed" → "intraday trend confirmed." Cascade may arm in deeper chop.
-
-#### Option C — Weighted harmony index (canonical MQL5 pattern, recommended)
-
-Replace the AND-gating block entirely with weighted scoring:
-
-```mql5
-if(high_vol_trend) {
-   g_regime_label = "VOLATILE";
-} else {
-   int m5_bias  = m5_bull       ? +1 : (m5_bear       ? -1 : 0);
-   int m15_bias = m15_bull_htf  ? +1 : (m15_bear_htf  ? -1 : 0);
-   int h1_bias  = h1_bull       ? +1 : (h1_bear       ? -1 : 0);
-   int h4_bias  = h4_bull       ? +1 : (h4_bear       ? -1 : 0);
-   double sum = m5_bias *g_sc.regime_weight_m5
-              + m15_bias*g_sc.regime_weight_m15
-              + h1_bias *g_sc.regime_weight_h1
-              + h4_bias *g_sc.regime_weight_h4;
-   double tot = g_sc.regime_weight_m5 + g_sc.regime_weight_m15
-              + g_sc.regime_weight_h1 + g_sc.regime_weight_h4;
-   double hi  = (tot > 0.0) ? sum / tot : 0.0;
-   if      (hi >=  g_sc.regime_hi_trend_threshold) g_regime_label = "TREND_BULL";
-   else if (hi <= -g_sc.regime_hi_trend_threshold) g_regime_label = "TREND_BEAR";
-   else                                             g_regime_label = "RANGE";
-}
-```
-
-**Defaults**: `m5=0.15, m15=0.25, h1=0.45, h4=0.15, threshold=0.50`. Master toggle `FORGE_REGIME_HARMONY_ENABLED=0` so legacy logic stays default until backtested.
-
-**Apr 1 08:40 sim**: m5(+1)·0.15 + m15(+1)·0.25 + h1(+1)·0.45 + h4(−1)·0.15 = **+0.70 ≥ 0.50 → TREND_BULL** ✓
-
-**Mar 31 sim** (bearish daily, mild H1+): m15(−1)·0.25 + h1(+1)·0.45 + h4(−1)·0.15 = **+0.05 → RANGE** ✓ (no false positive)
-
-**Risk**: Same blast radius as Option A — affects every consumer of `g_regime_label`. Mitigated by weight tuning + threshold tightening.
-
-**Preferred**: **Option C**. Adopts the canonical MQL5 community pattern, gives operator 5 weight knobs to tune per regime, preserves H4 input but prevents H4 lag from solo-blocking the label.
+**Quick summary**: G5001 Apr 1 08:40 capped at 5 legs because `regime=RANGE` from the inline classifier (H1+H4 unanimous-AND model lagged H1's bullish flip by 3.5h). v2.7.29 added an H1-strong override clause; v2.7.30 made it run in both tester and live. The full predictor replacement (LightGBM + ONNX) is the long-term fix — see the design doc.
 
 ---
 
@@ -517,6 +440,13 @@ Lower `breakout_buffer_points` from default to 0 — fires on every BB band touc
 
 ---
 
+### Issue 7 — Tester/live regime parity via file-driven pre-computed regime stream (SUPERSEDED)
+
+**Status**: **SUPERSEDED** by Phases 1-6 in [`docs/FORGE_REGIME_PREDICTOR_DESIGN.md`](FORGE_REGIME_PREDICTOR_DESIGN.md). The full Options A/B/C analysis (file-driven stream, MQL5 HMM port, MSDR+CPD hybrid) **moved to** the design doc's "Pre-design Issue 7" section.
+
+**Quick summary**: file-driven pre-computed regime stream was the precursor design. The follow-up phased discussion concluded that **ONNX-embedded LightGBM inference** is the better path — same parity guarantee, sub-ms latency, no file IO, no external dependency, in-EA execution.
+
+
 ### Priority order (post-Run 18)
 
 1. **Wait for Run 18 to complete** — measure G5048 block + total P&L vs Run 17.
@@ -557,11 +487,7 @@ Lower `breakout_buffer_points` from default to 0 — fires on every BB band touc
 ### Q7: "i wanna short window to capture this effect"
 **Finding**: Recommended `2026-04-14 → 2026-04-17` for surgical G5048 isolation. Operator opted for the longer Mar 31 → May 7 window for full validation.
 
-### Q8: "let us discuss the regime classifier - is it running now and passing data for forge?"
-**Finding**: `regime.py` NOT running (empty ps output). But FORGE doesn't read it in tester anyway (`if(!in_tester)` gate at FORGE.mq5:1080). Tester uses inline H1+H4 EMA-spread classifier at lines 5658-5661. → Issue 1, root cause section above.
-
-### Q9: "so python/regime.py is never used for by forge ... let us focus on fixing the inline regime classifier"
-**Finding**: Confirmed scope. Drafted 3 options (A, B, C) for the inline fix. → See "Issue 1" Options A/B/C above.
+> **Note**: Q8 (regime classifier wiring), Q9 (regime.py usage scope), Q10 (regime Google search), Q3b (Apr 1 regime explanation), and Q16-Q22 (v2.7.30 parity + design discussion) **moved to** [`docs/FORGE_REGIME_PREDICTOR_DESIGN.md`](FORGE_REGIME_PREDICTOR_DESIGN.md) → "Historical Q&A — Regime Discussion Thread" section. This Q&A log retains only non-regime entries from Run 18.
 
 ### Q15 (sim Apr 13 05:55): "But a scalper captures BOTH legs of the intraday swing. We need a way to trigger regularly to capture in and out over and over"
 **Investigation**: Reviewed Run 18 entry frequency (11 in 10 sim-days = 1/day average); compared with high-frequency scalper benchmarks; mapped existing setups to phase coverage.
@@ -638,40 +564,6 @@ Lower `breakout_buffer_points` from default to 0 — fires on every BB band touc
   - **(B, the worry)**: Daily slope is between −7 and −12 pts because the prior 2-week rally lifted D1 SMA20 enough that the recent pullback only nudges slope slightly negative. Threshold of 0.5×ATR doesn't trip → G5048 fires anyway. Fix would be `FORGE_DAILY_SLOPE_BLOCK_ATR=0.3` (one env-var change).
 **Forward link**: Hypothesis 1 in this doc, and Issue 1 (regime classifier) — separate concern from Filter 1. The two are independent: Filter 1 is about D1 slope (multi-day), Issue 1 regime is about H1+H4 alignment within a single day.
 
-### Q3b (sim Apr 8, repeated): "Look at the prices before and after and the duration of the price movement — if the first trade in london session on april 1 were perfect setup, why didn't fire more legs in that group?"
-**Investigation**: Re-pulled SIGNALS for 07:00 → 12:00 on Apr 1 (5-min granularity); pulled G5001 (magic 207402) trade timeline.
-**Evidence — pre-entry buildup (100 min)**:
-- 07:20 low at 4669 (RSI=26.7, ADX=43.8) → 08:40 entry at 4700.47 (+31 pts in 80 min)
-- PSAR flipped BELOW at 07:55 — **45 min before entry** (confirmed reversal, not whipsaw)
-- ADX trajectory: 23.4 → 47.9 (peak at 07:30) → 40.1 at entry
-- RSI: 39.6 → 73.3 (full oversold-to-overbought sweep)
-- BB bands EXPANDING (lower: 4679 → 4663)
-- H1 trend constant +2.05 to +2.26 throughout
-- `regime_label = RANGE` for entire pre-entry window
-**Evidence — post-entry move (120 min to peak)**:
-- 08:41:22: +2.6 pts → 2 TP1 wins ($37.92)
-- 08:47:12: −7 pts → 1 leg SL'd (−$37.20)
-- 09:00: −16.2 pts MAX ADVERSE EXCURSION (the pullback)
-- 09:50: +24.9 (past Run 17's TP3 at +9pts)
-- **10:40: peak +40.8 pts = 8.1×ATR**
-- 11:40: +37.6 (second push)
-- 12:00: regime_label finally flips to TREND_BULL — **3h 20m after entry**, after the move was over
-**G5001 leg detail**: 5 legs × 0.08 = 0.40 lots total. 2 TP1 wins ($38), 2 TP2-target legs (~$59 base magic), 1 SL (−$37). Net ≈ +$60.
-**Answer**: Setup was perfect AND market validated it (+41 pts, 8.1×ATR). EA fired only 5 legs because `regime_label = RANGE` from the inline classifier (FORGE.mq5:5658-5661). The classifier requires BOTH `h1_bull` AND `(h4_bull || h4_flat)` for TREND_BULL. H4 EMA20-EMA50 spread was still NEGATIVE (h4_bear=TRUE from prior down-trend), so the AND fails despite h1_trend=+2.15. H4 lags H1 by 3-5 hours after regime turns — exactly when scalpers want max size. The 5-leg cap (`native_legs_max_when_unclear=5`) fired because regime ≠ TREND_*. Money left on table: estimated **$100-250** of unrealized gains across the 5 missing legs at peak prices.
-**Forward link**: Issue 1 in Recommendations — proposed fix is **Option C (weighted harmony index)** per MQL5 article 20097. With proposed weights `m5=0.15, m15=0.25, h1=0.45, h4=0.15` and threshold 0.50, Apr 1 08:40 → HI = +0.70 → TREND_BULL → 10 legs unlocked. Mar 31 (correctly bearish) → HI = +0.05 → RANGE (no false positive).
-
-### Q10: "can you do a google search on how to do this in MT5?"
-**Finding**: Industry pattern is **weighted harmony index** (per MQL5 article 20097): bias per TF (+1/0/-1), weighted average, threshold-based label. Self-Aware Trend System uses Kaufman Efficiency Ratio as adaptive width. Veto patterns (RSI multi-TF) use slow TF only when STRONGLY opposing. **No canonical pattern uses unanimous-AND across timeframes** — FORGE is the outlier. → See Option C "weighted harmony" in Issue 1.
-
-Sources captured in the previous chat response:
-- MQL5 Article 20097 (Multi-Timeframe Harmony Index)
-- mql5.com/en/code/72247 (Self-Aware Trend System)
-- mql5.com/en/code/21399 (ADX multi-TF smoothed)
-- mql5.com/en/blogs/post/767332 (RSI multi-TF for scalping, Feb 2026)
-- mql5.com/en/blogs/post/769705 (Break Tracer EMA+ATR)
-- mql5.com/en/blogs/post/769330 (Adaptive SuperTrend confluence)
-
----
 
 ## Session Log
 
@@ -692,3 +584,8 @@ Sources captured in the previous chat response:
 | 2026-05-11 12:09 | 2026-04-14 ~10:25 | **Run 18 STOPPED by operator** (12 TAKEN, +$2,713.02, 131W/14L). Pivoted to v2.7.29 regime override fix (Issue 1 Option A). Operator-approved roadmap: v2.7.29 ships H1-strong override clause + .env activation of dump-catch (`FORGE_DUMP_CATCH_ENABLED=1`, `FORGE_DUMP_REQUIRE_D1_BIAS=0`, `FORGE_DUMP_LOT_FACTOR=0.5`) + regime override (`FORGE_REGIME_H1_OVERRIDE_FACTOR=2.0`). Apr 15 SELL cluster + Apr 16 G5048 outcomes NOT captured — to be tested in Run 19. |
 | 2026-05-11 11:21 | 2026-04-09 15:10 | Tick 13 (operator: "look april 16 again — is this what you expect?") — Apr 16 still ~7 sim-days away (sim hasn't reached it). 1890 signals, **8 TAKEN** (added Apr 9 13:51 BB_BREAKOUT BUY @ 4743.11 = Run 17 G5018). **G5008 loss cluster**: 5 legs SL'd at 4739.68 within 11 min of entry, all at −3.43pts (0.73×ATR — tight). Loss −$60.72 — note SL tighter than `breakout_buy_sl_atr_mult=3.0×ATR` expectation, structural placement (LENS OB zone). Net: 60W/7L, +$1,371.76. Filter 1 unchanged at 13 (all Mar 31). |
 | 2026-05-11 11:28 | 2026-04-10 23:55 | Tick 14 — **G5028 ✓ BLOCKED** (Apr 10 18:45 BB_BOUNCE BUY @ 4766.05, PSAR=ABOVE → `entry_quality_psar_misalign_buy`). This is THE TRADE v2.7.26 was specifically designed to prevent — design validated. 2298 signals, **11 TAKEN** (added Apr 10 14:45/15:00/15:35 BREAKOUT BUYs = Run 17 G5024+G5025 + 1 NEW). Run 17 also had Apr 10 morning BB_BOUNCE cluster (7 trades) — all blocked Run 18. **+$2,298.22 P&L, 114W/14L = 89.1% WR**. Updated v2.7.26 ROI: 1 prevented loss (~$100) vs 10 missed winners (~$1,250), partially offset by 4 unexpected BB_BREAKOUTs (~$600). Net cost: ~$550 so far. Filter 1 unchanged at 13. Apr 16 G5048 still 5.5 sim-days away. |
+| 2026-05-11 12:30 | n/a (chat) | **v2.7.30 shipped** — tester/live regime parity fix. Removed `if(in_tester)` wrapper from inline classifier at `FORGE.mq5:5687-5704` so H1+H4 EMA-spread classifier with v2.7.29 override clause runs unconditionally in both modes. VERSION 2.7.29 → 2.7.30, `make forge-compile` PASS, housekeeping A+B PASS, 28/28 gate tests PASS. JSON regime_label read at `:1094-1099` becomes advisory (overwritten each tick). |
+| 2026-05-11 12:45 | n/a (chat) | **Regime architecture review** — operator surfaced design question: regime.py output is bypassed for FORGE entries post-v2.7.30, alive only for SCRIBE/Athena observability. Schema confirmed correctly aligned (label vocab, payload, SCRIBE columns) per Q18. Three structural gaps identified: BRIDGE-not-in-tester, M5-vs-H1+H4 TF mismatch, confidence semantics divergence (HMM posterior vs hardcoded 1.0). |
+| 2026-05-11 13:00 | n/a (chat) | **TradingView MCP investigation** — operator pointed out LENS already wraps `LewisWJackson/tradingview-mcp-jackson`. Re-read MCP server source: exposes `replay_start` / `replay_step` / `data_get_study_values` / `batch_run` — historical regime features ARE retrievable via Bar Replay (correcting my earlier "not feasible" answer). |
+| 2026-05-11 13:15 | n/a (chat) | **Issue 7 drafted** — file-driven regime stream as v2.7.31 candidate. WebSearched 4 canonical patterns (HMM/hmmlearn, Markov-Switching/statsmodels, change-point/ruptures, multi-factor rule-based ARC). Three Options (A: file-driven JSON stream, B: MQL5 HMM port, C: MSDR+CPD hybrid). Preferred: Option A. All cited sources captured in Issue 7. |
+| 2026-05-11 13:30 | n/a (chat) | **Parity invariant codified in EA** — added `PARITY INVARIANT` banner block to `FORGE.mq5` just below `FORGE_VERSION` declaration (4 enforcement rules + changelog). Added `FORGE PARITY:` runtime audit log in `OnInit` printing `mode`, `regime_source`, `trend_strength_atr_threshold`, `regime_h1_override_factor`, `regime_h1_override_adx_min` — grep this prefix in MT5 journal/tester log to confirm identical knobs apply in tester and live. `make forge-compile` PASS. |
