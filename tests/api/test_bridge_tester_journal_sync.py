@@ -96,8 +96,10 @@ def test_tester_journal_skipped_when_flag_off(monkeypatch, tmp_path):
     _make_journal(tester_db, tester=True)
 
     scribe_mock = MagicMock()
-    scribe_mock.sync_forge_journal.return_value = 1
-    scribe_mock.sync_forge_journal_trades.return_value = 0
+    # Production _tick at python/bridge.py:2950 unpacks `proc, new = sync_*(...)`.
+    # Match that signature even though this test bypasses _tick.
+    scribe_mock.sync_forge_journal.return_value = (1, 1)
+    scribe_mock.sync_forge_journal_trades.return_value = (0, 0)
 
     stub = _make_bridge_stub([str(live_db), str(tester_db)], scribe_mock)
 
@@ -140,8 +142,8 @@ def test_tester_journal_synced_when_flag_on(monkeypatch, tmp_path):
     _make_journal(tester_db, tester=True)
 
     scribe_mock = MagicMock()
-    scribe_mock.sync_forge_journal.return_value = 1
-    scribe_mock.sync_forge_journal_trades.return_value = 1
+    scribe_mock.sync_forge_journal.return_value = (1, 1)
+    scribe_mock.sync_forge_journal_trades.return_value = (1, 1)
 
     stub = _make_bridge_stub([str(live_db), str(tester_db)], scribe_mock)
 

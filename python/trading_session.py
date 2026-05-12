@@ -23,6 +23,15 @@ _SYDNEY_TZ = ZoneInfo(os.environ.get("SESSION_SYDNEY_TZ", "Australia/Sydney"))
 _LONDON_TZ = ZoneInfo(os.environ.get("SESSION_LONDON_TZ", "Europe/London"))
 _NY_TZ = ZoneInfo(os.environ.get("SESSION_NY_TZ", "America/New_York"))
 
+# ICT killzones — minute-of-day in NY local time. Cross-confirmed standard windows.
+# See docs/research/ICT_KILLZONES.md for source citations.
+_KZ_DEFAULTS = {
+    "ASIAN":        (19 * 60,  3 * 60),   # 19:00 – 03:00 NY (wraps)
+    "LONDON_OPEN":  ( 2 * 60,  5 * 60),   # 02:00 – 05:00 NY
+    "NY_OPEN":      ( 7 * 60, 10 * 60),   # 07:00 – 10:00 NY (forex)
+    "LONDON_CLOSE": (10 * 60, 12 * 60),   # 10:00 – 12:00 NY
+}
+
 
 def _hour_in_range(h: int, start: int, end: int) -> bool:
     """True if integer UTC hour h lies in [start, end) modulo 24."""
@@ -65,6 +74,52 @@ def get_trading_session_utc(now: datetime | None = None) -> str:
     if _hour_in_range(h, asian_s, asian_e):
         return "ASIAN"
     return "OFF_HOURS"
+
+
+def _minute_in_window(now_min: int, start_min: int, end_min: int) -> bool:
+    if start_min < 0 or end_min < 0:
+        return False
+    if start_min < end_min:
+        return start_min <= now_min < end_min
+    return now_min >= start_min or now_min < end_min  # wraps midnight
+
+
+def _kz_window(name: str) -> tuple[int, int]:
+    s_def, e_def = _KZ_DEFAULTS[name]
+    s = int(os.environ.get(f"SESSION_KZ_{name}_START_MIN", str(s_def)))
+    e = int(os.environ.get(f"SESSION_KZ_{name}_END_MIN",   str(e_def)))
+    return s, e
+
+
+def get_current_killzone_utc(now: datetime | None = None) -> str:
+    """
+    Return ICT killzone label or '' (none).
+    Labels: '' | 'ASIAN_KZ' | 'LONDON_OPEN_KZ' | 'NY_OPEN_KZ' | 'LONDON_CLOSE_KZ'
+    Always evaluated in NY local time via zoneinfo (OS-DST-aware).
+    Returns '' on weekends or when disabled via KILLZONES_ENABLED=0.
+    """
+    if os.environ.get("KILLZONES_ENABLED", "1") not in ("1", "true", "True"):
+        return ""
+    now = now or datetime.now(timezone.utc)
+    ny_now = now.astimezone(_NY_TZ)
+    if ny_now.weekday() == 5:                       # Saturday
+        return ""
+    if ny_now.weekday() == 6 and ny_now.hour < 17:  # Sunday pre-open
+        return ""
+    now_min = ny_now.hour * 60 + ny_now.minute
+    s, e = _kz_window("NY_OPEN")
+    if _minute_in_window(now_min, s, e):
+        return "NY_OPEN_KZ"
+    s, e = _kz_window("LONDON_OPEN")
+    if _minute_in_window(now_min, s, e):
+        return "LONDON_OPEN_KZ"
+    s, e = _kz_window("LONDON_CLOSE")
+    if _minute_in_window(now_min, s, e):
+        return "LONDON_CLOSE_KZ"
+    s, e = _kz_window("ASIAN")
+    if _minute_in_window(now_min, s, e):
+        return "ASIAN_KZ"
+    return ""
 
 
 def trading_day_reset_hour_utc() -> int:
@@ -115,6 +170,20 @@ def session_clock_summary() -> str:
     sy0 = os.environ.get("SESSION_SYDNEY_LOCAL_START", "9")
     sy1 = os.environ.get("SESSION_SYDNEY_LOCAL_END", "17")
     wrap = "wraps midnight" if int(a0) > int(a1) else "flat UTC range"
+    kz_enabled = os.environ.get("KILLZONES_ENABLED", "1") in ("1", "true", "True")
+    if kz_enabled:
+        kz_asia_s, kz_asia_e = _kz_window("ASIAN")
+        kz_lo_s,   kz_lo_e   = _kz_window("LONDON_OPEN")
+        kz_ny_s,   kz_ny_e   = _kz_window("NY_OPEN")
+        kz_lc_s,   kz_lc_e   = _kz_window("LONDON_CLOSE")
+        kz_summary = (
+            f"; ICT killzones (NY local): ASIAN {kz_asia_s//60:02d}:{kz_asia_s%60:02d}–{kz_asia_e//60:02d}:{kz_asia_e%60:02d}, "
+            f"LONDON_OPEN {kz_lo_s//60:02d}:{kz_lo_s%60:02d}–{kz_lo_e//60:02d}:{kz_lo_e%60:02d}, "
+            f"NY_OPEN {kz_ny_s//60:02d}:{kz_ny_s%60:02d}–{kz_ny_e//60:02d}:{kz_ny_e%60:02d}, "
+            f"LONDON_CLOSE {kz_lc_s//60:02d}:{kz_lc_s%60:02d}–{kz_lc_e//60:02d}:{kz_lc_e%60:02d}"
+        )
+    else:
+        kz_summary = "; ICT killzones disabled (KILLZONES_ENABLED=0)"
     return (
         f"Kill zones: ASIAN(UTC) {a0}–{a1} ({wrap}), "
         f"LONDON(local) {lo0}–{lo1} {_LONDON_TZ.key}, "
@@ -122,4 +191,5 @@ def session_clock_summary() -> str:
         f"NEW_YORK(local) {ny0}–{ny1} {_NY_TZ.key}, "
         f"SYDNEY(local) {sy0}–{sy1} {_SYDNEY_TZ.key}; "
         f"daily P&L roll {trading_day_reset_hour_utc():02d}:00 UTC"
+        f"{kz_summary}"
     )

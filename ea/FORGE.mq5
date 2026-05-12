@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.105"
+#property version "2.108"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.35";
+const string FORGE_VERSION = "2.7.38";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -155,6 +155,13 @@ string   g_scalper_last_direction = "";          // last entry direction for ant
 datetime g_scalper_last_direction_time = 0;      // when last direction was entered
 datetime g_scalper_last_reset_day = 0;  // UTC day marker for session counter reset
 string   g_scalper_last_session_label = "";      // UTC session label used to reset first-entry anchors
+// 2.7.36 — killzone tracking + log-throttle globals for previously-unthrottled gates
+string   g_scalper_last_killzone_label = "";
+datetime g_scalper_killzone_start_time = 0;
+int      g_scalper_killzone_trades    = 0;
+datetime g_scalper_last_dircool_log_bar    = 0;  // throttle direction_cooldown log
+datetime g_scalper_last_opengroups_log_bar = 0;  // throttle open_groups log
+datetime g_scalper_last_sesscap_log_bar    = 0;  // throttle session_trade_cap log
 datetime g_scalper_last_nosetup_log_bar  = 0;   // throttle noisy "no setup" (once per M5 bar)
 datetime g_scalper_last_rrtoolow_log_bar = 0;   // throttle journal rr_too_low (once per M5 bar)
 datetime g_scalper_last_sesscut_log_bar  = 0;   // throttle entry_quality_session_sell_cutoff (2.7.7)
@@ -231,9 +238,91 @@ datetime g_scalper_last_dailybias_sell_log_bar = 0; // throttle daily_bull_block
 datetime g_scalper_last_dump_sell_time = 0;   // wall time of last dump SELL entry — cooldown anchor
 datetime g_scalper_last_dump_buy_time  = 0;   // wall time of last dump BUY entry  — cooldown anchor
 datetime g_scalper_last_dump_log_bar   = 0;   // throttle dump SKIP logs (once per M5 bar)
+
+// 2.7.37 — Layer-4 atom telemetry globals. Populated once per tick by
+// ForgeEvalAtoms() at the top of CheckScalperEntry; consumed by
+// JournalRecordSignal for every SKIP/TAKEN INSERT. See decision-stack
+// inventory §6 + logging extension design for atom→column mapping.
+double   g_eval_h4_trend         = 0.0;
+double   g_eval_m15_trend        = 0.0;
+double   g_eval_m30_trend        = 0.0;
+double   g_eval_h1_di_plus       = 0.0;
+double   g_eval_h1_di_minus      = 0.0;
+double   g_eval_h1_di_balance    = 0.0;
+double   g_eval_h4_rsi           = 0.0;
+double   g_eval_h4_adx           = 0.0;
+double   g_eval_d1_open          = 0.0;
+double   g_eval_d1_close         = 0.0;
+double   g_eval_day_open         = 0.0;
+double   g_eval_day_high         = 0.0;
+double   g_eval_day_low          = 0.0;
+double   g_eval_m5_open_1        = 0.0;
+double   g_eval_m5_high_1        = 0.0;
+double   g_eval_m5_low_1         = 0.0;
+double   g_eval_m5_close_1       = 0.0;
+int      g_eval_m5_lh_cascade    = 0;
+int      g_eval_m5_hl_cascade    = 0;
+double   g_eval_m5_body_pct      = 0.0;
+double   g_eval_h1_atr           = 0.0;
+double   g_eval_h4_atr           = 0.0;
+double   g_eval_m15_atr          = 0.0;
+double   g_eval_m1_atr           = 0.0;
+// 2.7.37 Group 3 — full per-TF indicator + OHLC + bar-quality inventory (45 cols)
+double   g_eval_h1_rsi           = 0.0;
+double   g_eval_h1_adx           = 0.0;
+double   g_eval_h1_bb_u          = 0.0;
+double   g_eval_h1_bb_m          = 0.0;
+double   g_eval_h1_bb_l          = 0.0;
+double   g_eval_h4_bb_u          = 0.0;
+double   g_eval_h4_bb_m          = 0.0;
+double   g_eval_h4_bb_l          = 0.0;
+double   g_eval_m15_rsi          = 0.0;
+double   g_eval_m15_ema20        = 0.0;
+double   g_eval_m15_ema50        = 0.0;
+double   g_eval_m30_rsi          = 0.0;
+double   g_eval_m30_adx          = 0.0;
+double   g_eval_m30_atr          = 0.0;
+double   g_eval_m30_ema20        = 0.0;
+double   g_eval_m30_ema50        = 0.0;
+double   g_eval_m1_ema20         = 0.0;
+double   g_eval_m1_ema50         = 0.0;
+double   g_eval_m5_open_0        = 0.0;
+double   g_eval_m5_high_0        = 0.0;
+double   g_eval_m5_low_0         = 0.0;
+double   g_eval_m5_close_0       = 0.0;
+double   g_eval_m15_open         = 0.0;
+double   g_eval_m15_high         = 0.0;
+double   g_eval_m15_low          = 0.0;
+double   g_eval_m15_close        = 0.0;
+double   g_eval_m30_open         = 0.0;
+double   g_eval_m30_high         = 0.0;
+double   g_eval_m30_low          = 0.0;
+double   g_eval_m30_close        = 0.0;
+double   g_eval_h1_open          = 0.0;
+double   g_eval_h1_high          = 0.0;
+double   g_eval_h1_low           = 0.0;
+double   g_eval_h1_close         = 0.0;
+double   g_eval_h4_open          = 0.0;
+double   g_eval_h4_high          = 0.0;
+double   g_eval_h4_low           = 0.0;
+double   g_eval_h4_close         = 0.0;
+int      g_eval_m5_inside_bar    = 0;
+int      g_eval_m5_outside_bar   = 0;
+int      g_eval_m5_doji          = 0;
+int      g_eval_m5_strong_bar    = 0;
+int      g_eval_long_lower_wick  = 0;
+int      g_eval_long_upper_wick  = 0;
+int      g_eval_m5_range_expanding = 0;
+datetime g_eval_last_tick        = 0;   // guard — avoid recomputing within same tick
+
 // 2.7.31 — BB_PULLBACK_SCALP cooldown trackers (Run 19 Issue 4)
 datetime g_pullback_scalp_last_sell_time = 0; // wall time of last pullback-scalp SELL entry
 datetime g_pullback_scalp_last_buy_time  = 0; // wall time of last pullback-scalp BUY entry
+// 2.7.38 Tier 1 Boolean Composites — runtime state
+datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
+datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
+datetime g_last_intraday_reversal_log_bar  = 0; // throttle entry_quality_intraday_reversal_buy_block log
+datetime g_last_chop_block_sell_log_bar    = 0; // throttle entry_quality_chop_block_sell log
 
 // Native news filter state
 datetime g_nf_next_refresh             = 0;
@@ -494,6 +583,42 @@ struct ScalperConfig {
    // Tester session control
    bool   tester_session_filter;
    string tester_allowed_sessions;
+   // Session — minute precision (2.7.36; additive; integer minute-of-day 0..1440; -1 = use legacy hour field)
+   int    london_start_min;
+   int    london_end_min;
+   int    ny_start_min;
+   int    ny_end_min;
+   int    asia_start_min;
+   int    asia_end_min;
+   // Session — NY-time anchoring (DST-aware via manual broker offset, Approach B)
+   bool   sessions_ny_anchored;
+   // Broker GMT offsets (manual; works identically in live + Strategy Tester)
+   int    broker_gmt_offset_winter;
+   int    broker_gmt_offset_summer;
+   // ICT Killzones (NY-time minute-of-day; killzones are always NY-anchored)
+   bool   killzones_enabled;
+   bool   killzones_gate_entries;
+   int    kz_asia_start_min;
+   int    kz_asia_end_min;
+   int    kz_london_open_start_min;
+   int    kz_london_open_end_min;
+   int    kz_ny_open_start_min;
+   int    kz_ny_open_end_min;
+   int    kz_london_close_start_min;
+   int    kz_london_close_end_min;
+   // 2.7.38 Tier 1 Boolean Composites (all default-OFF)
+   bool   block_sell_in_chop_enabled;
+   bool   intraday_reversal_sell_enabled;
+   double intraday_reversal_sell_lot_mult;
+   bool   fractional_sell_in_bull_enabled;
+   double fractional_sell_in_bull_lot_factor;
+   double fractional_sell_in_bull_sl_atr_mult;
+   double fractional_sell_in_bull_tp1_atr_mult;
+   bool   bull_day_dip_buy_enabled;
+   double bull_day_dip_buy_lot_mult;
+   double bull_day_dip_buy_sl_atr_mult;
+   double bull_day_dip_buy_tp1_atr_mult;
+   int    bull_day_dip_buy_reentry_cooldown_sec;
    // DD event
    double dd_tight_tp_atr;
    int    sentinel_min_threshold;
@@ -867,8 +992,21 @@ int OnInit() {
          " datapath=",  TerminalInfoString(TERMINAL_DATA_PATH),
          " commonpath=",TerminalInfoString(TERMINAL_COMMONDATA_PATH),
          " balance=",   AccountInfoDouble(ACCOUNT_BALANCE));
-   WriteBrokerInfo();
+   // 2.7.36 — InitScalperConfig must run BEFORE WriteBrokerInfo, because the new
+   // broker_gmt_offset_{winter,summer} + is_eu_dst/is_us_dst fields in
+   // WriteBrokerInfo read g_sc.broker_gmt_offset_*. Original pre-2.7.36 order
+   // had WriteBrokerInfo first, but it only used Account*/Terminal* APIs then.
    InitScalperConfig();
+   WriteBrokerInfo();
+   // 2.7.36 — Time diagnostic (verify Approach B broker offsets work in live + tester)
+   PrintFormat("FORGE TIME CHECK: TimeCurrent=%s TimeGMT=%s TimeTradeServer=%s",
+               TimeToString(TimeCurrent(),    TIME_DATE|TIME_SECONDS),
+               TimeToString(TimeGMT(),        TIME_DATE|TIME_SECONDS),
+               TimeToString(TimeTradeServer(),TIME_DATE|TIME_SECONDS));
+   PrintFormat("FORGE TIME CHECK: BrokerToNY=%s (EU_DST=%d offset=%dh)",
+               TimeToString(BrokerToNY(TimeCurrent()), TIME_DATE|TIME_SECONDS),
+               IsEU_DST(TimeCurrent()) ? 1 : 0,
+               IsEU_DST(TimeCurrent()) ? g_sc.broker_gmt_offset_summer : g_sc.broker_gmt_offset_winter);
    JournalInit();
    // Same live sync as OnTimer: BRIDGE config.json + analytics once at attach (not after 1s / 20 cycles).
    ReadConfig();
@@ -2482,6 +2620,18 @@ void WriteMarketData() {
    j += "\"trend_strength_atr_threshold\":" + DoubleToString(g_sc.trend_strength_atr_threshold,4) + ",";
    j += "\"breakout_buffer_points\":" + DoubleToString(g_sc.breakout_buffer_points,2);
    j += "},";
+   // 2.7.36 — Session + killzone state (named to avoid collision with top-level session key)
+   j += "\"forge_session_state\":{";
+   j += "\"label\":\""           + JsonEscape(ComputeCurrentSessionLabel())  + "\",";
+   j += "\"killzone\":\""        + JsonEscape(ComputeCurrentKillzoneLabel()) + "\",";
+   j += "\"anchor_mode\":\""     + (g_sc.sessions_ny_anchored ? "NY" : "UTC") + "\",";
+   j += "\"killzones_enabled\":" + IntegerToString(g_sc.killzones_enabled ? 1 : 0) + ",";
+   j += "\"killzones_gate_entries\":" + IntegerToString(g_sc.killzones_gate_entries ? 1 : 0) + ",";
+   j += "\"broker_gmt_offset_winter\":" + IntegerToString(g_sc.broker_gmt_offset_winter) + ",";
+   j += "\"broker_gmt_offset_summer\":" + IntegerToString(g_sc.broker_gmt_offset_summer) + ",";
+   j += "\"trades_this_session\":"  + IntegerToString(g_scalper_session_trades)  + ",";
+   j += "\"trades_this_killzone\":" + IntegerToString(g_scalper_killzone_trades);
+   j += "},";
    j += "\"volume_profile\":{";
    j += "\"poc_price\":" + DoubleToString(g_poc_price, 2) + ",";
    j += "\"poc_strength\":" + DoubleToString(g_poc_strength, 3) + ",";
@@ -2676,6 +2826,11 @@ void WriteBrokerInfo() {
    j += "\"server_time\":\"" + JsonEscape(TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)) + "\",";
    j += "\"server_time_unix\":" + IntegerToString((long)TimeCurrent()) + ",";
    j += "\"gmt_time\":\"" + JsonEscape(TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)) + "Z\",";
+   j += "\"gmt_offset_sec\":" + IntegerToString(ForgeBrokerGMTOffsetSec()) + ",";
+   j += "\"is_us_dst\":"      + IntegerToString(IsUS_DST(TimeGMT()) ? 1 : 0) + ",";
+   j += "\"is_eu_dst\":"      + IntegerToString(IsEU_DST(TimeCurrent()) ? 1 : 0) + ",";
+   j += "\"broker_gmt_offset_winter\":" + IntegerToString(g_sc.broker_gmt_offset_winter) + ",";
+   j += "\"broker_gmt_offset_summer\":" + IntegerToString(g_sc.broker_gmt_offset_summer) + ",";
    j += "\"chart_symbol\":\"" + JsonEscape(_Symbol) + "\",";
    j += "\"requested_mode\":\"" + JsonEscape(InputMode) + "\",";
    j += "\"effective_mode\":\"" + g_mode + "\",";
@@ -2880,6 +3035,38 @@ void InitScalperConfig() {
    g_sc.skip_asian  = false;
    g_sc.skip_london = false;
    g_sc.skip_ny     = false;
+   // 2.7.36 — minute-precision overrides (-1 sentinel = use legacy hour fields)
+   g_sc.london_start_min = -1;  g_sc.london_end_min = -1;
+   g_sc.ny_start_min     = -1;  g_sc.ny_end_min     = -1;
+   g_sc.asia_start_min   = -1;  g_sc.asia_end_min   = -1;
+   g_sc.sessions_ny_anchored     = false;
+   // Approach B broker offsets — defaults for Vantage / Cyprus brokers.
+   g_sc.broker_gmt_offset_winter = 2;
+   g_sc.broker_gmt_offset_summer = 3;
+   // ICT killzones (NY minute-of-day)
+   g_sc.killzones_enabled        = false;
+   g_sc.killzones_gate_entries   = false;
+   g_sc.kz_asia_start_min        = 19*60;   // 19:00 NY (wraps to 03:00)
+   g_sc.kz_asia_end_min          =  3*60;
+   g_sc.kz_london_open_start_min =  2*60;
+   g_sc.kz_london_open_end_min   =  5*60;
+   g_sc.kz_ny_open_start_min     =  7*60;
+   g_sc.kz_ny_open_end_min       = 10*60;
+   g_sc.kz_london_close_start_min= 10*60;
+   g_sc.kz_london_close_end_min  = 12*60;
+   // 2.7.38 Tier 1 Boolean Composites — all default-OFF
+   g_sc.block_sell_in_chop_enabled            = false;
+   g_sc.intraday_reversal_sell_enabled        = false;
+   g_sc.intraday_reversal_sell_lot_mult       = 2.0;
+   g_sc.fractional_sell_in_bull_enabled       = false;
+   g_sc.fractional_sell_in_bull_lot_factor    = 0.25;
+   g_sc.fractional_sell_in_bull_sl_atr_mult   = 1.5;
+   g_sc.fractional_sell_in_bull_tp1_atr_mult  = 0.3;
+   g_sc.bull_day_dip_buy_enabled              = false;
+   g_sc.bull_day_dip_buy_lot_mult             = 1.0;
+   g_sc.bull_day_dip_buy_sl_atr_mult          = 1.0;
+   g_sc.bull_day_dip_buy_tp1_atr_mult         = 0.65;
+   g_sc.bull_day_dip_buy_reentry_cooldown_sec = 300;
    g_sc.dd_tight_tp_atr = 0.8;
    g_sc.sentinel_min_threshold = 30;
    g_sc.news_filter_enabled         = true;
@@ -3463,6 +3650,39 @@ void ReadScalperConfig() {
       string ts_val = JsonGetString(content, "tester_allowed_sessions");
       if(StringLen(ts_val) > 0) g_sc.tester_allowed_sessions = ts_val;
    }
+   // 2.7.36 — Session minute-precision + NY anchor + broker offsets + killzones
+   if(JsonHasKey(content, "london_start_min")) { v=JsonGetDouble(content,"london_start_min"); if(v>=-1&&v<=1439) g_sc.london_start_min=(int)v; }
+   if(JsonHasKey(content, "london_end_min"))   { v=JsonGetDouble(content,"london_end_min");   if(v>=-1&&v<=1440) g_sc.london_end_min  =(int)v; }
+   if(JsonHasKey(content, "ny_start_min"))     { v=JsonGetDouble(content,"ny_start_min");     if(v>=-1&&v<=1439) g_sc.ny_start_min    =(int)v; }
+   if(JsonHasKey(content, "ny_end_min"))       { v=JsonGetDouble(content,"ny_end_min");       if(v>=-1&&v<=1440) g_sc.ny_end_min      =(int)v; }
+   if(JsonHasKey(content, "asia_start_min"))   { v=JsonGetDouble(content,"asia_start_min");   if(v>=-1&&v<=1439) g_sc.asia_start_min  =(int)v; }
+   if(JsonHasKey(content, "asia_end_min"))     { v=JsonGetDouble(content,"asia_end_min");     if(v>=-1&&v<=1440) g_sc.asia_end_min    =(int)v; }
+   if(JsonHasKey(content, "sessions_ny_anchored"))     { v=JsonGetDouble(content,"sessions_ny_anchored");     g_sc.sessions_ny_anchored=(v>=0.5); }
+   if(JsonHasKey(content, "broker_gmt_offset_winter")) { v=JsonGetDouble(content,"broker_gmt_offset_winter"); if(v>=-12&&v<=14) g_sc.broker_gmt_offset_winter=(int)v; }
+   if(JsonHasKey(content, "broker_gmt_offset_summer")) { v=JsonGetDouble(content,"broker_gmt_offset_summer"); if(v>=-12&&v<=14) g_sc.broker_gmt_offset_summer=(int)v; }
+   if(JsonHasKey(content, "killzones_enabled"))        { v=JsonGetDouble(content,"killzones_enabled");        g_sc.killzones_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "killzones_gate_entries"))   { v=JsonGetDouble(content,"killzones_gate_entries");   g_sc.killzones_gate_entries=(v>=0.5); }
+   if(JsonHasKey(content, "kz_asia_start_min"))         { v=JsonGetDouble(content,"kz_asia_start_min");         if(v>=0&&v<=1439) g_sc.kz_asia_start_min        =(int)v; }
+   if(JsonHasKey(content, "kz_asia_end_min"))           { v=JsonGetDouble(content,"kz_asia_end_min");           if(v>=0&&v<=1440) g_sc.kz_asia_end_min          =(int)v; }
+   if(JsonHasKey(content, "kz_london_open_start_min"))  { v=JsonGetDouble(content,"kz_london_open_start_min");  if(v>=0&&v<=1439) g_sc.kz_london_open_start_min =(int)v; }
+   if(JsonHasKey(content, "kz_london_open_end_min"))    { v=JsonGetDouble(content,"kz_london_open_end_min");    if(v>=0&&v<=1440) g_sc.kz_london_open_end_min   =(int)v; }
+   if(JsonHasKey(content, "kz_ny_open_start_min"))      { v=JsonGetDouble(content,"kz_ny_open_start_min");      if(v>=0&&v<=1439) g_sc.kz_ny_open_start_min     =(int)v; }
+   if(JsonHasKey(content, "kz_ny_open_end_min"))        { v=JsonGetDouble(content,"kz_ny_open_end_min");        if(v>=0&&v<=1440) g_sc.kz_ny_open_end_min       =(int)v; }
+   if(JsonHasKey(content, "kz_london_close_start_min")) { v=JsonGetDouble(content,"kz_london_close_start_min"); if(v>=0&&v<=1439) g_sc.kz_london_close_start_min=(int)v; }
+   if(JsonHasKey(content, "kz_london_close_end_min"))   { v=JsonGetDouble(content,"kz_london_close_end_min");   if(v>=0&&v<=1440) g_sc.kz_london_close_end_min  =(int)v; }
+   // 2.7.38 Tier 1 Boolean Composites
+   if(JsonHasKey(content, "block_sell_in_chop_enabled"))            { v=JsonGetDouble(content,"block_sell_in_chop_enabled");            g_sc.block_sell_in_chop_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "intraday_reversal_sell_enabled"))        { v=JsonGetDouble(content,"intraday_reversal_sell_enabled");        g_sc.intraday_reversal_sell_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "intraday_reversal_sell_lot_mult"))       { v=JsonGetDouble(content,"intraday_reversal_sell_lot_mult");       if(v>=0.5&&v<=5.0) g_sc.intraday_reversal_sell_lot_mult=v; }
+   if(JsonHasKey(content, "fractional_sell_in_bull_enabled"))       { v=JsonGetDouble(content,"fractional_sell_in_bull_enabled");       g_sc.fractional_sell_in_bull_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "fractional_sell_in_bull_lot_factor"))    { v=JsonGetDouble(content,"fractional_sell_in_bull_lot_factor");    if(v>0.0&&v<=1.0) g_sc.fractional_sell_in_bull_lot_factor=v; }
+   if(JsonHasKey(content, "fractional_sell_in_bull_sl_atr_mult"))   { v=JsonGetDouble(content,"fractional_sell_in_bull_sl_atr_mult");   if(v>=0.5&&v<=5.0) g_sc.fractional_sell_in_bull_sl_atr_mult=v; }
+   if(JsonHasKey(content, "fractional_sell_in_bull_tp1_atr_mult"))  { v=JsonGetDouble(content,"fractional_sell_in_bull_tp1_atr_mult");  if(v>=0.1&&v<=2.0) g_sc.fractional_sell_in_bull_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "bull_day_dip_buy_enabled"))              { v=JsonGetDouble(content,"bull_day_dip_buy_enabled");              g_sc.bull_day_dip_buy_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "bull_day_dip_buy_lot_mult"))             { v=JsonGetDouble(content,"bull_day_dip_buy_lot_mult");             if(v>=0.1&&v<=10.0) g_sc.bull_day_dip_buy_lot_mult=v; }
+   if(JsonHasKey(content, "bull_day_dip_buy_sl_atr_mult"))          { v=JsonGetDouble(content,"bull_day_dip_buy_sl_atr_mult");          if(v>=0.3&&v<=5.0) g_sc.bull_day_dip_buy_sl_atr_mult=v; }
+   if(JsonHasKey(content, "bull_day_dip_buy_tp1_atr_mult"))         { v=JsonGetDouble(content,"bull_day_dip_buy_tp1_atr_mult");         if(v>=0.1&&v<=3.0) g_sc.bull_day_dip_buy_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "bull_day_dip_buy_reentry_cooldown_sec")) { v=JsonGetDouble(content,"bull_day_dip_buy_reentry_cooldown_sec"); if(v>=0&&v<=3600) g_sc.bull_day_dip_buy_reentry_cooldown_sec=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -3979,57 +4199,515 @@ void ReadScalperConfig() {
                g_sc.journal_import_depth_days,
                g_sc.journal_stats_interval_sec);
 }
+//+------------------------------------------------------------------+
+//| 2.7.36 — Session/killzone helpers (Approach B: manual broker     |
+//| offset + EU-DST detection). Works identically in live + tester  |
+//| because TimeGMT() is unreliable in MT5 Strategy Tester.          |
+//| See docs/research/ICT_KILLZONES.md §5.                           |
+//+------------------------------------------------------------------+
+int LastSundayOfMonth(int year, int month) {
+   MqlDateTime d;
+   d.year = year; d.mon = month; d.day = 28;
+   d.hour = 0; d.min = 0; d.sec = 0;
+   datetime t = StructToTime(d);
+   TimeToStruct(t, d);
+   int last_day = 28;
+   for(int i = 28; i <= 31; i++) {
+      d.day = i;
+      t = StructToTime(d);
+      MqlDateTime check; TimeToStruct(t, check);
+      if(check.mon == month) last_day = i;
+   }
+   d.day = last_day;
+   t = StructToTime(d);
+   TimeToStruct(t, d);
+   return last_day - d.day_of_week;
+}
+
+bool IsEU_DST(datetime broker_time) {
+   MqlDateTime d; TimeToStruct(broker_time, d);
+   if(d.mon < 3 || d.mon > 10) return false;
+   if(d.mon > 3 && d.mon < 10) return true;
+   if(d.mon == 3) {
+      int last_sun = LastSundayOfMonth(d.year, 3);
+      if(d.day < last_sun) return false;
+      if(d.day > last_sun) return true;
+      return d.hour >= 3;
+   }
+   int last_sun = LastSundayOfMonth(d.year, 10);
+   if(d.day < last_sun) return true;
+   if(d.day > last_sun) return false;
+   return d.hour < 4;
+}
+
+int FirstSundayOfMonth(int year, int month) {
+   MqlDateTime d;
+   d.year = year; d.mon = month; d.day = 1;
+   d.hour = 0; d.min = 0; d.sec = 0;
+   datetime t = StructToTime(d);
+   TimeToStruct(t, d);
+   return (d.day_of_week == 0) ? 1 : (1 + (7 - d.day_of_week));
+}
+
+bool IsUS_DST(datetime utc) {
+   MqlDateTime d; TimeToStruct(utc, d);
+   if(d.mon < 3 || d.mon > 11) return false;
+   if(d.mon > 3 && d.mon < 11) return true;
+   if(d.mon == 3) {
+      int second_sun = FirstSundayOfMonth(d.year, 3) + 7;
+      if(d.day < second_sun) return false;
+      if(d.day > second_sun) return true;
+      return d.hour >= 7;
+   }
+   int first_sun = FirstSundayOfMonth(d.year, 11);
+   if(d.day < first_sun) return true;
+   if(d.day > first_sun) return false;
+   return d.hour < 6;
+}
+
+datetime BrokerToNY(datetime broker) {
+   int broker_off = IsEU_DST(broker)
+                       ? g_sc.broker_gmt_offset_summer
+                       : g_sc.broker_gmt_offset_winter;
+   datetime utc = broker - broker_off * 3600;
+   int ny_off   = IsUS_DST(utc) ? -4 : -5;
+   return utc + ny_off * 3600;
+}
+
+datetime GetNYTimeNow() {
+   return BrokerToNY(TimeCurrent());
+}
+
+datetime GetSessionAnchorTime() {
+   return g_sc.sessions_ny_anchored ? GetNYTimeNow() : TimeGMT();
+}
+
+bool MinuteInWindow(int now_min, int start_min, int end_min) {
+   if(start_min < 0 || end_min < 0) return false;
+   if(start_min < end_min) return now_min >= start_min && now_min < end_min;
+   return now_min >= start_min || now_min < end_min;
+}
+
+void GetEffectiveLondonWindow(int &start_min, int &end_min) {
+   start_min = (g_sc.london_start_min >= 0) ? g_sc.london_start_min : g_sc.london_start * 60;
+   end_min   = (g_sc.london_end_min   >= 0) ? g_sc.london_end_min   : g_sc.london_end   * 60;
+}
+void GetEffectiveNYWindow(int &start_min, int &end_min) {
+   start_min = (g_sc.ny_start_min >= 0) ? g_sc.ny_start_min : g_sc.ny_start * 60;
+   end_min   = (g_sc.ny_end_min   >= 0) ? g_sc.ny_end_min   : g_sc.ny_end   * 60;
+}
+void GetEffectiveAsiaWindow(int &start_min, int &end_min) {
+   start_min = g_sc.asia_start_min;
+   end_min   = g_sc.asia_end_min;
+}
+
+string ComputeCurrentSessionLabel() {
+   datetime t = GetSessionAnchorTime();
+   MqlDateTime dt; TimeToStruct(t, dt);
+   int now_min = dt.hour * 60 + dt.min;
+   int ls, le, ns, ne, asn, ae;
+   GetEffectiveLondonWindow(ls, le);
+   GetEffectiveNYWindow(ns, ne);
+   GetEffectiveAsiaWindow(asn, ae);
+   // NY checked FIRST so when ranges overlap (legacy default), NY wins for the
+   // overlap window instead of LONDON always winning.
+   if(MinuteInWindow(now_min, ns, ne)) return "NY";
+   if(MinuteInWindow(now_min, ls, le)) return "LONDON";
+   if(asn >= 0 && ae >= 0) {
+      if(MinuteInWindow(now_min, asn, ae)) return "ASIAN";
+      return "OFF";
+   }
+   return "ASIAN";    // legacy fallback when asia_*_min < 0
+}
+
+string ComputeCurrentKillzoneLabel() {
+   if(!g_sc.killzones_enabled) return "";
+   datetime ny = GetNYTimeNow();
+   MqlDateTime dt; TimeToStruct(ny, dt);
+   if(dt.day_of_week == 6) return "";
+   if(dt.day_of_week == 0 && dt.hour < 17) return "";
+   int now_min = dt.hour * 60 + dt.min;
+   if(MinuteInWindow(now_min, g_sc.kz_ny_open_start_min,      g_sc.kz_ny_open_end_min))      return "NY_OPEN_KZ";
+   if(MinuteInWindow(now_min, g_sc.kz_london_open_start_min,  g_sc.kz_london_open_end_min))  return "LONDON_OPEN_KZ";
+   if(MinuteInWindow(now_min, g_sc.kz_london_close_start_min, g_sc.kz_london_close_end_min)) return "LONDON_CLOSE_KZ";
+   if(MinuteInWindow(now_min, g_sc.kz_asia_start_min,         g_sc.kz_asia_end_min))         return "ASIAN_KZ";
+   return "";
+}
+
+int ForgeBrokerGMTOffsetSec() {
+   if(MQLInfoInteger(MQL_TESTER) != 0) {
+      datetime now = TimeCurrent();
+      int hr = IsEU_DST(now) ? g_sc.broker_gmt_offset_summer : g_sc.broker_gmt_offset_winter;
+      return hr * 3600;
+   }
+   return (int)(TimeTradeServer() - TimeGMT());
+}
+
+//+------------------------------------------------------------------+
+//| 2.7.37 — Populate Layer-4 atom telemetry globals once per tick.  |
+//| Called at the top of CheckScalperEntry; cheap (each iX is one    |
+//| broker round-trip but cached by MT5 within the bar). Idempotent  |
+//| within a single tick via g_eval_last_tick guard.                 |
+//+------------------------------------------------------------------+
+void ForgeEvalAtoms() {
+   datetime now_tc = TimeCurrent();
+   if(now_tc == g_eval_last_tick) return;   // already computed this tick
+   g_eval_last_tick = now_tc;
+
+   double _buf[1], _buf2[1];
+
+   // ── HTF trend strength components ──
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(point <= 0.0) point = _Point;
+
+   double h1_e20=0, h1_e50=0, h1_atr_v=0;
+   if(g_h_ma20 != INVALID_HANDLE && CopyBuffer(g_h_ma20, 0, 0, 1, _buf) == 1) h1_e20 = _buf[0];
+   if(g_h_ma50 != INVALID_HANDLE && CopyBuffer(g_h_ma50, 0, 0, 1, _buf) == 1) h1_e50 = _buf[0];
+   if(g_h_atr  != INVALID_HANDLE && CopyBuffer(g_h_atr,  0, 0, 1, _buf) == 1) h1_atr_v = _buf[0];
+   g_eval_h1_atr = h1_atr_v;
+
+   double h4_e20=0, h4_e50=0, h4_atr_v=0;
+   if(g_h4_ma20 != INVALID_HANDLE && CopyBuffer(g_h4_ma20, 0, 0, 1, _buf) == 1) h4_e20 = _buf[0];
+   if(g_h4_ma50 != INVALID_HANDLE && CopyBuffer(g_h4_ma50, 0, 0, 1, _buf) == 1) h4_e50 = _buf[0];
+   if(g_h4_atr  != INVALID_HANDLE && CopyBuffer(g_h4_atr,  0, 0, 1, _buf) == 1) h4_atr_v = _buf[0];
+   g_eval_h4_atr   = h4_atr_v;
+   g_eval_h4_trend = (h4_atr_v > 0.0) ? (h4_e20 - h4_e50) / MathMax(h4_atr_v, point) : 0.0;
+
+   // M15 trend (g_mtf[1] = M15 per InitMTFIndicators)
+   double m15_e20=0, m15_e50=0, m15_atr_v=0;
+   if(g_mtf[1].h_ma20 != INVALID_HANDLE && CopyBuffer(g_mtf[1].h_ma20, 0, 0, 1, _buf) == 1) m15_e20 = _buf[0];
+   if(g_mtf[1].h_ma50 != INVALID_HANDLE && CopyBuffer(g_mtf[1].h_ma50, 0, 0, 1, _buf) == 1) m15_e50 = _buf[0];
+   if(g_mtf[1].h_atr  != INVALID_HANDLE && CopyBuffer(g_mtf[1].h_atr,  0, 0, 1, _buf) == 1) m15_atr_v = _buf[0];
+   g_eval_m15_atr   = m15_atr_v;
+   g_eval_m15_trend = (m15_atr_v > 0.0) ? (m15_e20 - m15_e50) / MathMax(m15_atr_v, point) : 0.0;
+
+   // M30 trend (g_mtf[2] = M30)
+   double m30_e20=0, m30_e50=0, m30_atr_v=0;
+   if(g_mtf[2].h_ma20 != INVALID_HANDLE && CopyBuffer(g_mtf[2].h_ma20, 0, 0, 1, _buf) == 1) m30_e20 = _buf[0];
+   if(g_mtf[2].h_ma50 != INVALID_HANDLE && CopyBuffer(g_mtf[2].h_ma50, 0, 0, 1, _buf) == 1) m30_e50 = _buf[0];
+   if(g_mtf[2].h_atr  != INVALID_HANDLE && CopyBuffer(g_mtf[2].h_atr,  0, 0, 1, _buf) == 1) m30_atr_v = _buf[0];
+   g_eval_m30_trend = (m30_atr_v > 0.0) ? (m30_e20 - m30_e50) / MathMax(m30_atr_v, point) : 0.0;
+
+   // M1 ATR
+   if(g_m1_atr != INVALID_HANDLE && CopyBuffer(g_m1_atr, 0, 0, 1, _buf) == 1) g_eval_m1_atr = _buf[0];
+   else g_eval_m1_atr = 0.0;
+
+   // ── H1 ADX directional indices ──
+   if(g_h_adx != INVALID_HANDLE
+      && CopyBuffer(g_h_adx, 1, 0, 1, _buf)  == 1
+      && CopyBuffer(g_h_adx, 2, 0, 1, _buf2) == 1) {
+      g_eval_h1_di_plus  = _buf[0];
+      g_eval_h1_di_minus = _buf2[0];
+      g_eval_h1_di_balance = _buf[0] - _buf2[0];
+   } else {
+      g_eval_h1_di_plus = 0.0; g_eval_h1_di_minus = 0.0; g_eval_h1_di_balance = 0.0;
+   }
+
+   // ── H4 RSI + ADX ──
+   if(g_h4_rsi != INVALID_HANDLE && CopyBuffer(g_h4_rsi, 0, 0, 1, _buf) == 1) g_eval_h4_rsi = _buf[0];
+   else g_eval_h4_rsi = 0.0;
+   if(g_h4_adx != INVALID_HANDLE && CopyBuffer(g_h4_adx, 0, 0, 1, _buf) == 1) g_eval_h4_adx = _buf[0];
+   else g_eval_h4_adx = 0.0;
+
+   // ── D1 OHLC + current-day high/low/open ──
+   g_eval_d1_open  = iOpen (_Symbol, PERIOD_D1, 0);
+   g_eval_d1_close = iClose(_Symbol, PERIOD_D1, 0);
+   g_eval_day_open = g_eval_d1_open;
+   g_eval_day_high = iHigh (_Symbol, PERIOD_D1, 0);
+   g_eval_day_low  = iLow  (_Symbol, PERIOD_D1, 0);
+
+   // ── M5 prior-bar OHLC ──
+   g_eval_m5_open_1  = iOpen (_Symbol, PERIOD_M5, 1);
+   g_eval_m5_high_1  = iHigh (_Symbol, PERIOD_M5, 1);
+   g_eval_m5_low_1   = iLow  (_Symbol, PERIOD_M5, 1);
+   g_eval_m5_close_1 = iClose(_Symbol, PERIOD_M5, 1);
+
+   // ── M5 OHLC cascades (3 consecutive lower-highs / higher-lows over bars 1..3) ──
+   double h1 = iHigh(_Symbol, PERIOD_M5, 1);
+   double h2 = iHigh(_Symbol, PERIOD_M5, 2);
+   double h3 = iHigh(_Symbol, PERIOD_M5, 3);
+   double l1 = iLow (_Symbol, PERIOD_M5, 1);
+   double l2 = iLow (_Symbol, PERIOD_M5, 2);
+   double l3 = iLow (_Symbol, PERIOD_M5, 3);
+   g_eval_m5_lh_cascade = (h1 > 0 && h2 > 0 && h3 > 0 && h1 < h2 && h2 < h3) ? 1 : 0;
+   g_eval_m5_hl_cascade = (l1 > 0 && l2 > 0 && l3 > 0 && l1 > l2 && l2 > l3) ? 1 : 0;
+
+   // ── M5 body % (prior bar) ──
+   double _body  = MathAbs(g_eval_m5_close_1 - g_eval_m5_open_1);
+   double _range = g_eval_m5_high_1 - g_eval_m5_low_1;
+   g_eval_m5_body_pct = (_range > 0.0) ? (_body / _range) : 0.0;
+
+   // ── 2.7.37 Group 3 — full per-TF indicator + OHLC + bar-quality inventory ──
+
+   // H1 RSI, ADX, BB
+   if(g_h_rsi != INVALID_HANDLE && CopyBuffer(g_h_rsi, 0, 0, 1, _buf) == 1) g_eval_h1_rsi = _buf[0];
+   if(g_h_adx != INVALID_HANDLE && CopyBuffer(g_h_adx, 0, 0, 1, _buf) == 1) g_eval_h1_adx = _buf[0];
+   if(g_h_bb  != INVALID_HANDLE) {
+      if(CopyBuffer(g_h_bb, 1, 0, 1, _buf) == 1) g_eval_h1_bb_u = _buf[0];
+      if(CopyBuffer(g_h_bb, 0, 0, 1, _buf) == 1) g_eval_h1_bb_m = _buf[0];
+      if(CopyBuffer(g_h_bb, 2, 0, 1, _buf) == 1) g_eval_h1_bb_l = _buf[0];
+   }
+
+   // H4 BB
+   if(g_h4_bb != INVALID_HANDLE) {
+      if(CopyBuffer(g_h4_bb, 1, 0, 1, _buf) == 1) g_eval_h4_bb_u = _buf[0];
+      if(CopyBuffer(g_h4_bb, 0, 0, 1, _buf) == 1) g_eval_h4_bb_m = _buf[0];
+      if(CopyBuffer(g_h4_bb, 2, 0, 1, _buf) == 1) g_eval_h4_bb_l = _buf[0];
+   }
+
+   // M15 RSI + EMAs
+   if(g_mtf[1].h_rsi  != INVALID_HANDLE && CopyBuffer(g_mtf[1].h_rsi,  0, 0, 1, _buf) == 1) g_eval_m15_rsi = _buf[0];
+   g_eval_m15_ema20 = m15_e20;
+   g_eval_m15_ema50 = m15_e50;
+
+   // M30 RSI + ADX + ATR + EMAs
+   if(g_mtf[2].h_rsi  != INVALID_HANDLE && CopyBuffer(g_mtf[2].h_rsi,  0, 0, 1, _buf) == 1) g_eval_m30_rsi = _buf[0];
+   if(g_mtf[2].h_adx  != INVALID_HANDLE && CopyBuffer(g_mtf[2].h_adx,  0, 0, 1, _buf) == 1) g_eval_m30_adx = _buf[0];
+   g_eval_m30_atr   = m30_atr_v;
+   g_eval_m30_ema20 = m30_e20;
+   g_eval_m30_ema50 = m30_e50;
+
+   // M1 EMAs
+   if(g_m1_ma20 != INVALID_HANDLE && CopyBuffer(g_m1_ma20, 0, 0, 1, _buf) == 1) g_eval_m1_ema20 = _buf[0];
+   if(g_m1_ma50 != INVALID_HANDLE && CopyBuffer(g_m1_ma50, 0, 0, 1, _buf) == 1) g_eval_m1_ema50 = _buf[0];
+
+   // M5 current-bar OHLC (bar 0 — forming bar)
+   g_eval_m5_open_0  = iOpen (_Symbol, PERIOD_M5, 0);
+   g_eval_m5_high_0  = iHigh (_Symbol, PERIOD_M5, 0);
+   g_eval_m5_low_0   = iLow  (_Symbol, PERIOD_M5, 0);
+   g_eval_m5_close_0 = iClose(_Symbol, PERIOD_M5, 0);
+
+   // M15/M30/H1/H4 OHLC (bar 0)
+   g_eval_m15_open  = iOpen (_Symbol, PERIOD_M15, 0);
+   g_eval_m15_high  = iHigh (_Symbol, PERIOD_M15, 0);
+   g_eval_m15_low   = iLow  (_Symbol, PERIOD_M15, 0);
+   g_eval_m15_close = iClose(_Symbol, PERIOD_M15, 0);
+   g_eval_m30_open  = iOpen (_Symbol, PERIOD_M30, 0);
+   g_eval_m30_high  = iHigh (_Symbol, PERIOD_M30, 0);
+   g_eval_m30_low   = iLow  (_Symbol, PERIOD_M30, 0);
+   g_eval_m30_close = iClose(_Symbol, PERIOD_M30, 0);
+   g_eval_h1_open   = iOpen (_Symbol, PERIOD_H1, 0);
+   g_eval_h1_high   = iHigh (_Symbol, PERIOD_H1, 0);
+   g_eval_h1_low    = iLow  (_Symbol, PERIOD_H1, 0);
+   g_eval_h1_close  = iClose(_Symbol, PERIOD_H1, 0);
+   g_eval_h4_open   = iOpen (_Symbol, PERIOD_H4, 0);
+   g_eval_h4_high   = iHigh (_Symbol, PERIOD_H4, 0);
+   g_eval_h4_low    = iLow  (_Symbol, PERIOD_H4, 0);
+   g_eval_h4_close  = iClose(_Symbol, PERIOD_H4, 0);
+
+   // M5 bar-quality flags (computed from prior bar OHLC for stable post-bar evaluation)
+   double _h0 = iHigh (_Symbol, PERIOD_M5, 1);
+   double _l0 = iLow  (_Symbol, PERIOD_M5, 1);
+   double _o0 = iOpen (_Symbol, PERIOD_M5, 1);
+   double _c0 = iClose(_Symbol, PERIOD_M5, 1);
+   double _hp = iHigh (_Symbol, PERIOD_M5, 2);
+   double _lp = iLow  (_Symbol, PERIOD_M5, 2);
+   double _rg = _h0 - _l0;
+   double _rg_prev = _hp - _lp;
+   double _bd = MathAbs(_c0 - _o0);
+   // Inside bar: prior bar wholly contained within bar-before-prior
+   g_eval_m5_inside_bar  = (_h0 < _hp && _l0 > _lp) ? 1 : 0;
+   // Outside bar: prior bar engulfs bar-before-prior
+   g_eval_m5_outside_bar = (_h0 > _hp && _l0 < _lp) ? 1 : 0;
+   // Doji: body < 10% of range
+   g_eval_m5_doji        = (_rg > 0.0 && (_bd / _rg) < 0.10) ? 1 : 0;
+   // Strong bar: body > 70% of range
+   g_eval_m5_strong_bar  = (_rg > 0.0 && (_bd / _rg) > 0.70) ? 1 : 0;
+   // Long lower wick: lower wick > 50% of range AND body in upper third (bullish rejection)
+   double _lower_wick = MathMin(_o0, _c0) - _l0;
+   double _upper_wick = _h0 - MathMax(_o0, _c0);
+   g_eval_long_lower_wick = (_rg > 0.0 && (_lower_wick / _rg) > 0.50) ? 1 : 0;
+   g_eval_long_upper_wick = (_rg > 0.0 && (_upper_wick / _rg) > 0.50) ? 1 : 0;
+   // Range expanding: prior bar range > prior-to-prior range
+   g_eval_m5_range_expanding = (_rg_prev > 0.0 && _rg > _rg_prev) ? 1 : 0;
+}
+
+//+------------------------------------------------------------------+
+//| 2.7.38 — Tier 1 Boolean Composites                              |
+//|                                                                  |
+//| Each Is*Active() helper evaluates the composite atoms against   |
+//| current g_eval_* + globals + regime + h1_trend. ALL guarded by   |
+//| FORGE_*_ENABLED config flag — returns false when composite is   |
+//| disabled, even if atoms would evaluate TRUE.                    |
+//|                                                                  |
+//| Specs: docs/FORGE_INDICATOR_ATLAS.md §5                          |
+//| Case study: docs/FORGE_CASE_STUDY_2026_03_31_to_04_08.md §4b/c   |
+//+------------------------------------------------------------------+
+
+// #1 BLOCK_SELL_IN_CHOP — universal SELL gate for RANGE regime
+// Triggers when SELL is being attempted in a RANGE regime while H1 still has
+// bull-leaning momentum. Gold retraces UP in chop — chop-SELL has historically
+// high loss-rate (Run 22 G5001 −$51).
+//
+// Note: this helper returns "true if composite is active and would BLOCK".
+// Caller emits entry_quality_chop_block_sell when true.
+bool IsBlockSellInChopActive(const double h1_trend_strength) {
+   if(!g_sc.block_sell_in_chop_enabled) return false;
+   if(g_regime_label != "RANGE") return false;
+   if(h1_trend_strength <= 0.5) return false;
+   // Allow the rare FRACTIONAL_SELL_IN_BULL probe to bypass — that composite
+   // is the intentional counter-regime SELL when overbought, not chop-block.
+   if(IsFractionalSellInBullActive(h1_trend_strength)) return false;
+   return true;
+}
+
+// #2 INTRADAY_REVERSAL_TO_SELL_V3 — pivot detection
+// Detects the moment within a bullish-macro day when intraday turns to a
+// sustained decline. Atoms: V2 (h1≥0.3 + 30/60min cascade + RSI≤40 +
+// (HID_BEAR | REG_BEAR | below_bbm) + price<vwap) + V3 OHLC (m5_lh_cascade).
+//
+// Validated: Apr 2 09:00 crash, Apr 8 12:00 pivot.
+// When true: caller blocks BUY setups AND amplifies MOMENTUM_DUMP SELL lot.
+bool IsIntradayReversalSellActive(const double h1_trend_strength,
+                                   const double m5_rsi,
+                                   const double price,
+                                   const double m5_bb_m) {
+   if(!g_sc.intraday_reversal_sell_enabled) return false;
+   if(h1_trend_strength < 0.3) return false;  // macro WAS bull (h1 lags reversal)
+   // 30-min M5 decline (close[0] < close[6])
+   double c0 = iClose(_Symbol, PERIOD_M5, 0);
+   double c6 = iClose(_Symbol, PERIOD_M5, 6);
+   double c12 = iClose(_Symbol, PERIOD_M5, 12);
+   if(c0 <= 0 || c6 <= 0 || c12 <= 0) return false;
+   if(!(c0 < c6)) return false;        // M5 declining 30min
+   if(!(c6 < c12)) return false;       // and 60min ago higher → 2hr cascade
+   if(m5_rsi > 40.0) return false;
+   // RSI divergence OR price below BB middle (structural confirmation)
+   bool divergence_or_struct =
+      (g_rsi_div_type == "HID_BEAR" || g_rsi_div_type == "REG_BEAR" || c0 < m5_bb_m);
+   if(!divergence_or_struct) return false;
+   // VWAP confirmation — must be below institutional reference
+   if(g_vwap_price > 0 && price >= g_vwap_price) return false;
+   // V3 OHLC atom: m5_lh_cascade — 3 consecutive lower-highs
+   if(g_eval_m5_lh_cascade != 1) return false;
+   return true;
+}
+
+// #3 FRACTIONAL_SELL_IN_BULL — fractional counter-regime overbought probe
+// NEW setup trigger. Fires when regime is TREND_BULL but M5 is overbought
+// with bar-over-bar bearish — pullback expected but bounded by 1.5×ATR SL.
+bool IsFractionalSellInBullActive(const double h1_trend_strength) {
+   if(!g_sc.fractional_sell_in_bull_enabled) return false;
+   if(g_regime_label != "TREND_BULL") return false;
+   if(h1_trend_strength < 1.0) return false;
+   if(g_psar_state != "ABOVE") return false;
+   double buf[1];
+   double m5_rsi = (CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   if(m5_rsi < 60.0 || m5_rsi > 75.0) return false;
+   double m5_adx = (CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   if(m5_adx < 30.0) return false;
+   // Bar-over-bar bearish
+   double c0 = iClose(_Symbol, PERIOD_M5, 0);
+   double c1 = iClose(_Symbol, PERIOD_M5, 1);
+   if(c0 <= 0 || c1 <= 0 || c0 >= c1) return false;
+   // Near or above BB upper
+   double bb_u = (CopyBuffer(g_mtf[0].h_bb, 1, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   double m5_atr = (CopyBuffer(g_mtf[0].h_atr, 0, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(price < bb_u - 0.2 * m5_atr) return false;
+   return true;
+}
+
+// #4 BULL_DAY_DIP_BUY_V3 — 16-atom dip-buy on choppy bull days
+// NEW setup trigger. V2 atoms (POC + Fib + VWAP + RSI div) plus V3 OHLC atoms
+// (dist_high_atr < 2.0 + !m5_lh_cascade + long_lower_wick).
+//
+// Validated: Mar 31, Apr 1 dip-buy patterns. !m5_lh_cascade alone blocks the
+// Apr 8 16:35 BB_BOUNCE BUY −$200 disaster.
+bool IsBullDayDipBuyActive(const double h1_trend_strength) {
+   if(!g_sc.bull_day_dip_buy_enabled) return false;
+   if(h1_trend_strength < 0.5) return false;
+   if(g_daily_bear_bias) return false;
+   double buf[1];
+   double m5_rsi = (CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   if(m5_rsi < 30.0 || m5_rsi > 50.0) return false;
+   double m5_adx = (CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   if(m5_adx < 12.0 || m5_adx > 40.0) return false;
+   double bb_m = (CopyBuffer(g_mtf[0].h_bb, 0, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   double bb_l = (CopyBuffer(g_mtf[0].h_bb, 2, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   double m5_atr = (CopyBuffer(g_mtf[0].h_atr, 0, 0, 1, buf) == 1) ? buf[0] : 0.0;
+   double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(price > bb_m + 0.5 * m5_atr) return false;          // structural dip near BB middle
+   if(price < bb_l - 0.2 * m5_atr) return false;          // not flushed below band
+   if(g_poc_price > 0 && (price - g_poc_price) <= -m5_atr) return false;       // not far below POC
+   if(g_fib_50 > 0   && (price - g_fib_50)     <= -m5_atr * 0.5) return false; // not below 50% Fib
+   if(g_vwap_price > 0 && (price - g_vwap_price) > 0.5 * m5_atr) return false; // close to VWAP
+   if(g_rsi_div_type == "REG_BEAR" || g_rsi_div_type == "HID_BEAR") return false;
+   // V3 OHLC atoms
+   if((g_eval_day_high - price) >= 2.0 * m5_atr) return false; // within 2×ATR of day high
+   if(g_eval_m5_lh_cascade == 1) return false;                  // NOT in lower-high cascade
+   if(g_eval_long_lower_wick != 1) return false;                // prior bar rejected from low
+   // Session: LONDON or NY (use EA session label, not Python)
+   string sess = ComputeCurrentSessionLabel();
+   if(sess != "LONDON" && sess != "NY") return false;
+   // Re-entry cooldown
+   if(g_last_chop_buy_exit_time > 0
+      && (TimeCurrent() - g_last_chop_buy_exit_time) < g_sc.bull_day_dip_buy_reentry_cooldown_sec)
+      return false;
+   return true;
+}
+
 void ResetScalperSessionStateIfNeeded() {
-   MqlDateTime dt;
-   TimeGMT(dt);
+   datetime anchor = GetSessionAnchorTime();
+   MqlDateTime dt; TimeToStruct(anchor, dt);
    datetime today = StringToTime(StringFormat("%04d.%02d.%02d 00:00", dt.year, dt.mon, dt.day));
    if(today <= 0) return;
-   string current_session = "ASIAN";
-   if(dt.hour >= g_sc.london_start && dt.hour < g_sc.london_end)
-      current_session = "LONDON";
-   else if(dt.hour >= g_sc.ny_start && dt.hour < g_sc.ny_end)
-      current_session = "NY";
+
+   string current_session  = ComputeCurrentSessionLabel();
+   string current_killzone = ComputeCurrentKillzoneLabel();
+
    if(g_scalper_last_reset_day == 0) {
-      g_scalper_last_reset_day = today;
-      g_scalper_last_session_label = current_session;
+      g_scalper_last_reset_day      = today;
+      g_scalper_last_session_label  = current_session;
+      g_scalper_last_killzone_label = current_killzone;
       return;
    }
-   bool midnight_utc = (dt.hour == 0 && today != g_scalper_last_reset_day);
-   if(today != g_scalper_last_reset_day || midnight_utc) {
-      g_scalper_last_reset_day = today;
-      g_scalper_session_trades = 0;
-      g_scalper_last_entry_bar = 0;
-      g_scalper_last_direction = "";
+
+   if(today != g_scalper_last_reset_day) {
+      g_scalper_last_reset_day      = today;
+      g_scalper_session_trades      = 0;
+      g_scalper_killzone_trades     = 0;
+      g_scalper_last_entry_bar      = 0;
+      g_scalper_last_direction      = "";
       g_scalper_last_direction_time = 0;
-      g_first_buy_entry_price = 0.0;
-      g_first_sell_entry_price = 0.0;
-      g_scalper_last_session_label = current_session;
-      Print("FORGE SCALPER: session counters reset for new UTC day");
+      g_first_buy_entry_price       = 0.0;
+      g_first_sell_entry_price      = 0.0;
+      g_scalper_last_session_label  = current_session;
+      g_scalper_last_killzone_label = current_killzone;
+      PrintFormat("FORGE SCALPER: daily reset (anchor=%s)",
+                  g_sc.sessions_ny_anchored ? "NY" : "UTC");
       return;
    }
-   if(g_scalper_last_session_label == "") {
-      g_scalper_last_session_label = current_session;
-      return;
-   }
+
+   if(g_scalper_last_session_label == "") g_scalper_last_session_label = current_session;
    if(current_session != g_scalper_last_session_label) {
       g_scalper_last_session_label = current_session;
-      g_first_buy_entry_price = 0.0;
-      g_first_sell_entry_price = 0.0;
-      PrintFormat("FORGE SCALPER: first-entry anchors reset for session=%s hour=%d UTC",
-                  current_session, dt.hour);
+      g_first_buy_entry_price      = 0.0;
+      g_first_sell_entry_price     = 0.0;
+      PrintFormat("FORGE SCALPER: session change → %s (%s %02d:%02d)",
+                  current_session, g_sc.sessions_ny_anchored ? "NY" : "UTC", dt.hour, dt.min);
+   }
+
+   if(current_killzone != g_scalper_last_killzone_label) {
+      g_scalper_last_killzone_label = current_killzone;
+      g_scalper_killzone_start_time = anchor;
+      g_scalper_killzone_trades     = 0;
+      if(StringLen(current_killzone) > 0) {
+         PrintFormat("FORGE SCALPER: killzone → %s (NY %02d:%02d)",
+                     current_killzone, dt.hour, dt.min);
+      }
    }
 }
 
 bool ScalperSessionOK() {
-   MqlDateTime dt;
-   TimeGMT(dt);
-   int h = dt.hour;
-   bool is_london = (h >= g_sc.london_start && h < g_sc.london_end);
-   bool is_ny     = (h >= g_sc.ny_start     && h < g_sc.ny_end);
-   bool is_asian  = !is_london && !is_ny;
-   if(is_london && g_sc.skip_london) return false;
-   if(is_ny     && g_sc.skip_ny)     return false;
-   if(is_asian  && g_sc.skip_asian)  return false;
+   string s = ComputeCurrentSessionLabel();
+   if(s == "OFF") return false;
+   if(s == "LONDON" && g_sc.skip_london) return false;
+   if(s == "NY"     && g_sc.skip_ny)     return false;
+   if(s == "ASIAN"  && g_sc.skip_asian)  return false;
+   if(g_sc.killzones_enabled && g_sc.killzones_gate_entries) {
+      if(StringLen(ComputeCurrentKillzoneLabel()) == 0) return false;
+   }
    return true;
 }
 
@@ -4037,23 +4715,14 @@ bool ScalperTesterSessionOK() {
    if(!g_sc.tester_session_filter) return true;
    string allowed = g_sc.tester_allowed_sessions;
    if(allowed == "ALL" || allowed == "") return true;
-
-   MqlDateTime dt;
-   TimeGMT(dt);
-   int h = dt.hour;
-
-   string current_session = "ASIAN";
-   if(h >= g_sc.london_start && h < g_sc.london_end)
-      current_session = "LONDON";
-   else if(h >= g_sc.ny_start && h < g_sc.ny_end)
-      current_session = "NY";
-
+   string current_session = ComputeCurrentSessionLabel();
+   if(current_session == "OFF") return false;
    string parts[];
    int count = StringSplit(allowed, ',', parts);
    for(int i = 0; i < count; i++) {
-      StringTrimLeft(parts[i]);
-      StringTrimRight(parts[i]);
-      StringToUpper(parts[i]);
+      StringTrimLeft(parts[i]); StringTrimRight(parts[i]); StringToUpper(parts[i]);
+      if(parts[i] == "NEW_YORK") parts[i] = "NY";
+      if(parts[i] == "ASIA")     parts[i] = "ASIAN";
       if(parts[i] == current_session) return true;
    }
    return false;
@@ -4134,7 +4803,8 @@ bool ScalperDirectionCooldownOK(string proposed_direction) {
 
    if(bars_since < g_sc.direction_cooldown_bars) {
       datetime m5bar = iTime(_Symbol, PERIOD_M5, 0);
-      if(m5bar != g_scalper_last_sesswarn_log_bar) {
+      if(m5bar != g_scalper_last_dircool_log_bar) {
+         g_scalper_last_dircool_log_bar = m5bar;
          PrintFormat("FORGE SCALPER: skip gate=direction_cooldown last=%s proposed=%s bars_since=%d min=%d",
                      g_scalper_last_direction, proposed_direction, bars_since, g_sc.direction_cooldown_bars);
       }
@@ -4699,11 +5369,52 @@ bool JournalInit() {
       "adx_trend_regime INTEGER, "
       "high_vol_trend INTEGER, "
       "session TEXT, "
+      "killzone TEXT DEFAULT '', "
       "magic INTEGER, "
       "synced INTEGER DEFAULT 0, "
       "macd_histogram REAL, "
       "m15_adx REAL, "
-      "lot_factor REAL"
+      "lot_factor REAL, "
+      // 2.7.37 — Layer-4 atom telemetry (24 cols: closes Decision Stack §6 gap)
+      "h4_trend REAL, "
+      "m15_trend REAL, "
+      "h1_di_balance REAL, "
+      "day_open REAL, "
+      "day_high REAL, "
+      "day_low REAL, "
+      "m5_open_1 REAL, "
+      "m5_high_1 REAL, "
+      "m5_low_1 REAL, "
+      "m5_close_1 REAL, "
+      "m5_lh_cascade INTEGER DEFAULT 0, "
+      "m5_hl_cascade INTEGER DEFAULT 0, "
+      "m5_body_pct REAL, "
+      "h1_di_plus REAL, "
+      "h1_di_minus REAL, "
+      "h4_rsi REAL, "
+      "h4_adx REAL, "
+      "m30_trend REAL, "
+      "d1_open REAL, "
+      "d1_close REAL, "
+      "h1_atr REAL, "
+      "h4_atr REAL, "
+      "m15_atr REAL, "
+      "m1_atr REAL, "
+      // 2.7.37 Group 3 — full per-TF indicator + OHLC + bar-quality inventory (45 cols)
+      "h1_rsi REAL, h1_adx REAL, h1_bb_u REAL, h1_bb_m REAL, h1_bb_l REAL, "
+      "h4_bb_u REAL, h4_bb_m REAL, h4_bb_l REAL, "
+      "m15_rsi REAL, m15_ema20 REAL, m15_ema50 REAL, "
+      "m30_rsi REAL, m30_adx REAL, m30_atr REAL, m30_ema20 REAL, m30_ema50 REAL, "
+      "m1_ema20 REAL, m1_ema50 REAL, "
+      "m5_open_0 REAL, m5_high_0 REAL, m5_low_0 REAL, m5_close_0 REAL, "
+      "m15_open REAL, m15_high REAL, m15_low REAL, m15_close REAL, "
+      "m30_open REAL, m30_high REAL, m30_low REAL, m30_close REAL, "
+      "h1_open REAL, h1_high REAL, h1_low REAL, h1_close REAL, "
+      "h4_open REAL, h4_high REAL, h4_low REAL, h4_close REAL, "
+      "m5_inside_bar INTEGER DEFAULT 0, m5_outside_bar INTEGER DEFAULT 0, "
+      "m5_doji INTEGER DEFAULT 0, m5_strong_bar INTEGER DEFAULT 0, "
+      "long_lower_wick INTEGER DEFAULT 0, long_upper_wick INTEGER DEFAULT 0, "
+      "m5_range_expanding INTEGER DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -4767,6 +5478,83 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE TRADES ADD COLUMN run_id INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_run ON SIGNALS(run_id);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_run ON TRADES(run_id);");
+   // 2.7.36 — killzone column (additive; silently ignored when already present)
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN killzone TEXT DEFAULT '';");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_killzone ON SIGNALS(killzone);");
+   // 2.7.37 — Layer-4 atom telemetry (24 columns; additive ALTERs are no-ops if column exists)
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_trend REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_trend REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_di_balance REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN day_open REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN day_high REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN day_low REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_open_1 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_high_1 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_low_1 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_close_1 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_lh_cascade INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_hl_cascade INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_body_pct REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_di_plus REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_di_minus REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_rsi REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_adx REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_trend REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN d1_open REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN d1_close REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_atr REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_atr REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_atr REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m1_atr REAL;");
+   // 2.7.37 Group 3 — full per-TF indicator + OHLC + bar-quality inventory (45 cols)
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_rsi REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_adx REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_bb_u REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_bb_m REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_bb_l REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_bb_u REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_bb_m REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_bb_l REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_rsi REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_ema20 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_ema50 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_rsi REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_adx REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_atr REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_ema20 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_ema50 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m1_ema20 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m1_ema50 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_open_0 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_high_0 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_low_0 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_close_0 REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_open REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_high REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_low REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_close REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_open REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_high REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_low REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m30_close REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_open REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_high REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_low REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h1_close REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_open REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_high REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_low REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_close REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_inside_bar INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_outside_bar INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_doji INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_strong_bar INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN long_lower_wick INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN long_upper_wick INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_range_expanding INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
    // ── TRADES unique-constraint migration ─────────────────────────────────────
    // Old schema used deal_ticket INTEGER UNIQUE (can't be extended via ALTER).
    // Detect it via sqlite_master and recreate the table atomically.
@@ -4889,20 +5677,38 @@ void JournalRecordSignal(string outcome, string gate_reason,
    if(g_journal_db == INVALID_HANDLE) return;
    if(outcome == "SKIP" && !g_sc.journal_record_skips) return;
 
-   MqlDateTime dt;
-   TimeGMT(dt);
-   int h = dt.hour;
-   string session = "ASIAN";
-   if(h >= g_sc.london_start && h < g_sc.london_end) session = "LONDON";
-   else if(h >= g_sc.ny_start && h < g_sc.ny_end) session = "NY";
+   string session  = ComputeCurrentSessionLabel();
+   string killzone = ComputeCurrentKillzoneLabel();
 
    string sql = "INSERT INTO SIGNALS "
       "(time, symbol, setup_type, direction, outcome, gate_reason, "
       "price, spread, atr, rsi, adx, bb_upper, bb_lower, bb_mid, "
       "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
       "pattern_score, h1_trend, regime_label, regime_confidence, "
-      "adx_trend_regime, high_vol_trend, session, magic, synced, run_id, "
-      "macd_histogram, m15_adx, lot_factor) VALUES ("
+      "adx_trend_regime, high_vol_trend, session, killzone, magic, synced, run_id, "
+      "macd_histogram, m15_adx, lot_factor, "
+      // 2.7.37 — Layer-4 atom telemetry (24 cols sourced from g_eval_* globals
+      // populated by ForgeEvalAtoms() at the top of CheckScalperEntry)
+      "h4_trend, m15_trend, h1_di_balance, "
+      "day_open, day_high, day_low, "
+      "m5_open_1, m5_high_1, m5_low_1, m5_close_1, "
+      "m5_lh_cascade, m5_hl_cascade, m5_body_pct, "
+      "h1_di_plus, h1_di_minus, h4_rsi, h4_adx, m30_trend, "
+      "d1_open, d1_close, h1_atr, h4_atr, m15_atr, m1_atr, "
+      // 2.7.37 Group 3 — full inventory (45 cols)
+      "h1_rsi, h1_adx, h1_bb_u, h1_bb_m, h1_bb_l, "
+      "h4_bb_u, h4_bb_m, h4_bb_l, "
+      "m15_rsi, m15_ema20, m15_ema50, "
+      "m30_rsi, m30_adx, m30_atr, m30_ema20, m30_ema50, "
+      "m1_ema20, m1_ema50, "
+      "m5_open_0, m5_high_0, m5_low_0, m5_close_0, "
+      "m15_open, m15_high, m15_low, m15_close, "
+      "m30_open, m30_high, m30_low, m30_close, "
+      "h1_open, h1_high, h1_low, h1_close, "
+      "h4_open, h4_high, h4_low, h4_close, "
+      "m5_inside_bar, m5_outside_bar, m5_doji, m5_strong_bar, "
+      "long_lower_wick, long_upper_wick, m5_range_expanding"
+      ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
       + "'" + setup_type + "', "
@@ -4929,11 +5735,84 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_adx_trend_regime ? 1 : 0) + ", "
       + IntegerToString(high_vol_flag) + ", "
       + "'" + session + "', "
+      + "'" + killzone + "', "
       + IntegerToString((long)MagicNumber) + ", 0, "
       + IntegerToString(g_tester_run_id) + ", "
       + DoubleToString(macd_hist, 6) + ", "
       + DoubleToString(m15_adx_val, 2) + ", "
-      + DoubleToString(lot_factor_val, 4) + ")";
+      + DoubleToString(lot_factor_val, 4) + ", "
+      // 2.7.37 Layer-4 atoms
+      + DoubleToString(g_eval_h4_trend,      4) + ", "
+      + DoubleToString(g_eval_m15_trend,     4) + ", "
+      + DoubleToString(g_eval_h1_di_balance, 2) + ", "
+      + DoubleToString(g_eval_day_open,  _Digits) + ", "
+      + DoubleToString(g_eval_day_high,  _Digits) + ", "
+      + DoubleToString(g_eval_day_low,   _Digits) + ", "
+      + DoubleToString(g_eval_m5_open_1, _Digits) + ", "
+      + DoubleToString(g_eval_m5_high_1, _Digits) + ", "
+      + DoubleToString(g_eval_m5_low_1,  _Digits) + ", "
+      + DoubleToString(g_eval_m5_close_1,_Digits) + ", "
+      + IntegerToString(g_eval_m5_lh_cascade) + ", "
+      + IntegerToString(g_eval_m5_hl_cascade) + ", "
+      + DoubleToString(g_eval_m5_body_pct,    4) + ", "
+      + DoubleToString(g_eval_h1_di_plus,     2) + ", "
+      + DoubleToString(g_eval_h1_di_minus,    2) + ", "
+      + DoubleToString(g_eval_h4_rsi,         2) + ", "
+      + DoubleToString(g_eval_h4_adx,         2) + ", "
+      + DoubleToString(g_eval_m30_trend,      4) + ", "
+      + DoubleToString(g_eval_d1_open,   _Digits) + ", "
+      + DoubleToString(g_eval_d1_close,  _Digits) + ", "
+      + DoubleToString(g_eval_h1_atr,    _Digits) + ", "
+      + DoubleToString(g_eval_h4_atr,    _Digits) + ", "
+      + DoubleToString(g_eval_m15_atr,   _Digits) + ", "
+      + DoubleToString(g_eval_m1_atr,    _Digits) + ", "
+      // 2.7.37 Group 3 values
+      + DoubleToString(g_eval_h1_rsi,         2) + ", "
+      + DoubleToString(g_eval_h1_adx,         2) + ", "
+      + DoubleToString(g_eval_h1_bb_u,   _Digits) + ", "
+      + DoubleToString(g_eval_h1_bb_m,   _Digits) + ", "
+      + DoubleToString(g_eval_h1_bb_l,   _Digits) + ", "
+      + DoubleToString(g_eval_h4_bb_u,   _Digits) + ", "
+      + DoubleToString(g_eval_h4_bb_m,   _Digits) + ", "
+      + DoubleToString(g_eval_h4_bb_l,   _Digits) + ", "
+      + DoubleToString(g_eval_m15_rsi,        2) + ", "
+      + DoubleToString(g_eval_m15_ema20, _Digits) + ", "
+      + DoubleToString(g_eval_m15_ema50, _Digits) + ", "
+      + DoubleToString(g_eval_m30_rsi,        2) + ", "
+      + DoubleToString(g_eval_m30_adx,        2) + ", "
+      + DoubleToString(g_eval_m30_atr,   _Digits) + ", "
+      + DoubleToString(g_eval_m30_ema20, _Digits) + ", "
+      + DoubleToString(g_eval_m30_ema50, _Digits) + ", "
+      + DoubleToString(g_eval_m1_ema20,  _Digits) + ", "
+      + DoubleToString(g_eval_m1_ema50,  _Digits) + ", "
+      + DoubleToString(g_eval_m5_open_0, _Digits) + ", "
+      + DoubleToString(g_eval_m5_high_0, _Digits) + ", "
+      + DoubleToString(g_eval_m5_low_0,  _Digits) + ", "
+      + DoubleToString(g_eval_m5_close_0,_Digits) + ", "
+      + DoubleToString(g_eval_m15_open,  _Digits) + ", "
+      + DoubleToString(g_eval_m15_high,  _Digits) + ", "
+      + DoubleToString(g_eval_m15_low,   _Digits) + ", "
+      + DoubleToString(g_eval_m15_close, _Digits) + ", "
+      + DoubleToString(g_eval_m30_open,  _Digits) + ", "
+      + DoubleToString(g_eval_m30_high,  _Digits) + ", "
+      + DoubleToString(g_eval_m30_low,   _Digits) + ", "
+      + DoubleToString(g_eval_m30_close, _Digits) + ", "
+      + DoubleToString(g_eval_h1_open,   _Digits) + ", "
+      + DoubleToString(g_eval_h1_high,   _Digits) + ", "
+      + DoubleToString(g_eval_h1_low,    _Digits) + ", "
+      + DoubleToString(g_eval_h1_close,  _Digits) + ", "
+      + DoubleToString(g_eval_h4_open,   _Digits) + ", "
+      + DoubleToString(g_eval_h4_high,   _Digits) + ", "
+      + DoubleToString(g_eval_h4_low,    _Digits) + ", "
+      + DoubleToString(g_eval_h4_close,  _Digits) + ", "
+      + IntegerToString(g_eval_m5_inside_bar)  + ", "
+      + IntegerToString(g_eval_m5_outside_bar) + ", "
+      + IntegerToString(g_eval_m5_doji)        + ", "
+      + IntegerToString(g_eval_m5_strong_bar)  + ", "
+      + IntegerToString(g_eval_long_lower_wick) + ", "
+      + IntegerToString(g_eval_long_upper_wick) + ", "
+      + IntegerToString(g_eval_m5_range_expanding)
+      + ")";
 
    if(!DatabaseExecute(g_journal_db, sql)) {
       if(g_journal_signals_count == 0)
@@ -5578,6 +6457,12 @@ bool CheckEntryQuality(const string direction, const double atr,
 void CheckNativeScalperSetups() {
    EnsureIndicators();
    EnsureMTFIndicators();
+   // 2.7.37 — Populate Layer-4 atom telemetry globals FIRST, before any
+   // JournalRecordSignal call (including the pre-trigger SKIPs that fire
+   // before the per-bar/session/spread/cooldown gates). Codex v2.7.37
+   // FAIL #1: pre-2.7.37 call site at end of CheckScalperEntry left
+   // pre-trigger SKIPs with stale g_eval_* from the previous tick.
+   ForgeEvalAtoms();
    // 2.7.27 — Daily Direction Gate refresh + Filter 3 cancel-pending-on-flip.
    //   ComputeDailyBias() is cached per M5 bar; CancelPendingOnDailyFlip reads the
    //   one-tick g_daily_flip_now edge flag and cancels stale pending orders in our
@@ -5604,8 +6489,9 @@ void CheckNativeScalperSetups() {
       datetime m5bar = iTime(_Symbol, PERIOD_M5, 0);
       if(m5bar != g_scalper_last_sesswarn_log_bar) {
          g_scalper_last_sesswarn_log_bar = m5bar;
-         PrintFormat("FORGE SCALPER: skip gate=session_off hour=%d UTC — london=%d-%d ny=%d-%d (no trades this hour)",
-                     hour, g_sc.london_start, g_sc.london_end, g_sc.ny_start, g_sc.ny_end);
+         MqlDateTime _so; TimeToStruct(GetSessionAnchorTime(), _so);
+         PrintFormat("FORGE SCALPER: skip gate=session_off anchor=%s %02d:%02d (no trades)",
+                     g_sc.sessions_ny_anchored ? "NY" : "UTC", _so.hour, _so.min);
          JournalRecordSignal("SKIP","session_off","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
       }
       g_scalper_prev_session_blocked = true;
@@ -5637,14 +6523,22 @@ void CheckNativeScalperSetups() {
       return;
    }
    if(open_groups >= g_sc.max_open_groups) {
-      PrintFormat("FORGE SCALPER: skip gate=open_groups open=%d max=%d", open_groups, g_sc.max_open_groups);
-      JournalRecordSignal("SKIP","open_groups","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      datetime m5b_og = iTime(_Symbol, PERIOD_M5, 0);
+      if(m5b_og != g_scalper_last_opengroups_log_bar) {
+         g_scalper_last_opengroups_log_bar = m5b_og;
+         PrintFormat("FORGE SCALPER: skip gate=open_groups open=%d max=%d", open_groups, g_sc.max_open_groups);
+         JournalRecordSignal("SKIP","open_groups","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      }
       return;
    }
    if(MQLInfoInteger(MQL_TESTER) == 0 && g_scalper_session_trades >= g_sc.max_trades_per_session) {
-      PrintFormat("FORGE SCALPER: skip gate=session_trade_cap trades=%d max=%d",
-                  g_scalper_session_trades, g_sc.max_trades_per_session);
-      JournalRecordSignal("SKIP","session_trade_cap","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      datetime m5b_sc = iTime(_Symbol, PERIOD_M5, 0);
+      if(m5b_sc != g_scalper_last_sesscap_log_bar) {
+         g_scalper_last_sesscap_log_bar = m5b_sc;
+         PrintFormat("FORGE SCALPER: skip gate=session_trade_cap trades=%d max=%d",
+                     g_scalper_session_trades, g_sc.max_trades_per_session);
+         JournalRecordSignal("SKIP","session_trade_cap","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      }
       return;
    }
    if((MQLInfoInteger(MQL_TESTER) == 0 || g_sc.tester_cooldown_enabled) && !ScalperCooldownOK()) {
@@ -5681,6 +6575,10 @@ void CheckNativeScalperSetups() {
    }
 
    if(!ScalperOnePerBar()) return;
+
+   // 2.7.37 — ForgeEvalAtoms() already called at top of CheckNativeScalperSetups
+   // (idempotent via g_eval_last_tick guard). Atoms are now populated for every
+   // SKIP/TAKEN INSERT including the pre-trigger gates (news/atr/body/session_off/etc).
 
    // Read M5 indicators
    double buf[1];
@@ -6001,6 +6899,16 @@ void CheckNativeScalperSetups() {
          //   Even though G5048 was a BB_BREAKOUT, the Apr 15 14:46 SELL cluster of BB_BOUNCEs lost
          //   when daily was rolling bullish — so the same daily check applies here.
          if(g_sc.daily_direction_gate_enabled) ComputeDailyBias();
+         // 2.7.38 — INTRADAY_REVERSAL_TO_SELL_V3 composite block. When active, ALL
+         //   BUY setups are blocked because intraday flipped from bull to sustained decline.
+         if(IsIntradayReversalSellActive(h1_trend_strength, m5_rsi, mid, m5_bb_m)) {
+            datetime _irb_bar = iTime(_Symbol, PERIOD_M5, 0);
+            if(_irb_bar != g_last_intraday_reversal_log_bar) {
+               g_last_intraday_reversal_log_bar = _irb_bar;
+               JournalRecordSignal("SKIP","entry_quality_intraday_reversal_buy_block","BB_BOUNCE","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else
          if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) {
             datetime _dbb_bar_bb = iTime(_Symbol, PERIOD_M5, 0);
             if(_dbb_bar_bb != g_scalper_last_dailybias_buy_log_bar) {
@@ -6079,6 +6987,17 @@ void CheckNativeScalperSetups() {
          // 2.7.27 — Daily Direction Gate Filter 1 SELL side (mirror of BUY block above).
          //   Block BB_BOUNCE SELL when D1 SMA slope is positive beyond threshold (multi-day rip).
          if(g_sc.daily_direction_gate_enabled) ComputeDailyBias();
+         // 2.7.38 — BLOCK_SELL_IN_CHOP composite. Block SELL on RANGE-regime days
+         //   with H1 still bull-leaning (gold retraces UP in chop). Applied here
+         //   before daily-bias gate so chop-block fires first when both apply.
+         if(IsBlockSellInChopActive(h1_trend_strength)) {
+            datetime _cbs_bar = iTime(_Symbol, PERIOD_M5, 0);
+            if(_cbs_bar != g_last_chop_block_sell_log_bar) {
+               g_last_chop_block_sell_log_bar = _cbs_bar;
+               JournalRecordSignal("SKIP","entry_quality_chop_block_sell","BB_BOUNCE","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else
          if(g_sc.daily_direction_gate_enabled && g_daily_bull_bias) {
             datetime _dbb_bar_bs = iTime(_Symbol, PERIOD_M5, 0);
             if(_dbb_bar_bs != g_scalper_last_dailybias_sell_log_bar) {
@@ -6185,6 +7104,15 @@ void CheckNativeScalperSetups() {
          // 2.7.27 — Daily Direction Gate Filter 1 (Run 17 G5048 fix).
          //   Block BUY when D1 SMA slope is negative beyond threshold (multi-day rollover).
          //   Throttled per M5 bar to avoid journal flooding.
+         // 2.7.38 — INTRADAY_REVERSAL_TO_SELL_V3 composite block. When active, ALL BUY blocked.
+         if(IsIntradayReversalSellActive(h1_trend_strength, m5_rsi, mid, m5_bb_m)) {
+            datetime _irb_bar_bk = iTime(_Symbol, PERIOD_M5, 0);
+            if(_irb_bar_bk != g_last_intraday_reversal_log_bar) {
+               g_last_intraday_reversal_log_bar = _irb_bar_bk;
+               JournalRecordSignal("SKIP","entry_quality_intraday_reversal_buy_block","BB_BREAKOUT","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else
          if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) {
             datetime _dbb_bar_b = iTime(_Symbol, PERIOD_M5, 0);
             if(_dbb_bar_b != g_scalper_last_dailybias_buy_log_bar) {
@@ -6408,6 +7336,16 @@ void CheckNativeScalperSetups() {
          // 2.7.27 — Daily Direction Gate Filter 1 SELL side (mirror of BUY block above).
          //   Block SELL when D1 SMA slope is positive beyond threshold (multi-day rip).
          //   Same throttle window as BUY side — at most one bias-block log per M5 bar.
+         // 2.7.38 — BLOCK_SELL_IN_CHOP composite (chop-regime + h1 still bullish).
+         //   Fires before daily-bias gate so chop-block wins when both apply.
+         if(IsBlockSellInChopActive(h1_trend_strength)) {
+            datetime _cbs_bar_bk = iTime(_Symbol, PERIOD_M5, 0);
+            if(_cbs_bar_bk != g_last_chop_block_sell_log_bar) {
+               g_last_chop_block_sell_log_bar = _cbs_bar_bk;
+               JournalRecordSignal("SKIP","entry_quality_chop_block_sell","BB_BREAKOUT","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else
          if(g_sc.daily_direction_gate_enabled && g_daily_bull_bias) {
             datetime _dbb_bar_s = iTime(_Symbol, PERIOD_M5, 0);
             if(_dbb_bar_s != g_scalper_last_dailybias_sell_log_bar) {
@@ -6854,10 +7792,20 @@ void CheckNativeScalperSetups() {
          // BUY mirror — same filter chain with sign flips.
          bool _logged_b = (_dump_bar == g_scalper_last_dump_log_bar);
          double buy_rsi_min = 100.0 - g_sc.dump_max_rsi;  // mirror: RSI > 100−max
+         // 2.7.38 — INTRADAY_REVERSAL_TO_SELL_V3 composite block. When active, ALL BUY blocked.
+         //   Inserted as the first rung of the BUY filter cascade so the else-if chain
+         //   skips all subsequent gates AND the entry assignment when reversal fires.
+         if(IsIntradayReversalSellActive(h1_trend_strength, m5_rsi, mid, m5_bb_m)) {
+            if(_dump_bar != g_last_intraday_reversal_log_bar) {
+               g_last_intraday_reversal_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","entry_quality_intraday_reversal_buy_block","MOMENTUM_DUMP","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         }
          // 2.7.34 — BUY RSI ceiling (G5009 Run 20 fix). Block BUY when RSI is overbought-exhausted.
          // G5009 BUY @ 4592.63 fired at RSI=72.2 in TREND_BULL → reversed −18 pts → 10-leg cascade SL = −$305.
          // The "wave is exhausted" reality check that M5 momentum indicators alone miss.
-         if(g_sc.dump_max_rsi_buy > 0 && m5_rsi >= g_sc.dump_max_rsi_buy) {
+         else if(g_sc.dump_max_rsi_buy > 0 && m5_rsi >= g_sc.dump_max_rsi_buy) {
             if(!_logged_b) {
                g_scalper_last_dump_log_bar = _dump_bar;
                JournalRecordSignal("SKIP","dump_rsi_buy_ceil","MOMENTUM_DUMP","BUY",
@@ -6927,6 +7875,48 @@ void CheckNativeScalperSetups() {
                         ask, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx);
          }
       }
+   }
+
+   // 2.7.38 — #3 FRACTIONAL_SELL_IN_BULL trigger (atlas §5.3). Counter-regime
+   //   overbought probe — fires when TREND_BULL + h1≥1.0 + PSAR ABOVE + RSI 60-75
+   //   + ADX≥30 + bar-over-bar bearish + price near BB upper. Fractional lot
+   //   (default 0.25× base) so a wrong-direction probe is bounded.
+   if(direction == "" && g_sc.fractional_sell_in_bull_enabled && m5_atr > 0.0
+      && IsFractionalSellInBullActive(h1_trend_strength)) {
+      direction  = "SELL";
+      setup_type = "FRACTIONAL_SELL_IN_BULL";
+      double ask_px = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid_px = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      sl  = NormalizeDouble(ask_px + m5_atr * g_sc.fractional_sell_in_bull_sl_atr_mult, _Digits);
+      tp1 = NormalizeDouble(bid_px - m5_atr * g_sc.fractional_sell_in_bull_tp1_atr_mult, _Digits);
+      tp2 = 0;  // single banking — no runner per atlas §5.3
+      g_last_fractional_sell_in_bull_time = TimeCurrent();
+      PrintFormat("FORGE 2.7.38: FRACTIONAL_SELL_IN_BULL fired @ %.2f (h1_trend=%.2f, RSI=%.1f, ADX=%.1f, regime=%s)",
+                  bid_px, h1_trend_strength, m5_rsi, m5_adx, g_regime_label);
+   }
+
+   // 2.7.38 — #4 BULL_DAY_DIP_BUY_V3 trigger (atlas §5.1 V3, case study §4c).
+   //   16-atom dip-buy on choppy bull days. Single TP1 (default 0.65×ATR ≈ 40
+   //   pips at ATR=6), no TP2/TP3, 300sec re-entry cooldown after TP1 exit.
+   //   V3 OHLC atoms (!m5_lh_cascade, long_lower_wick, dist_high_atr<2) blocked
+   //   the Apr 8 16:35 BB_BOUNCE BUY −$200 disaster.
+   if(direction == "" && g_sc.bull_day_dip_buy_enabled && m5_atr > 0.0
+      && IsBullDayDipBuyActive(h1_trend_strength)) {
+      direction  = "BUY";
+      setup_type = "BULL_DAY_DIP_BUY";
+      double ask_px2 = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid_px2 = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      sl  = NormalizeDouble(bid_px2 - m5_atr * g_sc.bull_day_dip_buy_sl_atr_mult, _Digits);
+      tp1 = NormalizeDouble(ask_px2 + m5_atr * g_sc.bull_day_dip_buy_tp1_atr_mult, _Digits);
+      tp2 = 0;  // single banking — no runner per atlas §5.1
+      // Re-entry cooldown anchor (atlas §5.1 spec says "exit time"; we set at entry as
+      // a conservative simplification — TP1 ≈ 40 pips fires within minutes so the
+      // 300s cooldown effectively starts post-exit). Refine to true exit time in v2.7.39
+      // if needed (would require hook in ManageOpenGroups TP1-close branch).
+      g_last_chop_buy_exit_time = TimeCurrent();
+      PrintFormat("FORGE 2.7.38: BULL_DAY_DIP_BUY fired @ %.2f (h1_trend=%.2f, RSI=%.1f, ADX=%.1f, dist_high_atr=%.2f, regime=%s)",
+                  ask_px2, h1_trend_strength, m5_rsi, m5_adx,
+                  m5_atr > 0 ? (g_eval_day_high - ask_px2) / m5_atr : 0.0, g_regime_label);
    }
 
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
@@ -7236,10 +8226,32 @@ void CheckNativeScalperSetups() {
    // 2.7.31 — BB_PULLBACK_SCALP fractional lot. Same scalp profile as MOMENTUM_DUMP.
    double pullback_factor = (setup_type == "BB_PULLBACK_SCALP" && g_sc.pullback_scalp_lot_factor > 0.0 && g_sc.pullback_scalp_lot_factor < 1.0)
                             ? g_sc.pullback_scalp_lot_factor : 1.0;
+   // 2.7.38 — INTRADAY_REVERSAL_TO_SELL_V3 amplifier. When composite is active AND
+   //   this is a MOMENTUM_DUMP SELL, multiply lot by intraday_reversal_sell_lot_mult.
+   //   The pivot-detection composite gives high-conviction SELL signals; amplifying
+   //   the regime-aligned SELL is the with-trend doubling rationale (atlas §5.7).
+   double intraday_reversal_factor = 1.0;
+   if(setup_type == "MOMENTUM_DUMP" && direction == "SELL"
+      && IsIntradayReversalSellActive(h1_trend_strength, m5_rsi,
+                                       SymbolInfoDouble(_Symbol, SYMBOL_BID), m5_bb_m)) {
+      intraday_reversal_factor = g_sc.intraday_reversal_sell_lot_mult;
+   }
+   // 2.7.38 — FRACTIONAL_SELL_IN_BULL fractional probe (atlas §5.3). Scales down
+   //   the lot for the counter-regime overbought SELL probe to keep risk bounded.
+   double fractional_sell_factor = (setup_type == "FRACTIONAL_SELL_IN_BULL" && direction == "SELL"
+                                    && g_sc.fractional_sell_in_bull_lot_factor > 0.0
+                                    && g_sc.fractional_sell_in_bull_lot_factor <= 1.0)
+                                    ? g_sc.fractional_sell_in_bull_lot_factor : 1.0;
+   // 2.7.38 — BULL_DAY_DIP_BUY_V3 amplifier (atlas §5.1). Regime-aligned dip-buy
+   //   on choppy bull days. Lot multiplier is operator-tunable (default 1.0 = no
+   //   amplification; set higher to size up when composite fires).
+   double bull_day_dip_factor = (setup_type == "BULL_DAY_DIP_BUY" && direction == "BUY"
+                                 && g_sc.bull_day_dip_buy_lot_mult > 0.0)
+                                 ? g_sc.bull_day_dip_buy_lot_mult : 1.0;
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor);
+   double combined_lot_factor = MathMax(0.125, inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    double base_lot = lot_inputs_override_eff ? ScalperLot : g_sc.lot_fixed;
    double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);

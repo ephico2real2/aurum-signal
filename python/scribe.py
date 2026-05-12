@@ -146,8 +146,80 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     adx_trend_regime  INTEGER,
     high_vol_trend    INTEGER,
     session           TEXT,
+    killzone          TEXT,
     magic             INTEGER,
-    journal_source    TEXT DEFAULT 'live'
+    journal_source    TEXT DEFAULT 'live',
+    -- 2.7.37 Layer-4 atom telemetry (24 cols)
+    h4_trend          REAL,
+    m15_trend         REAL,
+    h1_di_balance     REAL,
+    day_open          REAL,
+    day_high          REAL,
+    day_low           REAL,
+    m5_open_1         REAL,
+    m5_high_1         REAL,
+    m5_low_1          REAL,
+    m5_close_1        REAL,
+    m5_lh_cascade     INTEGER DEFAULT 0,
+    m5_hl_cascade     INTEGER DEFAULT 0,
+    m5_body_pct       REAL,
+    h1_di_plus        REAL,
+    h1_di_minus       REAL,
+    h4_rsi            REAL,
+    h4_adx            REAL,
+    m30_trend         REAL,
+    d1_open           REAL,
+    d1_close          REAL,
+    h1_atr            REAL,
+    h4_atr            REAL,
+    m15_atr           REAL,
+    m1_atr            REAL,
+    -- 2.7.37 Group 3 — full per-TF indicator + OHLC + bar-quality inventory (45 cols)
+    h1_rsi            REAL,
+    h1_adx            REAL,
+    h1_bb_u           REAL,
+    h1_bb_m           REAL,
+    h1_bb_l           REAL,
+    h4_bb_u           REAL,
+    h4_bb_m           REAL,
+    h4_bb_l           REAL,
+    m15_rsi           REAL,
+    m15_ema20         REAL,
+    m15_ema50         REAL,
+    m30_rsi           REAL,
+    m30_adx           REAL,
+    m30_atr           REAL,
+    m30_ema20         REAL,
+    m30_ema50         REAL,
+    m1_ema20          REAL,
+    m1_ema50          REAL,
+    m5_open_0         REAL,
+    m5_high_0         REAL,
+    m5_low_0          REAL,
+    m5_close_0        REAL,
+    m15_open          REAL,
+    m15_high          REAL,
+    m15_low           REAL,
+    m15_close         REAL,
+    m30_open          REAL,
+    m30_high          REAL,
+    m30_low           REAL,
+    m30_close         REAL,
+    h1_open           REAL,
+    h1_high           REAL,
+    h1_low            REAL,
+    h1_close          REAL,
+    h4_open           REAL,
+    h4_high           REAL,
+    h4_low            REAL,
+    h4_close          REAL,
+    m5_inside_bar     INTEGER DEFAULT 0,
+    m5_outside_bar    INTEGER DEFAULT 0,
+    m5_doji           INTEGER DEFAULT 0,
+    m5_strong_bar     INTEGER DEFAULT 0,
+    long_lower_wick   INTEGER DEFAULT 0,
+    long_upper_wick   INTEGER DEFAULT 0,
+    m5_range_expanding INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forge_journal_trades (
@@ -530,7 +602,28 @@ class Scribe:
                     rsi_divergence TEXT, psar_state TEXT, pattern_score INTEGER,
                     h1_trend REAL, regime_label TEXT, regime_confidence REAL,
                     adx_trend_regime INTEGER, high_vol_trend INTEGER,
-                    session TEXT, magic INTEGER
+                    session TEXT, killzone TEXT, magic INTEGER,
+                    h4_trend REAL, m15_trend REAL, h1_di_balance REAL,
+                    day_open REAL, day_high REAL, day_low REAL,
+                    m5_open_1 REAL, m5_high_1 REAL, m5_low_1 REAL, m5_close_1 REAL,
+                    m5_lh_cascade INTEGER DEFAULT 0, m5_hl_cascade INTEGER DEFAULT 0, m5_body_pct REAL,
+                    h1_di_plus REAL, h1_di_minus REAL, h4_rsi REAL, h4_adx REAL, m30_trend REAL,
+                    d1_open REAL, d1_close REAL, h1_atr REAL, h4_atr REAL, m15_atr REAL, m1_atr REAL,
+                    -- 2.7.37 Group 3
+                    h1_rsi REAL, h1_adx REAL, h1_bb_u REAL, h1_bb_m REAL, h1_bb_l REAL,
+                    h4_bb_u REAL, h4_bb_m REAL, h4_bb_l REAL,
+                    m15_rsi REAL, m15_ema20 REAL, m15_ema50 REAL,
+                    m30_rsi REAL, m30_adx REAL, m30_atr REAL, m30_ema20 REAL, m30_ema50 REAL,
+                    m1_ema20 REAL, m1_ema50 REAL,
+                    m5_open_0 REAL, m5_high_0 REAL, m5_low_0 REAL, m5_close_0 REAL,
+                    m15_open REAL, m15_high REAL, m15_low REAL, m15_close REAL,
+                    m30_open REAL, m30_high REAL, m30_low REAL, m30_close REAL,
+                    h1_open REAL, h1_high REAL, h1_low REAL, h1_close REAL,
+                    h4_open REAL, h4_high REAL, h4_low REAL, h4_close REAL,
+                    m5_inside_bar INTEGER DEFAULT 0, m5_outside_bar INTEGER DEFAULT 0,
+                    m5_doji INTEGER DEFAULT 0, m5_strong_bar INTEGER DEFAULT 0,
+                    long_lower_wick INTEGER DEFAULT 0, long_upper_wick INTEGER DEFAULT 0,
+                    m5_range_expanding INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -567,6 +660,85 @@ class Scribe:
             # lot_factor — combined lot factor applied at entry (product of all lot modifiers).
             conn.execute("ALTER TABLE forge_signals ADD COLUMN lot_factor REAL")
             log.info("SCRIBE migration: added lot_factor to forge_signals")
+        if "killzone" not in fs_cols:
+            # killzone — ICT killzone label at signal time (added in FORGE 2.7.36).
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN killzone TEXT DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_killzone ON forge_signals(killzone)")
+            log.info("SCRIBE migration: added killzone to forge_signals")
+        # 2.7.37 — Layer-4 atom telemetry (24 cols; closes Decision Stack §6 gap)
+        _v37_cols = [
+            ("h4_trend",       "REAL"),
+            ("m15_trend",      "REAL"),
+            ("h1_di_balance",  "REAL"),
+            ("day_open",       "REAL"),
+            ("day_high",       "REAL"),
+            ("day_low",        "REAL"),
+            ("m5_open_1",      "REAL"),
+            ("m5_high_1",      "REAL"),
+            ("m5_low_1",       "REAL"),
+            ("m5_close_1",     "REAL"),
+            ("m5_lh_cascade",  "INTEGER DEFAULT 0"),
+            ("m5_hl_cascade",  "INTEGER DEFAULT 0"),
+            ("m5_body_pct",    "REAL"),
+            ("h1_di_plus",     "REAL"),
+            ("h1_di_minus",    "REAL"),
+            ("h4_rsi",         "REAL"),
+            ("h4_adx",         "REAL"),
+            ("m30_trend",      "REAL"),
+            ("d1_open",        "REAL"),
+            ("d1_close",       "REAL"),
+            ("h1_atr",         "REAL"),
+            ("h4_atr",         "REAL"),
+            ("m15_atr",        "REAL"),
+            ("m1_atr",         "REAL"),
+        ]
+        for _col, _decl in _v37_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    # Concurrent migration race: another Scribe() init added the col
+                    # between our fs_cols snapshot and this ALTER. Idempotent skip.
+                    if "duplicate column" not in str(_e).lower():
+                        raise
+        # 2.7.37 Group 3 — full per-TF indicator + OHLC + bar-quality inventory (45 cols)
+        _v37g3_cols = [
+            ("h1_rsi", "REAL"), ("h1_adx", "REAL"),
+            ("h1_bb_u", "REAL"), ("h1_bb_m", "REAL"), ("h1_bb_l", "REAL"),
+            ("h4_bb_u", "REAL"), ("h4_bb_m", "REAL"), ("h4_bb_l", "REAL"),
+            ("m15_rsi", "REAL"), ("m15_ema20", "REAL"), ("m15_ema50", "REAL"),
+            ("m30_rsi", "REAL"), ("m30_adx", "REAL"), ("m30_atr", "REAL"),
+            ("m30_ema20", "REAL"), ("m30_ema50", "REAL"),
+            ("m1_ema20", "REAL"), ("m1_ema50", "REAL"),
+            ("m5_open_0", "REAL"), ("m5_high_0", "REAL"), ("m5_low_0", "REAL"), ("m5_close_0", "REAL"),
+            ("m15_open", "REAL"), ("m15_high", "REAL"), ("m15_low", "REAL"), ("m15_close", "REAL"),
+            ("m30_open", "REAL"), ("m30_high", "REAL"), ("m30_low", "REAL"), ("m30_close", "REAL"),
+            ("h1_open", "REAL"), ("h1_high", "REAL"), ("h1_low", "REAL"), ("h1_close", "REAL"),
+            ("h4_open", "REAL"), ("h4_high", "REAL"), ("h4_low", "REAL"), ("h4_close", "REAL"),
+            ("m5_inside_bar", "INTEGER DEFAULT 0"),
+            ("m5_outside_bar", "INTEGER DEFAULT 0"),
+            ("m5_doji", "INTEGER DEFAULT 0"),
+            ("m5_strong_bar", "INTEGER DEFAULT 0"),
+            ("long_lower_wick", "INTEGER DEFAULT 0"),
+            ("long_upper_wick", "INTEGER DEFAULT 0"),
+            ("m5_range_expanding", "INTEGER DEFAULT 0"),
+        ]
+        for _col, _decl in _v37g3_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    # Idempotent under concurrent Scribe() init (see _v37_cols loop)
+                    if "duplicate column" not in str(_e).lower():
+                        raise
+        # 2.7.37 — v37 telemetry indexes. CREATE INDEX IF NOT EXISTS is idempotent;
+        # always run so fresh DBs (which pass the col-missing check) still get indexes.
+        # Previously gated by `not in fs_cols` which left fresh tables index-less.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_h1_di_balance ON forge_signals(h1_di_balance)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_m5_cascade ON forge_signals(m5_lh_cascade, m5_hl_cascade)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_m5_inside ON forge_signals(m5_inside_bar)")
         # forge_journal_trades: create fresh with UNIQUE(deal_ticket, journal_source, run_id)
         # or migrate old schema (UNIQUE on deal_ticket+journal_source only) atomically.
         fjt_sql = conn.execute(
@@ -867,6 +1039,33 @@ class Scribe:
             has_macd_hist  = "macd_histogram" in src_cols
             has_m15_adx    = "m15_adx"        in src_cols
             has_lot_factor = "lot_factor"      in src_cols
+            has_killzone   = "killzone"       in src_cols
+            # 2.7.37 — detect Layer-4 atom telemetry columns on source SIGNALS
+            v37_cols = [
+                "h4_trend", "m15_trend", "h1_di_balance",
+                "day_open", "day_high", "day_low",
+                "m5_open_1", "m5_high_1", "m5_low_1", "m5_close_1",
+                "m5_lh_cascade", "m5_hl_cascade", "m5_body_pct",
+                "h1_di_plus", "h1_di_minus", "h4_rsi", "h4_adx", "m30_trend",
+                "d1_open", "d1_close", "h1_atr", "h4_atr", "m15_atr", "m1_atr",
+            ]
+            has_v37 = all(c in src_cols for c in v37_cols)
+            # 2.7.37 Group 3 — full per-TF inventory (45 cols, additive on top of v37)
+            v37g3_cols = [
+                "h1_rsi", "h1_adx", "h1_bb_u", "h1_bb_m", "h1_bb_l",
+                "h4_bb_u", "h4_bb_m", "h4_bb_l",
+                "m15_rsi", "m15_ema20", "m15_ema50",
+                "m30_rsi", "m30_adx", "m30_atr", "m30_ema20", "m30_ema50",
+                "m1_ema20", "m1_ema50",
+                "m5_open_0", "m5_high_0", "m5_low_0", "m5_close_0",
+                "m15_open", "m15_high", "m15_low", "m15_close",
+                "m30_open", "m30_high", "m30_low", "m30_close",
+                "h1_open", "h1_high", "h1_low", "h1_close",
+                "h4_open", "h4_high", "h4_low", "h4_close",
+                "m5_inside_bar", "m5_outside_bar", "m5_doji", "m5_strong_bar",
+                "long_lower_wick", "long_upper_wick", "m5_range_expanding",
+            ]
+            has_v37g3 = all(c in src_cols for c in v37g3_cols)
 
             # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
@@ -974,6 +1173,11 @@ class Scribe:
                 + (", macd_histogram" if has_macd_hist  else ", NULL")
                 + (", m15_adx"        if has_m15_adx    else ", NULL")
                 + (", lot_factor"     if has_lot_factor  else ", NULL")
+                + (", killzone"       if has_killzone   else ", ''")
+                # 2.7.37 — all 24 atom telemetry cols appended together (all-or-nothing)
+                + (", " + ", ".join(v37_cols) if has_v37 else ", " + ", ".join(["NULL"] * len(v37_cols)))
+                # 2.7.37 Group 3 — 45 more cols, same all-or-nothing pattern
+                + (", " + ", ".join(v37g3_cols) if has_v37g3 else ", " + ", ".join(["NULL"] * len(v37g3_cols)))
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1007,9 +1211,15 @@ class Scribe:
                     continue
                 ts_utc   = datetime.fromtimestamp(r[1], tz=_tz.utc).isoformat()
                 aurum_rid = aurum_run_id_map.get(wall_time, 0)
+                killzone_val = r[32] if len(r) > 32 else ""
+                # 2.7.37 — 24 atom columns at positions r[33]..r[56]
+                v37_vals = tuple(r[33 + i] if len(r) > 33 + i else None for i in range(24))
+                # 2.7.37 Group 3 — 45 more cols at positions r[57]..r[101]
+                v37g3_vals = tuple(r[57 + i] if len(r) > 57 + i else None for i in range(45))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
-                    r[29], r[30], r[31], wall_time, aurum_rid,
+                    r[29], r[30], r[31], wall_time, aurum_rid, killzone_val,
+                    *v37_vals, *v37g3_vals,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1026,8 +1236,29 @@ class Scribe:
                         "rsi_divergence, psar_state, pattern_score, h1_trend, "
                         "regime_label, regime_confidence, adx_trend_regime, "
                         "high_vol_trend, session, magic, journal_source, run_id, "
-                        "macd_histogram, m15_adx, lot_factor, wall_time, aurum_run_id) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "macd_histogram, m15_adx, lot_factor, wall_time, aurum_run_id, killzone, "
+                        # 2.7.37 atoms — 24 cols
+                        "h4_trend, m15_trend, h1_di_balance, "
+                        "day_open, day_high, day_low, "
+                        "m5_open_1, m5_high_1, m5_low_1, m5_close_1, "
+                        "m5_lh_cascade, m5_hl_cascade, m5_body_pct, "
+                        "h1_di_plus, h1_di_minus, h4_rsi, h4_adx, m30_trend, "
+                        "d1_open, d1_close, h1_atr, h4_atr, m15_atr, m1_atr, "
+                        # 2.7.37 Group 3 — 45 more cols
+                        "h1_rsi, h1_adx, h1_bb_u, h1_bb_m, h1_bb_l, "
+                        "h4_bb_u, h4_bb_m, h4_bb_l, "
+                        "m15_rsi, m15_ema20, m15_ema50, "
+                        "m30_rsi, m30_adx, m30_atr, m30_ema20, m30_ema50, "
+                        "m1_ema20, m1_ema50, "
+                        "m5_open_0, m5_high_0, m5_low_0, m5_close_0, "
+                        "m15_open, m15_high, m15_low, m15_close, "
+                        "m30_open, m30_high, m30_low, m30_close, "
+                        "h1_open, h1_high, h1_low, h1_close, "
+                        "h4_open, h4_high, h4_low, h4_close, "
+                        "m5_inside_bar, m5_outside_bar, m5_doji, m5_strong_bar, "
+                        "long_lower_wick, long_upper_wick, m5_range_expanding"
+                        ") "
+                        "VALUES (" + ",".join(["?"] * (37 + 24 + 45)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)

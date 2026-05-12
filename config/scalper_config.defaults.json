@@ -148,14 +148,36 @@
   "session_filter": {
     "enabled": true,
     "london_start_utc": 7,
-    "london_end_utc": 20,
-    "ny_start_utc": 7,
+    "london_end_utc": 12,
+    "ny_start_utc": 12,
     "ny_end_utc": 20,
     "skip_asian": 1,
     "skip_london": 0,
     "skip_ny": 0,
     "tester_session_filter": 1,
-    "tester_allowed_sessions": "LONDON,NEW_YORK"
+    "tester_allowed_sessions": "LONDON,NY",
+
+    "london_start_min": -1,
+    "london_end_min":   -1,
+    "ny_start_min":     -1,
+    "ny_end_min":       -1,
+    "asia_start_min":   -1,
+    "asia_end_min":     -1,
+    "sessions_ny_anchored": 0,
+
+    "broker_gmt_offset_winter": 2,
+    "broker_gmt_offset_summer": 3,
+
+    "killzones_enabled": 0,
+    "killzones_gate_entries": 0,
+    "kz_asia_start_min":         1140,
+    "kz_asia_end_min":            180,
+    "kz_london_open_start_min":   120,
+    "kz_london_open_end_min":     300,
+    "kz_ny_open_start_min":       420,
+    "kz_ny_open_end_min":         600,
+    "kz_london_close_start_min":  600,
+    "kz_london_close_end_min":    720
   },
   "safety": {
     "max_spread_points": 30,
@@ -282,5 +304,25 @@
     "pending_ladder_abort_enabled": 1,
     "pending_ladder_abort_adverse_points": 25,
     "pending_ladder_abort_require_negative_float": 1
+  },
+
+  "composites": {
+    "_comment": "v2.7.38 Tier 1 Boolean Composites — all default-OFF. Operator enables individually after Run 26 validation. Specs in docs/FORGE_INDICATOR_ATLAS.md §5.",
+
+    "block_sell_in_chop_enabled": 0,
+
+    "intraday_reversal_sell_enabled": 0,
+    "intraday_reversal_sell_lot_mult": 2.0,
+
+    "fractional_sell_in_bull_enabled": 0,
+    "fractional_sell_in_bull_lot_factor": 0.25,
+    "fractional_sell_in_bull_sl_atr_mult": 1.5,
+    "fractional_sell_in_bull_tp1_atr_mult": 0.3,
+
+    "bull_day_dip_buy_enabled": 0,
+    "bull_day_dip_buy_lot_mult": 1.0,
+    "bull_day_dip_buy_sl_atr_mult": 1.0,
+    "bull_day_dip_buy_tp1_atr_mult": 0.65,
+    "bull_day_dip_buy_reentry_cooldown_sec": 300
   }
 }

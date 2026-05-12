@@ -188,9 +188,27 @@ GATE_CODE_RE = re.compile(
     r'JournalRecordSignal\(\s*"SKIP"\s*,\s*"([a-z_]+)"',
 )
 
+# Dynamic gate emissions: JournalRecordSignal("SKIP", "<literal_prefix>_" + <var>, ...)
+# Examples emitted by FORGE.mq5:
+#   JournalRecordSignal("SKIP","open_group_" + fail_reason, ...)
+#   JournalRecordSignal("SKIP", "warmup_" + warmup_reason, ...)
+# These MUST be covered by a _patterns wildcard in gate_legend.json (e.g. "warmup_*").
+GATE_CODE_DYNAMIC_RE = re.compile(
+    r'JournalRecordSignal\(\s*"SKIP"\s*,\s*"([a-z_]+_)"\s*\+\s*[a-zA-Z_]',
+)
+
 
 def _gates_emitted_by_ea(ea_src: str) -> set[str]:
     return set(GATE_CODE_RE.findall(ea_src))
+
+
+def _dynamic_gate_prefixes_emitted_by_ea(ea_src: str) -> set[str]:
+    """Extract literal prefixes from `JournalRecordSignal("SKIP", "prefix_" + var, ...)`.
+
+    Returns the prefix WITHOUT the trailing underscore for matching against
+    `_patterns` wildcards (whose keys are like `warmup_*`).
+    """
+    return set(GATE_CODE_DYNAMIC_RE.findall(ea_src))
 
 
 def _legend_keys(gate_legend: dict) -> set[str]:
@@ -219,6 +237,33 @@ def test_every_ea_gate_has_legend_entry(ea_src, gate_legend):
     assert not missing, (
         f"Gate codes emitted by FORGE.mq5 but missing from gate_legend.json: {sorted(missing)}.\n"
         f"Add entries to config/gate_legend.json with label, explanation, category."
+    )
+
+
+def test_every_dynamic_gate_prefix_has_legend_pattern(ea_src, gate_legend):
+    """Dynamic gate emissions ("<prefix>_" + var) must have a matching _patterns wildcard.
+
+    Closes Codex v2.7.37 WARNING #3: the literal-string GATE_CODE_RE misses
+    `open_group_<reason>` and `warmup_<reason>` emissions where the suffix is
+    a runtime string. Without this test, removing a `_patterns` wildcard from
+    gate_legend.json would silently leave dynamic gates undecoded in monitoring.
+    """
+    prefixes = _dynamic_gate_prefixes_emitted_by_ea(ea_src)
+    patterns = _legend_patterns(gate_legend)
+
+    missing = []
+    for prefix in prefixes:
+        # patterns are stored without the trailing '*' but WITH the trailing '_'
+        # (e.g. legend key "warmup_*" → stored as "warmup_").
+        if any(prefix == p or prefix.startswith(p) for p in patterns):
+            continue
+        missing.append(prefix)
+
+    assert not missing, (
+        f"Dynamic gate prefixes emitted by FORGE.mq5 (via string concatenation) "
+        f"without a matching `_patterns` wildcard in gate_legend.json: {sorted(missing)}.\n"
+        f"Add e.g. {{'{sorted(missing)[0] if missing else 'prefix_'}*': {{...}}}} to "
+        f"config/gate_legend.json `_patterns` section so monitoring can decode them."
     )
 
 

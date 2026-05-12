@@ -1,14 +1,21 @@
-# FORGE Entry Conditions — v2.7.15
+# FORGE Entry Conditions — v2.7.37
 
-**EA version**: FORGE v2.7.15 | **Symbol**: XAUUSD M5
+**EA version**: FORGE v2.7.37 | **Symbol**: XAUUSD M5
 **Source**: ea/FORGE.mq5 + config/scalper_config.json
 *All values read directly from code and config — not estimated.*
-*Last updated: 2026-05-10 (post-Run 12 + Codex review)*
+*Last updated: 2026-05-12 (post-v2.7.37 atom-telemetry release + Codex review)*
+
+> **Canonical source for current EA implementation**: `docs/FORGE_DECISION_STACK_INVENTORY.md`
+> regenerates per release with exact file:line citations for every Setup Trigger,
+> Filter Chain rung, Boolean Composite, Atom, and Entry Geometry block. This doc
+> is the **intent** spec; the inventory is the **as-implemented** snapshot.
 
 ## Changelog since v2.7.13
 
 | Version | Change | Rationale |
 |---|---|---|
+| **v2.7.37** | Layer-4 atom telemetry — 69 new SIGNALS columns (Tier A 13 + Tier B 11 + Group 3 45). Globals `g_eval_*` populated once per tick by `ForgeEvalAtoms()` at the top of `CheckNativeScalperSetups`. Every SKIP/TAKEN row now carries h1_di_{plus,minus,balance}, h4_{rsi,adx,bb_*,trend}, m15_/m30_/m1_ indicators, D1+M5 OHLC, bar-quality flags. Schema: 107 columns total (was 38). | Decision Stack Inventory §6 identified atoms referencing indicators not in SIGNALS — every gate's input is now recoverable from `SELECT ... FROM SIGNALS WHERE id = ?`. |
+| **v2.7.36** | Cross-stack session/time/killzone refactor — minute-precision windows, NY-anchor option (Approach B: manual broker GMT offsets — works in Strategy Tester where `TimeGMT()` is broken), ICT killzone layer. SIGNALS adds `killzone TEXT`. Tier 0 hotfix: `tester_allowed_sessions: LONDON,NEW_YORK → LONDON,NY` (the `NEW_YORK` token never matched the EA's `"NY"` session label after `StringToUpper`, silently blocking every NY trade in tester). De-overlapped legacy windows: London 7→12 UTC, NY 12→20 UTC. | Restores NY label reachability + enables ICT killzones as a parallel layer to the 3-session system. |
 | **v2.7.15** | M5-bar throttle for `entry_quality_rsi_buy_ceil` (global `g_scalper_last_rsibuyceil_log_bar`) | Run 12 logged 3,386 SKIPs from only 2 distinct M5 bars (per-tick flood) — corrupted Q9 gate-precision math to a false 0%. Throttle restores meaningful precision measurement. |
 | **v2.7.14** | H1 strong-bear bypass (`h1_trend < -1.0`) added to `entry_quality_rsi_sell_adx_floor` and `entry_quality_rsi_rising_sell` | Run 12 missed Apr 29 15:55/16:00 SELLs that had H1=-1.91/-1.99 (strongest bearish H1 of the period). The two-tier RSI floor and RSI-rising checks fire as if the trend is unconfirmed even when H1 dominates. Bypass keeps May 4 17:10 G5008 blocked (H1=-0.55, bypass inactive). |
 | **v2.7.14** | M5-bar throttle for `entry_quality_direction` + `entry_quality_body` (per direction — separate globals for SELL and BUY) | Two M5 bars on Apr 29 generated 2,583 direction SKIP rows from per-tick logging. Same flood-pattern fix as v1.8.6 session_off. |
@@ -43,7 +50,7 @@
 
 ## Full Lot Conditions
 
-Full lot = **0.08 per leg** when `combined_lot_factor = 1.0`.
+Full lot = **0.25 per leg** (active `fixed_lot=0.25` at `config/scalper_config.json:302`) when `combined_lot_factor = 1.0`.
 
 | Factor | Condition for 1.0 | When reduced |
 |---|---|---|
@@ -64,7 +71,7 @@ Full lot = **0.08 per leg** when `combined_lot_factor = 1.0`.
 ### Pre-quality gates (OHLC only — no indicator needed)
 | Gate | Condition | Config value |
 |---|---|---|
-| Session | London or NY session | `tester_allowed_sessions=LONDON,NEW_YORK` |
+| Session | London or NY session (v2.7.36: minute-precision optional via `*_min` fields, NY-anchor optional via `sessions_ny_anchored`) | `tester_allowed_sessions=LONDON,NY` (was `LONDON,NEW_YORK` pre-v2.7.36 — Tier 0 hotfix) |
 | ATR floor | ATR ≥ min_entry_atr | `min_entry_atr = 1.0 pts` |
 | Candle body | avg body/range over 3 bars ≥ threshold | `min_body_ratio = 0.25` |
 | Directional bars | ≥ N of last 3 bars close in BUY direction | `min_directional_bars = 1` |
@@ -112,7 +119,7 @@ All legs fire simultaneously (`staged_initial_legs=8` — capped at actual n).
 ### Pre-quality gates (same as BUY except session)
 | Gate | Condition | Config value |
 |---|---|---|
-| Session | SELL blocked after 18:00 UTC (2 PM EDT) | `session_ny_sell_cutoff_utc = 18` |
+| Session | SELL cutoff implemented but **disabled in active config** — gate code `entry_quality_session_sell_cutoff` still emits when `> 0` | `session_ny_sell_cutoff_utc = 0` (active; doc intent was 18 — operator must set `FORGE_SESSION_NY_SELL_CUTOFF_UTC=18` in `.env` to re-enable) |
 | ATR floor | ATR ≥ 1.0 pts | `min_entry_atr = 1.0` |
 | Candle body | avg body/range ≥ 0.25 | `min_body_ratio = 0.25` |
 | Directional bars | ≥ 1 of last 3 bars close in SELL direction | `min_directional_bars = 1` |
@@ -215,13 +222,13 @@ Entry:  pending SELL STOP at TP1_price − ATR×0.4   (sell_stop_cont_atr_mult=0
 SL:     TP1_price + ATR×0.4
 TP:     cascade_entry − ATR×1.5                     (sell_stop_cont_tp_atr_mult=1.5)
 Expiry: 2 M5 bars (10 min)                          (sell_stop_cont_expiry_bars=2)
-Lot:    fixed_lot × 1.0 = 0.08 (FULL LOT)          (sell_stop_cont_lot_factor=1.0)
+Lot:    fixed_lot × 1.0 = 0.25 (FULL LOT)          (sell_stop_cont_lot_factor=1.0)
 Legs:   5 simultaneous pending orders               (sell_stop_cont_legs=5)
 Slots:  [2..8] (up to 7 legs max)
 Magic:  group_magic + 20002 through +20008
 ```
 
-**Rationale**: TP1 hit proves the trend is real. Cascade fires at full lot — same conviction as the primary entry. 5 legs × 0.08 lot × 1.5×ATR TP = same risk profile as the primary group.
+**Rationale**: TP1 hit proves the trend is real. Cascade fires at full lot — same conviction as the primary entry. 5 legs × 0.25 lot × 1.5×ATR TP = same risk profile as the primary group.
 
 ### BUY LIMIT Recovery (arms after primary SELL hits TP1)
 ```
@@ -247,7 +254,7 @@ Trail multiplier:         1.35×ATR    (fast_lock_breath_mult=1.35)
 
 ## Full Lot — Quick Reference
 
-**To get 0.08 lots per leg on a SELL BB_BREAKOUT:**
+**To get 0.25 lots per leg on a SELL BB_BREAKOUT:**
 
 1. Setup type is BB_BREAKOUT (not BB_BOUNCE)
 2. Price outside BB lower band (not inside-band SELL)

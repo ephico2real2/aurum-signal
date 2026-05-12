@@ -22,7 +22,11 @@ from scribe import get_scribe, get_tester_scribe
 from status_report import KNOWN_COMPONENTS
 from market_data import MT5_STALE_SEC, build_execution_quote, enrich_mt5_for_stale_check, safe_float
 from autoscalper_condition_service import build_autoscalper_condition_report
-from trading_session import get_trading_session_utc, trading_day_reset_hour_utc
+from trading_session import (
+    get_trading_session_utc,
+    trading_day_reset_hour_utc,
+    get_current_killzone_utc,
+)
 from config_io import atomic_write_json
 
 log = logging.getLogger("athena_api")
@@ -546,9 +550,12 @@ def api_live():
         "timestamp":       datetime.now(timezone.utc).isoformat(),
         "mode":            status.get("mode", "UNKNOWN"),
         "effective_mode":  status.get("effective_mode", "UNKNOWN"),
-        "session":         status.get("session", "OFF_HOURS"),
-        "session_utc":     get_trading_session_utc(),
-        "session_id":      status.get("session_id"),
+        "session":           status.get("session", "OFF_HOURS"),
+        "session_utc":       get_trading_session_utc(),
+        "killzone":          status.get("killzone", ""),
+        "killzone_utc":      get_current_killzone_utc(),
+        "killzone_start_ts": status.get("killzone_start_ts"),
+        "session_id":        status.get("session_id"),
         "cycle":           status.get("cycle", 0),
         "version":         status.get("version", _SYSTEM_VERSION),
 
@@ -1603,6 +1610,7 @@ def api_health():
         "mt5_connected": bool(_read_json(MARKET_FILE)),
         "bridge_running": bool(_read_json(STATUS_FILE)),
         "session_utc": get_trading_session_utc(),
+        "killzone_utc": get_current_killzone_utc(),
         "pnl_day_reset_hour_utc": trading_day_reset_hour_utc(),
         # Live caps for POST /api/scribe/query — missing on stale ATHENA processes (restart after pull).
         "scribe_query": {

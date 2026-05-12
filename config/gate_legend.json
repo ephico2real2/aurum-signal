@@ -181,6 +181,16 @@
     "explanation": "New sell entries are blocked after a configurable hour (default NY 17:00 UTC, London 00:00 UTC). Holds avoid holding new short positions through thin overnight markets with unpredictable gaps.",
     "category": "Session / Time"
   },
+  "entry_quality_chop_block_sell": {
+    "label": "Chop block — SELL rejected in RANGE regime (v2.7.38 BLOCK_SELL_IN_CHOP composite)",
+    "explanation": "BLOCK_SELL_IN_CHOP composite fired: g_regime_label='RANGE' AND h1_trend_strength>0.5 (gold retraces UP in chop — chop-SELL has historically high loss-rate). Applies to BB_BREAKOUT/BB_BOUNCE/BB_PULLBACK_SCALP SELL chains. MOMENTUM_DUMP SELL has its own dump_chop_block.",
+    "category": "Composite / Regime"
+  },
+  "entry_quality_intraday_reversal_buy_block": {
+    "label": "Intraday reversal — ALL BUY setups blocked (v2.7.38 INTRADAY_REVERSAL_TO_SELL_V3 composite)",
+    "explanation": "INTRADAY_REVERSAL_TO_SELL_V3 composite fired: h1_trend_strength≥0.3 (macro WAS bull) AND M5 declining 30min AND 60min cascade AND m5_rsi≤40 AND (HID_BEAR | REG_BEAR | below BB mid) AND price<vwap AND m5_lh_cascade. When TRUE: all BUY entries blocked; MOMENTUM_DUMP SELL lot amplified by intraday_reversal_sell_lot_mult. Validated: Apr 2 09:00 crash, Apr 8 12:00 pivot.",
+    "category": "Composite / Intraday Reversal"
+  },
   "entry_quality_news_filter": {
     "label": "News blackout — high-impact event imminent or recent",
     "explanation": "A high-impact economic event (e.g. Non-Farm Payrolls, CPI, FOMC) is within the blackout window. FORGE blocks new entries entirely around these events — volatility spikes make entries unpredictable and stops unreliable.",

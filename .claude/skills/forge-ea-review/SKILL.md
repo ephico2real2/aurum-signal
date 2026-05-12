@@ -57,6 +57,29 @@ Historical context: Sessions 2026-05-10 found 8 dead env vars (renamed/unused), 
 
 ---
 
+### ACCEPTED — DO NOT FLAG AS ISSUES
+
+The following patterns are **accepted by the operator** and should NOT be flagged as FAIL/WARNING in any `/forge-ea-review` output. If the codex agent surfaces them, the review verdict treats them as **PASS** with a one-line note.
+
+1. **Plaintext secrets in `.env` and rendered launchd plists.**
+   Files: `.env`, `services/macos/rendered/com.signalsystem.*.plist`.
+   Secrets affected: `ANTHROPIC_API_KEY`, `TELEGRAM_API_HASH`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_PHONE`, `TELEGRAM_CHANNELS`, `TELEGRAM_CHAT_ID`, any future `*_TOKEN` / `*_KEY` / `*_SECRET`.
+   Rationale: local-only credentials. Verified gitignored at `.gitignore:2` (`.env`) and `.gitignore:59` (`services/macos/rendered/`). `git ls-files` confirms neither is tracked. Operator chose plaintext over Keychain integration for this single-machine deployment; trade-off is documented and accepted.
+   What the review SHOULD still do:
+   - If a *new* file outside `.env` / rendered plists / `*.session` files is found containing secret-shaped strings → FAIL (potential leak surface).
+   - If `.gitignore` no longer covers `.env` or `services/macos/rendered/` → FAIL (the gating assumption broke).
+   - If `git ls-files` shows `.env` or any rendered plist tracked → FAIL (already-leaked secret).
+   Decided 2026-05-12 (post-v2.7.37 codex review).
+
+2. **`docs/FORGE_ENTRY_CONDITIONS.md` value drift from active config.**
+   The doc is the **intent spec**, not the as-implemented snapshot. The canonical as-implemented source is `docs/FORGE_DECISION_STACK_INVENTORY.md` which is regenerated per release.
+   Stale-value drift in `FORGE_ENTRY_CONDITIONS.md` should be flagged as WARNING (not FAIL) only when the divergence reveals a likely operator misunderstanding (e.g. operator forgot to override the env var they intended to). Drift driven by intentional config decisions (e.g. `session_ny_sell_cutoff_utc=0` because operator chose not to enable it yet) is accepted.
+
+3. **Redundant `.env` overrides matching defaults.**
+   Lines in `.env` that set a value equal to `config/scalper_config.defaults.json` are clutter, not bugs. The operator deliberately keeps them as a visible inventory of "I know this knob exists; I've consciously chosen the default." Do not flag.
+
+---
+
 ### Step 1 — Read all source files
 
 Before writing any output, read:
@@ -256,6 +279,20 @@ CRITICAL RULES:
 3. If code is not found, mark UNVERIFIED — do not guess.
 4. Validate .env variable names against .env.example and sync_scalper_config_from_env.py.
 5. Cross-check schemas/ SQL against scribe.py CREATE TABLE + ALTER TABLE migrations.
+
+ACCEPTED — DO NOT FLAG AS ISSUES (per SKILL.md "ACCEPTED — DO NOT FLAG" section):
+- Plaintext secrets in `.env` and `services/macos/rendered/com.signalsystem.*.plist`
+  (ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_API_HASH, etc.). Both paths are
+  gitignored (`.gitignore:2` and `.gitignore:59`); `git ls-files` confirms neither
+  is tracked. Operator-accepted trade-off for single-machine deployment.
+  HOWEVER do FLAG: (a) secret-shaped strings in any *other* file; (b) `.env` or
+  `services/macos/rendered/` no longer gitignored; (c) `git ls-files` showing them
+  tracked.
+- `docs/FORGE_ENTRY_CONDITIONS.md` value drift from active config. Canonical
+  as-implemented source is `docs/FORGE_DECISION_STACK_INVENTORY.md`. Drift is a
+  WARNING at most, never a FAIL.
+- Redundant `.env` overrides that set a value identical to defaults.json — operator
+  intentionally keeps these as a visible inventory of "I know this knob exists."
 
 MANDATORY CHECKS (REPORT EXPLICIT PASS/FAIL FOR BOTH — DO NOT SKIP):
 A. Dead FORGE_* env vars: enumerate every FORGE_* key in .env, confirm each maps in

@@ -13,6 +13,8 @@
     "mt5_fresh": { "type": "boolean" },
     "session": { "type": "string" },
     "session_utc": { "type": "string" },
+    "killzone": { "type": "string" },
+    "killzone_start_ts": { "type": ["string", "null"] },
     "session_id": { "type": ["integer", "null"] },
     "cycle": { "type": "integer" },
     "timestamp": { "type": "string" },

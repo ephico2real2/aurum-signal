@@ -53,7 +53,22 @@
         "additionalProperties": true
       }
     },
-    "indicators_h1": { "type": "object" }
+    "indicators_h1": { "type": "object" },
+    "forge_session_state": {
+      "type": "object",
+      "properties": {
+        "label":                    { "type": "string" },
+        "killzone":                 { "type": "string" },
+        "anchor_mode":              { "type": "string", "enum": ["UTC", "NY"] },
+        "killzones_enabled":        { "type": "integer", "enum": [0, 1] },
+        "killzones_gate_entries":   { "type": "integer", "enum": [0, 1] },
+        "broker_gmt_offset_winter": { "type": "integer" },
+        "broker_gmt_offset_summer": { "type": "integer" },
+        "trades_this_session":      { "type": "integer" },
+        "trades_this_killzone":     { "type": "integer" }
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": true
 }

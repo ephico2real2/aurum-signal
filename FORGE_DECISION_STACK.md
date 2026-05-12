@@ -179,17 +179,37 @@ Skills (`forge-monitor`, `forge-ea-review`, `research`) reference this document 
 ## §8. Cross-references
 
 - **Atlas** (`docs/FORGE_INDICATOR_ATLAS.md`) — §1 indicator inventory (atoms), §5 composite registry, §13 command log
+- **Decision-stack inventory** (`docs/FORGE_DECISION_STACK_INVENTORY.md`) — canonical per-version EA extraction (v2.7.36+). Every setup trigger, filter chain, composite, atom, and entry geometry block in `ea/FORGE.mq5` mapped to file:line. The source-of-truth for "what does FORGE actually implement today."
 - **Playbook** (`FORGE_SETUP_PLAYBOOK.md`) — §1 setup matrix, §5 geometry, §7 gate codes per setup, §10 boolean composite design pattern
 - **Gate dictionary** (`config/gate_legend.json`) — authoritative source for gate codes
 - **EA source** (`ea/FORGE.mq5`) — implementation of all 5 layers
 - **Case studies** (`docs/FORGE_CASE_STUDY_*.md`) — boolean composites in action with cross-day truth tables
+- **Logging extension** (`docs/FORGE_LOGGING_EXTENSION_DESIGN.md`) — closes the telemetry deficit where Layer-4 atoms reference indicators not yet journaled. v2.7.37+ work item.
 - **Skill** (`.claude/skills/forge-monitor/SKILL.md`) — workflow for adding new composites, includes verification-first principle and command logging
 
 ---
 
-## §9. Changelog
+## §10. Cross-version inventory (NEW v2.7.36)
+
+Per-version 5-layer extractions live in `docs/FORGE_DECISION_STACK_INVENTORY.md`. Each release that changes the EA's entry decision logic appends a section to that file. The inventory is the canonical answer to:
+
+- "Which setup triggers exist in v2.7.X?"
+- "What's the filter chain for setup Y in this build?"
+- "Which atoms feed composite Z?"
+- "When I see `SKIP gate=X` in the journal, which atom failed and where in the EA?" (§7 trace map)
+
+Skills (`forge-monitor`, `forge-ea-review`) reference the inventory for current-state verification before proposing changes. The inventory MUST be regenerated after any v2.7.X EA refactor that touches:
+1. A new setup trigger (Layer 1)
+2. A new or renamed gate code in a filter chain (Layer 2)
+3. A new composite or atom (Layer 3/4)
+4. Geometry changes to SL/TP/lot multipliers (Layer 5)
+
+---
+
+## §11. Changelog
 
 | Date | Change |
 |---|---|
 | 2026-05-12 | Initial document created. 5-layer entry-decision stack defined: Setup Trigger → Filter Chain → Boolean Composite → Atoms → Entry Geometry. Terminology mapping table. Canonical MOMENTUM_DUMP_SELL example. Cross-references to atlas / playbook / gate_legend. |
 | 2026-05-12 | Note: `g_regime` struct (defined in [`FORGE_REGIME_TAXONOMY.md §3`](FORGE_REGIME_TAXONOMY.md)) becomes the canonical **Atom source** from Phase 2 (v2.7.37+) onward. Atoms today reference globals like `g_regime_label`, `g_daily_bear_bias`, `h1_bull`; post-migration, atoms reference `g_regime.htf_label`, `g_regime.daily_bear_bias`, `g_regime.intraday_counter_htf`, etc. (See `FORGE_REGIME_TAXONOMY.md §2.6` for HTF/MTF/LTF glossary.) Composite specs in atlas §5 V2/V3 use the future syntax; the EA implementation references the current globals until Phase 3 migration. |
+| 2026-05-12 | Added §10 (Cross-version inventory) pointing to `docs/FORGE_DECISION_STACK_INVENTORY.md`. Initial v2.7.36 extraction populated (5 setup types, 58 gate codes, 8 composites, ~45 atoms, 8 geometry rules). Inventory becomes per-release mandatory artefact. |

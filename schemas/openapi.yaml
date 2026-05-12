@@ -1253,6 +1253,7 @@ components:
         mt5_connected: { type: boolean }
         bridge_running: { type: boolean }
         session_utc: { type: string }
+        killzone_utc: { type: string }
         pnl_day_reset_hour_utc: { type: integer }
         scribe_query:
           type: object
@@ -1356,6 +1357,9 @@ components:
         effective_mode: { type: string }
         session: { type: string }
         session_utc: { type: string }
+        killzone: { type: string }
+        killzone_utc: { type: string }
+        killzone_start_ts: { type: string, nullable: true }
         session_id: {}
         cycle: { type: integer }
         version: { type: string }
@@ -1491,6 +1495,7 @@ components:
         effective_mode: { type: string }
         timestamp: {}
         session: {}
+        killzone: {}
         session_id: {}
         cycle: { type: integer }
         hint: { type: string }

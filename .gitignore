@@ -1,5 +1,9 @@
 # ── Credentials — NEVER commit ────────────────────────────────────
 .env
+.env.bak*
+.env.*.bak
+.env.local
+.env.*.local
 *.session
 *.session.json
 config/telegram_session*

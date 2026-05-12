@@ -1,5 +1,230 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [FORGE 2.7.38] — 2026-05-12 (Tier 1 Boolean Composite shipment)
+
+### Context
+Ships the 4 Tier 1 composites from `FORGE_COMPOSITE_ROADMAP.md` §4. Originally
+scoped for v2.7.36 but bumped to v2.7.38 because v2.7.36 became the session/KZ
+refactor and v2.7.37 the Layer-4 atom telemetry expansion. With the atom data
+now in SIGNALS, the composites can be validated post-run from `forge_signals`
+SELECTs without re-running tester.
+
+**All 4 default-OFF.** Operator enables each independently via FORGE_*_ENABLED
+env vars after Run 26 validates each composite against the v2.7.37 atom
+telemetry.
+
+### Composites shipped
+
+| # | Composite | Type | Atlas spec | Env flag |
+|---|---|---|---|---|
+| 1 | **BLOCK_SELL_IN_CHOP** | Gate (3 SELL chains) | §5.4 | `FORGE_BLOCK_SELL_IN_CHOP_ENABLED` |
+| 2 | **INTRADAY_REVERSAL_TO_SELL_V3** | Dual: gate BUY + amplify SELL lot | §5.7 + V3 OHLC | `FORGE_INTRADAY_REVERSAL_SELL_ENABLED` + `_LOT_MULT=2.0` |
+| 3 | **FRACTIONAL_SELL_IN_BULL** | NEW setup_type | §5.3 | `FORGE_FRACTIONAL_SELL_IN_BULL_ENABLED` + 3 geometry knobs |
+| 4 | **BULL_DAY_DIP_BUY_V3** | NEW setup_type (16 atoms) | §5.1 V3 (case study §4c) | `FORGE_BULL_DAY_DIP_BUY_ENABLED` + 4 geometry knobs |
+
+### Changes table
+
+| # | File | Change | Why |
+|---|------|--------|-----|
+| 1 | `ea/FORGE.mq5` | 12 new `ScalperConfig` fields in a logical `composites` section (struct, InitScalperConfig defaults, ReadScalperConfig readers) | Hot-reload via scalper_config.json |
+| 2 | `ea/FORGE.mq5` | 4 new helpers: `IsBlockSellInChopActive`, `IsIntradayReversalSellActive`, `IsFractionalSellInBullActive`, `IsBullDayDipBuyActive` | Each composite is a single function returning the boolean spec from atlas §5 |
+| 3 | `ea/FORGE.mq5` | 4 new state globals: `g_last_chop_buy_exit_time`, `g_last_fractional_sell_in_bull_time`, `g_last_intraday_reversal_log_bar`, `g_last_chop_block_sell_log_bar` | Re-entry cooldown anchors + log throttles |
+| 4 | `ea/FORGE.mq5` | BLOCK_SELL_IN_CHOP gate inserted at top of BB_BOUNCE SELL + BB_BREAKOUT SELL chains (MOMENTUM_DUMP SELL has dump_chop_block already) | Composite blocks chop-regime SELL entries |
+| 5 | `ea/FORGE.mq5` | INTRADAY_REVERSAL_TO_SELL_V3 gate inserted at top of BB_BOUNCE BUY, BB_BREAKOUT BUY, MOMENTUM_DUMP BUY chains | Composite blocks ALL BUY when intraday pivot detected |
+| 6 | `ea/FORGE.mq5` | Lot pipeline at `combined_lot_factor`: + `intraday_reversal_factor` (MOMENTUM_DUMP SELL amplifier) + `fractional_sell_factor` + `bull_day_dip_factor` | New triggers route through existing lot pipeline; INTRADAY_REVERSAL_TO_SELL_V3 doubles MOMENTUM_DUMP SELL lot when active |
+| 7 | `ea/FORGE.mq5` | FRACTIONAL_SELL_IN_BULL new trigger block: direction=SELL, setup_type=FRACTIONAL_SELL_IN_BULL, single TP1, no TP2, fractional lot | NEW setup type (atlas §5.3) |
+| 8 | `ea/FORGE.mq5` | BULL_DAY_DIP_BUY new trigger block: 16-atom composite check, single TP1 (0.65×ATR), no TP2, regime amplifier lot, 300s re-entry cooldown | NEW setup type (atlas §5.1 V3) |
+| 9 | `ea/FORGE.mq5` | `#property version "2.107"` → `"2.108"` (auto-stamped) | Version bump |
+| 10 | `config/scalper_config.defaults.json` | New `"composites"` JSON section with 12 keys, all default-OFF | Hot-reload baseline |
+| 11 | `scripts/sync_scalper_config_from_env.py` | 12 new FORGE_* → composites.* mappings | Env-driven overrides |
+| 12 | `.env.example` | New "BOOLEAN COMPOSITES — Tier 1 (FORGE v2.7.38)" section with all 12 vars (commented-out hints) | Discoverability |
+| 13 | `config/gate_legend.json` | 2 new gate codes: `entry_quality_chop_block_sell`, `entry_quality_intraday_reversal_buy_block` | Decoded gate codes in monitoring + tests |
+| 14 | `VERSION` / `SYSTEM_VERSION` | 2.7.37 → 2.7.38 / 1.10.0 → 1.10.1 | Version bumps |
+
+### Atom→composite trace
+
+| Composite | Atoms (referenced via g_eval_* globals + g_regime_* + h1_trend_strength) |
+|---|---|
+| BLOCK_SELL_IN_CHOP | `g_regime_label=="RANGE"` ∧ `h1_trend_strength>0.5` ∧ ¬FRACTIONAL_SELL_IN_BULL |
+| INTRADAY_REVERSAL_TO_SELL_V3 | `h1_trend≥0.3` ∧ `m5_close<close[6]` ∧ `close[6]<close[12]` ∧ `m5_rsi≤40` ∧ (HID_BEAR ∨ REG_BEAR ∨ price<bb_mid) ∧ `price<vwap` ∧ `m5_lh_cascade==1` |
+| FRACTIONAL_SELL_IN_BULL | `regime==TREND_BULL` ∧ `h1_trend≥1.0` ∧ `psar==ABOVE` ∧ `m5_rsi∈[60,75]` ∧ `m5_adx≥30` ∧ bar-over-bar bearish ∧ price near BB upper |
+| BULL_DAY_DIP_BUY_V3 | `h1_trend≥0.5` ∧ ¬daily_bear_bias ∧ `m5_rsi∈[30,50]` ∧ `m5_adx∈[12,40]` ∧ BB dip-zone ∧ POC/Fib/VWAP gaps OK ∧ no bear divergence ∧ V3 OHLC (dist_high_atr<2 ∧ ¬m5_lh_cascade ∧ long_lower_wick) ∧ session∈{LONDON,NY} ∧ 300s cooldown |
+
+### Acceptance verified
+- `make scalper-env-sync` clean (66 env overrides — unchanged since v2.7.37 because composite enabled flags default-OFF)
+- `make forge-compile` clean → FORGE.ex5 built, `#property version "2.108"`
+- `python -c "import trading_session, scribe, bridge, athena_api"` clean
+- `tests/api/test_forge_27x_gates.py + test_bridge_tester_journal_sync + test_scribe_forge_journal`: **37/37 pass**
+- New gate codes `entry_quality_chop_block_sell` + `entry_quality_intraday_reversal_buy_block` present in gate_legend (dynamic-prefix test from v2.7.37 confirms no undecoded codes)
+- All 4 composites callable from EA helpers; default-OFF so no live behaviour change
+
+### Design decisions
+- **Default-OFF for all 4**: operator enables each via env vars after validating with Run 26 SIGNALS rows. The v2.7.37 atom telemetry expansion (69 cols) means every composite's input is post-mortem-readable from `SELECT ... FROM forge_signals WHERE id=?` without re-running the tester.
+- **BLOCK_SELL_IN_CHOP bypasses FRACTIONAL_SELL_IN_BULL**: helper guards `if(IsFractionalSellInBullActive(...)) return false;` — the rare overbought-counter SELL is the intentional counter-regime probe, not chop-block.
+- **INTRADAY_REVERSAL_TO_SELL_V3 lot amplifier scoped to MOMENTUM_DUMP SELL only**: dump SELLs are regime-aligned with the reversal direction; amplifying generic SELL setups (BB_BREAKOUT, BB_BOUNCE) wasn't validated in atlas §5.7.
+- **BULL_DAY_DIP_BUY re-entry cooldown anchor set at ENTRY (not exit)**: spec says "exit time" but TP1 fires within minutes (0.65×ATR ≈ 40 pips on gold) so entry-anchored 300s effectively starts post-exit. Refinement to true exit-time hook deferred to v2.7.39 if data shows cooldown drift.
+- **INTRADAY_REVERSAL gate uses else-if chain pattern (not `continue`)**: MOMENTUM_DUMP BUY trigger block is conditional, not a loop — `continue` was rejected by compiler. Switched to else-if so the cascade naturally skips downstream gates AND entry assignment.
+
+### Open items (deferred to v2.7.39)
+1. Tier 2 composites: NO_TREND_DAY, CHOP_LADDER_BUY_GRID, TREND_CONTINUATION_BUY (per roadmap §5)
+2. BULL_DAY_DIP_BUY true-exit-time cooldown hook in `ManageOpenGroups` TP1-close branch
+3. Composite-firing rate measurement in forge-monitor dashboard
+
+---
+
+## [FORGE 2.7.37] — 2026-05-12 (Layer-4 atom telemetry — closes Decision Stack §6 gap)
+
+### Context
+Decision Stack Inventory (`docs/FORGE_DECISION_STACK_INVENTORY.md`) §6 made
+the spec-vs-implementation gap concrete: **Layer-4 atoms reference indicators
+that aren't journaled**. The H1 DI gate, daily bias gate, M30 trend gate, H4
+RSI/ADX gates, and M5 cascade composites all consume indicators that exist
+live but aren't in SIGNALS — post-mortems could see WHICH gate fired but not
+the indicator value that drove it.
+
+This release adds **69 new SIGNALS columns** sourced from
+`g_eval_*` globals populated once per tick by a new `ForgeEvalAtoms()`
+helper at the top of `CheckScalperEntry`. Every SKIP/TAKEN INSERT carries
+the full multi-TF + OHLC + bar-quality context. **Zero new computation
+cost** — the values were already being computed for gate evaluation; we
+were just throwing them away after the gate ran.
+
+### Tier A (13 cols — yesterday's Logging Extension Design)
+`h4_trend`, `m15_trend`, `h1_di_balance`, `day_open`, `day_high`, `day_low`,
+`m5_open_1`, `m5_high_1`, `m5_low_1`, `m5_close_1`, `m5_lh_cascade`,
+`m5_hl_cascade`, `m5_body_pct`
+
+### Tier B (11 atom-driven additions from inventory §6)
+`h1_di_plus`, `h1_di_minus`, `h4_rsi`, `h4_adx`, `m30_trend`, `d1_open`,
+`d1_close`, `h1_atr`, `h4_atr`, `m15_atr`, `m1_atr`
+
+### Group 3 (45 cols — full broker-available inventory)
+- **Indicator components**: `h1_rsi`, `h1_adx`, `h1_bb_{u,m,l}`, `h4_bb_{u,m,l}`, `m15_rsi`, `m15_ema{20,50}`, `m30_{rsi,adx,atr,ema20,ema50}`, `m1_ema{20,50}`
+- **Per-TF OHLC bar 0**: M5 (`m5_*_0`), M15 (`m15_*`), M30 (`m30_*`), H1 (`h1_*`), H4 (`h4_*`)
+- **Bar-quality flags** (INTEGER 0/1): `m5_inside_bar`, `m5_outside_bar`, `m5_doji`, `m5_strong_bar`, `long_lower_wick`, `long_upper_wick`, `m5_range_expanding`
+
+### Changes table
+
+| # | File | Change | Why |
+|---|------|--------|-----|
+| 1 | `ea/FORGE.mq5` | 69 new globals `g_eval_*` + `ForgeEvalAtoms()` helper (~120 LOC) | Single point of computation per tick; idempotent via `g_eval_last_tick` guard |
+| 2 | `ea/FORGE.mq5` | `ForgeEvalAtoms()` call at top of `CheckScalperEntry` | Ensures globals are populated before any `JournalRecordSignal` call |
+| 3 | `ea/FORGE.mq5` | SIGNALS `CREATE TABLE` extended + 69 additive `ALTER TABLE` migrations | Schema parity for fresh + existing DBs |
+| 4 | `ea/FORGE.mq5` | `JournalRecordSignal` INSERT SQL adds 69 columns + value lines | Single function update — no per-call-site changes needed (atoms flow via globals) |
+| 5 | `ea/FORGE.mq5` | Indexes on `h1_di_balance`, `(m5_lh_cascade, m5_hl_cascade)`, `m5_inside_bar` | Query performance for cascade/inside-bar composites |
+| 6 | `ea/FORGE.mq5` | `#property version "2.106"` → `"2.107"` (auto-stamped from VERSION) | Version bump |
+| 7 | `python/scribe.py` | 69 columns in declarative + in-init `forge_signals` CREATE | Schema parity |
+| 8 | `python/scribe.py` | 69 additive `ALTER TABLE forge_signals ADD COLUMN ...` migrations | Existing scribe DBs upgrade cleanly |
+| 9 | `python/scribe.py` | `sync_forge_journal`: `has_v37` + `has_v37g3` detection paths in SELECT/INSERT | Forward-compat: old journal DBs sync as NULL for missing cols |
+| 10 | `VERSION` / `SYSTEM_VERSION` | 2.7.36 → 2.7.37 / 1.9.9 → 1.10.0 | Version bumps |
+
+### Acceptance verified
+- `make scalper-env-sync` clean (66 env overrides, version stamped 2.7.37)
+- `make forge-compile` clean → FORGE.ex5 built (388 KB, +24 KB vs 2.7.36)
+- `python -c "import trading_session, scribe, bridge, athena_api"` clean
+- Fresh `forge_signals` DB created with **107 total columns** (37 legacy + 24 v37 Tier A+B + 45 v37 Group 3 + 1 killzone = 107)
+- `tests/api/test_forge_27x_gates.py`: 28/28 pass (no dead env vars)
+- `tests/services/test_scribe_forge_journal.py`: 4/4 pass (sync tuple signature + multi-run dedup)
+- `tests/api/test_bridge_tester_journal_sync.py`: 4/4 pass (tuple-mock signatures match production)
+
+### Atom→column trace (closes inventory §6 gap)
+| Atom from FORGE.mq5 Layer 4 | Composite that uses it | SKIP gate code | New column |
+|---|---|---|---|
+| `h1_di_plus < h1_di_minus` | BB_BREAKOUT_BUY, BB_BREAKOUT_SELL | `entry_quality_h1_di_{buy,sell}` | `h1_di_plus`, `h1_di_minus`, `h1_di_balance` |
+| `h4_rsi_v` in band | BB_BREAKOUT_{BUY,SELL} | `entry_quality_h4_rsi_{buy,sell}_blocked` | `h4_rsi` |
+| `h4_adx_v` in band | BB_BREAKOUT_{BUY,SELL} | `entry_quality_h4_adx_{buy,sell}_blocked` | `h4_adx` |
+| `m30_trend_strength <= 0` | BB_BREAKOUT_SELL | `entry_quality_m30_not_bearish` | `m30_trend` |
+| `d1_open > d1_close` (bear day) | MOMENTUM_DUMP_SELL | `dump_d1_bias_block` | `d1_open`, `d1_close` |
+| `m5_lh_cascade == 1` | INTRADAY_REVERSAL_TO_SELL_V3 | (composite validation) | `m5_lh_cascade` |
+| `m5_body_pct >= body_pct_min` | (pre-trigger entry quality) | `entry_quality_body` | `m5_body_pct` |
+
+### Design decisions
+- **Globals over signature expansion**: Initially considered adding 69 optional params to `JournalRecordSignal` (per Logging Extension Design §4). Switched to `g_eval_*` globals because:
+  1. Avoids touching 52 call sites
+  2. The atoms are semantically "this tick's context" — global state is correct
+  3. `ForgeEvalAtoms()` runs once per tick, called automatically at entry-eval start
+  4. Add new columns in future without touching call sites at all — just extend the helper
+- **`g_eval_last_tick` guard**: prevents double-evaluation if `CheckScalperEntry` is called multiple times in a tick. Atoms cached for the entire tick.
+- **`has_v37` / `has_v37g3` all-or-nothing detection**: scribe's `sync_forge_journal` treats each tier as a unit. If the source journal DB is pre-v37 (missing any col), all v37 cols sync as NULL. Forward-compatible for old journal DBs being synced after MT5 EA upgrade.
+- **All atoms default to 0/NULL on first appearance**: legacy SIGNALS rows from v2.7.36 and earlier keep working — new columns are NULL.
+
+---
+
+## [FORGE 2.7.36] — 2026-05-12 (Cross-stack session/time/killzone refactor)
+
+### Context
+Implements `docs/prompts/FIX_FORGE_TIME_ISSUES.md` v4. Session detection moves
+from hour-only UTC ranges to minute precision with optional NY anchoring
+(DST-aware via manual broker GMT offsets — Approach B, works identically in
+live and Strategy Tester because `TimeGMT()` is unreliable in tester per
+MQL5 docs). Adds ICT killzone layer on top of the existing 3-label session
+system: per-tick label computed in both MQL5 (EA) and Python (BRIDGE/ATHENA).
+Defaults preserve legacy behaviour (`*_min=-1`, `sessions_ny_anchored=0`,
+`killzones_enabled=0`).
+
+### Tier 0 hotfix (ships first)
+- `config/scalper_config.defaults.json`: `tester_allowed_sessions` token
+  fixed `"LONDON,NEW_YORK"` → `"LONDON,NY"`. `ScalperTesterSessionOK` labels
+  the NY window as `"NY"` after `StringToUpper`, so `NEW_YORK` token silently
+  rejected every NY entry in tester. Defensive alias `NEW_YORK → NY` (and
+  `ASIA → ASIAN`) added in `ScalperTesterSessionOK` so future operators
+  don't hit the same trap.
+
+### Changes table
+
+| # | File | Change | Why |
+|---|------|--------|-----|
+| 1 | `ea/FORGE.mq5` | New `ScalperConfig` Session fields: `london/ny/asia_{start,end}_min`, `sessions_ny_anchored`, `broker_gmt_offset_winter/summer`, `kz_*_min` (4 KZ windows), `killzones_enabled`, `killzones_gate_entries` | Minute-precision windows; NY anchoring; ICT killzones |
+| 2 | `ea/FORGE.mq5` | New helpers: `LastSundayOfMonth`, `FirstSundayOfMonth`, `IsEU_DST`, `IsUS_DST`, `BrokerToNY`, `GetNYTimeNow`, `GetSessionAnchorTime`, `MinuteInWindow`, `GetEffective*Window`, `ComputeCurrentSessionLabel`, `ComputeCurrentKillzoneLabel`, `ForgeBrokerGMTOffsetSec` | Approach B time conversion; works in tester (where `TimeGMT()` ≡ broker server time) |
+| 3 | `ea/FORGE.mq5` | `ScalperSessionOK`, `ScalperTesterSessionOK`, `ResetScalperSessionStateIfNeeded` rewritten to use `ComputeCurrentSessionLabel` | Single source of truth for session label; supports both UTC and NY anchor |
+| 4 | `ea/FORGE.mq5` | `JournalRecordSignal` writes `session = ComputeCurrentSessionLabel()` + new `killzone` column | Replaces hard-coded TimeGMT-hour-derived session string |
+| 5 | `ea/FORGE.mq5` | `WriteMarketData` adds `forge_session_state{label,killzone,anchor_mode,...}` block; `WriteBrokerInfo` adds `gmt_offset_sec`, `is_us_dst`, `is_eu_dst`, `broker_gmt_offset_winter/summer` | Visibility of session/KZ state in JSON contracts |
+| 6 | `ea/FORGE.mq5` | SIGNALS table: `killzone TEXT DEFAULT ''` column in CREATE + additive ALTER + `idx_sig_killzone` index | Persistent KZ trail in journal DB |
+| 7 | `ea/FORGE.mq5` | `OnInit` adds `FORGE TIME CHECK` diagnostic prints (TimeCurrent vs TimeGMT vs TimeTradeServer vs BrokerToNY) | Operator verification of broker offset before shipping KZ gating |
+| 8 | `ea/FORGE.mq5` | Throttle bug fixes: `g_scalper_last_dircool_log_bar`, `g_scalper_last_opengroups_log_bar`, `g_scalper_last_sesscap_log_bar` added; `ScalperDirectionCooldownOK`, `open_groups` gate, `session_trade_cap` gate now throttle once per M5 bar | Prior `ScalperDirectionCooldownOK` used the wrong global (`g_scalper_last_sesswarn_log_bar`) and never updated it; `open_groups`/`session_trade_cap` had no throttle at all → log spam every tick when at cap |
+| 9 | `ea/FORGE.mq5` | `#property version "2.105"` → `"2.106"` (auto-stamped from VERSION 2.7.35→2.7.36) | Version bump |
+| 10 | `python/trading_session.py` | New `_KZ_DEFAULTS` + `_minute_in_window` + `_kz_window` + `get_current_killzone_utc` + `session_clock_summary` KZ block | zoneinfo-based KZ (OS-DST-aware — no broker offset needed Python-side) |
+| 11 | `python/bridge.py` | New `_killzone()` helper, `_current_killzone` / `_killzone_start_ts` attrs, tick-loop KZ transition detection, `_on_killzone_change` method (logs SCRIBE `KILLZONE_CHANGE` event, optional Herald ping via `HERALD_KILLZONE_ALERTS`), `_write_status` adds `killzone` + `killzone_start_ts` | Persists last KZ; lighter than session change (no SCRIBE row open/close) |
+| 12 | `python/scribe.py` | `forge_signals.killzone TEXT` in declarative + in-init CREATE + additive ALTER + idx; `sync_forge_journal` SELECT/INSERT extended with `has_killzone` detection | Persists EA-emitted KZ label into ATHENA's `forge_signals` |
+| 13 | `python/athena_api.py` | `/api/live` and `/api/health` responses add `killzone`, `killzone_utc`, `killzone_start_ts` | Dashboard + downstream consumers |
+| 14 | `dashboard/app.js` | Header session span now shows KZ badge (amber) when `D.killzone_utc \|\| D.killzone` set; default `liveData` shape extended with `session_utc/killzone/killzone_utc` | UI visibility |
+| 15 | `config/scalper_config.defaults.json` | `session_filter` extended with all new keys; `london_end_utc 20→12` + `ny_start_utc 7→12` to **de-overlap** windows | Prior legacy: both London and NY covered 07-20 UTC, so the `if/else-if` order made NY label unreachable in production. New: London 7-12 UTC (morning EU), NY 12-20 UTC (afternoon US). Call-out in release notes. |
+| 16 | `scripts/sync_scalper_config_from_env.py` | MAPPING entries for `FORGE_SESSIONS_NY_ANCHORED`, `FORGE_BROKER_GMT_OFFSET_{WINTER,SUMMER}`, `FORGE_{LONDON,NY,ASIA}_{START,END}_MIN` (lower bound `None` so `-1` sentinel passes), `FORGE_KILLZONES_{ENABLED,GATE_ENTRIES}`, `FORGE_KZ_*_MIN` (4 KZ pairs) | Every new env var wired end-to-end per `feedback_no_dead_env_vars` memory rule |
+| 17 | `.env.example` | New `# ── SESSION MINUTE-PRECISION + NY ANCHOR + KILLZONES` block documents every new `FORGE_*` var | Cheat sheet completeness |
+| 18 | `schemas/files/status.schema.json` | Adds `killzone`, `killzone_start_ts` | Status contract |
+| 19 | `schemas/files/market_data.schema.json` | Adds `forge_session_state` object (not nested `session` — avoids collision with existing top-level `session: string`) | Market data contract |
+| 20 | `schemas/openapi.yaml` | `LiveResponse` + `HealthResponse` + `ModeReadResponse` extended with killzone fields | OpenAPI contract consistency |
+| 21 | `VERSION` / `SYSTEM_VERSION` | 2.7.35 → 2.7.36 / 1.9.8 → 1.9.9 | Version bumps |
+| 22 | `tests/services/test_scribe_forge_journal.py` | Updated stale tests that compared `sync_forge_journal(...) == 1` (returns `(processed, inserted)` tuple) | Test signature drift from earlier sync refactor — surfaced incidentally |
+
+### Acceptance verified
+- `make scalper-env-sync` clean (66 env overrides, killzone vars unset → defaults applied, version stamped 2.7.36)
+- `make forge-compile` clean → FORGE.ex5 built
+- `python -c "import trading_session, scribe, bridge, athena_api"` clean
+- `tests/api/test_forge_27x_gates.py` 28/28 pass (no dead `FORGE_*` env vars)
+- `get_current_killzone_utc()` returns `''` with `KILLZONES_ENABLED=0`, `'LONDON_CLOSE_KZ'` at runtime (10:00–12:00 NY) with default config
+- Fresh `forge_signals` DB created with `killzone` column
+
+### Breaking behavioural change (documented per acceptance #8)
+Default London/NY UTC windows **de-overlapped** from prior degenerate
+`07–20 UTC` for both → London `07–12`, NY `12–20`. Sessions previously
+mislabeled `LONDON` during 12–20 UTC will now correctly read `NY`.
+`tester_session_filter` with `LONDON,NY` continues to admit both. To restore
+the legacy single-window behaviour set `FORGE_LONDON_END_UTC=20` and
+`FORGE_NY_START_UTC=7`.
+
+### What NOT enabled by default
+- `sessions_ny_anchored=0` — session label still in UTC by default. Set
+  `FORGE_SESSIONS_NY_ANCHORED=1` to switch.
+- `killzones_enabled=0` — KZ label always empty (no EA effect; no journal
+  write). Set `FORGE_KILLZONES_ENABLED=1` to start tracking.
+- `killzones_gate_entries=0` — even with KZ enabled, EA does not gate
+  entries by killzone. `FORGE_KILLZONES_GATE_ENTRIES=1` enables gating
+  (use with caution — silently halves trading hours).
+- `HERALD_KILLZONE_ALERTS=0` — no Telegram pings on KZ transition.
+
+---
+
 ## [FORGE 2.7.11-run10-prep] — 2026-05-10 (Run 9 post-mortem fixes)
 
 ### Context

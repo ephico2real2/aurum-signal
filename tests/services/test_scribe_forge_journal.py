@@ -122,8 +122,9 @@ def test_forge_journal_sync_tags_source_and_is_idempotent(tmp_path, monkeypatch)
     _create_journal(journal)
 
     scribe = scribe_mod.Scribe(str(tmp_path / "scribe.db"))
-    assert scribe.sync_forge_journal(str(journal), source="tester") == 1
-    assert scribe.sync_forge_journal_trades(str(journal), source="tester") == 1
+    # sync_* returns (processed, inserted) — both 1 on a single-row fresh journal.
+    assert scribe.sync_forge_journal(str(journal), source="tester") == (1, 1)
+    assert scribe.sync_forge_journal_trades(str(journal), source="tester") == (1, 1)
 
     conn = sqlite3.connect(str(journal))
     try:
@@ -153,8 +154,16 @@ def test_forge_journal_trades_multi_run_dedup(tmp_path, monkeypatch):
     journal = tmp_path / "FORGE_journal_XAUUSD_tester.db"
     _create_journal(journal)
 
-    # Add a second row: same deal_ticket (777001) but run_id=2
+    # forge_journal_trades dedup is on (deal_ticket, journal_source, wall_time).
+    # Each run_id must therefore map to a distinct wall_time — register both
+    # in TESTER_RUNS so the sync builds wall_time_map for both runs.
     with sqlite3.connect(str(journal)) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS TESTER_RUNS ("
+            "id INTEGER PRIMARY KEY, wall_time INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO TESTER_RUNS VALUES (0, 1710000000000)")
+        conn.execute("INSERT INTO TESTER_RUNS VALUES (2, 1710001000000)")
         conn.execute(
             """
             INSERT INTO TRADES
@@ -168,8 +177,10 @@ def test_forge_journal_trades_multi_run_dedup(tmp_path, monkeypatch):
         conn.commit()
 
     scribe = scribe_mod.Scribe(str(tmp_path / "scribe.db"))
-    synced = scribe.sync_forge_journal_trades(str(journal), source="tester")
-    assert synced == 2  # both rows accepted
+    # sync signals first so the wall_time cache is built from TESTER_RUNS.
+    scribe.sync_forge_journal(str(journal), source="tester")
+    processed, inserted = scribe.sync_forge_journal_trades(str(journal), source="tester")
+    assert processed == 2  # both rows accepted
 
     with sqlite3.connect(str(tmp_path / "scribe.db")) as conn:
         rows = conn.execute(
@@ -186,16 +197,16 @@ def test_forge_journal_sync_keeps_live_and_tester_sources_separate(tmp_path, mon
     _create_journal(journal)
 
     scribe = scribe_mod.Scribe(str(tmp_path / "scribe.db"))
-    assert scribe.sync_forge_journal(str(journal), source="live") == 1
-    assert scribe.sync_forge_journal_trades(str(journal), source="live") == 1
+    assert scribe.sync_forge_journal(str(journal), source="live") == (1, 1)
+    assert scribe.sync_forge_journal_trades(str(journal), source="live") == (1, 1)
 
     with sqlite3.connect(str(journal)) as conn:
         conn.execute("UPDATE SIGNALS SET synced=0 WHERE id=10")
         conn.execute("UPDATE TRADES SET synced=0 WHERE id=20")
         conn.commit()
 
-    assert scribe.sync_forge_journal(str(journal), source="tester") == 1
-    assert scribe.sync_forge_journal_trades(str(journal), source="tester") == 1
+    assert scribe.sync_forge_journal(str(journal), source="tester") == (1, 1)
+    assert scribe.sync_forge_journal_trades(str(journal), source="tester") == (1, 1)
 
     with sqlite3.connect(str(tmp_path / "scribe.db")) as conn:
         assert conn.execute(

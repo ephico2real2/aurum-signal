@@ -24,7 +24,11 @@ from listener    import Listener
 from aurum       import get_aurum
 from reconciler  import get_reconciler
 from status_report import report_component_status
-from trading_session import get_trading_session_utc, sydney_open_alert_info
+from trading_session import (
+    get_trading_session_utc,
+    sydney_open_alert_info,
+    get_current_killzone_utc,
+)
 from freshness import DATA_FRESHNESS_WINDOWS
 from config_io import atomic_write_json
 from market_data import enrich_mt5_for_stale_check
@@ -580,6 +584,11 @@ def _session() -> str:
     return get_trading_session_utc()
 
 
+def _killzone() -> str:
+    """Return current ICT killzone label or '' (none)."""
+    return get_current_killzone_utc()
+
+
 def _resolve_forge_scalper_mode(mode: str) -> str:
     """
     FORGE native scalper should only be enabled when the strategy mode includes
@@ -969,6 +978,9 @@ class Bridge:
         # Session tracking
         self._current_session    = "OFF_HOURS"
         self._current_session_id = None    # SCRIBE trading_sessions row id
+        # ICT killzone tracking (additive; lighter than session — event log only)
+        self._current_killzone   = ""
+        self._killzone_start_ts  = None
         self._broker_info        = {}      # from FORGE broker_info.json
         self._pending_entry_threshold_points = FORGE_PENDING_ENTRY_THRESHOLD_POINTS
         self._trend_strength_atr_threshold = FORGE_TREND_STRENGTH_ATR_THRESHOLD
@@ -2849,6 +2861,11 @@ class Bridge:
             self._on_session_change(new_session, mt5)
         self._check_sydney_open_alert()
 
+        # ── 3b. KILLZONE TRANSITION DETECTION ─────────────────────
+        new_kz = _killzone()
+        if new_kz != self._current_killzone:
+            self._on_killzone_change(new_kz)
+
         # ── 4. BROKER INFO from FORGE ──────────────────────────────
         broker_info = _read_json(BROKER_INFO_FILE)
         if broker_info:
@@ -3064,6 +3081,31 @@ class Bridge:
             f"Balance: ${balance:,.2f}" if balance else
             f"🕐 <b>SESSION: {new_session}</b>{acct_tag}"
         )
+
+    def _on_killzone_change(self, new_killzone: str) -> None:
+        """Track ICT killzone transitions. Lighter than _on_session_change:
+        no SCRIBE row open/close, just an event log + optional Herald ping."""
+        prev = self._current_killzone
+        self._current_killzone   = new_killzone
+        self._killzone_start_ts  = datetime.now(timezone.utc).isoformat() if new_killzone else None
+
+        log.info(f"BRIDGE: Killzone transition {prev or 'NONE'} → {new_killzone or 'NONE'}")
+
+        try:
+            self.scribe.log_system_event(
+                "KILLZONE_CHANGE",
+                triggered_by="BRIDGE",
+                session=self._current_session,
+                notes=f"{prev or 'NONE'} → {new_killzone or 'NONE'}",
+            )
+        except Exception as e:
+            log.debug(f"BRIDGE: killzone event log failed: {e}")
+
+        if new_killzone and os.environ.get("HERALD_KILLZONE_ALERTS", "0") in ("1", "true", "True"):
+            try:
+                self.herald.send(f"⏱ <b>KILLZONE: {new_killzone}</b>")
+            except Exception as e:
+                log.debug(f"BRIDGE: killzone herald failed: {e}")
 
     # ── Signal processing ─────────────────────────────────────────
     def _process_signal(self, mt5: dict, lens_snap):
@@ -5029,6 +5071,8 @@ class Bridge:
             "strategy_tester":   bool((mt5 or {}).get("strategy_tester")),
             "session":           self._current_session,
             "session_utc":       get_trading_session_utc(),
+            "killzone":          self._current_killzone,
+            "killzone_start_ts": self._killzone_start_ts,
             "session_id":        self._current_session_id,
             "cycle":             self._cycle,
             "timestamp":         _now(),

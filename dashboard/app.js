@@ -699,7 +699,7 @@ function ATHENA(){
 
   const D=data||{
     mode:'DISCONNECTED',effective_mode:'DISCONNECTED',
-    session:'UNKNOWN',cycle:0,
+    session:'UNKNOWN',session_utc:'',killzone:'',killzone_utc:'',cycle:0,
     account_type:'UNKNOWN',broker:'',server:'',
     mt5_connected:false,circuit_breaker:false,
     sentinel_active:false,mt5_fresh:false,mt5_quote_stale:true,chart_symbol:null,
@@ -819,8 +819,19 @@ function ATHENA(){
           </div>
         )}
         <span style={{fontSize:9,color:T.text,fontFamily:T.mono}}>{timeStr}</span>
-        <span style={{fontSize:9,color:T.text,fontFamily:T.mono}} title="session_utc = UTC kill-zone clock; session = last BRIDGE write">
-          {D.session_utc||D.session}</span>
+        <span style={{display:'flex',alignItems:'center',gap:6,fontSize:9,color:T.text,fontFamily:T.mono}}>
+          <span title="session_utc = UTC kill-zone clock; session = last BRIDGE write">
+            {D.session_utc||D.session}</span>
+          {(D.killzone_utc||D.killzone) && (
+            <span style={{padding:'1px 5px',borderRadius:2,
+              background:'rgba(245,158,11,0.12)',
+              border:`1px solid ${T.amber}`,
+              color:T.amber}}
+              title="ICT killzone (NY-anchored). killzone_utc = freshly computed; killzone = last BRIDGE write">
+              {D.killzone_utc||D.killzone}
+            </span>
+          )}
+        </span>
       </div>
       <div style={{display:'flex',alignItems:'center',gap:10}}>
         <div style={{display:'flex',alignItems:'center',gap:5,fontSize:9,
