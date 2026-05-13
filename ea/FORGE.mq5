@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.135"
+#property version "2.136"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.65";
+const string FORGE_VERSION = "2.7.66";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -563,6 +563,9 @@ struct ScalperConfig {
    double dump_sl_atr_mult_sell;            // 2.7.54: SELL MOMENTUM_DUMP SL multiplier (default 2.0)
    double dump_tp1_atr_mult_buy;            // 2.7.54: BUY TP1 multiplier (default 0.4 — bounces short)
    double dump_tp1_atr_mult_sell;           // 2.7.54: SELL TP1 multiplier (default 0.6 — dumps run further)
+   // v2.7.66 — TP2 now configurable (was hardcoded 1.0). Matches widened SL for healthier R:R.
+   double dump_tp2_atr_mult_buy;            // BUY TP2 multiplier (default 2.0)
+   double dump_tp2_atr_mult_sell;           // SELL TP2 multiplier (default 2.0)
    int    dump_max_hold_seconds;            // 2.7.54: time stop — close at market if open > N sec and TP1 unfilled (default 600 = 10min; 0=disabled)
    // 2.7.55 — SELL oversold protection (Run 26 G5003 fix: SELL at RSI=32.4 + price below bbl = mean-reversion zone)
    double dump_sell_min_rsi;                // 2.7.55: block SELL when m5_rsi ≤ this (default 30; 0=disabled)
@@ -589,6 +592,7 @@ struct ScalperConfig {
    double dump_pyramid_base_factor;         // 2.7.56: first group's multiplier (default 1.0)
    double dump_pyramid_step;                // 2.7.56: increment per consecutive group (default 1.0)
    double dump_pyramid_max_factor;          // 2.7.56: cap (default 5.0)
+   double dump_pyramid_min_factor;          // v2.7.66: floor (default 1.0). Allows DECREASING pyramid (5×→4×→3×→2×→1×) by setting base=5 step=-1 — clamped to this floor.
    bool   dump_cascade_enabled;             // v2.7.59: allow ArmPostTP1Ladder for MOMENTUM_DUMP (default true; v2.7.28 had hardcoded off)
    // v2.7.60 — MOMENTUM_DUMP V2 composite (catch G5001/G5002, block G5003-style late entries).
    //   Multi-atom alignment replaces over-blocking dump_sell_h1_max=0.5. SELL example:
@@ -3608,6 +3612,8 @@ void InitScalperConfig() {
    g_sc.dump_sl_atr_mult_sell         = 2.0;      // same
    g_sc.dump_tp1_atr_mult_buy         = 0.4;      // bounces short — bank fast
    g_sc.dump_tp1_atr_mult_sell        = 0.6;      // dumps run further — let it travel
+   g_sc.dump_tp2_atr_mult_buy         = 2.5;      // v2.7.66 — wider TP2 matches wide SL + "win big on trend days"
+   g_sc.dump_tp2_atr_mult_sell        = 2.5;      // v2.7.66 — same for SELL
    g_sc.dump_max_hold_seconds         = 600;      // 10-min time stop on losers (Apr 13 G5024 40-min held against → SL fix)
    // 2.7.55 — SELL oversold protection (Run 26 G5003 fix)
    g_sc.dump_sell_min_rsi             = 30.0;     // block SELL at RSI ≤ 30 (mean-reversion zone)
@@ -3621,6 +3627,7 @@ void InitScalperConfig() {
    g_sc.dump_pyramid_base_factor      = 1.0;
    g_sc.dump_pyramid_step             = 1.0;
    g_sc.dump_pyramid_max_factor       = 5.0;
+   g_sc.dump_pyramid_min_factor       = 1.0;     // v2.7.66 — floor for decreasing pyramid
    g_sc.dump_cascade_enabled          = true;     // v2.7.59 — allow MOMENTUM_DUMP cascade (was hardcoded off in v2.7.28)
    // v2.7.60 — MOMENTUM_DUMP V2 composite defaults (validated on G5001=4559.73 12:30:29)
    g_sc.dump_v2_enabled               = true;
@@ -4680,6 +4687,8 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"dump_sl_atr_mult_sell"))    { v = JsonGetDouble(content,"dump_sl_atr_mult_sell");    if(v >= 0.3 && v <= 10.0) g_sc.dump_sl_atr_mult_sell  = v; }
    if(JsonHasKey(content,"dump_tp1_atr_mult_buy"))    { v = JsonGetDouble(content,"dump_tp1_atr_mult_buy");    if(v >= 0.1 && v <= 5.0)  g_sc.dump_tp1_atr_mult_buy  = v; }
    if(JsonHasKey(content,"dump_tp1_atr_mult_sell"))   { v = JsonGetDouble(content,"dump_tp1_atr_mult_sell");   if(v >= 0.1 && v <= 5.0)  g_sc.dump_tp1_atr_mult_sell = v; }
+   if(JsonHasKey(content,"dump_tp2_atr_mult_buy"))    { v = JsonGetDouble(content,"dump_tp2_atr_mult_buy");    if(v >= 0.1 && v <= 20.0) g_sc.dump_tp2_atr_mult_buy  = v; }
+   if(JsonHasKey(content,"dump_tp2_atr_mult_sell"))   { v = JsonGetDouble(content,"dump_tp2_atr_mult_sell");   if(v >= 0.1 && v <= 20.0) g_sc.dump_tp2_atr_mult_sell = v; }
    if(JsonHasKey(content,"dump_max_hold_seconds"))    { v = JsonGetDouble(content,"dump_max_hold_seconds");    if(v >= 0 && v <= 7200)   g_sc.dump_max_hold_seconds  = (int)v; }
    // 2.7.55 — SELL oversold protection loaders
    if(JsonHasKey(content,"dump_sell_min_rsi"))          { v = JsonGetDouble(content,"dump_sell_min_rsi");          if(v >= 0 && v <= 100) g_sc.dump_sell_min_rsi        = v; }
@@ -4690,8 +4699,9 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"dump_max_open_same_direction"))  { v = JsonGetDouble(content,"dump_max_open_same_direction");  if(v >= 0 && v <= 100)  g_sc.dump_max_open_same_direction  = (int)v; }
    if(JsonHasKey(content,"dump_pyramid_enabled"))          { v = JsonGetDouble(content,"dump_pyramid_enabled");          g_sc.dump_pyramid_enabled = (v >= 0.5); }
    if(JsonHasKey(content,"dump_pyramid_base_factor"))      { v = JsonGetDouble(content,"dump_pyramid_base_factor");      if(v >= 0.1 && v <= 10.0) g_sc.dump_pyramid_base_factor = v; }
-   if(JsonHasKey(content,"dump_pyramid_step"))             { v = JsonGetDouble(content,"dump_pyramid_step");             if(v >= 0.0 && v <= 10.0) g_sc.dump_pyramid_step        = v; }
+   if(JsonHasKey(content,"dump_pyramid_step"))             { v = JsonGetDouble(content,"dump_pyramid_step");             if(v >= -10.0 && v <= 10.0) g_sc.dump_pyramid_step        = v; }  // v2.7.66 — negative allowed for DECREASING
    if(JsonHasKey(content,"dump_pyramid_max_factor"))       { v = JsonGetDouble(content,"dump_pyramid_max_factor");       if(v >= 0.1 && v <= 20.0) g_sc.dump_pyramid_max_factor  = v; }
+   if(JsonHasKey(content,"dump_pyramid_min_factor"))       { v = JsonGetDouble(content,"dump_pyramid_min_factor");       if(v >= 0.0 && v <= 20.0) g_sc.dump_pyramid_min_factor  = v; }
    // 2.7.29 — Regime H1-strong override (Run 18 Issue 1 fix).
    if(JsonHasKey(content,"regime_h1_override_factor"))  { v = JsonGetDouble(content,"regime_h1_override_factor");  if(v >= 0.0 && v <= 10.0) g_sc.regime_h1_override_factor  = v; }
    if(JsonHasKey(content,"regime_h1_override_adx_min")) { v = JsonGetDouble(content,"regime_h1_override_adx_min"); if(v >= 0.0 && v <= 100.0) g_sc.regime_h1_override_adx_min = v; }
@@ -10128,7 +10138,7 @@ void CheckNativeScalperSetups() {
             //   BEAR TP1 stays 0.6×ATR (gold dumps travel further than bounces).
             sl  = NormalizeDouble(ask + m5_atr * g_sc.dump_sl_atr_mult_sell, _Digits);
             tp1 = NormalizeDouble(bid - m5_atr * g_sc.dump_tp1_atr_mult_sell, _Digits);
-            tp2 = NormalizeDouble(bid - m5_atr * 1.0, _Digits);
+            tp2 = NormalizeDouble(bid - m5_atr * g_sc.dump_tp2_atr_mult_sell, _Digits);  // v2.7.66
             g_scalper_last_dump_sell_time = _now_t;
             PrintFormat("FORGE 2.7.54: MOMENTUM_DUMP SELL fired @ %.2f (move=%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f, regime=%s, SL=%.1f×ATR, TP1=%.1f×ATR)",
                         bid, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx, g_regime_label,
@@ -10256,7 +10266,7 @@ void CheckNativeScalperSetups() {
             //   BULL TP1 = 0.4×ATR (bounces are short — bank fast), SELL TP1 = 0.6×ATR (dumps run further).
             sl  = NormalizeDouble(bid - m5_atr * g_sc.dump_sl_atr_mult_buy, _Digits);
             tp1 = NormalizeDouble(ask + m5_atr * g_sc.dump_tp1_atr_mult_buy, _Digits);
-            tp2 = NormalizeDouble(ask + m5_atr * 1.0, _Digits);
+            tp2 = NormalizeDouble(ask + m5_atr * g_sc.dump_tp2_atr_mult_buy, _Digits);  // v2.7.66
             g_scalper_last_dump_buy_time = _now_t;
             PrintFormat("FORGE 2.7.54: MOMENTUM_DUMP BUY fired @ %.2f (move=+%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f, SL=%.1f×ATR, TP1=%.1f×ATR)",
                         ask, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx,
@@ -11319,13 +11329,16 @@ void CheckNativeScalperSetups() {
    //   counter (g_dump_pyramid_consec_*) increments on each MOMENTUM_DUMP TAKEN in same direction
    //   and resets when direction flips OR all same-dir MOMENTUM_DUMP positions close.
    //   The factor applied to THIS entry uses (counter + 1) since counter increments AFTER fire.
+   //   v2.7.66 — clamp to [min_factor, max_factor] (was [base_factor, max_factor]) to allow
+   //   DECREASING pyramid (operator: "5×, 4×, 3×, 2×, 1× — big lot at best entry, smaller adds").
+   //   For canonical decreasing: base=5.0, step=-1.0, max=5.0, min=1.0 → 5,4,3,2,1,1,1...
    double dump_pyramid_factor = 1.0;
    if(setup_type == "MOMENTUM_DUMP" && g_sc.dump_pyramid_enabled) {
       int consec_n = (direction == "BUY") ? g_dump_pyramid_consec_buy_count
                                           : g_dump_pyramid_consec_sell_count;
       double pf = g_sc.dump_pyramid_base_factor + consec_n * g_sc.dump_pyramid_step;
       if(pf > g_sc.dump_pyramid_max_factor) pf = g_sc.dump_pyramid_max_factor;
-      if(pf < g_sc.dump_pyramid_base_factor) pf = g_sc.dump_pyramid_base_factor;
+      if(pf < g_sc.dump_pyramid_min_factor) pf = g_sc.dump_pyramid_min_factor;
       dump_pyramid_factor = pf;
    }
    // v2.7.62 — Day-extreme distance amplifier (G5092 reward; mirror of v2.7.61 block).

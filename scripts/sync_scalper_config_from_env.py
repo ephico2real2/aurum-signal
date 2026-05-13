@@ -357,8 +357,13 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_DUMP_MAX_OPEN_SAME_DIRECTION":   ("safety", "dump_max_open_same_direction", "int",    0,    100),
     "FORGE_SETUP_DUMP_PYRAMID_ENABLED":          ("safety", "dump_pyramid_enabled",         "bool01", None, None),
     "FORGE_GEOMETRY_DUMP_PYRAMID_BASE_FACTOR":   ("safety", "dump_pyramid_base_factor",     "float",  0.1,  10.0),
-    "FORGE_GEOMETRY_DUMP_PYRAMID_STEP":          ("safety", "dump_pyramid_step",            "float",  0.0,  10.0),
+    "FORGE_GEOMETRY_DUMP_PYRAMID_STEP":          ("safety", "dump_pyramid_step",            "float",  -10.0, 10.0),  # v2.7.66 — negative allowed for DECREASING pyramid
     "FORGE_GEOMETRY_DUMP_PYRAMID_MAX_FACTOR":    ("safety", "dump_pyramid_max_factor",      "float",  0.1,  20.0),
+    # v2.7.66 — Decreasing pyramid floor (operator: "5×,4×,3×,2×,1× — big lot at best entry, smaller adds")
+    "FORGE_GEOMETRY_DUMP_PYRAMID_MIN_FACTOR":    ("safety", "dump_pyramid_min_factor",      "float",  0.0,  20.0),
+    # v2.7.66 — Configurable TP2 (was hardcoded 1.0×ATR; widened to match wide SL)
+    "FORGE_GEOMETRY_DUMP_TP2_ATR_MULT_BUY":      ("safety", "dump_tp2_atr_mult_buy",        "float",  0.1,  20.0),
+    "FORGE_GEOMETRY_DUMP_TP2_ATR_MULT_SELL":     ("safety", "dump_tp2_atr_mult_sell",       "float",  0.1,  20.0),
     # v2.7.59 — MOMENTUM_DUMP cascade enable (gate the v2.7.28 hardcoded skip)
     "FORGE_GATE_DUMP_CASCADE_ENABLED":           ("safety", "dump_cascade_enabled",         "bool01", None, None),
     # v2.7.60 — MD V2 composite
