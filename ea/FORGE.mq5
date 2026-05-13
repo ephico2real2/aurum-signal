@@ -330,6 +330,9 @@ datetime g_ma_crossover_last_sell_time = 0; // wall time of last MA_CROSSOVER SE
 // 2.7.42 — VWAP_REVERSION cooldown trackers (Phase 2 — pullback-to-VWAP in trend direction)
 datetime g_vwap_reversion_last_buy_time  = 0; // wall time of last VWAP_REVERSION BUY entry
 datetime g_vwap_reversion_last_sell_time = 0; // wall time of last VWAP_REVERSION SELL entry
+// 2.7.42 — FIB_CONFLUENCE cooldown trackers (Phase 2 — fib level + EMA/VWAP overlap pullback)
+datetime g_fib_confluence_last_buy_time  = 0; // wall time of last FIB_CONFLUENCE BUY entry
+datetime g_fib_confluence_last_sell_time = 0; // wall time of last FIB_CONFLUENCE SELL entry
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -529,6 +532,18 @@ struct ScalperConfig {
    double vwap_reversion_tp1_atr_mult;        // TP1 = ATR × this (default 0.4)
    double vwap_reversion_tp2_atr_mult;        // TP2 = ATR × this (default 1.0 — target = original extension zone)
    int    vwap_reversion_cooldown_seconds;    // min gap per direction (default 600)
+   // 2.7.42 — FIB_CONFLUENCE setup (Phase 2). Trend-direction retrace to fib
+   //   38.2/50/61.8 of recent swing, coinciding with ≥1 reference (EMA20, EMA50,
+   //   VWAP) within tolerance × ATR. Uses g_fib_382/50/618 already computed.
+   bool   fib_confluence_enabled;             // master toggle (default off)
+   int    fib_confluence_min_confluences;     // min overlapping refs (default 1; max 3 = EMA20+EMA50+VWAP all align)
+   double fib_confluence_tolerance_atr;       // proximity threshold for fib + reference overlap (default 0.3 × ATR)
+   double fib_confluence_min_swing_atr;       // min (fib_high − fib_low) / ATR to qualify (default 2.0 — avoid micro-swings)
+   double fib_confluence_lot_factor;          // lot multiplier (default 0.5)
+   double fib_confluence_sl_atr_mult;         // SL = ATR × this (default 1.5)
+   double fib_confluence_tp1_atr_mult;        // TP1 = ATR × this (default 0.5)
+   double fib_confluence_tp2_atr_mult;        // TP2 = ATR × this (default 1.3 — back toward swing extreme)
+   int    fib_confluence_cooldown_seconds;    // min gap per direction (default 600)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3039,6 +3054,16 @@ void InitScalperConfig() {
    g_sc.vwap_reversion_tp1_atr_mult         = 0.4;
    g_sc.vwap_reversion_tp2_atr_mult         = 1.0;
    g_sc.vwap_reversion_cooldown_seconds     = 600;
+   // 2.7.42 — FIB_CONFLUENCE setup (Phase 2; default OFF)
+   g_sc.fib_confluence_enabled              = false;
+   g_sc.fib_confluence_min_confluences      = 1;
+   g_sc.fib_confluence_tolerance_atr        = 0.3;
+   g_sc.fib_confluence_min_swing_atr        = 2.0;
+   g_sc.fib_confluence_lot_factor           = 0.5;
+   g_sc.fib_confluence_sl_atr_mult          = 1.5;
+   g_sc.fib_confluence_tp1_atr_mult         = 0.5;
+   g_sc.fib_confluence_tp2_atr_mult         = 1.3;
+   g_sc.fib_confluence_cooldown_seconds     = 600;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3811,6 +3836,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "vwap_reversion_tp1_atr_mult"))         { v=JsonGetDouble(content,"vwap_reversion_tp1_atr_mult");         if(v>=0.1&&v<=5.0) g_sc.vwap_reversion_tp1_atr_mult=v; }
    if(JsonHasKey(content, "vwap_reversion_tp2_atr_mult"))         { v=JsonGetDouble(content,"vwap_reversion_tp2_atr_mult");         if(v>=0.1&&v<=10.0) g_sc.vwap_reversion_tp2_atr_mult=v; }
    if(JsonHasKey(content, "vwap_reversion_cooldown_seconds"))     { v=JsonGetDouble(content,"vwap_reversion_cooldown_seconds");     if(v>=0&&v<=7200) g_sc.vwap_reversion_cooldown_seconds=(int)v; }
+   // 2.7.42 — FIB_CONFLUENCE setup (Phase 2). Flat-search reads from setup/atom/geometry/timing sections.
+   if(JsonHasKey(content, "fib_confluence_enabled"))              { v=JsonGetDouble(content,"fib_confluence_enabled");              g_sc.fib_confluence_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "fib_confluence_min_confluences"))      { v=JsonGetDouble(content,"fib_confluence_min_confluences");      if(v>=1&&v<=5) g_sc.fib_confluence_min_confluences=(int)v; }
+   if(JsonHasKey(content, "fib_confluence_tolerance_atr"))        { v=JsonGetDouble(content,"fib_confluence_tolerance_atr");        if(v>=0.05&&v<=2.0) g_sc.fib_confluence_tolerance_atr=v; }
+   if(JsonHasKey(content, "fib_confluence_min_swing_atr"))        { v=JsonGetDouble(content,"fib_confluence_min_swing_atr");        if(v>=0.5&&v<=20.0) g_sc.fib_confluence_min_swing_atr=v; }
+   if(JsonHasKey(content, "fib_confluence_lot_factor"))           { v=JsonGetDouble(content,"fib_confluence_lot_factor");           if(v>=0.1&&v<=2.0) g_sc.fib_confluence_lot_factor=v; }
+   if(JsonHasKey(content, "fib_confluence_sl_atr_mult"))          { v=JsonGetDouble(content,"fib_confluence_sl_atr_mult");          if(v>=0.5&&v<=5.0) g_sc.fib_confluence_sl_atr_mult=v; }
+   if(JsonHasKey(content, "fib_confluence_tp1_atr_mult"))         { v=JsonGetDouble(content,"fib_confluence_tp1_atr_mult");         if(v>=0.1&&v<=5.0) g_sc.fib_confluence_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "fib_confluence_tp2_atr_mult"))         { v=JsonGetDouble(content,"fib_confluence_tp2_atr_mult");         if(v>=0.1&&v<=10.0) g_sc.fib_confluence_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "fib_confluence_cooldown_seconds"))     { v=JsonGetDouble(content,"fib_confluence_cooldown_seconds");     if(v>=0&&v<=7200) g_sc.fib_confluence_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -4809,6 +4844,51 @@ int DetectVwapReversionEvent(const double m5_atr, const double h1_trend_strength
    // Step 3: direction by H1 trend agreement
    if(extended_above && h1_trend_strength > 0.0) return 1;
    if(extended_below && h1_trend_strength < 0.0) return -1;
+   return 0;
+}
+
+// 2.7.42 — FIB_CONFLUENCE event detector (Phase 2). Returns 1 = BUY pullback,
+// -1 = SELL pullback, 0 = no event. Trend-direction retrace to fib 38.2/50/61.8
+// of the recent swing, with at least min_confluences other references (EMA20,
+// EMA50, VWAP) within tolerance × ATR of the active fib level.
+//
+// Uses g_fib_382 / g_fib_50 / g_fib_618 computed at FORGE.mq5 (~5142-5144) and
+// g_fib_high/low for the swing-size guard. Throttled at 60s in the fib pass.
+int DetectFibConfluenceEvent(const double m5_atr, const double h1_trend_strength) {
+   if(!g_sc.fib_confluence_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   if(g_fib_high <= 0.0 || g_fib_low <= 0.0) return 0;
+   if(g_fib_382 <= 0.0 || g_fib_50 <= 0.0 || g_fib_618 <= 0.0) return 0;
+   // Step 1: swing-size guard — avoid micro-swings
+   double swing_size = g_fib_high - g_fib_low;
+   if(swing_size < g_sc.fib_confluence_min_swing_atr * m5_atr) return 0;
+   // Step 2: price near any fib level
+   double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double tol = g_sc.fib_confluence_tolerance_atr * m5_atr;
+   double levels[3];
+   levels[0] = g_fib_382;
+   levels[1] = g_fib_50;
+   levels[2] = g_fib_618;
+   double active_fib = 0.0;
+   for(int i = 0; i < 3; i++) {
+      if(MathAbs(price - levels[i]) <= tol) {
+         active_fib = levels[i];
+         break;
+      }
+   }
+   if(active_fib <= 0.0) return 0;
+   // Step 3: count confluences (EMA20, EMA50, VWAP within tol of active_fib)
+   int confluences = 0;
+   double ema20_buf[1], ema50_buf[1];
+   if(CopyBuffer(g_mtf[0].h_ma20, 0, 1, 1, ema20_buf) == 1
+      && MathAbs(ema20_buf[0] - active_fib) <= tol) confluences++;
+   if(CopyBuffer(g_mtf[0].h_ma50, 0, 1, 1, ema50_buf) == 1
+      && MathAbs(ema50_buf[0] - active_fib) <= tol) confluences++;
+   if(g_vwap_price > 0.0 && MathAbs(g_vwap_price - active_fib) <= tol) confluences++;
+   if(confluences < g_sc.fib_confluence_min_confluences) return 0;
+   // Step 4: direction by H1 trend agreement (trend-continuation pullback)
+   if(h1_trend_strength > 0.0) return 1;
+   if(h1_trend_strength < 0.0) return -1;
    return 0;
 }
 
@@ -8278,6 +8358,43 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — FIB_CONFLUENCE trigger (Phase 2). Retrace to fib 38.2/50/61.8 +
+   //   reference overlap (EMA20/EMA50/VWAP) in established H1 trend direction.
+   if(direction == "" && g_sc.fib_confluence_enabled && m5_atr > 0.0) {
+      int fc_event = DetectFibConfluenceEvent(m5_atr, h1_trend_strength);
+      if(fc_event != 0) {
+         string fc_dir = (fc_event > 0) ? "BUY" : "SELL";
+         datetime fc_last = (fc_event > 0) ? g_fib_confluence_last_buy_time : g_fib_confluence_last_sell_time;
+         datetime fc_now  = TimeCurrent();
+         bool fc_cool_ok = (g_sc.fib_confluence_cooldown_seconds <= 0
+                            || fc_last == 0
+                            || (fc_now - fc_last) >= g_sc.fib_confluence_cooldown_seconds
+                            || CooldownBypassActive(fc_dir, "FIB_CONFLUENCE", m5_adx));
+         if(!fc_cool_ok) {
+            JournalRecordSignal("SKIP","fib_confluence_cooldown","FIB_CONFLUENCE",fc_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = fc_dir;
+            setup_type = "FIB_CONFLUENCE";
+            double fc_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double fc_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(fc_event > 0) {
+               sl  = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(fc_ask + m5_atr * g_sc.fib_confluence_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(fc_ask + m5_atr * g_sc.fib_confluence_tp2_atr_mult, _Digits);
+               g_fib_confluence_last_buy_time = fc_now;
+            } else {
+               sl  = NormalizeDouble(fc_ask + m5_atr * g_sc.fib_confluence_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_tp2_atr_mult, _Digits);
+               g_fib_confluence_last_sell_time = fc_now;
+            }
+            PrintFormat("FORGE 2.7.42: FIB_CONFLUENCE %s fired @ %.2f (fib382=%.2f, fib50=%.2f, fib618=%.2f, h1_trend=%.2f)",
+                        fc_dir, (fc_event > 0 ? fc_ask : fc_bid), g_fib_382, g_fib_50, g_fib_618, h1_trend_strength);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -8632,6 +8749,11 @@ void CheckNativeScalperSetups() {
                                    && g_sc.vwap_reversion_lot_factor > 0.0
                                    && g_sc.vwap_reversion_lot_factor < 1.0)
                                    ? g_sc.vwap_reversion_lot_factor : 1.0;
+   // 2.7.42 — FIB_CONFLUENCE lot factor (Phase 2). Default 0.5.
+   double fib_confluence_factor = (setup_type == "FIB_CONFLUENCE"
+                                   && g_sc.fib_confluence_lot_factor > 0.0
+                                   && g_sc.fib_confluence_lot_factor < 1.0)
+                                   ? g_sc.fib_confluence_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -8641,7 +8763,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the

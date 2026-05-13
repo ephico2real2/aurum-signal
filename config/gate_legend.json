@@ -365,5 +365,10 @@
     "label": "VWAP reversion — cooldown active",
     "explanation": "v2.7.42 VWAP_REVERSION pullback trigger fired (price retraced to VWAP after ≥N M5 bars of extension in the H1-trend direction) within timing.vwap_reversion_cooldown_seconds (default 600) of a prior VWAP_REVERSION entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
+  },
+  "fib_confluence_cooldown": {
+    "label": "Fib confluence — cooldown active",
+    "explanation": "v2.7.42 FIB_CONFLUENCE trigger fired (price retraced to fib 38.2/50/61.8 of recent swing with ≥atom.fib_confluence_min_confluences reference overlaps from EMA20/EMA50/VWAP) within timing.fib_confluence_cooldown_seconds (default 600) of a prior FIB_CONFLUENCE entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
+    "category": "Cooldowns"
   }
 }

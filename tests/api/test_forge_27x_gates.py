@@ -408,3 +408,40 @@ def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg):
     # 6. SKIP gate code emitted by EA exists
     assert '"vwap_reversion_cooldown"' in ea_src, \
         "EA does not emit SKIP code vwap_reversion_cooldown"
+
+
+def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg):
+    """v2.7.42 FIB_CONFLUENCE Phase 2 — EA + config + gate legend aligned."""
+    # 1. setup_type literal emitted in EA
+    assert 'setup_type = "FIB_CONFLUENCE"' in ea_src, \
+        "FIB_CONFLUENCE setup_type literal missing from ea/FORGE.mq5 dispatch"
+    # 2. Detector helper exists
+    assert "DetectFibConfluenceEvent" in ea_src, \
+        "DetectFibConfluenceEvent helper missing from ea/FORGE.mq5"
+    # 3. Detector uses all 3 fib levels (382, 50, 618)
+    for level in ("g_fib_382", "g_fib_50", "g_fib_618"):
+        assert level in ea_src, f"detector should reference {level}"
+    # 4. All 9 config knobs present in active config
+    for key in (
+        ("setup", "fib_confluence_enabled"),
+        ("atom", "fib_confluence_min_confluences"),
+        ("atom", "fib_confluence_tolerance_atr"),
+        ("atom", "fib_confluence_min_swing_atr"),
+        ("geometry", "fib_confluence_lot_factor"),
+        ("geometry", "fib_confluence_sl_atr_mult"),
+        ("geometry", "fib_confluence_tp1_atr_mult"),
+        ("geometry", "fib_confluence_tp2_atr_mult"),
+        ("timing", "fib_confluence_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}' section"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 5. Default-OFF
+    assert cfg["setup"]["fib_confluence_enabled"] == 0, \
+        "fib_confluence_enabled should default to 0 (Phase 2 ships OFF)"
+    # 6. Lot factor present in combined_lot_factor product
+    assert "fib_confluence_factor" in ea_src, \
+        "fib_confluence_factor not multiplied into combined_lot_factor"
+    # 7. SKIP gate code emitted by EA exists
+    assert '"fib_confluence_cooldown"' in ea_src, \
+        "EA does not emit SKIP code fib_confluence_cooldown"
