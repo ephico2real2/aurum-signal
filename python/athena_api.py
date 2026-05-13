@@ -552,9 +552,15 @@ def api_live():
         "effective_mode":  status.get("effective_mode", "UNKNOWN"),
         "session":           status.get("session", "OFF_HOURS"),
         "session_utc":       get_trading_session_utc(),
-        "killzone":          status.get("killzone", ""),
-        "killzone_utc":      get_current_killzone_utc(),
-        "killzone_start_ts": status.get("killzone_start_ts"),
+        # v2.7.49 — killzone is now EA-anchored. status["killzone"] is bridge's
+        # mirror of the EA's broker-clock-anchored label (read from market_data.json
+        # via _killzone() — see bridge.py). killzone_local_check is bridge's OWN
+        # UTC-clock compute, kept for divergence detection (DST cutover days, broker
+        # clock skew, etc.) — UI renders it as an alert when it disagrees with
+        # the authoritative `killzone` field.
+        "killzone":             status.get("killzone", ""),
+        "killzone_local_check": get_current_killzone_utc(),
+        "killzone_start_ts":    status.get("killzone_start_ts"),
         "session_id":        status.get("session_id"),
         "cycle":           status.get("cycle", 0),
         "version":         status.get("version", _SYSTEM_VERSION),
