@@ -33,8 +33,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_FAST_LOCK_MIN_PROFIT_POINTS": ("safety", "fast_lock_min_profit_points", "float", 0.0, None),
     "FORGE_BOUNCE_MIN_TP1_ATR_MULT": ("bb_bounce", "min_tp1_atr_mult", "float", 0.0, 5.0),
     "FORGE_BOUNCE_MIN_TP2_ATR_MULT": ("bb_bounce", "min_tp2_atr_mult", "float", 0.0, 10.0),
-    "FORGE_ADX_HYSTERESIS_ENABLED": ("safety", "adx_hysteresis_enabled", "bool01", None, None),
-    "FORGE_ADX_HYSTERESIS_APPLY_IN_TESTER": ("safety", "adx_hysteresis_apply_in_tester", "bool01", None, None),
+    "FORGE_GATE_M5_ADX_HYSTERESIS_ENABLE": ("safety", "adx_hysteresis_enabled", "bool01", None, None),
+    "FORGE_GATE_M5_ADX_HYSTERESIS_APPLY_IN_TESTER": ("safety", "adx_hysteresis_apply_in_tester", "bool01", None, None),
     # Native news filter
     "FORGE_NEWS_FILTER_ENABLED": ("safety", "news_filter_enabled", "bool01", None, None),
     "FORGE_NEWS_FILTER_CURRENCIES": ("safety", "news_filter_currencies", "string", None, None),
@@ -52,8 +52,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_NEWS_FILTER_TIGHTEN_RSI_SELL": ("safety", "news_filter_tighten_rsi_sell", "float", 30.0, 50.0),
     "FORGE_NEWS_FILTER_REFRESH_SEC": ("safety", "news_filter_refresh_sec", "int", 60.0, None),
     "FORGE_NEWS_FILTER_APPLY_IN_TESTER": ("safety", "news_filter_apply_in_tester", "bool01", None, None),
-    "FORGE_ADX_TREND_ENTER": ("safety", "adx_trend_enter", "float", 0.0, 100.0),
-    "FORGE_ADX_TREND_EXIT": ("safety", "adx_trend_exit", "float", 0.0, 100.0),
+    "FORGE_ATOM_M5_ADX_TREND_ENTER": ("safety", "adx_trend_enter", "float", 0.0, 100.0),
+    "FORGE_ATOM_M5_ADX_TREND_EXIT": ("safety", "adx_trend_exit", "float", 0.0, 100.0),
     "FORGE_SELL_LOSS_GRACE_SEC": ("safety", "sell_loss_grace_sec", "int", 0.0, None),
     "FORGE_SELL_LOSS_GRACE_ADVERSE_POINTS": ("safety", "sell_loss_grace_adverse_points", "float", 0.0, None),
     "FORGE_INPUTS_OVERRIDE_LOT_SIZING": ("lot_sizing", "inputs_override_lot_sizing", "bool01", None, None),
@@ -80,13 +80,13 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_MAX_NUM_TRADES": ("lot_sizing", "max_num_trades", "int", 1.0, 30.0),
     "FORGE_GOLD_NATIVE_MAX_SELL_LEGS": ("lot_sizing", "gold_native_max_sell_legs", "int", 0.0, 30.0),
     "FORGE_NATIVE_LEGS_MAX_WHEN_UNCLEAR": ("lot_sizing", "native_legs_max_when_unclear", "int", 0.0, 30.0),
-    "FORGE_NATIVE_LEGS_CLEAR_TREND_FACTOR": ("lot_sizing", "native_legs_clear_trend_factor", "float", 1.0, 3.0),
-    "FORGE_NATIVE_FORCE_STAGED_SCALE_IN": ("lot_sizing", "native_force_staged_scale_in", "bool01", None, None),
+    "FORGE_GEOMETRY_LEGS_CLEAR_TREND_FACTOR": ("lot_sizing", "native_legs_clear_trend_factor", "float", 1.0, 3.0),
+    "FORGE_GEOMETRY_STAGED_SCALE_IN_FORCE": ("lot_sizing", "native_force_staged_scale_in", "bool01", None, None),
     "FORGE_STAGED_INITIAL_LEGS":          ("lot_sizing", "staged_initial_legs",          "int",    1.0, 30.0),
     "FORGE_STAGED_ADD_INTERVAL_SEC":      ("lot_sizing", "staged_add_interval_sec",      "int",    5.0, 300.0),
     "FORGE_STAGED_ADD_MIN_FAVORABLE_POINTS": ("lot_sizing", "staged_add_min_favorable_points", "float", 0.0, 5000.0),
-    "FORGE_WAVE_CONFIRMATION_LOT_MULT":      ("lot_sizing", "wave_confirmation_lot_mult",      "float", 1.0, 10.0),
-    "FORGE_NATIVE_SCALPER_USE_LIMIT_ENTRY": ("lot_sizing", "native_scalper_use_limit_entry", "bool01", None, None),
+    "FORGE_GEOMETRY_WAVE_CONFIRM_LOT_MULT":      ("lot_sizing", "wave_confirmation_lot_mult",      "float", 1.0, 10.0),
+    "FORGE_GEOMETRY_NATIVE_USE_LIMIT_ENTRY": ("lot_sizing", "native_scalper_use_limit_entry", "bool01", None, None),
     "FORGE_BOUNCE_REQUIRE_H1_DIRECTION": ("bb_bounce", "bounce_require_h1_direction", "bool01", None, None),
     "FORGE_BOUNCE_HTF_BIAS": ("bb_bounce", "bounce_htf_bias", "bounce_htf_bias", None, None),
     "FORGE_BOUNCE_BLOCK_HTF_TREND_ALIGN": ("bb_bounce", "bounce_block_htf_trend_align", "bool01", None, None),
@@ -116,9 +116,9 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # H1 MACD histogram gate for SELL: block SELL when H1 MACD hist >= 0 (H1 bullish momentum; Run 12+)
     "FORGE_BREAKOUT_REQUIRE_H1_MACD_SELL":       ("bb_breakout", "require_h1_macd_sell",        "bool01", None, None),
     # H1 MACD histogram gate for BUY (2.7.17 Run 15 G5002 fix): block BUY when H1 MACD hist < 0
-    "FORGE_BREAKOUT_REQUIRE_H1_MACD_BUY":        ("bb_breakout", "require_h1_macd_buy",         "bool01", None, None),
+    "FORGE_GATE_BREAKOUT_H1_MACD_REQUIRE_BUY":        ("bb_breakout", "require_h1_macd_buy",         "bool01", None, None),
     # BB_BREAKOUT same-direction cooldown in seconds (2.7.17 Run 15 G5002 fix); 0 = disabled
-    "FORGE_BREAKOUT_SAME_DIR_COOLDOWN_SECONDS":  ("bb_breakout", "same_dir_cooldown_seconds",   "int",    0.0,  3600.0),
+    "FORGE_TIMING_BREAKOUT_SAME_DIR_COOLDOWN_SEC":  ("bb_breakout", "same_dir_cooldown_seconds",   "int",    0.0,  3600.0),
     # 2.7.19 — Failed-breakout-pullback gate (Run 15 G5013/G5015 fix); 0 = disabled
     "FORGE_BREAKOUT_FAILED_GATE_ENABLED":        ("bb_breakout", "failed_gate_enabled",         "bool01", None, None),
     "FORGE_BREAKOUT_FAILED_LOOKBACK_BARS":       ("bb_breakout", "failed_lookback_bars",        "int",    1.0,  20.0),
@@ -134,7 +134,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # M30 EMA bearish confirmation gate (2.7.9 Feature 3)
     "FORGE_BREAKOUT_REQUIRE_M30_BEAR_SELL":      ("bb_breakout", "require_m30_bear_sell",      "bool01", None, None),
     "FORGE_BREAKOUT_REQUIRE_RSI_DECLINING_SELL": ("bb_breakout", "require_rsi_declining_sell", "bool01", None, None),
-    "FORGE_BREAKOUT_BLOCK_HID_BULL_SELL":        ("bb_breakout", "block_hid_bull_sell",         "bool01", None, None),
+    "FORGE_GATE_BREAKOUT_HID_BULL_DIV_BLOCK_SELL":        ("bb_breakout", "block_hid_bull_sell",         "bool01", None, None),
     "FORGE_BREAKOUT_RSI_DECL_SELL_ADX_THRESHOLD":("bb_breakout", "rsi_decl_sell_adx_threshold","float",  10.0, 80.0),
     "FORGE_BREAKOUT_M30_BEAR_ADX_MIN":      ("bb_breakout", "m30_bear_adx_min",      "float", 0.0, 80.0),
     # OsMA(fast,slow,signal) histogram gate — MACD Histogram MC 4-quadrant approach
@@ -157,19 +157,19 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_ADX_SELL_BLOCK_THRESHOLD": ("bb_breakout", "adx_sell_block_threshold", "float", 0.0, 100.0),
     # H1+H4 crash SELL — max ADX cap and min H1 bear strength
     "FORGE_BREAKOUT_H1H4_CRASH_SELL_ADX_MAX":  ("bb_breakout", "h1h4_crash_sell_adx_max", "float", 0.0, 100.0),
-    "FORGE_BREAKOUT_H1H4_CRASH_SELL_MIN_M15_ADX": ("bb_breakout", "h1h4_crash_sell_min_m15_adx", "float", 0.0, 80.0),
+    "FORGE_ATOM_BREAKOUT_CRASH_BYPASS_M15_ADX_MIN_SELL": ("bb_breakout", "h1h4_crash_sell_min_m15_adx", "float", 0.0, 80.0),
     "FORGE_BREAKOUT_MIN_H1_BEAR_STRENGTH":     ("bb_breakout", "min_h1_bear_strength",    "float", 0.0, 5.0),
     # SELL STOP continuation (2.7.10 Day 2) — disabled by default; enable to capture second impulse after TP1
     "FORGE_SELL_STOP_CONT_ENABLED":      ("bb_breakout", "sell_stop_cont_enabled",      "bool01", None, None),
     "FORGE_SELL_STOP_CONT_ATR_MULT":     ("bb_breakout", "sell_stop_cont_atr_mult",     "float", 0.1, 3.0),
-    "FORGE_SELL_STOP_CONT_SL_ATR_MULT":  ("bb_breakout", "sell_stop_cont_sl_atr_mult",  "float", 0.0, 10.0),
+    "FORGE_GEOMETRY_SELL_STOP_CONT_SL_ATR_MULT":  ("bb_breakout", "sell_stop_cont_sl_atr_mult",  "float", 0.0, 10.0),
     "FORGE_SELL_STOP_CONT_LOT_FACTOR":   ("bb_breakout", "sell_stop_cont_lot_factor",   "float", 0.0, 2.0),
-    "FORGE_SELL_STOP_CONT_LEGS":         ("bb_breakout", "sell_stop_cont_legs",         "int",   1.0, 7.0),
+    "FORGE_GEOMETRY_SELL_STOP_CONT_LEGS":         ("bb_breakout", "sell_stop_cont_legs",         "int",   1.0, 7.0),
     "FORGE_SELL_STOP_CONT_EXPIRY_BARS":  ("bb_breakout", "sell_stop_cont_expiry_bars",  "int",   1.0, 50.0),
     "FORGE_SELL_STOP_CONT_TP_ATR_MULT": ("bb_breakout", "sell_stop_cont_tp_atr_mult",  "float", 0.0, 5.0),
     "FORGE_SELL_STOP_CONT_MIN_RSI":      ("bb_breakout", "sell_stop_cont_min_rsi",      "float", 0.0, 50.0),
-    "FORGE_SELL_STOP_CONT_MIN_ADX":      ("bb_breakout", "sell_stop_cont_min_adx",      "float", 0.0, 80.0),
-    "FORGE_SELL_STOP_CONT_REQUIRE_H1_DI": ("bb_breakout", "sell_stop_cont_require_h1_di", "bool01", None, None),
+    "FORGE_ATOM_SELL_STOP_CONT_M5_ADX_MIN":      ("bb_breakout", "sell_stop_cont_min_adx",      "float", 0.0, 80.0),
+    "FORGE_GATE_SELL_STOP_CONT_H1_DI_REQUIRE": ("bb_breakout", "sell_stop_cont_require_h1_di", "bool01", None, None),
     # 2.7.21 — Cascade regime guard (Run 15 G5040 -$1119 cascade fix)
     "FORGE_SELL_STOP_CONT_REQUIRE_TREND_REGIME": ("bb_breakout", "sell_stop_cont_require_trend_regime", "bool01", None, None),
     # BUY LIMIT recovery (2.7.10 Day 3) — Cardwell Bull Support entry at crash low after SELL TP1
@@ -182,13 +182,13 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # H4 supplemental gates (2.7.10) — disabled by default in .defaults.json; enable per run for testing
     # H4 RSI gate: block SELL when H4 RSI >= h4_rsi_sell_max (Cardwell Bear Resistance exhaustion on H4)
     #              block BUY  when H4 RSI <= h4_rsi_buy_min  (Cardwell Bull Support exhaustion on H4)
-    "FORGE_H4_RSI_GATE_ENABLED": ("bb_breakout", "h4_rsi_gate_enabled", "bool01", None, None),
-    "FORGE_H4_RSI_SELL_MAX":     ("bb_breakout", "h4_rsi_sell_max",     "float", 30.0, 80.0),
-    "FORGE_H4_RSI_BUY_MIN":      ("bb_breakout", "h4_rsi_buy_min",      "float", 20.0, 70.0),
+    "FORGE_GATE_HTF_H4_RSI_ENABLE": ("bb_breakout", "h4_rsi_gate_enabled", "bool01", None, None),
+    "FORGE_ATOM_HTF_H4_RSI_MAX_SELL":     ("bb_breakout", "h4_rsi_sell_max",     "float", 30.0, 80.0),
+    "FORGE_ATOM_HTF_H4_RSI_MIN_BUY":      ("bb_breakout", "h4_rsi_buy_min",      "float", 20.0, 70.0),
     # H4 ADX gate: block entries when H4 ADX < min threshold (H4 trend not directional — ranging H4)
-    "FORGE_H4_ADX_GATE_ENABLED": ("bb_breakout", "h4_adx_gate_enabled", "bool01", None, None),
-    "FORGE_H4_ADX_MIN_SELL":     ("bb_breakout", "h4_adx_min_sell",     "float", 0.0, 80.0),
-    "FORGE_H4_ADX_MIN_BUY":      ("bb_breakout", "h4_adx_min_buy",      "float", 0.0, 80.0),
+    "FORGE_GATE_HTF_H4_ADX_ENABLE": ("bb_breakout", "h4_adx_gate_enabled", "bool01", None, None),
+    "FORGE_ATOM_HTF_H4_ADX_MIN_SELL":     ("bb_breakout", "h4_adx_min_sell",     "float", 0.0, 80.0),
+    "FORGE_ATOM_HTF_H4_ADX_MIN_BUY":      ("bb_breakout", "h4_adx_min_buy",      "float", 0.0, 80.0),
     "FORGE_FIB_BIAS_ENABLED": ("indicators", "fib_bias_enabled", "bool01", None, None),
     "FORGE_FIB_TP_ENABLED": ("indicators", "fib_tp_enabled", "bool01", None, None),
     "FORGE_FIB_LOOKBACK": ("indicators", "fib_lookback", "int", 0.0, 500.0),
@@ -227,28 +227,28 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_TP5_MIN_ADX":         ("bb_breakout", "tp5_min_adx",         "int",    0,    100),
     "FORGE_BREAKOUT_TP5_ATR_MULT":        ("bb_breakout", "tp5_atr_mult",        "float",  3.0,  10.0),
     # 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 -$1,666 fix.
-    "FORGE_DAILY_DIRECTION_GATE_ENABLED":  ("safety", "daily_direction_gate_enabled",  "bool01", None, None),
-    "FORGE_DAILY_SMA_PERIOD":               ("safety", "daily_sma_period",              "int",    2,    200),
-    "FORGE_DAILY_SMA_LOOKBACK_DAYS":        ("safety", "daily_sma_lookback_days",       "int",    1,    30),
-    "FORGE_DAILY_SLOPE_BLOCK_ATR":          ("safety", "daily_slope_block_atr",         "float",  0.0,  5.0),
-    "FORGE_DAILY_MOVE_BLOCK_ATR":           ("safety", "daily_move_block_atr",          "float",  0.0,  5.0),
-    "FORGE_DAILY_MOVE_FLIP_HYSTERESIS":     ("safety", "daily_move_flip_hysteresis",    "float",  0.0,  5.0),
-    "FORGE_DAILY_CANCEL_PENDING_ON_FLIP":   ("safety", "daily_cancel_pending_on_flip",  "bool01", None, None),
-    "FORGE_DAILY_CANCEL_INCLUDES_CASCADE":  ("safety", "daily_cancel_includes_cascade", "bool01", None, None),
+    "FORGE_GATE_DAILY_DIRECTION_ENABLE":  ("safety", "daily_direction_gate_enabled",  "bool01", None, None),
+    "FORGE_ATOM_DAILY_SMA_PERIOD":               ("safety", "daily_sma_period",              "int",    2,    200),
+    "FORGE_ATOM_DAILY_SMA_LOOKBACK":        ("safety", "daily_sma_lookback_days",       "int",    1,    30),
+    "FORGE_ATOM_DAILY_SLOPE_BLOCK_ATR":          ("safety", "daily_slope_block_atr",         "float",  0.0,  5.0),
+    "FORGE_ATOM_DAILY_MOVE_BLOCK_ATR":           ("safety", "daily_move_block_atr",          "float",  0.0,  5.0),
+    "FORGE_ATOM_DAILY_MOVE_FLIP_HYSTERESIS":     ("safety", "daily_move_flip_hysteresis",    "float",  0.0,  5.0),
+    "FORGE_GATE_DAILY_FLIP_CANCEL_PENDING":   ("safety", "daily_cancel_pending_on_flip",  "bool01", None, None),
+    "FORGE_GATE_DAILY_FLIP_CANCEL_CASCADE":  ("safety", "daily_cancel_includes_cascade", "bool01", None, None),
     # 2.7.28 — Momentum dump-catch market entry (Run 17 trend-capture gap fix).
     "FORGE_DUMP_CATCH_ENABLED":      ("safety", "dump_catch_enabled",      "bool01", None, None),
     "FORGE_DUMP_LOOKBACK_BARS":      ("safety", "dump_lookback_bars",      "int",    1,    20),
     "FORGE_DUMP_ATR_MULT":           ("safety", "dump_atr_mult",           "float",  0.3,  5.0),
     "FORGE_DUMP_MAX_RSI":            ("safety", "dump_max_rsi",            "float",  0,    100),
-    "FORGE_DUMP_MAX_RSI_BUY":        ("safety", "dump_max_rsi_buy",        "float",  0,    100),
+    "FORGE_ATOM_DUMP_RSI_MAX_BUY":        ("safety", "dump_max_rsi_buy",        "float",  0,    100),
     "FORGE_DUMP_MIN_ADX":            ("safety", "dump_min_adx",            "float",  0,    100),
     "FORGE_DUMP_REQUIRE_PSAR":       ("safety", "dump_require_psar",       "bool01", None, None),
     "FORGE_DUMP_REQUIRE_D1_BIAS":    ("safety", "dump_require_d1_bias",    "bool01", None, None),
     "FORGE_DUMP_COOLDOWN_SECONDS":   ("safety", "dump_cooldown_seconds",   "int",    0,    7200),
     "FORGE_DUMP_LOT_FACTOR":         ("safety", "dump_lot_factor",         "float",  0.01, 2.0),
-    "FORGE_DUMP_BUY_LOT_FACTOR":     ("safety", "dump_buy_lot_factor",     "float",  0.0,  2.0),
-    "FORGE_DUMP_SELL_LOT_FACTOR":    ("safety", "dump_sell_lot_factor",    "float",  0.0,  2.0),
-    "FORGE_DUMP_SELL_H1_MAX":        ("safety", "dump_sell_h1_max",        "float",  0.0,  10.0),
+    "FORGE_GEOMETRY_DUMP_LOT_FACTOR_BUY":     ("safety", "dump_buy_lot_factor",     "float",  0.0,  2.0),
+    "FORGE_GEOMETRY_DUMP_LOT_FACTOR_SELL":    ("safety", "dump_sell_lot_factor",    "float",  0.0,  2.0),
+    "FORGE_ATOM_DUMP_H1_TREND_MAX_SELL":        ("safety", "dump_sell_h1_max",        "float",  0.0,  10.0),
     # 2.7.32 — Option B (default OFF) direction-confirmation gate
     "FORGE_DUMP_REQUIRE_BAR_CONFIRM": ("safety", "dump_require_bar_confirm", "bool01", None, None),
     # 2.7.31 — BB_PULLBACK_SCALP additive setup (Run 19 Issue 4 / Task #53)
@@ -261,8 +261,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_PULLBACK_SCALP_COOLDOWN_SECONDS":   ("safety", "pullback_scalp_cooldown_seconds",   "int",    0,    7200),
     "FORGE_PULLBACK_SCALP_MAX_ADX":            ("safety", "pullback_scalp_max_adx",            "float",  0,    100),
     # 2.7.29 — Regime H1-strong override (Run 18 Issue 1 fix). 0 = disabled, 2.0 typical when enabled.
-    "FORGE_REGIME_H1_OVERRIDE_FACTOR":  ("safety", "regime_h1_override_factor",  "float", 0.0, 10.0),
-    "FORGE_REGIME_H1_OVERRIDE_ADX_MIN": ("safety", "regime_h1_override_adx_min", "float", 0.0, 100.0),
+    "FORGE_ATOM_HTF_H1_STRONG_FACTOR":  ("safety", "regime_h1_override_factor",  "float", 0.0, 10.0),
+    "FORGE_ATOM_HTF_H1_STRONG_ADX_MIN": ("safety", "regime_h1_override_adx_min", "float", 0.0, 100.0),
     "FORGE_BREAKOUT_TP1_ATR_MULT":      ("bb_breakout", "tp1_atr_mult",      "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_BUY_ATR_MULT":  ("bb_breakout", "tp1_buy_atr_mult",  "float", 0.1, 5.0),
     "FORGE_BREAKOUT_TP1_SELL_ATR_MULT": ("bb_breakout", "tp1_sell_atr_mult", "float", 0.1, 5.0),
@@ -529,6 +529,153 @@ ENV_KEY_ALIASES: dict[str, tuple[str, ...]] = {
         "FORGE_TIMING_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC",
         "FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC",
     ),
+    # 2.7.42 Phase 2 §10.5.1 + §10.5.1b — regime/HTF/Daily + setup-specific backfill renames.
+    # Same legacy-alias pattern as §10.5.1c. Operator's existing .env continues to work;
+    # deprecation warning at sync time points at the new canonical name.
+    "FORGE_ATOM_HTF_H1_STRONG_FACTOR": (
+        "FORGE_ATOM_HTF_H1_STRONG_FACTOR",
+        "FORGE_REGIME_H1_OVERRIDE_FACTOR",
+    ),
+    "FORGE_ATOM_HTF_H1_STRONG_ADX_MIN": (
+        "FORGE_ATOM_HTF_H1_STRONG_ADX_MIN",
+        "FORGE_REGIME_H1_OVERRIDE_ADX_MIN",
+    ),
+    "FORGE_GATE_DAILY_DIRECTION_ENABLE": (
+        "FORGE_GATE_DAILY_DIRECTION_ENABLE",
+        "FORGE_DAILY_DIRECTION_GATE_ENABLED",
+    ),
+    "FORGE_GATE_DAILY_FLIP_CANCEL_PENDING": (
+        "FORGE_GATE_DAILY_FLIP_CANCEL_PENDING",
+        "FORGE_DAILY_CANCEL_PENDING_ON_FLIP",
+    ),
+    "FORGE_GATE_DAILY_FLIP_CANCEL_CASCADE": (
+        "FORGE_GATE_DAILY_FLIP_CANCEL_CASCADE",
+        "FORGE_DAILY_CANCEL_INCLUDES_CASCADE",
+    ),
+    "FORGE_ATOM_DAILY_SMA_PERIOD": (
+        "FORGE_ATOM_DAILY_SMA_PERIOD",
+        "FORGE_DAILY_SMA_PERIOD",
+    ),
+    "FORGE_ATOM_DAILY_SMA_LOOKBACK": (
+        "FORGE_ATOM_DAILY_SMA_LOOKBACK",
+        "FORGE_DAILY_SMA_LOOKBACK_DAYS",
+    ),
+    "FORGE_ATOM_DAILY_SLOPE_BLOCK_ATR": (
+        "FORGE_ATOM_DAILY_SLOPE_BLOCK_ATR",
+        "FORGE_DAILY_SLOPE_BLOCK_ATR",
+    ),
+    "FORGE_ATOM_DAILY_MOVE_BLOCK_ATR": (
+        "FORGE_ATOM_DAILY_MOVE_BLOCK_ATR",
+        "FORGE_DAILY_MOVE_BLOCK_ATR",
+    ),
+    "FORGE_ATOM_DAILY_MOVE_FLIP_HYSTERESIS": (
+        "FORGE_ATOM_DAILY_MOVE_FLIP_HYSTERESIS",
+        "FORGE_DAILY_MOVE_FLIP_HYSTERESIS",
+    ),
+    "FORGE_GATE_HTF_H4_RSI_ENABLE": (
+        "FORGE_GATE_HTF_H4_RSI_ENABLE",
+        "FORGE_H4_RSI_GATE_ENABLED",
+    ),
+    "FORGE_ATOM_HTF_H4_RSI_MAX_SELL": (
+        "FORGE_ATOM_HTF_H4_RSI_MAX_SELL",
+        "FORGE_H4_RSI_SELL_MAX",
+    ),
+    "FORGE_ATOM_HTF_H4_RSI_MIN_BUY": (
+        "FORGE_ATOM_HTF_H4_RSI_MIN_BUY",
+        "FORGE_H4_RSI_BUY_MIN",
+    ),
+    "FORGE_GATE_HTF_H4_ADX_ENABLE": (
+        "FORGE_GATE_HTF_H4_ADX_ENABLE",
+        "FORGE_H4_ADX_GATE_ENABLED",
+    ),
+    "FORGE_ATOM_HTF_H4_ADX_MIN_SELL": (
+        "FORGE_ATOM_HTF_H4_ADX_MIN_SELL",
+        "FORGE_H4_ADX_MIN_SELL",
+    ),
+    "FORGE_ATOM_HTF_H4_ADX_MIN_BUY": (
+        "FORGE_ATOM_HTF_H4_ADX_MIN_BUY",
+        "FORGE_H4_ADX_MIN_BUY",
+    ),
+    "FORGE_GATE_M5_ADX_HYSTERESIS_ENABLE": (
+        "FORGE_GATE_M5_ADX_HYSTERESIS_ENABLE",
+        "FORGE_ADX_HYSTERESIS_ENABLED",
+    ),
+    "FORGE_ATOM_M5_ADX_TREND_ENTER": (
+        "FORGE_ATOM_M5_ADX_TREND_ENTER",
+        "FORGE_ADX_TREND_ENTER",
+    ),
+    "FORGE_ATOM_M5_ADX_TREND_EXIT": (
+        "FORGE_ATOM_M5_ADX_TREND_EXIT",
+        "FORGE_ADX_TREND_EXIT",
+    ),
+    "FORGE_GATE_M5_ADX_HYSTERESIS_APPLY_IN_TESTER": (
+        "FORGE_GATE_M5_ADX_HYSTERESIS_APPLY_IN_TESTER",
+        "FORGE_ADX_HYSTERESIS_APPLY_IN_TESTER",
+    ),
+    "FORGE_GATE_BREAKOUT_HID_BULL_DIV_BLOCK_SELL": (
+        "FORGE_GATE_BREAKOUT_HID_BULL_DIV_BLOCK_SELL",
+        "FORGE_BREAKOUT_BLOCK_HID_BULL_SELL",
+    ),
+    "FORGE_ATOM_BREAKOUT_CRASH_BYPASS_M15_ADX_MIN_SELL": (
+        "FORGE_ATOM_BREAKOUT_CRASH_BYPASS_M15_ADX_MIN_SELL",
+        "FORGE_BREAKOUT_H1H4_CRASH_SELL_MIN_M15_ADX",
+    ),
+    "FORGE_GATE_BREAKOUT_H1_MACD_REQUIRE_BUY": (
+        "FORGE_GATE_BREAKOUT_H1_MACD_REQUIRE_BUY",
+        "FORGE_BREAKOUT_REQUIRE_H1_MACD_BUY",
+    ),
+    "FORGE_TIMING_BREAKOUT_SAME_DIR_COOLDOWN_SEC": (
+        "FORGE_TIMING_BREAKOUT_SAME_DIR_COOLDOWN_SEC",
+        "FORGE_BREAKOUT_SAME_DIR_COOLDOWN_SECONDS",
+    ),
+    "FORGE_GEOMETRY_SELL_STOP_CONT_LEGS": (
+        "FORGE_GEOMETRY_SELL_STOP_CONT_LEGS",
+        "FORGE_SELL_STOP_CONT_LEGS",
+    ),
+    "FORGE_ATOM_SELL_STOP_CONT_M5_ADX_MIN": (
+        "FORGE_ATOM_SELL_STOP_CONT_M5_ADX_MIN",
+        "FORGE_SELL_STOP_CONT_MIN_ADX",
+    ),
+    "FORGE_GATE_SELL_STOP_CONT_H1_DI_REQUIRE": (
+        "FORGE_GATE_SELL_STOP_CONT_H1_DI_REQUIRE",
+        "FORGE_SELL_STOP_CONT_REQUIRE_H1_DI",
+    ),
+    "FORGE_GEOMETRY_SELL_STOP_CONT_SL_ATR_MULT": (
+        "FORGE_GEOMETRY_SELL_STOP_CONT_SL_ATR_MULT",
+        "FORGE_SELL_STOP_CONT_SL_ATR_MULT",
+    ),
+    "FORGE_GEOMETRY_DUMP_LOT_FACTOR_BUY": (
+        "FORGE_GEOMETRY_DUMP_LOT_FACTOR_BUY",
+        "FORGE_DUMP_BUY_LOT_FACTOR",
+    ),
+    "FORGE_GEOMETRY_DUMP_LOT_FACTOR_SELL": (
+        "FORGE_GEOMETRY_DUMP_LOT_FACTOR_SELL",
+        "FORGE_DUMP_SELL_LOT_FACTOR",
+    ),
+    "FORGE_ATOM_DUMP_H1_TREND_MAX_SELL": (
+        "FORGE_ATOM_DUMP_H1_TREND_MAX_SELL",
+        "FORGE_DUMP_SELL_H1_MAX",
+    ),
+    "FORGE_ATOM_DUMP_RSI_MAX_BUY": (
+        "FORGE_ATOM_DUMP_RSI_MAX_BUY",
+        "FORGE_DUMP_MAX_RSI_BUY",
+    ),
+    "FORGE_GEOMETRY_STAGED_SCALE_IN_FORCE": (
+        "FORGE_GEOMETRY_STAGED_SCALE_IN_FORCE",
+        "FORGE_NATIVE_FORCE_STAGED_SCALE_IN",
+    ),
+    "FORGE_GEOMETRY_LEGS_CLEAR_TREND_FACTOR": (
+        "FORGE_GEOMETRY_LEGS_CLEAR_TREND_FACTOR",
+        "FORGE_NATIVE_LEGS_CLEAR_TREND_FACTOR",
+    ),
+    "FORGE_GEOMETRY_NATIVE_USE_LIMIT_ENTRY": (
+        "FORGE_GEOMETRY_NATIVE_USE_LIMIT_ENTRY",
+        "FORGE_NATIVE_SCALPER_USE_LIMIT_ENTRY",
+    ),
+    "FORGE_GEOMETRY_WAVE_CONFIRM_LOT_MULT": (
+        "FORGE_GEOMETRY_WAVE_CONFIRM_LOT_MULT",
+        "FORGE_WAVE_CONFIRMATION_LOT_MULT",
+    ),
 }
 
 
@@ -546,6 +693,43 @@ DEPRECATED_ALIASES: set[str] = {
     "FORGE_BULL_DAY_DIP_BUY_SL_ATR_MULT",
     "FORGE_BULL_DAY_DIP_BUY_TP1_ATR_MULT",
     "FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC",
+    # 2.7.42 Phase 2 §10.5.1 + §10.5.1b legacy names
+    "FORGE_REGIME_H1_OVERRIDE_FACTOR",
+    "FORGE_REGIME_H1_OVERRIDE_ADX_MIN",
+    "FORGE_DAILY_DIRECTION_GATE_ENABLED",
+    "FORGE_DAILY_CANCEL_PENDING_ON_FLIP",
+    "FORGE_DAILY_CANCEL_INCLUDES_CASCADE",
+    "FORGE_DAILY_SMA_PERIOD",
+    "FORGE_DAILY_SMA_LOOKBACK_DAYS",
+    "FORGE_DAILY_SLOPE_BLOCK_ATR",
+    "FORGE_DAILY_MOVE_BLOCK_ATR",
+    "FORGE_DAILY_MOVE_FLIP_HYSTERESIS",
+    "FORGE_H4_RSI_GATE_ENABLED",
+    "FORGE_H4_RSI_SELL_MAX",
+    "FORGE_H4_RSI_BUY_MIN",
+    "FORGE_H4_ADX_GATE_ENABLED",
+    "FORGE_H4_ADX_MIN_SELL",
+    "FORGE_H4_ADX_MIN_BUY",
+    "FORGE_ADX_HYSTERESIS_ENABLED",
+    "FORGE_ADX_TREND_ENTER",
+    "FORGE_ADX_TREND_EXIT",
+    "FORGE_ADX_HYSTERESIS_APPLY_IN_TESTER",
+    "FORGE_BREAKOUT_BLOCK_HID_BULL_SELL",
+    "FORGE_BREAKOUT_H1H4_CRASH_SELL_MIN_M15_ADX",
+    "FORGE_BREAKOUT_REQUIRE_H1_MACD_BUY",
+    "FORGE_BREAKOUT_SAME_DIR_COOLDOWN_SECONDS",
+    "FORGE_SELL_STOP_CONT_LEGS",
+    "FORGE_SELL_STOP_CONT_MIN_ADX",
+    "FORGE_SELL_STOP_CONT_REQUIRE_H1_DI",
+    "FORGE_SELL_STOP_CONT_SL_ATR_MULT",
+    "FORGE_DUMP_BUY_LOT_FACTOR",
+    "FORGE_DUMP_SELL_LOT_FACTOR",
+    "FORGE_DUMP_SELL_H1_MAX",
+    "FORGE_DUMP_MAX_RSI_BUY",
+    "FORGE_NATIVE_FORCE_STAGED_SCALE_IN",
+    "FORGE_NATIVE_LEGS_CLEAR_TREND_FACTOR",
+    "FORGE_NATIVE_SCALPER_USE_LIMIT_ENTRY",
+    "FORGE_WAVE_CONFIRMATION_LOT_MULT",
 }
 _DEPRECATION_WARNINGS_PRINTED: set[str] = set()
 
