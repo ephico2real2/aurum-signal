@@ -226,6 +226,11 @@
     "explanation": "MOMENTUM_DUMP SELL was blocked because the current killzone is LONDON_OPEN_KZ AND minutes_into_kz<60. The first hour of London open commonly sweeps Asian highs/lows before reversing (Judas Swing), so DUMP SELLs in this window often get caught in the reversal. Operator opt-in via FORGE_GATE_DUMP_JUDAS_WINDOW_BLOCK=1.",
     "category": "Session / Time"
   },
+  "kz_warmup": {
+    "label": "Killzone warmup — waiting for opening volatility to settle",
+    "explanation": "ALL entries blocked because the current killzone is within its first FORGE_GATE_KZ_WARMUP_MIN minutes (default 0=disabled, 15 typical). The opening minutes of a session commonly produce wide spreads and violent wicks that clear liquidity before the real move begins (stop-hunt risk). Once minutes_into_kz reaches the threshold, trading resumes normally.",
+    "category": "Session / Time"
+  },
   "spread": {
     "label": "Spread too wide — entry too expensive",
     "explanation": "The bid-ask spread at this moment exceeds the configured maximum (default 30 points for XAUUSD). A wide spread makes the entry uneconomical — the cost to enter is too large relative to the expected profit.",

@@ -945,6 +945,27 @@ def test_dump_judas_window_block_wired(ea_src, cfg, defaults, sync_src, gate_leg
     assert gate_legend["dump_judas_window"]["category"] == "Session / Time"
 
 
+def test_kz_warmup_gate_wired(ea_src, cfg, defaults, sync_src, gate_legend):
+    """v2.7.52: KZ warmup gate (FORGE_GATE_KZ_WARMUP_MIN) blocks entries in first N min of any KZ.
+    Implements the arongroups stop-hunt advice — first 5-15 min of session opens have wide spreads
+    and frequent stop hunts; better to wait for opening volatility to settle."""
+    # ScalperConfig field + default + JsonHasKey
+    assert "kz_warmup_min" in ea_src
+    assert 'JsonHasKey(content, "kz_warmup_min")' in ea_src
+    # Default OFF (0 = disabled)
+    assert cfg["session_filter"]["kz_warmup_min"] == 0
+    assert defaults["session_filter"]["kz_warmup_min"] == 0
+    # Sync mapping
+    assert "FORGE_GATE_KZ_WARMUP_MIN" in sync_src
+    # Wired into the early-gate dispatch path: knob > 0 AND KZ active AND minutes_into_kz < threshold
+    assert "g_sc.kz_warmup_min > 0" in ea_src
+    assert "g_regime.minutes_into_kz < g_sc.kz_warmup_min" in ea_src
+    # SKIP code emitted + registered in gate_legend
+    assert 'JournalRecordSignal("SKIP","kz_warmup"' in ea_src
+    assert "kz_warmup" in gate_legend
+    assert gate_legend["kz_warmup"]["category"] == "Session / Time"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # v2.7.47 — RegimeState surfacing to SIGNALS (FORGE_REGIME_TAXONOMY.md §3)
 # ──────────────────────────────────────────────────────────────────────────────
