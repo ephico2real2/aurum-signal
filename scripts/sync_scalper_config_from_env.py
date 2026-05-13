@@ -303,19 +303,25 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_KZ_NY_OPEN_END_MIN":       ("session_filter", "kz_ny_open_end_min",        "int",    0.0,  1440.0),
     "FORGE_KZ_LONDON_CLOSE_START_MIN":("session_filter", "kz_london_close_start_min", "int",    0.0,  1439.0),
     "FORGE_KZ_LONDON_CLOSE_END_MIN":  ("session_filter", "kz_london_close_end_min",   "int",    0.0,  1440.0),
-    # 2.7.38 Tier 1 Boolean Composites (all default-OFF; see docs/FORGE_INDICATOR_ATLAS.md §5)
+    # 2.7.38 Tier 1 Boolean Composites (all default-OFF; see docs/FORGE_INDICATOR_ATLAS.md §5).
+    # Composites that GATE/AMPLIFY existing setups stay in composites.* scope.
     "FORGE_BLOCK_SELL_IN_CHOP_ENABLED":       ("composites", "block_sell_in_chop_enabled",       "bool01", None, None),
     "FORGE_INTRADAY_REVERSAL_SELL_ENABLED":   ("composites", "intraday_reversal_sell_enabled",   "bool01", None, None),
     "FORGE_INTRADAY_REVERSAL_SELL_LOT_MULT":  ("composites", "intraday_reversal_sell_lot_mult",  "float",  0.5,   5.0),
-    "FORGE_FRACTIONAL_SELL_IN_BULL_ENABLED":  ("composites", "fractional_sell_in_bull_enabled",  "bool01", None, None),
-    "FORGE_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR": ("composites", "fractional_sell_in_bull_lot_factor", "float", 0.05, 1.0),
-    "FORGE_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT": ("composites", "fractional_sell_in_bull_sl_atr_mult", "float", 0.5,  5.0),
-    "FORGE_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT": ("composites", "fractional_sell_in_bull_tp1_atr_mult", "float", 0.1, 2.0),
-    "FORGE_BULL_DAY_DIP_BUY_ENABLED":         ("composites", "bull_day_dip_buy_enabled",         "bool01", None, None),
-    "FORGE_BULL_DAY_DIP_BUY_LOT_MULT":        ("composites", "bull_day_dip_buy_lot_mult",        "float",  0.1,  10.0),
-    "FORGE_BULL_DAY_DIP_BUY_SL_ATR_MULT":     ("composites", "bull_day_dip_buy_sl_atr_mult",     "float",  0.3,   5.0),
-    "FORGE_BULL_DAY_DIP_BUY_TP1_ATR_MULT":    ("composites", "bull_day_dip_buy_tp1_atr_mult",    "float",  0.1,   3.0),
-    "FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC": ("composites", "bull_day_dip_buy_reentry_cooldown_sec", "int", 0.0, 3600.0),
+    # 2.7.42 Phase 2 §10.5.1c composite split — FRACTIONAL_SELL_IN_BULL + BULL_DAY_DIP_BUY
+    # emit their own setup_type strings → env names move to SETUP/GEOMETRY/TIMING scopes
+    # per FORGE_NAMING_CONVENTIONS.md §4.9. JSON destinations stay in composites.* per the
+    # Python-contract preservation rule (§10.5.0.1). Legacy env names still work via
+    # ENV_KEY_ALIASES below.
+    "FORGE_SETUP_FRACTIONAL_SELL_IN_BULL_ENABLED":         ("composites", "fractional_sell_in_bull_enabled",         "bool01", None, None),
+    "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR":   ("composites", "fractional_sell_in_bull_lot_factor",      "float",  0.05, 1.0),
+    "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT":  ("composites", "fractional_sell_in_bull_sl_atr_mult",     "float",  0.5,  5.0),
+    "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT": ("composites", "fractional_sell_in_bull_tp1_atr_mult",    "float",  0.1,  2.0),
+    "FORGE_SETUP_BULL_DAY_DIP_BUY_ENABLED":                ("composites", "bull_day_dip_buy_enabled",                "bool01", None, None),
+    "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_LOT_MULT":            ("composites", "bull_day_dip_buy_lot_mult",               "float",  0.1,  10.0),
+    "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_SL_ATR_MULT":         ("composites", "bull_day_dip_buy_sl_atr_mult",            "float",  0.3,  5.0),
+    "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_TP1_ATR_MULT":        ("composites", "bull_day_dip_buy_tp1_atr_mult",           "float",  0.1,  3.0),
+    "FORGE_TIMING_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC":  ("composites", "bull_day_dip_buy_reentry_cooldown_sec",   "int",    0.0,  3600.0),
     "FORGE_TESTER_COOLDOWN_ENABLED": ("safety", "tester_cooldown_enabled", "bool01", None, None),
     "FORGE_DIRECTION_COOLDOWN_ENABLED": ("safety", "direction_cooldown_enabled", "bool01", None, None),
     "FORGE_DIRECTION_COOLDOWN_BARS": ("safety", "direction_cooldown_bars", "int", 0.0, 50.0),
@@ -482,13 +488,78 @@ ENV_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "FORGE_NUM_TRADES": ("FORGE_NUM_TRADES", "forgeNumTrades"),
     "FORGE_MIN_NUM_TRADES": ("FORGE_MIN_NUM_TRADES", "forgeMinNumTrades"),
     "FORGE_MAX_NUM_TRADES": ("FORGE_MAX_NUM_TRADES", "forgeMaxNumTrades"),
+    # 2.7.42 Phase 2 §10.5.1c composite split — legacy env names continue to resolve
+    # for one EA version. Operator-facing migration: switch .env to the new SETUP/
+    # GEOMETRY/TIMING-prefixed names; the old names will be removed in a future EA
+    # version. JSON keys (composites.fractional_sell_in_bull_*, composites.bull_day_dip_buy_*)
+    # are NOT renamed per the Python-contract preservation rule (§10.5.0.1).
+    "FORGE_SETUP_FRACTIONAL_SELL_IN_BULL_ENABLED": (
+        "FORGE_SETUP_FRACTIONAL_SELL_IN_BULL_ENABLED",      # canonical (preferred)
+        "FORGE_FRACTIONAL_SELL_IN_BULL_ENABLED",            # legacy alias (deprecated)
+    ),
+    "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR": (
+        "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR",
+        "FORGE_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR",
+    ),
+    "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT": (
+        "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT",
+        "FORGE_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT",
+    ),
+    "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT": (
+        "FORGE_GEOMETRY_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT",
+        "FORGE_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT",
+    ),
+    "FORGE_SETUP_BULL_DAY_DIP_BUY_ENABLED": (
+        "FORGE_SETUP_BULL_DAY_DIP_BUY_ENABLED",
+        "FORGE_BULL_DAY_DIP_BUY_ENABLED",
+    ),
+    "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_LOT_MULT": (
+        "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_LOT_MULT",
+        "FORGE_BULL_DAY_DIP_BUY_LOT_MULT",
+    ),
+    "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_SL_ATR_MULT": (
+        "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_SL_ATR_MULT",
+        "FORGE_BULL_DAY_DIP_BUY_SL_ATR_MULT",
+    ),
+    "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_TP1_ATR_MULT": (
+        "FORGE_GEOMETRY_BULL_DAY_DIP_BUY_TP1_ATR_MULT",
+        "FORGE_BULL_DAY_DIP_BUY_TP1_ATR_MULT",
+    ),
+    "FORGE_TIMING_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC": (
+        "FORGE_TIMING_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC",
+        "FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC",
+    ),
 }
 
 
+# 2.7.42 Phase 2 §10.5.1c — env names that are deprecated. When _env_raw resolves to
+# one of these instead of the canonical name, emit a one-line deprecation warning
+# pointing the operator at the new name. (Only deprecations are warned — neutral
+# aliases like forgeNumTrades/FORGE_NUM_TRADES are not warned.)
+DEPRECATED_ALIASES: set[str] = {
+    "FORGE_FRACTIONAL_SELL_IN_BULL_ENABLED",
+    "FORGE_FRACTIONAL_SELL_IN_BULL_LOT_FACTOR",
+    "FORGE_FRACTIONAL_SELL_IN_BULL_SL_ATR_MULT",
+    "FORGE_FRACTIONAL_SELL_IN_BULL_TP1_ATR_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_ENABLED",
+    "FORGE_BULL_DAY_DIP_BUY_LOT_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_SL_ATR_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_TP1_ATR_MULT",
+    "FORGE_BULL_DAY_DIP_BUY_REENTRY_COOLDOWN_SEC",
+}
+_DEPRECATION_WARNINGS_PRINTED: set[str] = set()
+
+
 def _env_raw(env: dict[str, str], env_key: str) -> str:
-    for k in ENV_KEY_ALIASES.get(env_key, (env_key,)):
+    aliases = ENV_KEY_ALIASES.get(env_key, (env_key,))
+    canonical = aliases[0]
+    for k in aliases:
         v = env.get(k, "").strip()
         if v:
+            if k in DEPRECATED_ALIASES and k not in _DEPRECATION_WARNINGS_PRINTED:
+                _DEPRECATION_WARNINGS_PRINTED.add(k)
+                print(f"[sync] ⚠ DEPRECATED: .env has {k}=... — use {canonical} instead "
+                      f"(legacy alias will be removed in a future EA version)")
             return v
     return ""
 
