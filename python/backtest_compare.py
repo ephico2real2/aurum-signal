@@ -59,6 +59,52 @@ def _run_stats(ts, aurum_run_id: int) -> dict[str, Any]:
         if r["outcome"] == "SKIP" and r["gate_reason"]:
             gate_breakdown[r["gate_reason"]] = gate_breakdown.get(r["gate_reason"], 0) + r["cnt"]
 
+    # v2.7.48 — killzone + RegimeState breakdowns (FORGE_REGIME_TAXONOMY.md §3 + §11.3 + §11.6).
+    # Surfaces the columns that v2.7.36/.45/.47 added to forge_signals so run-vs-run can answer
+    # "did Run A enter more in the prime window than Run B?" and "did intraday_counter_htf
+    # entries underperform?" — the whole reason those columns exist.
+    # All wrapped in try/except: pre-v2.7.36 aurum_tester.db files won't have the columns and
+    # should soft-degrade (no enrichment) rather than crash the comparator.
+    taken_by_killzone: dict[str, int] = {}
+    htf_h1_strong_rate_pct: float | None = None
+    intraday_counter_htf_rate_pct: float | None = None
+    judas_window_taken: int = 0
+    try:
+        kz_rows = ts.query(
+            """SELECT COALESCE(NULLIF(killzone,''),'(none)') AS kz, COUNT(*) AS cnt
+               FROM forge_signals
+               WHERE aurum_run_id=? AND outcome='TAKEN'
+               GROUP BY 1
+               ORDER BY cnt DESC""",
+            (aurum_run_id,),
+        )
+        taken_by_killzone = {r["kz"]: r["cnt"] for r in kz_rows}
+    except Exception:
+        # Column doesn't exist on old aurum_tester.db — leave empty.
+        pass
+
+    try:
+        regime_rows = ts.query(
+            """SELECT
+                 SUM(CASE WHEN htf_h1_strong=1        THEN 1 ELSE 0 END) AS htf_strong_cnt,
+                 SUM(CASE WHEN intraday_counter_htf=1 THEN 1 ELSE 0 END) AS counter_htf_cnt,
+                 SUM(CASE WHEN killzone='LONDON_OPEN_KZ' AND minutes_into_kz < 60 THEN 1 ELSE 0 END) AS judas_cnt
+               FROM forge_signals
+               WHERE aurum_run_id=? AND outcome='TAKEN'""",
+            (aurum_run_id,),
+        )
+        if regime_rows and taken > 0:
+            r0 = regime_rows[0]
+            htf_strong_cnt  = int(r0.get("htf_strong_cnt")  or 0)
+            counter_htf_cnt = int(r0.get("counter_htf_cnt") or 0)
+            judas_window_taken = int(r0.get("judas_cnt") or 0)
+            htf_h1_strong_rate_pct        = _pct(htf_strong_cnt,  taken)
+            intraday_counter_htf_rate_pct = _pct(counter_htf_cnt, taken)
+    except Exception:
+        # Columns from v2.7.47 (htf_h1_strong, intraday_counter_htf) or v2.7.45 (minutes_into_kz)
+        # don't exist on older DB — leave the rate fields as None.
+        pass
+
     trade_rows = ts.query(
         """SELECT profit FROM forge_journal_trades
            WHERE aurum_run_id=? AND profit IS NOT NULL AND profit != 0""",
@@ -97,6 +143,11 @@ def _run_stats(ts, aurum_run_id: int) -> dict[str, Any]:
         "avg_win":         avg_win,
         "avg_loss":        avg_loss,
         "gate_breakdown":  dict(sorted(gate_breakdown.items(), key=lambda x: -x[1])),
+        # v2.7.48 — killzone + RegimeState breakdowns (sorted desc by cnt already)
+        "taken_by_killzone":             taken_by_killzone,
+        "htf_h1_strong_rate_pct":        htf_h1_strong_rate_pct,
+        "intraday_counter_htf_rate_pct": intraday_counter_htf_rate_pct,
+        "judas_window_taken":            judas_window_taken,
     }
 
 
@@ -192,6 +243,21 @@ def compare_runs(ts, run_a_id: int, run_b_id: int) -> dict[str, Any]:
     }
     gate_diff = dict(sorted(gate_diff.items(), key=lambda x: -abs(x[1]["delta"])))
 
+    # v2.7.48 — Killzone diff: same shape as gate_diff. Reveals e.g. "Run A took 12 more entries
+    # in NY_OPEN_KZ but 4 fewer in LONDON_OPEN_KZ" — directly speaks to §11.4 composite refinements.
+    kz_a = a.get("taken_by_killzone", {})
+    kz_b = b.get("taken_by_killzone", {})
+    all_kz = set(kz_a) | set(kz_b)
+    killzone_diff = {
+        k: {
+            "a":     kz_a.get(k, 0),
+            "b":     kz_b.get(k, 0),
+            "delta": kz_a.get(k, 0) - kz_b.get(k, 0),
+        }
+        for k in all_kz
+    }
+    killzone_diff = dict(sorted(killzone_diff.items(), key=lambda x: -abs(x[1]["delta"])))
+
     winner = None
     if score_a is not None and score_b is not None:
         if score_a > score_b:
@@ -214,9 +280,17 @@ def compare_runs(ts, run_a_id: int, run_b_id: int) -> dict[str, Any]:
             "wins":           _delta(a.get("wins"),           b.get("wins")),
             "losses":         _delta(a.get("losses"),         b.get("losses")),
             "score":          _delta(score_a,                 score_b),
+            # v2.7.48 — regime/killzone deltas (FORGE_REGIME_TAXONOMY.md §3 + §11.6)
+            "htf_h1_strong_rate_pct":        _delta(a.get("htf_h1_strong_rate_pct"),
+                                                    b.get("htf_h1_strong_rate_pct")),
+            "intraday_counter_htf_rate_pct": _delta(a.get("intraday_counter_htf_rate_pct"),
+                                                    b.get("intraday_counter_htf_rate_pct")),
+            "judas_window_taken":            _delta(a.get("judas_window_taken"),
+                                                    b.get("judas_window_taken")),
         },
-        "gate_diff": gate_diff,
-        "winner":    winner,
+        "gate_diff":    gate_diff,
+        "killzone_diff": killzone_diff,
+        "winner":       winner,
         "note": (
             "Score 0-100: 40% win rate + 30% P&L return (vs balance, 5%=full) + "
             "15% loss avoidance + 15% take rate (0.05%=full) + up to 5pt R/R bonus. "
