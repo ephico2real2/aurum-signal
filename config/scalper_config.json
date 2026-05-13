@@ -1,5 +1,5 @@
 {
-  "version": "2.7.60",
+  "version": "2.7.61",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -335,7 +335,7 @@
     "dump_sl_atr_mult_sell": 2.0,
     "dump_tp1_atr_mult_buy": 0.4,
     "dump_tp1_atr_mult_sell": 0.6,
-    "dump_max_hold_seconds": 600,
+    "dump_max_hold_seconds": 0,
     "dump_sell_min_rsi": 30,
     "dump_sell_block_below_bb_l": 1,
     "dump_below_bbl_block_max_rsi": 35,
@@ -418,6 +418,7 @@
     "bull_day_dip_buy_prime_amplifier": 1.0,
     "dump_judas_window_block": 0,
     "momentum_dump_composite_test_enabled": 1,
+    "bb_lower_reversion_buy_max_hold_seconds": 0,
     "trend_continuation_buy_sl_atr_mult": 1.5,
     "trend_continuation_buy_cooldown_seconds": 0,
     "trend_continuation_sell_sl_atr_mult": 1.5,

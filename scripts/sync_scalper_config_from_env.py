@@ -374,6 +374,9 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_DUMP_MAX_ADX":                   ("safety", "dump_max_adx",                 "float",  0.0,   80.0),
     "FORGE_GATE_DUMP_SELL_LATE_RSI_BLOCK":       ("safety", "dump_sell_late_rsi_block",     "float",  0.0,   100.0),
     "FORGE_GATE_DUMP_BUY_LATE_RSI_BLOCK":        ("safety", "dump_buy_late_rsi_block",      "float",  0.0,   100.0),
+    # v2.7.61 — Day-extreme distance gate
+    "FORGE_GATE_DUMP_BUY_MAX_DIST_FROM_DAY_HIGH_ATR":  ("safety", "dump_buy_max_dist_from_day_high_atr",  "float", 0.0, 10.0),
+    "FORGE_GATE_DUMP_SELL_MAX_DIST_FROM_DAY_LOW_ATR":  ("safety", "dump_sell_max_dist_from_day_low_atr",  "float", 0.0, 10.0),
     # 2.7.32 — Option B (default OFF) direction-confirmation gate
     "FORGE_DUMP_REQUIRE_BAR_CONFIRM": ("safety", "dump_require_bar_confirm", "bool01", None, None),
     # 2.7.31 — BB_PULLBACK_SCALP additive setup (Run 19 Issue 4 / Task #53)

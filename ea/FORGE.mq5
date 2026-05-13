@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.130"
+#property version "2.131"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.60";
+const string FORGE_VERSION = "2.7.61";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -596,6 +596,13 @@ struct ScalperConfig {
    double dump_max_adx;                     // shared exhaustion-block ADX ceiling (default 42)
    double dump_sell_late_rsi_block;         // SELL exhaustion: blocks when adx≥max_adx AND rsi ≤ this (default 36)
    double dump_buy_late_rsi_block;          // BUY exhaustion: blocks when adx≥max_adx AND rsi ≥ this (default 64)
+   // v2.7.61 — Day-extreme distance gate (Apr 13 chop-in-bear G5087/G5098 −$152 fix).
+   //   Block MOMENTUM_DUMP BUY when price within max_dist×ATR of day_high (overextended top).
+   //   Block MOMENTUM_DUMP SELL when price within max_dist×ATR of day_low (overextended bottom).
+   //   Default 0.5×ATR: G5087/G5098 fired ~0.1pt from day high (0.02-0.06×ATR) → blocked.
+   //   Apr 13 winners (G5086/G5094/G5096) fired ≥3pt below (>0.5×ATR) → allowed.
+   double dump_buy_max_dist_from_day_high_atr;   // BUY block: 0 disables gate (default 0.5)
+   double dump_sell_max_dist_from_day_low_atr;   // SELL block: 0 disables gate (default 0.5)
    // 2.7.32 — Option B (default OFF, documented for validation): direction-confirmation gate.
    //   Run 20 Mar 31 had 16 of 24 BUY losses as IMMEDIATE-SL (avg 30min, 1.52×ATR — exact SL setting,
    //   no TPs offset). These are direction failures, not SL-too-tight. Widening SL (Option A 3.0→4.0×ATR)
@@ -3539,6 +3546,9 @@ void InitScalperConfig() {
    g_sc.dump_max_adx                  = 42.0;     // exhaustion ceiling (G5003 was 43.9 ≥ 42 → blocked)
    g_sc.dump_sell_late_rsi_block      = 36.0;     // SELL exhaustion: blocks when adx≥42 AND rsi ≤ 36
    g_sc.dump_buy_late_rsi_block       = 64.0;     // BUY exhaustion: blocks when adx≥42 AND rsi ≥ 64
+   // v2.7.61 — Day-extreme distance gate defaults
+   g_sc.dump_buy_max_dist_from_day_high_atr  = 0.5;
+   g_sc.dump_sell_max_dist_from_day_low_atr  = 0.5;
    // 2.7.29 — Regime H1-strong override defaults (Run 18 Issue 1 fix).
    g_sc.regime_h1_override_factor     = 0.0;      // 0 = disabled (legacy unanimous AND-gating). 2.0 typical when enabled.
    g_sc.regime_h1_override_adx_min    = 30.0;     // Minimum M5 ADX for override to fire.
@@ -4466,6 +4476,9 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"dump_max_adx"))            { v=JsonGetDouble(content,"dump_max_adx");            if(v>=0 && v<=80) g_sc.dump_max_adx=v; }
    if(JsonHasKey(content,"dump_sell_late_rsi_block")){ v=JsonGetDouble(content,"dump_sell_late_rsi_block");if(v>=0 && v<=100) g_sc.dump_sell_late_rsi_block=v; }
    if(JsonHasKey(content,"dump_buy_late_rsi_block")) { v=JsonGetDouble(content,"dump_buy_late_rsi_block"); if(v>=0 && v<=100) g_sc.dump_buy_late_rsi_block=v; }
+   // v2.7.61 — Day-extreme distance gate loaders
+   if(JsonHasKey(content,"dump_buy_max_dist_from_day_high_atr"))  { v=JsonGetDouble(content,"dump_buy_max_dist_from_day_high_atr");  if(v>=0 && v<=10.0) g_sc.dump_buy_max_dist_from_day_high_atr=v; }
+   if(JsonHasKey(content,"dump_sell_max_dist_from_day_low_atr"))  { v=JsonGetDouble(content,"dump_sell_max_dist_from_day_low_atr"); if(v>=0 && v<=10.0) g_sc.dump_sell_max_dist_from_day_low_atr=v; }
    // 2.7.57 — TREND_CONTINUATION_BUY loaders
    if(JsonHasKey(content,"trend_continuation_buy_enabled"))          { v=JsonGetDouble(content,"trend_continuation_buy_enabled");          g_sc.trend_continuation_buy_enabled=(v>=0.5); }
    if(JsonHasKey(content,"trend_continuation_buy_h1_min"))           { v=JsonGetDouble(content,"trend_continuation_buy_h1_min");           if(v>=0 && v<=10.0) g_sc.trend_continuation_buy_h1_min=v; }
@@ -9883,8 +9896,14 @@ void CheckNativeScalperSetups() {
                      (g_sc.dump_max_adx > 0
                       && m5_adx >= g_sc.dump_max_adx
                       && m5_rsi <= g_sc.dump_sell_late_rsi_block);
-               if(_md_exhaustion)      { _md_v2_block = true; _md_v2_gate = "dump_v2_exhaustion_sell"; }
-               else if(_md_misalign)   { _md_v2_block = true; _md_v2_gate = "dump_v2_misalign_sell"; }
+               // v2.7.61 — Day-low proximity: block SELL within max_dist×ATR of day_low (overextended bottom)
+               bool _md_at_day_low =
+                     (g_sc.dump_sell_max_dist_from_day_low_atr > 0
+                      && g_eval_day_low > 0
+                      && (mid - g_eval_day_low) <= g_sc.dump_sell_max_dist_from_day_low_atr * m5_atr);
+               if(_md_exhaustion)        { _md_v2_block = true; _md_v2_gate = "dump_v2_exhaustion_sell"; }
+               else if(_md_at_day_low)   { _md_v2_block = true; _md_v2_gate = "dump_v2_at_day_low_sell"; }
+               else if(_md_misalign)     { _md_v2_block = true; _md_v2_gate = "dump_v2_misalign_sell"; }
             }
             if(_md_v2_block) {
                if(!_logged) {
@@ -10007,8 +10026,17 @@ void CheckNativeScalperSetups() {
                      (g_sc.dump_max_adx > 0
                       && m5_adx >= g_sc.dump_max_adx
                       && m5_rsi >= g_sc.dump_buy_late_rsi_block);
-               if(_mdb_exhaustion)   { _mdb_v2_block = true; _mdb_v2_gate = "dump_v2_exhaustion_buy"; }
-               else if(_mdb_misalign){ _mdb_v2_block = true; _mdb_v2_gate = "dump_v2_misalign_buy"; }
+               // v2.7.61 — Day-high proximity: block BUY within max_dist×ATR of day_high (overextended top)
+               //   Apr 13 G5087 (mid=4736.72, day_high=4736.8, atr=5.08) → 0.02×ATR ≤ 0.5 → BLOCK
+               //   Apr 13 G5098 (mid=4736.94, day_high=4737, atr=7.22) → 0.008×ATR → BLOCK
+               //   Apr 13 G5094 (mid=4730.11, day_high=4737, atr=6.16) → 1.12×ATR > 0.5 → allow
+               bool _mdb_at_day_high =
+                     (g_sc.dump_buy_max_dist_from_day_high_atr > 0
+                      && g_eval_day_high > 0
+                      && (g_eval_day_high - mid) <= g_sc.dump_buy_max_dist_from_day_high_atr * m5_atr);
+               if(_mdb_exhaustion)       { _mdb_v2_block = true; _mdb_v2_gate = "dump_v2_exhaustion_buy"; }
+               else if(_mdb_at_day_high) { _mdb_v2_block = true; _mdb_v2_gate = "dump_v2_at_day_high_buy"; }
+               else if(_mdb_misalign)    { _mdb_v2_block = true; _mdb_v2_gate = "dump_v2_misalign_buy"; }
             }
             if(_mdb_v2_block) {
                if(!_logged_b) {
