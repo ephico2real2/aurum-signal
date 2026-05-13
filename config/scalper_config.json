@@ -1,5 +1,5 @@
 {
-  "version": "2.7.47",
+  "version": "2.7.51",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -333,6 +333,7 @@
     "block_sell_in_chop_enabled": 0,
     "intraday_reversal_sell_enabled": 0,
     "intraday_reversal_sell_lot_mult": 2.0,
+    "intraday_reversal_require_prime_kz": 0,
     "fractional_sell_in_bull_enabled": 0,
     "fractional_sell_in_bull_lot_factor": 0.25,
     "fractional_sell_in_bull_sl_atr_mult": 1.5,
@@ -341,7 +342,9 @@
     "bull_day_dip_buy_lot_mult": 1.0,
     "bull_day_dip_buy_sl_atr_mult": 1.0,
     "bull_day_dip_buy_tp1_atr_mult": 0.65,
-    "bull_day_dip_buy_reentry_cooldown_sec": 300
+    "bull_day_dip_buy_reentry_cooldown_sec": 300,
+    "bull_day_dip_buy_prime_amplifier": 1.0,
+    "dump_judas_window_block": 0
   },
   "setup": {
     "_comment": "Setup ENABLE toggles per FORGE_NAMING_CONVENTIONS.md \u00a74.9. All default-OFF. v2.7.38 composites that emit their own setup_type (BULL_DAY_DIP_BUY, FRACTIONAL_SELL_IN_BULL) will move here per \u00a710.5.1c rename plan.",

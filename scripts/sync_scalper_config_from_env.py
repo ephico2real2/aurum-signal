@@ -310,6 +310,10 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BLOCK_SELL_IN_CHOP_ENABLED":       ("composites", "block_sell_in_chop_enabled",       "bool01", None, None),
     "FORGE_INTRADAY_REVERSAL_SELL_ENABLED":   ("composites", "intraday_reversal_sell_enabled",   "bool01", None, None),
     "FORGE_INTRADAY_REVERSAL_SELL_LOT_MULT":  ("composites", "intraday_reversal_sell_lot_mult",  "float",  0.5,   5.0),
+    # 2.7.51 §11.4 — killzone-aware composite refinements (FORGE_REGIME_TAXONOMY.md §11.4)
+    "FORGE_GATE_INTRADAY_REVERSAL_REQUIRE_PRIME_KZ":  ("composites", "intraday_reversal_require_prime_kz",  "bool01", None, None),
+    "FORGE_AMPLIFY_BULL_DAY_DIP_BUY_PRIME_FACTOR":   ("composites", "bull_day_dip_buy_prime_amplifier",     "float",  0.5,  5.0),
+    "FORGE_GATE_DUMP_JUDAS_WINDOW_BLOCK":            ("composites", "dump_judas_window_block",              "bool01", None, None),
     # 2.7.42 Phase 2 §10.5.1c composite split — FRACTIONAL_SELL_IN_BULL + BULL_DAY_DIP_BUY
     # emit their own setup_type strings → env names move to SETUP/GEOMETRY/TIMING scopes
     # per FORGE_NAMING_CONVENTIONS.md §4.9. JSON destinations stay in composites.* per the

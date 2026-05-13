@@ -896,6 +896,56 @@ def test_killzone_trade_cap_wired_end_to_end(ea_src, cfg, gate_legend, sync_src,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# v2.7.51 — §11.4 killzone-aware composite refinements
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_bull_day_dip_buy_prime_amplifier_wired(ea_src, cfg, defaults, sync_src):
+    """v2.7.51 §11.4: BULL_DAY_DIP_BUY prime-window amplifier (NY_OPEN_KZ ∪ LONDON_CLOSE_KZ)."""
+    # ScalperConfig field + default + JsonHasKey
+    assert "bull_day_dip_buy_prime_amplifier" in ea_src
+    assert 'JsonHasKey(content, "bull_day_dip_buy_prime_amplifier")' in ea_src
+    # Default no-change (1.0)
+    assert cfg["composites"]["bull_day_dip_buy_prime_amplifier"] == 1.0
+    assert defaults["composites"]["bull_day_dip_buy_prime_amplifier"] == 1.0
+    # Sync mapping
+    assert "FORGE_AMPLIFY_BULL_DAY_DIP_BUY_PRIME_FACTOR" in sync_src
+    # Wired into lot factor — multiplied into bull_day_dip_factor when KZ matches
+    assert 'g_sc.bull_day_dip_buy_prime_amplifier > 1.0' in ea_src
+    assert 'g_regime.killzone == "NY_OPEN_KZ"' in ea_src
+    assert 'g_regime.killzone == "LONDON_CLOSE_KZ"' in ea_src
+    assert "bull_day_dip_factor *= g_sc.bull_day_dip_buy_prime_amplifier" in ea_src
+
+
+def test_intraday_reversal_require_prime_kz_wired(ea_src, cfg, defaults, sync_src):
+    """v2.7.51 §11.4: INTRADAY_REVERSAL_SELL amplifier only fires in prime KZ when knob is on."""
+    assert "intraday_reversal_require_prime_kz" in ea_src
+    assert 'JsonHasKey(content, "intraday_reversal_require_prime_kz")' in ea_src
+    assert cfg["composites"]["intraday_reversal_require_prime_kz"] == 0
+    assert defaults["composites"]["intraday_reversal_require_prime_kz"] == 0
+    assert "FORGE_GATE_INTRADAY_REVERSAL_REQUIRE_PRIME_KZ" in sync_src
+    # Gate sits at the END of IsIntradayReversalSellActive — pre-existing returns must still be reachable
+    assert "if(g_sc.intraday_reversal_require_prime_kz) {" in ea_src
+    # When the gate fires, the function returns false (amplifier doesn't apply)
+
+
+def test_dump_judas_window_block_wired(ea_src, cfg, defaults, sync_src, gate_legend):
+    """v2.7.51 §11.4: MOMENTUM_DUMP SELL blocked in first 60 min of LONDON_OPEN_KZ when knob is on."""
+    assert "dump_judas_window_block" in ea_src
+    assert 'JsonHasKey(content, "dump_judas_window_block")' in ea_src
+    assert cfg["composites"]["dump_judas_window_block"] == 0
+    assert defaults["composites"]["dump_judas_window_block"] == 0
+    assert "FORGE_GATE_DUMP_JUDAS_WINDOW_BLOCK" in sync_src
+    # Dispatch-site check: knob + KZ + minutes
+    assert 'g_sc.dump_judas_window_block' in ea_src
+    assert 'g_regime.killzone == "LONDON_OPEN_KZ"' in ea_src
+    assert 'g_regime.minutes_into_kz < 60' in ea_src
+    # SKIP code emitted + registered in gate_legend
+    assert 'JournalRecordSignal("SKIP","dump_judas_window","MOMENTUM_DUMP","SELL"' in ea_src
+    assert "dump_judas_window" in gate_legend
+    assert gate_legend["dump_judas_window"]["category"] == "Session / Time"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # v2.7.47 — RegimeState surfacing to SIGNALS (FORGE_REGIME_TAXONOMY.md §3)
 # ──────────────────────────────────────────────────────────────────────────────
 

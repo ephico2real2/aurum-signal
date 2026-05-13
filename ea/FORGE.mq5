@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.117"
+#property version "2.121"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.47";
+const string FORGE_VERSION = "2.7.51";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -824,6 +824,10 @@ struct ScalperConfig {
    bool   block_sell_in_chop_enabled;
    bool   intraday_reversal_sell_enabled;
    double intraday_reversal_sell_lot_mult;
+   // 2.7.51 §11.4 — killzone-aware composite refinements (all default-no-change)
+   double bull_day_dip_buy_prime_amplifier;   // ×N lot multiplier in prime window (NY_OPEN_KZ ∪ LONDON_CLOSE_KZ); 1.0=disabled
+   bool   intraday_reversal_require_prime_kz; // when true, intraday_reversal_sell amplifier only applies in prime window
+   bool   dump_judas_window_block;            // when true, block MOMENTUM_DUMP SELL in first 60 min of LONDON_OPEN_KZ (Judas Swing risk)
    bool   fractional_sell_in_bull_enabled;
    double fractional_sell_in_bull_lot_factor;
    double fractional_sell_in_bull_sl_atr_mult;
@@ -3482,6 +3486,10 @@ void InitScalperConfig() {
    g_sc.block_sell_in_chop_enabled            = false;
    g_sc.intraday_reversal_sell_enabled        = false;
    g_sc.intraday_reversal_sell_lot_mult       = 2.0;
+   // 2.7.51 §11.4 — killzone-aware composite refinements (all default no-change)
+   g_sc.bull_day_dip_buy_prime_amplifier      = 1.0;    // 1.0=disabled; 1.5 typical per §11.4
+   g_sc.intraday_reversal_require_prime_kz    = false;  // false=amplifier always applies; true=prime KZ only
+   g_sc.dump_judas_window_block               = false;  // false=no block; true=block in first 60min of LONDON_OPEN_KZ
    g_sc.fractional_sell_in_bull_enabled       = false;
    g_sc.fractional_sell_in_bull_lot_factor    = 0.25;
    g_sc.fractional_sell_in_bull_sl_atr_mult   = 1.5;
@@ -4126,6 +4134,10 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "block_sell_in_chop_enabled"))            { v=JsonGetDouble(content,"block_sell_in_chop_enabled");            g_sc.block_sell_in_chop_enabled=(v>=0.5); }
    if(JsonHasKey(content, "intraday_reversal_sell_enabled"))        { v=JsonGetDouble(content,"intraday_reversal_sell_enabled");        g_sc.intraday_reversal_sell_enabled=(v>=0.5); }
    if(JsonHasKey(content, "intraday_reversal_sell_lot_mult"))       { v=JsonGetDouble(content,"intraday_reversal_sell_lot_mult");       if(v>=0.5&&v<=5.0) g_sc.intraday_reversal_sell_lot_mult=v; }
+   // 2.7.51 §11.4 — killzone-aware composite refinements
+   if(JsonHasKey(content, "bull_day_dip_buy_prime_amplifier"))      { v=JsonGetDouble(content,"bull_day_dip_buy_prime_amplifier");      if(v>=0.5&&v<=5.0) g_sc.bull_day_dip_buy_prime_amplifier=v; }
+   if(JsonHasKey(content, "intraday_reversal_require_prime_kz"))    { v=JsonGetDouble(content,"intraday_reversal_require_prime_kz");    g_sc.intraday_reversal_require_prime_kz=(v>=0.5); }
+   if(JsonHasKey(content, "dump_judas_window_block"))               { v=JsonGetDouble(content,"dump_judas_window_block");               g_sc.dump_judas_window_block=(v>=0.5); }
    if(JsonHasKey(content, "fractional_sell_in_bull_enabled"))       { v=JsonGetDouble(content,"fractional_sell_in_bull_enabled");       g_sc.fractional_sell_in_bull_enabled=(v>=0.5); }
    if(JsonHasKey(content, "fractional_sell_in_bull_lot_factor"))    { v=JsonGetDouble(content,"fractional_sell_in_bull_lot_factor");    if(v>0.0&&v<=1.0) g_sc.fractional_sell_in_bull_lot_factor=v; }
    if(JsonHasKey(content, "fractional_sell_in_bull_sl_atr_mult"))   { v=JsonGetDouble(content,"fractional_sell_in_bull_sl_atr_mult");   if(v>=0.5&&v<=5.0) g_sc.fractional_sell_in_bull_sl_atr_mult=v; }
@@ -5172,6 +5184,16 @@ bool IsIntradayReversalSellActive(const double h1_trend_strength,
    if(g_vwap_price > 0 && price >= g_vwap_price) return false;
    // V3 OHLC atom: m5_lh_cascade — 3 consecutive lower-highs
    if(g_eval_m5_lh_cascade != 1) return false;
+   // 2.7.51 §11.4 — optional prime-KZ restriction (institutional flip windows only).
+   //   Default OFF — when operator sets FORGE_GATE_INTRADAY_REVERSAL_REQUIRE_PRIME_KZ=1
+   //   the amplifier only fires inside NY_OPEN_KZ ∪ LONDON_CLOSE_KZ where institutions
+   //   are most likely to flip bias. Outside those windows the V3 sells are more often
+   //   noise / retrace fade-outs. g_regime.killzone is broker-clock-anchored (matches
+   //   forge_signals.killzone for retrospective validation).
+   if(g_sc.intraday_reversal_require_prime_kz) {
+      if(g_regime.killzone != "NY_OPEN_KZ" && g_regime.killzone != "LONDON_CLOSE_KZ")
+         return false;
+   }
    return true;
 }
 
@@ -9123,6 +9145,20 @@ void CheckNativeScalperSetups() {
                JournalRecordSignal("SKIP","dump_chop_block","MOMENTUM_DUMP","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
+         } else if(g_sc.dump_judas_window_block
+                && g_regime.killzone == "LONDON_OPEN_KZ"
+                && g_regime.minutes_into_kz < 60) {
+            // 2.7.51 §11.4 — Judas Swing block. First 60 min of LONDON_OPEN_KZ (≈02:00-03:00 NY,
+            //   06:00-07:00 UTC EDT) is when London commonly sweeps Asian highs/lows BEFORE
+            //   reversing. MOMENTUM_DUMP SELLs in this window often get caught in the reversal.
+            //   Default OFF; operator opt-in via FORGE_GATE_DUMP_JUDAS_WINDOW_BLOCK=1.
+            //   g_regime.killzone + minutes_into_kz are EA-anchored (broker-clock) — same values
+            //   logged into forge_signals for retrospective validation.
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_judas_window","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
          } else {
             // All filters pass — fire market SELL entry
             direction = "SELL";
@@ -10102,6 +10138,17 @@ void CheckNativeScalperSetups() {
    double bull_day_dip_factor = (setup_type == "BULL_DAY_DIP_BUY" && direction == "BUY"
                                  && g_sc.bull_day_dip_buy_lot_mult > 0.0)
                                  ? g_sc.bull_day_dip_buy_lot_mult : 1.0;
+   // 2.7.51 §11.4 — BULL_DAY_DIP_BUY prime-window amplifier. Stacks on top of the
+   //   base bull_day_dip_factor. When the killzone is the gold prime window
+   //   (NY_OPEN_KZ ∪ LONDON_CLOSE_KZ — 60-70% of gold's daily range per EBC research),
+   //   multiply lot factor by the configured amplifier (default 1.0 = disabled;
+   //   1.5 typical per §11.4 spec). g_regime.killzone is EA-anchored — same value
+   //   that lands in forge_signals.killzone for retrospective validation.
+   if(setup_type == "BULL_DAY_DIP_BUY" && direction == "BUY"
+      && g_sc.bull_day_dip_buy_prime_amplifier > 1.0
+      && (g_regime.killzone == "NY_OPEN_KZ" || g_regime.killzone == "LONDON_CLOSE_KZ")) {
+      bull_day_dip_factor *= g_sc.bull_day_dip_buy_prime_amplifier;
+   }
    // 2.7.42 — MA_CROSSOVER lot factor (Phase 2). Default 0.5 — crossovers lag,
    //   so per-leg lot is halved by default. Operator can override via
    //   FORGE_GEOMETRY_MA_CROSSOVER_LOT_FACTOR.
