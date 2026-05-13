@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.128"
+#property version "2.129"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.58";
+const string FORGE_VERSION = "2.7.59";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -384,6 +384,10 @@ datetime g_momentum_dump_composite_test_last_sell_time = 0;
 // Pairs with dump_below_bbl_block_sell (Run 26 G5003 was a textbook SELL-block case;
 // this setup turns the same condition into a BUY entry signal).
 datetime g_bb_lower_reversion_buy_last_time = 0;
+// v2.7.59 — BLR_BUY consecutive-loss tracking (falling-knife throttle)
+datetime g_blr_buy_recent_sl_times[10];   // ring buffer of recent SL timestamps
+int      g_blr_buy_recent_sl_count  = 0;  // active count within window
+datetime g_blr_buy_throttle_until   = 0;  // cooldown end timestamp (0 = no throttle active)
 // 2.7.57 — TREND_CONTINUATION_BUY/SELL anchors (atlas §5.2 canonical, finally shipped).
 // BUY = bullish breakout above BB upper; SELL = bearish breakdown below BB lower.
 // Validated against Apr 9 13:51 BUY +$12.48 in 8s and Apr 8 17:31 SELL +$22+ in 1min.
@@ -574,6 +578,7 @@ struct ScalperConfig {
    double dump_pyramid_base_factor;         // 2.7.56: first group's multiplier (default 1.0)
    double dump_pyramid_step;                // 2.7.56: increment per consecutive group (default 1.0)
    double dump_pyramid_max_factor;          // 2.7.56: cap (default 5.0)
+   bool   dump_cascade_enabled;             // v2.7.59: allow ArmPostTP1Ladder for MOMENTUM_DUMP (default true; v2.7.28 had hardcoded off)
    // 2.7.32 — Option B (default OFF, documented for validation): direction-confirmation gate.
    //   Run 20 Mar 31 had 16 of 24 BUY losses as IMMEDIATE-SL (avg 30min, 1.52×ATR — exact SL setting,
    //   no TPs offset). These are direction failures, not SL-too-tight. Widening SL (Option A 3.0→4.0×ATR)
@@ -900,6 +905,14 @@ struct ScalperConfig {
    //   Mean-reversion BUYs in oversold zone risk getting wicked out before the bounce.
    //   max_hold_seconds: close at market if no TP1 in window (default 1800 = 30min).
    int    bb_lower_reversion_buy_max_hold_seconds;    // time-stop window (default 1800 = 30min; 0=disabled)
+   // v2.7.59 — Falling-knife protection for BLR_BUY (Apr 2 G5021-G5024 4-back-to-back fix).
+   //   require_reversal_candle: require last M5 close > last M5 open (green bar = bounce starting).
+   //   consec_loss_max: after N consecutive BLR_BUY SLs within window, disable for cooldown_sec.
+   bool   bb_lower_reversion_buy_require_reversal_candle;  // default 1
+   int    bb_lower_reversion_buy_consec_loss_max;          // default 2 — N SLs trigger throttle
+   int    bb_lower_reversion_buy_consec_loss_window_sec;   // default 1800 — counter window
+   int    bb_lower_reversion_buy_consec_loss_cooldown_sec; // default 1800 — throttle duration
+   double bb_lower_reversion_buy_h4_min;                   // default −1.0 — block if h4_trend ≤ h4_min (very bearish HTF)
    // 2.7.57 — TREND_CONTINUATION_BUY / _SELL (canonical roadmap Tier-2, finally shipping).
    //   BUY: regime=TREND_BULL + h1≥h1_min + RSI in [rsi_min, rsi_max] + ADX≥adx_min +
    //        M15 ADX≥m15_adx_min + PSAR=BELOW + price within bb_proximity_atr×ATR of bb_u +
@@ -3495,6 +3508,7 @@ void InitScalperConfig() {
    g_sc.dump_pyramid_base_factor      = 1.0;
    g_sc.dump_pyramid_step             = 1.0;
    g_sc.dump_pyramid_max_factor       = 5.0;
+   g_sc.dump_cascade_enabled          = true;     // v2.7.59 — allow MOMENTUM_DUMP cascade (was hardcoded off in v2.7.28)
    // 2.7.29 — Regime H1-strong override defaults (Run 18 Issue 1 fix).
    g_sc.regime_h1_override_factor     = 0.0;      // 0 = disabled (legacy unanimous AND-gating). 2.0 typical when enabled.
    g_sc.regime_h1_override_adx_min    = 30.0;     // Minimum M5 ADX for override to fire.
@@ -3680,6 +3694,12 @@ void InitScalperConfig() {
    g_sc.bb_lower_reversion_buy_extreme_rsi             = 25.0;  // RSI ≤ 25 = extreme oversold
    g_sc.bb_lower_reversion_buy_extreme_amplifier       = 1.5;   // 1.5× lot when RSI ≤ 25
    g_sc.bb_lower_reversion_buy_max_hold_seconds        = 1800;  // 30-min time-stop; bounce should happen fast or thesis failed
+   // v2.7.59 — Falling-knife protection (Apr 2 G5021-G5024 −$386 4-back-to-back fix)
+   g_sc.bb_lower_reversion_buy_require_reversal_candle = true;
+   g_sc.bb_lower_reversion_buy_consec_loss_max         = 2;
+   g_sc.bb_lower_reversion_buy_consec_loss_window_sec  = 1800;
+   g_sc.bb_lower_reversion_buy_consec_loss_cooldown_sec = 1800;
+   g_sc.bb_lower_reversion_buy_h4_min                  = -1.0;  // block when H4 trend ≤ -1.0 (strongly bearish HTF)
    // 2.7.57 — TREND_CONTINUATION init defaults (atlas §5.2)
    g_sc.trend_continuation_buy_enabled              = true;
    g_sc.trend_continuation_buy_h1_min               = 0.10;
@@ -4396,6 +4416,13 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"bb_lower_reversion_buy_extreme_rsi"))         { v=JsonGetDouble(content,"bb_lower_reversion_buy_extreme_rsi");         if(v>=0 && v<=100)   g_sc.bb_lower_reversion_buy_extreme_rsi=v; }
    if(JsonHasKey(content,"bb_lower_reversion_buy_extreme_amplifier"))   { v=JsonGetDouble(content,"bb_lower_reversion_buy_extreme_amplifier");   if(v>=1.0 && v<=10.0) g_sc.bb_lower_reversion_buy_extreme_amplifier=v; }
    if(JsonHasKey(content,"bb_lower_reversion_buy_max_hold_seconds"))    { v=JsonGetDouble(content,"bb_lower_reversion_buy_max_hold_seconds");    if(v>=0 && v<=7200)   g_sc.bb_lower_reversion_buy_max_hold_seconds=(int)v; }
+   // v2.7.59 — BLR_BUY falling-knife protection loaders
+   if(JsonHasKey(content,"bb_lower_reversion_buy_require_reversal_candle")) { v=JsonGetDouble(content,"bb_lower_reversion_buy_require_reversal_candle"); g_sc.bb_lower_reversion_buy_require_reversal_candle=(v>=0.5); }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_consec_loss_max"))         { v=JsonGetDouble(content,"bb_lower_reversion_buy_consec_loss_max");         if(v>=0 && v<=10) g_sc.bb_lower_reversion_buy_consec_loss_max=(int)v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_consec_loss_window_sec"))  { v=JsonGetDouble(content,"bb_lower_reversion_buy_consec_loss_window_sec");  if(v>=0 && v<=7200) g_sc.bb_lower_reversion_buy_consec_loss_window_sec=(int)v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_consec_loss_cooldown_sec")){ v=JsonGetDouble(content,"bb_lower_reversion_buy_consec_loss_cooldown_sec");if(v>=0 && v<=7200) g_sc.bb_lower_reversion_buy_consec_loss_cooldown_sec=(int)v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_h4_min"))                  { v=JsonGetDouble(content,"bb_lower_reversion_buy_h4_min");                  if(v>=-10.0 && v<=10.0) g_sc.bb_lower_reversion_buy_h4_min=v; }
+   if(JsonHasKey(content,"dump_cascade_enabled"))                           { v=JsonGetDouble(content,"dump_cascade_enabled");                           g_sc.dump_cascade_enabled=(v>=0.5); }
    // 2.7.57 — TREND_CONTINUATION_BUY loaders
    if(JsonHasKey(content,"trend_continuation_buy_enabled"))          { v=JsonGetDouble(content,"trend_continuation_buy_enabled");          g_sc.trend_continuation_buy_enabled=(v>=0.5); }
    if(JsonHasKey(content,"trend_continuation_buy_h1_min"))           { v=JsonGetDouble(content,"trend_continuation_buy_h1_min");           if(v>=0 && v<=10.0) g_sc.trend_continuation_buy_h1_min=v; }
@@ -9964,8 +9991,20 @@ void CheckNativeScalperSetups() {
                                    >= g_sc.bb_lower_reversion_buy_cooldown_seconds
                               || CooldownBypassActive("BUY", "BB_LOWER_REVERSION_BUY",
                                                        m5_adx, h1_trend_strength));
+      // v2.7.59 — Falling-knife protection (Apr 2 G5021-G5024 fix)
+      // Reversal candle: require last closed M5 bar to be green (close > open).
+      double _bbr_m5_open  = iOpen(_Symbol,  PERIOD_M5, 1);
+      double _bbr_m5_close = iClose(_Symbol, PERIOD_M5, 1);
+      bool   _bbr_reversal_ok = (!g_sc.bb_lower_reversion_buy_require_reversal_candle
+                                || _bbr_m5_close > _bbr_m5_open);
+      // H4 alignment: don't catch knife when H4 is strongly bearish.
+      bool   _bbr_h4_ok      = (h4_trend_strength >= g_sc.bb_lower_reversion_buy_h4_min);
+      // Consecutive-loss throttle: if recently throttled, block.
+      bool   _bbr_throttle_ok = (g_blr_buy_throttle_until == 0
+                                || _bbr_now >= g_blr_buy_throttle_until);
       if(_bbr_below_band && _bbr_rsi_ok && _bbr_adx_ok && _bbr_daily_ok
-         && _bbr_sess_ok && _bbr_h1_ok && _bbr_cool_ok) {
+         && _bbr_sess_ok && _bbr_h1_ok && _bbr_cool_ok
+         && _bbr_reversal_ok && _bbr_h4_ok && _bbr_throttle_ok) {
          direction  = "BUY";
          setup_type = "BB_LOWER_REVERSION_BUY";
          double _bbr_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -11566,8 +11605,10 @@ void ArmPostTP1Ladder(const int gi) {
    if(gi < 0 || gi >= ArraySize(g_groups)) return;
    // Day 2 only arms for SELL groups — BUY recovery is Day 3
    if(g_groups[gi].direction != "SELL") return;
-   // 2.7.28 — MOMENTUM_DUMP is a single-shot scalp; never arm cascade for it.
-   if(g_groups[gi].scalper_setup == "MOMENTUM_DUMP") return;
+   // 2.7.28 — MOMENTUM_DUMP was hardcoded single-shot. v2.7.59 — gate behind dump_cascade_enabled
+   //   (default true; v2.7.56 multi-leg intent supersedes v2.7.28). Set FORGE_GATE_DUMP_CASCADE_ENABLED=0
+   //   to restore old behavior.
+   if(g_groups[gi].scalper_setup == "MOMENTUM_DUMP" && !g_sc.dump_cascade_enabled) return;
    // 2.7.31 — BB_PULLBACK_SCALP is also a single-shot tight scalp; no cascade.
    if(g_groups[gi].scalper_setup == "BB_PULLBACK_SCALP") return;
    double crash_low = g_groups[gi].crash_low;
@@ -11750,6 +11791,36 @@ void ArmPostTP1Ladder(const int gi) {
    }
 }
 
+// v2.7.59 — BLR_BUY consecutive-loss throttle helper (Apr 2 G5021-G5024 4-back-to-back fix)
+void BlrBuy_RecordSL() {
+   datetime now = TimeGMT();
+   int win = g_sc.bb_lower_reversion_buy_consec_loss_window_sec;
+   if(win <= 0) return;
+   // Prune entries outside the window
+   for(int i = 0; i < ArraySize(g_blr_buy_recent_sl_times); i++) {
+      if(g_blr_buy_recent_sl_times[i] > 0 && (now - g_blr_buy_recent_sl_times[i]) > win)
+         g_blr_buy_recent_sl_times[i] = 0;
+   }
+   // Insert new entry in first free slot
+   for(int i = 0; i < ArraySize(g_blr_buy_recent_sl_times); i++) {
+      if(g_blr_buy_recent_sl_times[i] == 0) { g_blr_buy_recent_sl_times[i] = now; break; }
+   }
+   // Count active and trigger throttle
+   int active = 0;
+   for(int i = 0; i < ArraySize(g_blr_buy_recent_sl_times); i++)
+      if(g_blr_buy_recent_sl_times[i] > 0) active++;
+   g_blr_buy_recent_sl_count = active;
+   if(g_sc.bb_lower_reversion_buy_consec_loss_max > 0
+      && active >= g_sc.bb_lower_reversion_buy_consec_loss_max) {
+      g_blr_buy_throttle_until = now + g_sc.bb_lower_reversion_buy_consec_loss_cooldown_sec;
+      for(int i = 0; i < ArraySize(g_blr_buy_recent_sl_times); i++) g_blr_buy_recent_sl_times[i] = 0;
+      g_blr_buy_recent_sl_count = 0;
+      PrintFormat("FORGE 2.7.59: BLR_BUY throttle activated until %s (%d consecutive SLs in %ds)",
+                  TimeToString(g_blr_buy_throttle_until, TIME_DATE|TIME_MINUTES),
+                  g_sc.bb_lower_reversion_buy_consec_loss_max, win);
+   }
+}
+
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result) {
@@ -11785,6 +11856,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          if(dtype == DEAL_TYPE_BUY)  g_last_sl_time_sell = TimeGMT();
          // DEAL_TYPE_SELL closes a BUY position (SL on BUY group)
          else if(dtype == DEAL_TYPE_SELL) g_last_sl_time_buy = TimeGMT();
+         // v2.7.59 — BLR_BUY consecutive-loss tracker for falling-knife throttle
+         for(int _bg = 0; _bg < ArraySize(g_groups); _bg++) {
+            if((long)(MagicNumber + g_groups[_bg].magic_offset) == _deal_magic
+               && g_groups[_bg].scalper_setup == "BB_LOWER_REVERSION_BUY") {
+               BlrBuy_RecordSL();
+               break;
+            }
+         }
       }
    }
 }

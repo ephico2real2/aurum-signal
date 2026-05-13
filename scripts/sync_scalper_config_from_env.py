@@ -121,6 +121,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_EXTREME_RSI":             ("composites", "bb_lower_reversion_buy_extreme_rsi",            "float",  0,     100),
     "FORGE_GEOMETRY_BB_LOWER_REVERSION_BUY_EXTREME_AMPLIFIER":   ("composites", "bb_lower_reversion_buy_extreme_amplifier",      "float",  1.0,   10.0),
     "FORGE_TIMING_BB_LOWER_REVERSION_BUY_MAX_HOLD_SECONDS":      ("composites", "bb_lower_reversion_buy_max_hold_seconds",      "int",    0,     7200),
+    # v2.7.59 — BLR_BUY falling-knife protection (Apr 2 G5021-G5024 fix)
+    "FORGE_GATE_BB_LOWER_REVERSION_BUY_REQUIRE_REVERSAL_CANDLE": ("composites", "bb_lower_reversion_buy_require_reversal_candle","bool01", None,  None),
+    "FORGE_GATE_BB_LOWER_REVERSION_BUY_CONSEC_LOSS_MAX":         ("composites", "bb_lower_reversion_buy_consec_loss_max",         "int",    0,     10),
+    "FORGE_TIMING_BB_LOWER_REVERSION_BUY_CONSEC_LOSS_WINDOW_SEC":("composites", "bb_lower_reversion_buy_consec_loss_window_sec",  "int",    0,     7200),
+    "FORGE_TIMING_BB_LOWER_REVERSION_BUY_CONSEC_LOSS_COOLDOWN_SEC":("composites","bb_lower_reversion_buy_consec_loss_cooldown_sec","int",   0,     7200),
+    "FORGE_GATE_BB_LOWER_REVERSION_BUY_H4_MIN":                  ("composites", "bb_lower_reversion_buy_h4_min",                  "float",  -10.0, 10.0),
     # 2.7.57 — TREND_CONTINUATION_BUY + SELL (atlas §5.2 canonical, finally shipping)
     "FORGE_SETUP_TREND_CONTINUATION_BUY_ENABLED":               ("composites", "trend_continuation_buy_enabled",              "bool01", None,  None),
     "FORGE_GATE_TREND_CONTINUATION_BUY_H1_MIN":                 ("composites", "trend_continuation_buy_h1_min",               "float",  0,     10.0),
@@ -353,6 +359,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_DUMP_PYRAMID_BASE_FACTOR":   ("safety", "dump_pyramid_base_factor",     "float",  0.1,  10.0),
     "FORGE_GEOMETRY_DUMP_PYRAMID_STEP":          ("safety", "dump_pyramid_step",            "float",  0.0,  10.0),
     "FORGE_GEOMETRY_DUMP_PYRAMID_MAX_FACTOR":    ("safety", "dump_pyramid_max_factor",      "float",  0.1,  20.0),
+    # v2.7.59 — MOMENTUM_DUMP cascade enable (gate the v2.7.28 hardcoded skip)
+    "FORGE_GATE_DUMP_CASCADE_ENABLED":           ("safety", "dump_cascade_enabled",         "bool01", None, None),
     # 2.7.32 — Option B (default OFF) direction-confirmation gate
     "FORGE_DUMP_REQUIRE_BAR_CONFIRM": ("safety", "dump_require_bar_confirm", "bool01", None, None),
     # 2.7.31 — BB_PULLBACK_SCALP additive setup (Run 19 Issue 4 / Task #53)
