@@ -148,6 +148,10 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     session           TEXT,
     killzone          TEXT,
     minutes_into_kz   INTEGER DEFAULT 0,
+    -- 2.7.47 RegimeState surfacing (FORGE_REGIME_TAXONOMY.md §3)
+    htf_h1_strong        INTEGER DEFAULT 0,
+    intraday_label       TEXT DEFAULT '',
+    intraday_counter_htf INTEGER DEFAULT 0,
     magic             INTEGER,
     journal_source    TEXT DEFAULT 'live',
     -- 2.7.37 Layer-4 atom telemetry (24 cols)
@@ -603,7 +607,9 @@ class Scribe:
                     rsi_divergence TEXT, psar_state TEXT, pattern_score INTEGER,
                     h1_trend REAL, regime_label TEXT, regime_confidence REAL,
                     adx_trend_regime INTEGER, high_vol_trend INTEGER,
-                    session TEXT, killzone TEXT, minutes_into_kz INTEGER DEFAULT 0, magic INTEGER,
+                    session TEXT, killzone TEXT, minutes_into_kz INTEGER DEFAULT 0,
+                    htf_h1_strong INTEGER DEFAULT 0, intraday_label TEXT DEFAULT '', intraday_counter_htf INTEGER DEFAULT 0,
+                    magic INTEGER,
                     h4_trend REAL, m15_trend REAL, h1_di_balance REAL,
                     day_open REAL, day_high REAL, day_low REAL,
                     m5_open_1 REAL, m5_high_1 REAL, m5_low_1 REAL, m5_close_1 REAL,
@@ -672,6 +678,16 @@ class Scribe:
             # FORGE_REGIME_TAXONOMY.md §11.6).
             conn.execute("ALTER TABLE forge_signals ADD COLUMN minutes_into_kz INTEGER DEFAULT 0")
             log.info("SCRIBE migration: added minutes_into_kz to forge_signals")
+        # 2.7.47 — RegimeState surfacing (FORGE_REGIME_TAXONOMY.md §3): 3 NEW regime fields
+        if "htf_h1_strong" not in fs_cols:
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN htf_h1_strong INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added htf_h1_strong to forge_signals")
+        if "intraday_label" not in fs_cols:
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN intraday_label TEXT DEFAULT ''")
+            log.info("SCRIBE migration: added intraday_label to forge_signals")
+        if "intraday_counter_htf" not in fs_cols:
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN intraday_counter_htf INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added intraday_counter_htf to forge_signals")
         # 2.7.37 — Layer-4 atom telemetry (24 cols; closes Decision Stack §6 gap)
         _v37_cols = [
             ("h4_trend",       "REAL"),
@@ -1048,6 +1064,8 @@ class Scribe:
             has_lot_factor = "lot_factor"      in src_cols
             has_killzone   = "killzone"       in src_cols
             has_min_into_kz = "minutes_into_kz" in src_cols
+            # 2.7.47 — RegimeState surfacing (FORGE_REGIME_TAXONOMY.md §3) — all-or-nothing trio
+            has_regime_v47 = all(c in src_cols for c in ("htf_h1_strong", "intraday_label", "intraday_counter_htf"))
             # 2.7.37 — detect Layer-4 atom telemetry columns on source SIGNALS
             v37_cols = [
                 "h4_trend", "m15_trend", "h1_di_balance",
@@ -1183,6 +1201,9 @@ class Scribe:
                 + (", lot_factor"     if has_lot_factor  else ", NULL")
                 + (", killzone"       if has_killzone   else ", ''")
                 + (", minutes_into_kz" if has_min_into_kz else ", 0")
+                # 2.7.47 — RegimeState trio (all-or-nothing) appended together
+                + (", htf_h1_strong, intraday_label, intraday_counter_htf"
+                   if has_regime_v47 else ", 0, '', 0")
                 # 2.7.37 — all 24 atom telemetry cols appended together (all-or-nothing)
                 + (", " + ", ".join(v37_cols) if has_v37 else ", " + ", ".join(["NULL"] * len(v37_cols)))
                 # 2.7.37 Group 3 — 45 more cols, same all-or-nothing pattern
@@ -1223,13 +1244,18 @@ class Scribe:
                 killzone_val = r[32] if len(r) > 32 else ""
                 # 2.7.45 — minutes_into_kz at r[33] (FORGE_REGIME_TAXONOMY.md §11.6)
                 min_into_kz_val = r[33] if len(r) > 33 else 0
-                # 2.7.37 — 24 atom columns at positions r[34]..r[57] (was r[33]..r[56] before 2.7.45)
-                v37_vals = tuple(r[34 + i] if len(r) > 34 + i else None for i in range(24))
-                # 2.7.37 Group 3 — 45 more cols at positions r[58]..r[102] (was r[57]..r[101] before 2.7.45)
-                v37g3_vals = tuple(r[58 + i] if len(r) > 58 + i else None for i in range(45))
+                # 2.7.47 — RegimeState trio at r[34]..r[36] (FORGE_REGIME_TAXONOMY.md §3)
+                htf_h1_strong_val      = r[34] if len(r) > 34 else 0
+                intraday_label_val     = r[35] if len(r) > 35 else ""
+                intraday_counter_htf_v = r[36] if len(r) > 36 else 0
+                # 2.7.37 — 24 atom columns at positions r[37]..r[60] (was r[34]..r[57] before 2.7.47)
+                v37_vals = tuple(r[37 + i] if len(r) > 37 + i else None for i in range(24))
+                # 2.7.37 Group 3 — 45 more cols at positions r[61]..r[105] (was r[58]..r[102] before 2.7.47)
+                v37g3_vals = tuple(r[61 + i] if len(r) > 61 + i else None for i in range(45))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
+                    htf_h1_strong_val, intraday_label_val, intraday_counter_htf_v,
                     *v37_vals, *v37g3_vals,
                 ))
                 synced_ids.append(fid)
@@ -1248,6 +1274,8 @@ class Scribe:
                         "regime_label, regime_confidence, adx_trend_regime, "
                         "high_vol_trend, session, magic, journal_source, run_id, "
                         "macd_histogram, m15_adx, lot_factor, wall_time, aurum_run_id, killzone, minutes_into_kz, "
+                        # 2.7.47 RegimeState trio (FORGE_REGIME_TAXONOMY.md §3)
+                        "htf_h1_strong, intraday_label, intraday_counter_htf, "
                         # 2.7.37 atoms — 24 cols
                         "h4_trend, m15_trend, h1_di_balance, "
                         "day_open, day_high, day_low, "

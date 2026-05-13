@@ -1767,11 +1767,14 @@ def api_backtest_run(aurum_run_id):
             GROUP BY gate_reason ORDER BY cnt DESC LIMIT 15
         """, (aurum_run_id,))
 
-        # TAKEN entries enriched with trade outcomes
+        # TAKEN entries enriched with trade outcomes.
+        # v2.7.47: surface killzone + minutes_into_kz so the dashboard / analysis
+        # tools can see which ICT window each entry landed in (Judas-window
+        # detection: minutes_into_kz<60 inside LONDON_OPEN_KZ = elevated reversal risk).
         taken_raw = ts.query("""
             SELECT forge_id, time, timestamp_utc, direction,
                    ROUND(rsi,1) as rsi, ROUND(adx,1) as adx,
-                   setup_type, session
+                   setup_type, session, killzone, minutes_into_kz
             FROM forge_signals
             WHERE aurum_run_id=? AND outcome='TAKEN'
             ORDER BY time
