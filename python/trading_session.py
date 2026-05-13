@@ -156,6 +156,47 @@ def _kz_window(name: str) -> tuple[int, int]:
     return s, e
 
 
+def get_ea_session(market_data_path: str | os.PathLike,
+                   max_age_sec: int = 60) -> Tuple[Optional[str], Optional[float]]:
+    """Read the EA's authoritative session label from market_data.json.
+
+    Mirrors get_ea_killzone() — same file, same forge_session_state object, different
+    field. The EA's session label is broker-clock-anchored (ComputeCurrentSessionLabel
+    in FORGE.mq5), matching exactly what gets written to forge_signals.session for every
+    TAKEN/SKIP entry. v2.7.50: brings session to the same EA-anchored authority model
+    that v2.7.49 established for killzones — MT5 is where orders fire, so the EA's
+    clock is the only one with causal authority over trade decisions.
+
+    Returns:
+        (label, age_seconds) — `label` is one of the EA session strings (matches what
+                                FORGE.mq5:ComputeCurrentSessionLabel returns, e.g.
+                                'LONDON' / 'NY' / 'ASIAN' / 'OFF'); `age_seconds` is
+                                the market_data.json mtime delta vs now.
+        (None,  None)        — file missing, unreadable, stale beyond `max_age_sec`,
+                                or doesn't contain a forge_session_state.label field.
+                                Caller should fall back to get_trading_session_utc().
+    """
+    try:
+        mtime = os.path.getmtime(market_data_path)
+    except OSError:
+        return None, None
+    age = max(0.0, time.time() - mtime)
+    if age > max_age_sec:
+        return None, age
+    try:
+        with open(market_data_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None, age
+    fss = data.get("forge_session_state") if isinstance(data, dict) else None
+    if not isinstance(fss, dict):
+        return None, age
+    label = fss.get("label")
+    if label is None:
+        return None, age
+    return str(label), age
+
+
 def get_ea_killzone(market_data_path: str | os.PathLike,
                     max_age_sec: int = 60) -> Tuple[Optional[str], Optional[float]]:
     """Read the EA's authoritative killzone label from market_data.json.
