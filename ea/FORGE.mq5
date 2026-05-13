@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.136"
+#property version "2.137"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.66";
+const string FORGE_VERSION = "2.7.67";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1023,6 +1023,18 @@ struct ScalperConfig {
    bool   trend_continuation_sell_block_bullish_div;     // block if g_rsi_div_type == "BULLISH" (default 1)
    bool   trend_continuation_sell_require_h4_alignment;  // block if h4_trend_strength > h4_max (default 1)
    double trend_continuation_sell_h4_max;                // H4 trend ceiling (default 0.0 — non-positive)
+   // v2.7.67 — TC velocity/DI/day-extreme atoms (live-state demo: -8.91 ADX delta would have caught a dying-trend BUY).
+   //   Shared (both directions): require_velocity_check toggle, min_adx_delta, min_velocity.
+   //   Direction-specific (signed): macd_slope, di_balance, day-extreme distance.
+   bool   trend_continuation_require_velocity_check;        // master toggle for the 5 new atoms (default true)
+   double trend_continuation_min_adx_delta_5bar;            // require m5_adx_delta_5bar > this (default 0.0 — must be rising)
+   double trend_continuation_min_velocity_5bar;             // require |m5_velocity_5bar| > this (default 0.5 — actual move)
+   double trend_continuation_buy_min_macd_slope_5bar;       // BUY: macd_slope > this (default +0.2 — strengthening up)
+   double trend_continuation_sell_max_macd_slope_5bar;      // SELL: macd_slope < this (default -0.2 — strengthening down)
+   double trend_continuation_buy_min_di_balance;            // BUY: h1_di_plus - h1_di_minus > this (default 0.0)
+   double trend_continuation_sell_max_di_balance;           // SELL: h1_di_plus - h1_di_minus < this (default 0.0)
+   double trend_continuation_buy_max_dist_from_day_high_atr; // BUY: block if (day_high - price)/atr <= this (default 0.5)
+   double trend_continuation_sell_max_dist_from_day_low_atr; // SELL: block if (price - day_low)/atr <= this (default 0.5)
    int    post_sl_cooldown_sec;         // extended cooldown per-direction after SL hit (default 3600s = 60min)
    double breakout_near_floor_lot_factor;  // Cardwell RSI 20-25 zone: lot factor when crash bypass + RSI near floor (default 0.25)
    double same_direction_stack_lot_factor; // lot factor for 2nd concurrent group in same direction (default 0.25)
@@ -3894,6 +3906,16 @@ void InitScalperConfig() {
    g_sc.trend_continuation_sell_max_poc_distance_atr  = 1.5;  // 0=disabled
    g_sc.trend_continuation_sell_block_bullish_div     = true;
    g_sc.trend_continuation_sell_require_h4_alignment  = true;
+   // v2.7.67 — TC velocity/DI/day-extreme defaults
+   g_sc.trend_continuation_require_velocity_check        = true;
+   g_sc.trend_continuation_min_adx_delta_5bar            = 0.0;   // ADX must be rising
+   g_sc.trend_continuation_min_velocity_5bar             = 0.5;   // ≥0.5×ATR move in last 25min
+   g_sc.trend_continuation_buy_min_macd_slope_5bar       = 0.2;   // bull momentum strengthening
+   g_sc.trend_continuation_sell_max_macd_slope_5bar      = -0.2;  // bear momentum strengthening
+   g_sc.trend_continuation_buy_min_di_balance            = 0.0;   // DI+ > DI-
+   g_sc.trend_continuation_sell_max_di_balance           = 0.0;   // DI+ < DI-
+   g_sc.trend_continuation_buy_max_dist_from_day_high_atr  = 0.5; // not at day-high
+   g_sc.trend_continuation_sell_max_dist_from_day_low_atr  = 0.5; // not at day-low
    g_sc.trend_continuation_sell_h4_max                = 0.0;
    // 2.7.7 defaults
    g_sc.session_ny_sell_cutoff_utc      = 17;
@@ -4653,6 +4675,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"trend_continuation_sell_block_bullish_div"))     { v=JsonGetDouble(content,"trend_continuation_sell_block_bullish_div");     g_sc.trend_continuation_sell_block_bullish_div=(v>=0.5); }
    if(JsonHasKey(content,"trend_continuation_sell_require_h4_alignment"))  { v=JsonGetDouble(content,"trend_continuation_sell_require_h4_alignment");  g_sc.trend_continuation_sell_require_h4_alignment=(v>=0.5); }
    if(JsonHasKey(content,"trend_continuation_sell_h4_max"))                { v=JsonGetDouble(content,"trend_continuation_sell_h4_max");                if(v>=-10.0 && v<=10.0) g_sc.trend_continuation_sell_h4_max=v; }
+   // v2.7.67 — TC velocity/DI/day-extreme loaders
+   if(JsonHasKey(content,"trend_continuation_require_velocity_check"))      { v=JsonGetDouble(content,"trend_continuation_require_velocity_check");      g_sc.trend_continuation_require_velocity_check=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_min_adx_delta_5bar"))          { v=JsonGetDouble(content,"trend_continuation_min_adx_delta_5bar");          if(v>=-50 && v<=50) g_sc.trend_continuation_min_adx_delta_5bar=v; }
+   if(JsonHasKey(content,"trend_continuation_min_velocity_5bar"))           { v=JsonGetDouble(content,"trend_continuation_min_velocity_5bar");           if(v>=0 && v<=10) g_sc.trend_continuation_min_velocity_5bar=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_min_macd_slope_5bar"))     { v=JsonGetDouble(content,"trend_continuation_buy_min_macd_slope_5bar");     if(v>=-10 && v<=10) g_sc.trend_continuation_buy_min_macd_slope_5bar=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_max_macd_slope_5bar"))    { v=JsonGetDouble(content,"trend_continuation_sell_max_macd_slope_5bar");    if(v>=-10 && v<=10) g_sc.trend_continuation_sell_max_macd_slope_5bar=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_min_di_balance"))          { v=JsonGetDouble(content,"trend_continuation_buy_min_di_balance");          if(v>=-100 && v<=100) g_sc.trend_continuation_buy_min_di_balance=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_max_di_balance"))         { v=JsonGetDouble(content,"trend_continuation_sell_max_di_balance");         if(v>=-100 && v<=100) g_sc.trend_continuation_sell_max_di_balance=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_max_dist_from_day_high_atr")){ v=JsonGetDouble(content,"trend_continuation_buy_max_dist_from_day_high_atr"); if(v>=0 && v<=10) g_sc.trend_continuation_buy_max_dist_from_day_high_atr=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_max_dist_from_day_low_atr")) { v=JsonGetDouble(content,"trend_continuation_sell_max_dist_from_day_low_atr"); if(v>=0 && v<=10) g_sc.trend_continuation_sell_max_dist_from_day_low_atr=v; }
    if(JsonHasKey(content,"session_ny_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_ny_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_ny_sell_cutoff_utc = (int)v; }
    // 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 fix.
    // Filter 1 blocks BUY when D1 SMA slope < −threshold (multi-day rollover);
@@ -10407,6 +10439,16 @@ void CheckNativeScalperSetups() {
                           || (g_rsi_div_type != "REG_BEAR" && g_rsi_div_type != "HID_BEAR"));
       bool _tcb_h4_ok   = (!g_sc.trend_continuation_buy_require_h4_alignment
                           || h4_trend_strength >= g_sc.trend_continuation_buy_h4_min);
+      // v2.7.67 — Velocity/DI/day-extreme atoms (5 new gates)
+      bool _tcb_vel_check  = g_sc.trend_continuation_require_velocity_check;
+      bool _tcb_adx_rising = (!_tcb_vel_check || g_eval_m5_adx_delta_5bar > g_sc.trend_continuation_min_adx_delta_5bar);
+      bool _tcb_velocity   = (!_tcb_vel_check || g_eval_m5_velocity_5bar > g_sc.trend_continuation_min_velocity_5bar);
+      bool _tcb_macd_slope = (!_tcb_vel_check || g_eval_m5_macd_slope_5bar > g_sc.trend_continuation_buy_min_macd_slope_5bar);
+      bool _tcb_di_ok      = (!_tcb_vel_check || (g_eval_h1_di_plus - g_eval_h1_di_minus) > g_sc.trend_continuation_buy_min_di_balance);
+      bool _tcb_not_at_high = (g_sc.trend_continuation_buy_max_dist_from_day_high_atr <= 0
+                              || g_eval_day_high <= 0
+                              || m5_atr <= 0
+                              || (g_eval_day_high - _tcb_mid) > g_sc.trend_continuation_buy_max_dist_from_day_high_atr * m5_atr);
       datetime _tcb_now   = TimeCurrent();
       bool _tcb_cool      = (g_sc.trend_continuation_buy_cooldown_seconds <= 0
                           || g_trend_continuation_buy_last_time == 0
@@ -10416,7 +10458,8 @@ void CheckNativeScalperSetups() {
                                                    m5_adx, h1_trend_strength));
       if(_tcb_regime && _tcb_daily && _tcb_h1 && _tcb_rsi && _tcb_adx
          && _tcb_m15adx_ok && _tcb_psar && _tcb_proximity && _tcb_cool
-         && _tcb_macd_ok && _tcb_vwap_ok && _tcb_poc_ok && _tcb_div_ok && _tcb_h4_ok) {
+         && _tcb_macd_ok && _tcb_vwap_ok && _tcb_poc_ok && _tcb_div_ok && _tcb_h4_ok
+         && _tcb_adx_rising && _tcb_velocity && _tcb_macd_slope && _tcb_di_ok && _tcb_not_at_high) {
          direction  = "BUY";
          setup_type = "TREND_CONTINUATION_BUY";
          double _tcb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -10463,6 +10506,16 @@ void CheckNativeScalperSetups() {
                           || (g_rsi_div_type != "REG_BULL" && g_rsi_div_type != "HID_BULL"));
       bool _tcs_h4_ok   = (!g_sc.trend_continuation_sell_require_h4_alignment
                           || h4_trend_strength <= g_sc.trend_continuation_sell_h4_max);
+      // v2.7.67 — Velocity/DI/day-extreme atoms (mirror of BUY)
+      bool _tcs_vel_check  = g_sc.trend_continuation_require_velocity_check;
+      bool _tcs_adx_rising = (!_tcs_vel_check || g_eval_m5_adx_delta_5bar > g_sc.trend_continuation_min_adx_delta_5bar);
+      bool _tcs_velocity   = (!_tcs_vel_check || g_eval_m5_velocity_5bar > g_sc.trend_continuation_min_velocity_5bar);
+      bool _tcs_macd_slope = (!_tcs_vel_check || g_eval_m5_macd_slope_5bar < g_sc.trend_continuation_sell_max_macd_slope_5bar);
+      bool _tcs_di_ok      = (!_tcs_vel_check || (g_eval_h1_di_plus - g_eval_h1_di_minus) < g_sc.trend_continuation_sell_max_di_balance);
+      bool _tcs_not_at_low = (g_sc.trend_continuation_sell_max_dist_from_day_low_atr <= 0
+                             || g_eval_day_low <= 0
+                             || m5_atr <= 0
+                             || (_tcs_mid - g_eval_day_low) > g_sc.trend_continuation_sell_max_dist_from_day_low_atr * m5_atr);
       datetime _tcs_now   = TimeCurrent();
       bool _tcs_cool      = (g_sc.trend_continuation_sell_cooldown_seconds <= 0
                           || g_trend_continuation_sell_last_time == 0
@@ -10472,7 +10525,8 @@ void CheckNativeScalperSetups() {
                                                    m5_adx, h1_trend_strength));
       if(_tcs_regime && _tcs_daily && _tcs_h1 && _tcs_rsi && _tcs_adx
          && _tcs_m15adx_ok && _tcs_psar && _tcs_proximity && _tcs_cool
-         && _tcs_macd_ok && _tcs_vwap_ok && _tcs_poc_ok && _tcs_div_ok && _tcs_h4_ok) {
+         && _tcs_macd_ok && _tcs_vwap_ok && _tcs_poc_ok && _tcs_div_ok && _tcs_h4_ok
+         && _tcs_adx_rising && _tcs_velocity && _tcs_macd_slope && _tcs_di_ok && _tcs_not_at_low) {
          direction  = "SELL";
          setup_type = "TREND_CONTINUATION_SELL";
          double _tcs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
