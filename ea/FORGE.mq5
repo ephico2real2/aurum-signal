@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.121"
+#property version "2.122"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.51";
+const string FORGE_VERSION = "2.7.52";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -812,6 +812,7 @@ struct ScalperConfig {
    bool   killzones_enabled;
    bool   killzones_gate_entries;
    int    killzones_max_trades_per_kz;     // 2.7.46 §11.5 — per-killzone trade cap (0 = disabled)
+   int    kz_warmup_min;                   // 2.7.52 — block entries in first N min of every KZ (0 = disabled)
    int    kz_asia_start_min;
    int    kz_asia_end_min;
    int    kz_london_open_start_min;
@@ -3474,6 +3475,7 @@ void InitScalperConfig() {
    g_sc.killzones_enabled        = false;
    g_sc.killzones_gate_entries   = false;
    g_sc.killzones_max_trades_per_kz = 0;   // 2.7.46 §11.5 — 0=disabled (operator opts in via FORGE_GATE_KILLZONE_MAX_TRADES)
+   g_sc.kz_warmup_min            = 0;      // 2.7.52 — 0=disabled; 15 typical (per arongroups stop-hunt research at first 5-15 min of session opens)
    g_sc.kz_asia_start_min        = 19*60;   // 19:00 NY (wraps to 03:00)
    g_sc.kz_asia_end_min          =  3*60;
    g_sc.kz_london_open_start_min =  2*60;
@@ -4122,6 +4124,7 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "killzones_enabled"))        { v=JsonGetDouble(content,"killzones_enabled");        g_sc.killzones_enabled=(v>=0.5); }
    if(JsonHasKey(content, "killzones_gate_entries"))   { v=JsonGetDouble(content,"killzones_gate_entries");   g_sc.killzones_gate_entries=(v>=0.5); }
    if(JsonHasKey(content, "killzones_max_trades_per_kz")) { v=JsonGetDouble(content,"killzones_max_trades_per_kz"); if(v>=0.0&&v<=99.0) g_sc.killzones_max_trades_per_kz=(int)v; }
+   if(JsonHasKey(content, "kz_warmup_min"))             { v=JsonGetDouble(content,"kz_warmup_min");             if(v>=0.0&&v<=60.0) g_sc.kz_warmup_min            =(int)v; }
    if(JsonHasKey(content, "kz_asia_start_min"))         { v=JsonGetDouble(content,"kz_asia_start_min");         if(v>=0&&v<=1439) g_sc.kz_asia_start_min        =(int)v; }
    if(JsonHasKey(content, "kz_asia_end_min"))           { v=JsonGetDouble(content,"kz_asia_end_min");           if(v>=0&&v<=1440) g_sc.kz_asia_end_min          =(int)v; }
    if(JsonHasKey(content, "kz_london_open_start_min"))  { v=JsonGetDouble(content,"kz_london_open_start_min");  if(v>=0&&v<=1439) g_sc.kz_london_open_start_min =(int)v; }
@@ -7854,6 +7857,23 @@ void CheckNativeScalperSetups() {
       if(_kc_bar != g_scalper_last_sesswarn_log_bar) {
          g_scalper_last_sesswarn_log_bar = _kc_bar;
          JournalRecordSignal("SKIP","killzone_trade_cap","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      }
+      return;
+   }
+   // 2.7.52 — KZ warmup gate. Per arongroups stop-hunt research (article §
+   //   "Execution Risks Inside Kill Zones"), the first 5-15 min of a session
+   //   open commonly produces wide spreads + violent wicks that clear liquidity
+   //   without the real move yet underway. Default OFF (0). Operator opts in
+   //   via FORGE_GATE_KZ_WARMUP_MIN=15 (or similar). Applies to ALL killzones
+   //   uniformly — for KZ-specific behavior use dump_judas_window_block (§11.4).
+   //   g_regime.killzone + minutes_into_kz are EA-anchored (broker clock).
+   if(g_sc.kz_warmup_min > 0
+      && StringLen(g_regime.killzone) > 0
+      && g_regime.minutes_into_kz < g_sc.kz_warmup_min) {
+      datetime _kw_bar = iTime(_Symbol, PERIOD_M5, 0);
+      if(_kw_bar != g_scalper_last_sesswarn_log_bar) {
+         g_scalper_last_sesswarn_log_bar = _kw_bar;
+         JournalRecordSignal("SKIP","kz_warmup","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
       }
       return;
    }
