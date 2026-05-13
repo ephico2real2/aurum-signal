@@ -360,5 +360,10 @@
     "label": "MA crossover — cooldown active",
     "explanation": "v2.7.42 MA_CROSSOVER trigger fired within timing.ma_crossover_cooldown_seconds (default 600) of a prior MA_CROSSOVER entry in the same direction. Bypassed when last group won TP1 in regime-aligned direction with M5 ADX confirmation (v2.7.41 bypass mechanism).",
     "category": "Cooldowns"
+  },
+  "vwap_reversion_cooldown": {
+    "label": "VWAP reversion — cooldown active",
+    "explanation": "v2.7.42 VWAP_REVERSION pullback trigger fired (price retraced to VWAP after ≥N M5 bars of extension in the H1-trend direction) within timing.vwap_reversion_cooldown_seconds (default 600) of a prior VWAP_REVERSION entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
+    "category": "Cooldowns"
   }
 }

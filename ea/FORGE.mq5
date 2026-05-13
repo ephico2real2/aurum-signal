@@ -327,6 +327,9 @@ datetime g_pullback_scalp_last_buy_time  = 0; // wall time of last pullback-scal
 // 2.7.42 — MA_CROSSOVER cooldown trackers (Phase 2 — EMA20×EMA50 event-triggered entry)
 datetime g_ma_crossover_last_buy_time  = 0; // wall time of last MA_CROSSOVER BUY entry
 datetime g_ma_crossover_last_sell_time = 0; // wall time of last MA_CROSSOVER SELL entry
+// 2.7.42 — VWAP_REVERSION cooldown trackers (Phase 2 — pullback-to-VWAP in trend direction)
+datetime g_vwap_reversion_last_buy_time  = 0; // wall time of last VWAP_REVERSION BUY entry
+datetime g_vwap_reversion_last_sell_time = 0; // wall time of last VWAP_REVERSION SELL entry
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -513,6 +516,19 @@ struct ScalperConfig {
    double ma_crossover_tp1_atr_mult;        // TP1 = ATR × this (default 0.5)
    double ma_crossover_tp2_atr_mult;        // TP2 = ATR × this (default 1.5)
    int    ma_crossover_cooldown_seconds;    // min gap per direction (default 600 = 10min)
+   // 2.7.42 — VWAP_REVERSION setup (Phase 2). Pullback-to-VWAP in established H1 trend.
+   // Detects: prior N M5 bars closed beyond min_deviation × ATR from VWAP, current bar
+   //   retraces to within tolerance, H1 trend agrees with extension direction. BUY when
+   //   H1 bullish + extension was ABOVE VWAP; SELL when H1 bearish + extension BELOW.
+   bool   vwap_reversion_enabled;             // master toggle (default off)
+   double vwap_reversion_min_deviation_atr;   // min |close − vwap| / ATR to count bar as extended (default 1.0)
+   double vwap_reversion_max_deviation_atr;   // max extension before pattern is invalidated (default 3.0)
+   int    vwap_reversion_min_extension_bars;  // min bars in lookback that must be extended (default 5)
+   double vwap_reversion_lot_factor;          // lot multiplier (default 0.5)
+   double vwap_reversion_sl_atr_mult;         // SL = ATR × this (default 1.2 — tight, rejection resolves fast)
+   double vwap_reversion_tp1_atr_mult;        // TP1 = ATR × this (default 0.4)
+   double vwap_reversion_tp2_atr_mult;        // TP2 = ATR × this (default 1.0 — target = original extension zone)
+   int    vwap_reversion_cooldown_seconds;    // min gap per direction (default 600)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3013,6 +3029,16 @@ void InitScalperConfig() {
    g_sc.ma_crossover_tp1_atr_mult     = 0.5;
    g_sc.ma_crossover_tp2_atr_mult     = 1.5;
    g_sc.ma_crossover_cooldown_seconds = 600;
+   // 2.7.42 — VWAP_REVERSION setup (Phase 2; default OFF)
+   g_sc.vwap_reversion_enabled              = false;
+   g_sc.vwap_reversion_min_deviation_atr    = 1.0;
+   g_sc.vwap_reversion_max_deviation_atr    = 3.0;
+   g_sc.vwap_reversion_min_extension_bars   = 5;
+   g_sc.vwap_reversion_lot_factor           = 0.5;
+   g_sc.vwap_reversion_sl_atr_mult          = 1.2;
+   g_sc.vwap_reversion_tp1_atr_mult         = 0.4;
+   g_sc.vwap_reversion_tp2_atr_mult         = 1.0;
+   g_sc.vwap_reversion_cooldown_seconds     = 600;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3775,6 +3801,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "ma_crossover_tp1_atr_mult"))      { v=JsonGetDouble(content,"ma_crossover_tp1_atr_mult");      if(v>=0.1&&v<=5.0) g_sc.ma_crossover_tp1_atr_mult=v; }
    if(JsonHasKey(content, "ma_crossover_tp2_atr_mult"))      { v=JsonGetDouble(content,"ma_crossover_tp2_atr_mult");      if(v>=0.1&&v<=10.0) g_sc.ma_crossover_tp2_atr_mult=v; }
    if(JsonHasKey(content, "ma_crossover_cooldown_seconds"))  { v=JsonGetDouble(content,"ma_crossover_cooldown_seconds");  if(v>=0&&v<=7200) g_sc.ma_crossover_cooldown_seconds=(int)v; }
+   // 2.7.42 — VWAP_REVERSION setup (Phase 2). Same flat-search convention as MA_CROSSOVER.
+   if(JsonHasKey(content, "vwap_reversion_enabled"))              { v=JsonGetDouble(content,"vwap_reversion_enabled");              g_sc.vwap_reversion_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "vwap_reversion_min_deviation_atr"))    { v=JsonGetDouble(content,"vwap_reversion_min_deviation_atr");    if(v>=0.1&&v<=10.0) g_sc.vwap_reversion_min_deviation_atr=v; }
+   if(JsonHasKey(content, "vwap_reversion_max_deviation_atr"))    { v=JsonGetDouble(content,"vwap_reversion_max_deviation_atr");    if(v>=0.5&&v<=20.0) g_sc.vwap_reversion_max_deviation_atr=v; }
+   if(JsonHasKey(content, "vwap_reversion_min_extension_bars"))   { v=JsonGetDouble(content,"vwap_reversion_min_extension_bars");   if(v>=1&&v<=50) g_sc.vwap_reversion_min_extension_bars=(int)v; }
+   if(JsonHasKey(content, "vwap_reversion_lot_factor"))           { v=JsonGetDouble(content,"vwap_reversion_lot_factor");           if(v>=0.1&&v<=2.0) g_sc.vwap_reversion_lot_factor=v; }
+   if(JsonHasKey(content, "vwap_reversion_sl_atr_mult"))          { v=JsonGetDouble(content,"vwap_reversion_sl_atr_mult");          if(v>=0.5&&v<=5.0) g_sc.vwap_reversion_sl_atr_mult=v; }
+   if(JsonHasKey(content, "vwap_reversion_tp1_atr_mult"))         { v=JsonGetDouble(content,"vwap_reversion_tp1_atr_mult");         if(v>=0.1&&v<=5.0) g_sc.vwap_reversion_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "vwap_reversion_tp2_atr_mult"))         { v=JsonGetDouble(content,"vwap_reversion_tp2_atr_mult");         if(v>=0.1&&v<=10.0) g_sc.vwap_reversion_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "vwap_reversion_cooldown_seconds"))     { v=JsonGetDouble(content,"vwap_reversion_cooldown_seconds");     if(v>=0&&v<=7200) g_sc.vwap_reversion_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -4732,6 +4768,47 @@ int DetectMaCrossoverEvent() {
    double diff_prev = ema20_buf[1] - ema50_buf[1];  // bar 2 (one before)
    if(diff_prev <= 0.0 && diff_now > 0.0) return 1;   // BUY cross
    if(diff_prev >= 0.0 && diff_now < 0.0) return -1;  // SELL cross
+   return 0;
+}
+
+// 2.7.42 — VWAP_REVERSION event detector (Phase 2). Returns 1 = BUY pullback,
+// -1 = SELL pullback, 0 = no event. Detects price retracing to VWAP after a
+// multi-bar extension in the H1-trend direction.
+//
+// Logic:
+//   1. Current price near VWAP (within min_deviation_atr × 0.5 of VWAP)
+//   2. Of the prior `min_extension_bars` M5 closes, at least (N-1) were
+//      extended beyond min_deviation_atr × ATR from VWAP (filters chop)
+//   3. Extension direction agrees with H1 trend:
+//      - extension ABOVE VWAP + H1 bullish → BUY pullback
+//      - extension BELOW VWAP + H1 bearish → SELL pullback
+//   4. max_deviation_atr guards against runaway extensions (probably trend
+//      acceleration, not a pullback opportunity)
+int DetectVwapReversionEvent(const double m5_atr, const double h1_trend_strength) {
+   if(!g_sc.vwap_reversion_enabled) return 0;
+   if(g_vwap_price <= 0.0 || m5_atr <= 0.0) return 0;
+   double min_dev = g_sc.vwap_reversion_min_deviation_atr;
+   double max_dev = g_sc.vwap_reversion_max_deviation_atr;
+   int    N       = g_sc.vwap_reversion_min_extension_bars;
+   if(N < 2) N = 2;
+   // Step 1: current price near VWAP
+   double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double dist_now_atr = (price - g_vwap_price) / m5_atr;
+   if(MathAbs(dist_now_atr) > min_dev * 0.5) return 0;
+   // Step 2: count extended bars in prior N
+   int ext_up = 0, ext_dn = 0;
+   for(int shift = 1; shift <= N; shift++) {
+      double bar_close = iClose(_Symbol, PERIOD_M5, shift);
+      if(bar_close <= 0.0) continue;
+      double dev_atr = (bar_close - g_vwap_price) / m5_atr;
+      if(dev_atr > min_dev && dev_atr < max_dev) ext_up++;
+      else if(dev_atr < -min_dev && dev_atr > -max_dev) ext_dn++;
+   }
+   bool extended_above = (ext_up >= N - 1);
+   bool extended_below = (ext_dn >= N - 1);
+   // Step 3: direction by H1 trend agreement
+   if(extended_above && h1_trend_strength > 0.0) return 1;
+   if(extended_below && h1_trend_strength < 0.0) return -1;
    return 0;
 }
 
@@ -8163,6 +8240,44 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — VWAP_REVERSION trigger (Phase 2). Pullback-to-VWAP in established
+   //   H1 trend direction (gold-friendly). H1 direction is built into the
+   //   detector — so only cooldown can block here.
+   if(direction == "" && g_sc.vwap_reversion_enabled && m5_atr > 0.0) {
+      int vwr_event = DetectVwapReversionEvent(m5_atr, h1_trend_strength);
+      if(vwr_event != 0) {
+         string vwr_dir = (vwr_event > 0) ? "BUY" : "SELL";
+         datetime vwr_last = (vwr_event > 0) ? g_vwap_reversion_last_buy_time : g_vwap_reversion_last_sell_time;
+         datetime vwr_now  = TimeCurrent();
+         bool vwr_cool_ok = (g_sc.vwap_reversion_cooldown_seconds <= 0
+                             || vwr_last == 0
+                             || (vwr_now - vwr_last) >= g_sc.vwap_reversion_cooldown_seconds
+                             || CooldownBypassActive(vwr_dir, "VWAP_REVERSION", m5_adx));
+         if(!vwr_cool_ok) {
+            JournalRecordSignal("SKIP","vwap_reversion_cooldown","VWAP_REVERSION",vwr_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = vwr_dir;
+            setup_type = "VWAP_REVERSION";
+            double vwr_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double vwr_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(vwr_event > 0) {
+               sl  = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(vwr_ask + m5_atr * g_sc.vwap_reversion_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(vwr_ask + m5_atr * g_sc.vwap_reversion_tp2_atr_mult, _Digits);
+               g_vwap_reversion_last_buy_time = vwr_now;
+            } else {
+               sl  = NormalizeDouble(vwr_ask + m5_atr * g_sc.vwap_reversion_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_tp2_atr_mult, _Digits);
+               g_vwap_reversion_last_sell_time = vwr_now;
+            }
+            PrintFormat("FORGE 2.7.42: VWAP_REVERSION %s fired @ %.2f (vwap=%.2f, h1_trend=%.2f, ADX=%.1f)",
+                        vwr_dir, (vwr_event > 0 ? vwr_ask : vwr_bid), g_vwap_price, h1_trend_strength, m5_adx);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -8511,6 +8626,12 @@ void CheckNativeScalperSetups() {
                                  && g_sc.ma_crossover_lot_factor > 0.0
                                  && g_sc.ma_crossover_lot_factor < 1.0)
                                  ? g_sc.ma_crossover_lot_factor : 1.0;
+   // 2.7.42 — VWAP_REVERSION lot factor (Phase 2). Default 0.5 — pullback
+   //   entries are higher-edge than chasing but still half-size by policy.
+   double vwap_reversion_factor = (setup_type == "VWAP_REVERSION"
+                                   && g_sc.vwap_reversion_lot_factor > 0.0
+                                   && g_sc.vwap_reversion_lot_factor < 1.0)
+                                   ? g_sc.vwap_reversion_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -8520,7 +8641,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the

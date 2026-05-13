@@ -374,3 +374,37 @@ def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg):
     # 6. All 3 SKIP gate codes emitted by EA exist in gate_legend.json
     for gate in ("ma_crossover_adx_below_min", "ma_crossover_m15_misalign", "ma_crossover_cooldown"):
         assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+
+
+def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg):
+    """v2.7.42 VWAP_REVERSION Phase 2 — EA + config + gate legend aligned."""
+    # 1. setup_type literal emitted in EA
+    assert 'setup_type = "VWAP_REVERSION"' in ea_src, \
+        "VWAP_REVERSION setup_type literal missing from ea/FORGE.mq5 dispatch"
+    # 2. Detector helper exists
+    assert "DetectVwapReversionEvent" in ea_src, \
+        "DetectVwapReversionEvent helper missing from ea/FORGE.mq5"
+    # 3. All 9 config knobs present in active config
+    for key in (
+        ("setup", "vwap_reversion_enabled"),
+        ("atom", "vwap_reversion_min_deviation_atr"),
+        ("atom", "vwap_reversion_max_deviation_atr"),
+        ("atom", "vwap_reversion_min_extension_bars"),
+        ("geometry", "vwap_reversion_lot_factor"),
+        ("geometry", "vwap_reversion_sl_atr_mult"),
+        ("geometry", "vwap_reversion_tp1_atr_mult"),
+        ("geometry", "vwap_reversion_tp2_atr_mult"),
+        ("timing", "vwap_reversion_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}' section"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 4. Default-OFF
+    assert cfg["setup"]["vwap_reversion_enabled"] == 0, \
+        "vwap_reversion_enabled should default to 0 (Phase 2 ships OFF)"
+    # 5. Lot factor present in combined_lot_factor product
+    assert "vwap_reversion_factor" in ea_src, \
+        "vwap_reversion_factor not multiplied into combined_lot_factor"
+    # 6. SKIP gate code emitted by EA exists
+    assert '"vwap_reversion_cooldown"' in ea_src, \
+        "EA does not emit SKIP code vwap_reversion_cooldown"
