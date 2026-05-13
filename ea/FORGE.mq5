@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.133"
+#property version "2.134"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.63";
+const string FORGE_VERSION = "2.7.64";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -252,6 +252,9 @@ datetime g_scalper_last_dump_log_bar   = 0;   // throttle dump SKIP logs (once p
 double   g_eval_h4_trend         = 0.0;
 double   g_eval_m15_trend        = 0.0;
 double   g_eval_m30_trend        = 0.0;
+// v2.7.64 — Mirror h1/m5 trend locals to globals so WriteMarketData can expose them in market_data.json
+double   g_eval_h1_trend         = 0.0;
+double   g_eval_m5_trend         = 0.0;
 double   g_eval_h1_di_plus       = 0.0;
 double   g_eval_h1_di_minus      = 0.0;
 double   g_eval_h1_di_balance    = 0.0;
@@ -3240,6 +3243,44 @@ void WriteMarketData() {
    j += "},";
    j += "\"rsi_divergence\":\"" + g_rsi_div_type + "\",";
    j += "\"psar_state\":\"" + g_psar_state + "\",";
+   // v2.7.64 — entry_atoms: the 27 internal atoms the EA uses for setup decisions.
+   //   All derived from broker indicator/price handles (iMA, iATR, iADX, iHigh/Low, etc.) —
+   //   no external data sources. Mirrors SIGNALS table columns for live state visibility.
+   j += "\"entry_atoms\":{";
+   // Tier 1 — Critical for "where will we enter?"
+   j += "\"h1_trend_strength\":"  + DoubleToString(g_eval_h1_trend, 4)  + ",";
+   j += "\"h4_trend_strength\":"  + DoubleToString(g_eval_h4_trend, 4)  + ",";
+   j += "\"m5_trend_strength\":"  + DoubleToString(g_eval_m5_trend, 4)  + ",";
+   j += "\"m15_trend_strength\":" + DoubleToString(g_eval_m15_trend, 4) + ",";
+   j += "\"m30_trend_strength\":" + DoubleToString(g_eval_m30_trend, 4) + ",";
+   j += "\"regime_label\":\""     + JsonEscape(g_regime_label) + "\",";
+   j += "\"regime_confidence\":"  + DoubleToString(g_regime_confidence, 3) + ",";
+   j += "\"minutes_into_kz\":"    + IntegerToString(g_regime.minutes_into_kz) + ",";
+   j += "\"day_high\":"           + DoubleToString(g_eval_day_high, 2) + ",";
+   j += "\"day_low\":"            + DoubleToString(g_eval_day_low, 2)  + ",";
+   j += "\"daily_bull_bias\":"    + IntegerToString(g_daily_bull_bias ? 1 : 0) + ",";
+   j += "\"daily_bear_bias\":"    + IntegerToString(g_daily_bear_bias ? 1 : 0) + ",";
+   // Tier 2 — DI + HTF + regime atoms
+   j += "\"h1_di_plus\":"         + DoubleToString(g_eval_h1_di_plus, 2)  + ",";
+   j += "\"h1_di_minus\":"        + DoubleToString(g_eval_h1_di_minus, 2) + ",";
+   j += "\"h1_di_balance\":"      + DoubleToString(g_eval_h1_di_plus - g_eval_h1_di_minus, 2) + ",";
+   j += "\"htf_h1_strong\":"      + IntegerToString(g_regime.htf_h1_strong ? 1 : 0) + ",";
+   j += "\"adx_trend_regime\":"   + IntegerToString(g_adx_trend_regime ? 1 : 0) + ",";
+   j += "\"intraday_label\":\""   + JsonEscape(g_regime.intraday_label) + "\",";
+   j += "\"intraday_counter_htf\":" + IntegerToString(g_regime.intraday_counter_htf ? 1 : 0) + ",";
+   // Tier 3 — M5 candle pattern atoms
+   j += "\"m5_lh_cascade\":"      + IntegerToString(g_eval_m5_lh_cascade)     + ",";
+   j += "\"m5_hl_cascade\":"      + IntegerToString(g_eval_m5_hl_cascade)     + ",";
+   j += "\"m5_body_pct\":"        + DoubleToString(g_eval_m5_body_pct, 4)    + ",";
+   j += "\"m5_strong_bar\":"      + IntegerToString(g_eval_m5_strong_bar)     + ",";
+   j += "\"m5_inside_bar\":"      + IntegerToString(g_eval_m5_inside_bar)     + ",";
+   j += "\"m5_doji\":"            + IntegerToString(g_eval_m5_doji)           + ",";
+   j += "\"long_upper_wick\":"    + IntegerToString(g_eval_long_upper_wick)   + ",";
+   j += "\"long_lower_wick\":"    + IntegerToString(g_eval_long_lower_wick)   + ",";
+   j += "\"m5_range_expanding\":" + IntegerToString(g_eval_m5_range_expanding);
+   // pattern_score is setup-specific (caller-passed to JournalRecordSignal), not a tick-state global —
+   // not exposed here. Use SIGNALS table for per-trade pattern_score.
+   j += "},";
    // Indicators H1
    j += "\"indicators_h1\":{";
    double rsi_buf[1], ma20_buf[1], ma50_buf[1], atr_buf[1];
@@ -8833,6 +8874,7 @@ void CheckNativeScalperSetups() {
 
    // H1 trend bias
    double h1_trend_strength = (h1_ema20 - h1_ema50) / MathMax(h1_atr, point);
+   g_eval_h1_trend = h1_trend_strength;   // v2.7.64 — mirror to global for market_data.json
    bool h1_bull = h1_trend_strength > trend_thr_eff;
    bool h1_bear = h1_trend_strength < -trend_thr_eff;
    bool h1_flat = !h1_bull && !h1_bear;
@@ -8950,6 +8992,7 @@ void CheckNativeScalperSetups() {
    double sl = 0, tp1 = 0, tp2 = 0;
    string setup_type = "";
    double m5_trend_strength = (m5_ema20 - m5_ema50) / MathMax(m5_atr, point);
+   g_eval_m5_trend = m5_trend_strength;   // v2.7.64 — mirror to global for market_data.json
    double m15_trend_strength = m15_trend_strength_htf;
    string nf_ev_label_pre = "";
    ScalperNewsUpdateEffectiveThresholds(nf_ev_label_pre);
