@@ -168,6 +168,32 @@ n_legs_amplified = MathMin(MAX_LEGS_CEILING, n_legs_amplified);
 | `bull_day_dip_buy_lot_mult` | Operator-tunable amplifier on BULL_DAY_DIP_BUY | Composite active |
 | `ScalperLotFactor` (v2.7.40) | Global lot multiplier on `fixed_lot` (MT5 input or env) | Always-on, default 1.0 |
 
+### Inverse amplifiers (per-setup lot throttles — same code shape, default < 1.0)
+
+The lot-factor code pattern (safe default 1.0 in the local variable, conditional bump to
+the env knob value) ALSO accommodates **throttles** where the env knob defaults below
+1.0. Mechanically identical to amplifiers; only the default direction differs. The 11
+v2.7.42 setups all use this shape with `geometry.<setup>_lot_factor=0.5` default
+(conservative per-leg sizing on new setups until backtest validates).
+
+| Throttle | Effect | Gate |
+|---|---|---|
+| `geometry.ma_crossover_lot_factor=0.5` | 0.5× lot on MA_CROSSOVER (crossovers lag) | `setup_type == "MA_CROSSOVER"` |
+| `geometry.vwap_reversion_lot_factor=0.5` | 0.5× lot on VWAP_REVERSION | `setup_type == "VWAP_REVERSION"` |
+| `geometry.fib_confluence_lot_factor=0.5` | 0.5× lot on FIB_CONFLUENCE | `setup_type == "FIB_CONFLUENCE"` |
+| `geometry.inside_bar_lot_factor=0.5` | 0.5× lot on INSIDE_BAR | `setup_type == "INSIDE_BAR"` |
+| `geometry.bb_squeeze_lot_factor=0.5` | 0.5× lot on BB_SQUEEZE | `setup_type == "BB_SQUEEZE"` |
+| `geometry.orb_lot_factor=0.5` | 0.5× lot on ORB | `setup_type == "ORB"` |
+| `geometry.gap_and_go_lot_factor=0.5` | 0.5× lot on GAP_AND_GO | `setup_type == "GAP_AND_GO"` |
+| `geometry.double_pattern_lot_factor=0.5` | 0.5× lot on DOUBLE_TOP / DOUBLE_BOTTOM (shared) | `setup_type in {DOUBLE_TOP, DOUBLE_BOTTOM}` |
+| `geometry.hs_lot_factor=0.5` | 0.5× lot on HEAD_AND_SHOULDERS / INVERSE_H&S (shared) | `setup_type in {HEAD_AND_SHOULDERS, INVERSE_HEAD_AND_SHOULDERS}` |
+| `geometry.flag_pennant_lot_factor=0.5` | 0.5× lot on FLAG_PENNANT | `setup_type == "FLAG_PENNANT"` |
+| `geometry.trendline_bounce_lot_factor=0.5` | 0.5× lot on TRENDLINE_BOUNCE | `setup_type == "TRENDLINE_BOUNCE"` |
+| `geometry.sr_flip_lot_factor=0.5` | 0.5× lot on SR_FLIP | `setup_type == "SR_FLIP"` |
+
+All 11 default-OFF in `setup.*_enabled=0`. When operator flips a setup ON, the throttle
+is automatically applied — explicit step to size up requires raising the lot_factor knob.
+
 ---
 
 ## §5. Composite pattern
@@ -215,6 +241,49 @@ The scope split for env knobs follows §4.9:
 ### Live registry
 
 See `docs/FORGE_INDICATOR_ATLAS.md` §5 — composite registry with calibration history.
+
+### v2.7.42 setup composites (11 new ones)
+
+Per §5 categories, the **Setup composite** subtype (a multi-atom predicate that defines
+a new `setup_type`) describes all 11 v2.7.42 entries shipped this session. Each has a
+`Detect<Name>Event()` helper that returns `1 = BUY signal / -1 = SELL signal / 0 = no
+event` — a direction-aware variant of the §5 bool-returning shape. Sample:
+
+```cpp
+int DetectMaCrossoverEvent() {
+    if (!g_sc.ma_crossover_enabled) return 0;  // master toggle
+    double ema20_buf[2], ema50_buf[2];
+    if (CopyBuffer(g_mtf[0].h_ma20, 0, 1, 2, ema20_buf) != 2) return 0;
+    if (CopyBuffer(g_mtf[0].h_ma50, 0, 1, 2, ema50_buf) != 2) return 0;
+    double diff_now  = ema20_buf[0] - ema50_buf[0];
+    double diff_prev = ema20_buf[1] - ema50_buf[1];
+    if (diff_prev <= 0.0 && diff_now > 0.0) return 1;   // BUY cross
+    if (diff_prev >= 0.0 && diff_now < 0.0) return -1;  // SELL cross
+    return 0;
+}
+```
+
+| Setup composite (Det*Event helper) | Setup_type string | Returns 1 | Returns -1 |
+|---|---|---|---|
+| `DetectMaCrossoverEvent` | `MA_CROSSOVER` | EMA20 crosses above EMA50 | EMA20 crosses below EMA50 |
+| `DetectVwapReversionEvent` | `VWAP_REVERSION` | Pullback to VWAP in H1 uptrend | Pullback to VWAP in H1 downtrend |
+| `DetectFibConfluenceEvent` | `FIB_CONFLUENCE` | H1 bull + price near fib + ≥N references | H1 bear + same |
+| `DetectInsideBarBreakoutEvent` | `INSIDE_BAR` | Inside-bar + breakout above bar[1] high | Inside-bar + breakout below bar[1] low |
+| `DetectBbSqueezeBreakoutEvent` | `BB_SQUEEZE` | Squeeze + break above bb_u + min_breakout | Squeeze + break below bb_l |
+| `DetectOrbBreakoutEvent` | `ORB` | Locked range + break above range_high | Locked range + break below range_low |
+| `DetectGapAndGoEvent` | `GAP_AND_GO` | Gap up ≥ min_gap_atr | Gap down ≥ min_gap_atr |
+| `DetectDoubleTopEvent` | `DOUBLE_TOP` | — (SELL only) | Two-highs + neckline-break |
+| `DetectDoubleBottomEvent` | `DOUBLE_BOTTOM` | Two-lows + ridge-break | — (BUY only) |
+| `DetectHeadAndShouldersEvent` | `HEAD_AND_SHOULDERS` | — (SELL only) | 3-high H&S + neckline-break |
+| `DetectInverseHeadAndShouldersEvent` | `INVERSE_HEAD_AND_SHOULDERS` | 3-low IH&S + neckline-break | — (BUY only) |
+| `DetectFlagPennantEvent` | `FLAG_PENNANT` | Bullish impulse + consolidation + break-up | Bearish impulse + consolidation + break-down |
+| `DetectTrendlineBounceEvent` | `TRENDLINE_BOUNCE` | Rising-lows line + touch + reject up | Falling-highs line + touch + reject down |
+| `DetectSrFlipEvent` | `SR_FLIP` | Broken resistance bounces as support | Broken support rejects as resistance |
+
+All 11 follow the §5 "Setup composite" pattern: master toggle + multi-atom predicate
+chain + pure function (no side effects). Each is paired with a `<setup>_lot_factor` in
+the GEOMETRY scope (§4 amplifier shape), a `<setup>_*_cooldown_seconds` in the TIMING
+scope (§7), per-direction cooldown trackers in §6, and SKIP gate codes in §2.
 
 ---
 
@@ -264,6 +333,24 @@ g_<setup_lower>_last_<event>_time  — setup-specific trackers
 | `g_last_chop_buy_exit_time` | BULL_DAY_DIP_BUY TP1 exit | BULL_DAY_DIP_BUY reentry cooldown |
 | `g_scalper_last_direction` | Any entry | `ScalperDirectionCooldownOK()` (anti-flip-flop) |
 | `g_groups[gi].tp1_hit` | TP1 close fires | Group lifecycle, post-TP1 ladder arming |
+| **v2.7.42 — Phase 2 / C-extended setup cooldown trackers (28 total)** | | |
+| `g_ma_crossover_last_buy_time` / `_sell_time` | MA_CROSSOVER fires | MA_CROSSOVER per-direction cooldown |
+| `g_vwap_reversion_last_buy_time` / `_sell_time` | VWAP_REVERSION fires | VWAP_REVERSION per-direction cooldown |
+| `g_fib_confluence_last_buy_time` / `_sell_time` | FIB_CONFLUENCE fires | FIB_CONFLUENCE per-direction cooldown |
+| `g_inside_bar_last_buy_time` / `_sell_time` | INSIDE_BAR fires | INSIDE_BAR per-direction cooldown |
+| `g_bb_squeeze_last_buy_time` / `_sell_time` | BB_SQUEEZE fires | BB_SQUEEZE per-direction cooldown |
+| `g_orb_last_buy_time` / `_sell_time` | ORB fires | ORB per-direction cooldown |
+| `g_gap_and_go_last_buy_time` / `_sell_time` | GAP_AND_GO fires | GAP_AND_GO per-direction cooldown |
+| `g_flag_pennant_last_buy_time` / `_sell_time` | FLAG_PENNANT fires | FLAG_PENNANT per-direction cooldown |
+| `g_trendline_bounce_last_buy_time` / `_sell_time` | TRENDLINE_BOUNCE fires | TRENDLINE_BOUNCE per-direction cooldown |
+| `g_sr_flip_last_buy_time` / `_sell_time` | SR_FLIP fires | SR_FLIP per-direction cooldown |
+| `g_double_top_last_time` | DOUBLE_TOP fires (SELL-only) | DOUBLE_TOP single-pattern cooldown |
+| `g_double_bottom_last_time` | DOUBLE_BOTTOM fires (BUY-only) | DOUBLE_BOTTOM single-pattern cooldown |
+| `g_head_and_shoulders_last_time` | HEAD_AND_SHOULDERS fires (SELL-only) | H&S single-pattern cooldown |
+| `g_inverse_head_and_shoulders_last_time` | INVERSE_H&S fires (BUY-only) | IH&S single-pattern cooldown |
+| **v2.7.42 — Multi-value state trackers (non-cooldown)** | | |
+| `g_swings[64]`, `g_swings_count`, `g_swings_next_idx`, `g_swings_last_update_bar` | New confirmed swing on M5 close | Tier 3 setups (Double Top/Bottom, H&S, IH&S, Trendline Bounce, S/R Flip) via `GetRecentSwings()` |
+| `g_orb_window_high`, `g_orb_window_low`, `g_orb_window_locked`, `g_orb_window_day_stamp` | Each tick inside ORB window; reset on NY-local day change | `DetectOrbBreakoutEvent` |
 
 ### Pitfall: state lifecycle
 
@@ -563,3 +650,4 @@ You want to add a new logic check. Ask:
 | Date | Change |
 |------|--------|
 | 2026-05-12 | Initial doc. 7 core patterns catalogued (Filter, Bypass, Amplifier, Composite, State tracker, Cooldown, Bypass-list). §9 knob design. §10 anti-patterns. §11 decision flow showing pattern composition. §12 pattern selection decision tree. Cross-referenced from Decision Stack, Naming Conventions, Regime Taxonomy, Lot Sizing Reference, Trailing-Add Ladder feature doc. |
+| 2026-05-12 | v2.7.42 backfill of 11 new C-extended setups (commits `04c166c`..`7d42a10`) + Phase 2 naming-convention renames (commits `21b5b8d`, `5acd97f`): §4 amplifier registry adds 12 setup-specific lot throttles (inverse-amplifier subsection); §5 composite registry adds 11 new setup-composite Det*Event helpers + setup_type strings; §6 state-tracker registry adds 28 cooldown trackers + multi-value swing-buffer + ORB-window state. All audited against §2/§3/§4/§7 patterns: 100% conformance (3+ SKIP codes each → gate_legend, CooldownBypassActive hooked per setup, safe-default 1.0 fold for all lot factors, 0-guarded cooldown queries). |
