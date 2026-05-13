@@ -321,6 +321,7 @@
 
     "intraday_reversal_sell_enabled": 0,
     "intraday_reversal_sell_lot_mult": 2.0,
+    "intraday_reversal_require_prime_kz": 0,
 
     "fractional_sell_in_bull_enabled": 0,
     "fractional_sell_in_bull_lot_factor": 0.25,
@@ -331,7 +332,9 @@
     "bull_day_dip_buy_lot_mult": 1.0,
     "bull_day_dip_buy_sl_atr_mult": 1.0,
     "bull_day_dip_buy_tp1_atr_mult": 0.65,
-    "bull_day_dip_buy_reentry_cooldown_sec": 300
+    "bull_day_dip_buy_reentry_cooldown_sec": 300,
+    "bull_day_dip_buy_prime_amplifier": 1.0,
+    "dump_judas_window_block": 0
   },
 
   "setup": {
