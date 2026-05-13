@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.116"
+#property version "2.117"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.46";
+const string FORGE_VERSION = "2.7.47";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -6670,6 +6670,10 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_killzone ON SIGNALS(killzone);");
    // 2.7.45 — minutes_into_kz column (FORGE_REGIME_TAXONOMY.md §11.6 — Judas-window detector for retrospective composite validation)
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN minutes_into_kz INTEGER DEFAULT 0;");
+   // 2.7.47 — RegimeState surfacing (FORGE_REGIME_TAXONOMY.md §3 — 3 NEW computed regime fields for retrospective composite validation)
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN htf_h1_strong INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN intraday_label TEXT DEFAULT '';");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN intraday_counter_htf INTEGER DEFAULT 0;");
    // 2.7.37 — Layer-4 atom telemetry (24 columns; additive ALTERs are no-ops if column exists)
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_trend REAL;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_trend REAL;");
@@ -6880,6 +6884,8 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "pattern_score, h1_trend, regime_label, regime_confidence, "
       "adx_trend_regime, high_vol_trend, session, killzone, magic, synced, run_id, "
       "macd_histogram, m15_adx, lot_factor, minutes_into_kz, "
+      // 2.7.47 — RegimeState surfacing (FORGE_REGIME_TAXONOMY.md §3 — htf_h1_strong + intraday_label + intraday_counter_htf)
+      "htf_h1_strong, intraday_label, intraday_counter_htf, "
       // 2.7.37 — Layer-4 atom telemetry (24 cols sourced from g_eval_* globals
       // populated by ForgeEvalAtoms() at the top of CheckScalperEntry)
       "h4_trend, m15_trend, h1_di_balance, "
@@ -6936,6 +6942,12 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + DoubleToString(lot_factor_val, 4) + ", "
       // 2.7.45 — minutes_into_kz (FORGE_REGIME_TAXONOMY.md §11.6 — Judas-window detector)
       + IntegerToString(minutes_into_kz_now) + ", "
+      // 2.7.47 — RegimeState — 3 NEW fields from g_regime, populated by RegimeUpdate() each tick.
+      //   Early-gate SKIPs that fire before RegimeUpdate runs will see last-tick's value
+      //   (still useful for analysis; never more than 1 tick stale).
+      + IntegerToString(g_regime.htf_h1_strong ? 1 : 0) + ", "
+      + "'" + g_regime.intraday_label + "', "
+      + IntegerToString(g_regime.intraday_counter_htf ? 1 : 0) + ", "
       // 2.7.37 Layer-4 atoms
       + DoubleToString(g_eval_h4_trend,      4) + ", "
       + DoubleToString(g_eval_m15_trend,     4) + ", "

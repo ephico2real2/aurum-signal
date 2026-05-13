@@ -893,3 +893,56 @@ def test_killzone_trade_cap_wired_end_to_end(ea_src, cfg, gate_legend, sync_src,
         "defaults.json killzones_max_trades_per_kz should be 0"
     assert "FORGE_GATE_KILLZONE_MAX_TRADES" in sync_src, \
         "sync_scalper_config_from_env.py missing FORGE_GATE_KILLZONE_MAX_TRADES mapping"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v2.7.47 — RegimeState surfacing to SIGNALS (FORGE_REGIME_TAXONOMY.md §3)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_regime_state_logged_to_signals(ea_src):
+    """v2.7.47: 3 NEW computed RegimeState fields land in SIGNALS for retrospective analysis."""
+    # EA-side ALTER TABLE
+    assert "ALTER TABLE SIGNALS ADD COLUMN htf_h1_strong INTEGER" in ea_src, \
+        "SIGNALS schema missing htf_h1_strong column"
+    assert "ALTER TABLE SIGNALS ADD COLUMN intraday_label TEXT" in ea_src, \
+        "SIGNALS schema missing intraday_label column"
+    assert "ALTER TABLE SIGNALS ADD COLUMN intraday_counter_htf INTEGER" in ea_src, \
+        "SIGNALS schema missing intraday_counter_htf column"
+    # INSERT column list
+    insert_block = ea_src.split('INSERT INTO SIGNALS')[1].split('VALUES')[0]
+    for col in ("htf_h1_strong", "intraday_label", "intraday_counter_htf"):
+        assert col in insert_block, f"INSERT INTO SIGNALS column list missing {col}"
+    # Values are sourced from g_regime struct (Phase 2 wiring proves itself useful)
+    assert "g_regime.htf_h1_strong" in ea_src, "INSERT must source htf_h1_strong from g_regime"
+    assert "g_regime.intraday_label" in ea_src, "INSERT must source intraday_label from g_regime"
+    assert "g_regime.intraday_counter_htf" in ea_src, "INSERT must source intraday_counter_htf from g_regime"
+
+
+def test_regime_state_scribe_mirror():
+    """v2.7.47: scribe.py mirrors the 3 RegimeState SIGNALS columns to forge_signals."""
+    from pathlib import Path as _Path
+    scribe = (_Path(__file__).parent.parent.parent / "python" / "scribe.py").read_text()
+    # CREATE TABLE has the 3 columns
+    for col in ("htf_h1_strong", "intraday_label", "intraday_counter_htf"):
+        assert col in scribe, f"scribe.py missing {col}"
+    # ALTER TABLE migrations
+    assert "ADD COLUMN htf_h1_strong INTEGER" in scribe, "scribe.py missing ALTER for htf_h1_strong"
+    assert "ADD COLUMN intraday_label TEXT" in scribe, "scribe.py missing ALTER for intraday_label"
+    assert "ADD COLUMN intraday_counter_htf INTEGER" in scribe, "scribe.py missing ALTER for intraday_counter_htf"
+    # All-or-nothing detection
+    assert 'has_regime_v47' in scribe, "scribe.py missing has_regime_v47 source-column detector"
+    # INSERT column list
+    assert "htf_h1_strong, intraday_label, intraday_counter_htf" in scribe, \
+        "scribe.py forge_signals INSERT missing the v2.7.47 trio"
+
+
+def test_athena_api_returns_killzone_minutes_in_taken_entries():
+    """v2.7.47: /api/backtest/run/:id TAKEN SELECT exposes killzone + minutes_into_kz."""
+    from pathlib import Path as _Path
+    api = (_Path(__file__).parent.parent.parent / "python" / "athena_api.py").read_text()
+    # The TAKEN-entries SELECT must include both columns
+    taken_block_start = api.find("# TAKEN entries enriched")
+    assert taken_block_start >= 0, "athena_api TAKEN entries SELECT block not found"
+    taken_block = api[taken_block_start:taken_block_start + 800]
+    assert "killzone" in taken_block, "TAKEN entries SELECT missing killzone column"
+    assert "minutes_into_kz" in taken_block, "TAKEN entries SELECT missing minutes_into_kz column"
