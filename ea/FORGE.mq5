@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.132"
+#property version "2.133"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.62";
+const string FORGE_VERSION = "2.7.63";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -613,6 +613,20 @@ struct ScalperConfig {
    double dump_dist_amplifier_factor;               // default 1.5×
    double dump_dist_amplifier_strong_threshold_atr; // default 3.0
    double dump_dist_amplifier_strong_factor;        // default 2.0×
+   // v2.7.63 — Killzone-tier amplifier (operator: "kills move fast within secs").
+   //   Peak liquidity 0-5 min into NY/London open; decays to de-risk past 60 min.
+   //   Reads g_regime.killzone (string) + g_regime.minutes_into_kz (int) populated each tick.
+   bool   dump_kz_amplifier_enabled;
+   double dump_kz_tier1_max_min;     // 0-5 min default → 2.0× (peak)
+   double dump_kz_tier1_factor;
+   double dump_kz_tier2_max_min;     // 5-15 min default → 1.5× (strong)
+   double dump_kz_tier2_factor;
+   double dump_kz_tier3_max_min;     // 15-30 min default → 1.0× (normal)
+   double dump_kz_tier3_factor;
+   double dump_kz_tier4_max_min;     // 30-60 min default → 0.85× (fading)
+   double dump_kz_tier4_factor;
+   double dump_kz_tier5_factor;      // 60+ min default → 0.6× (stale/de-risk)
+   double dump_kz_no_zone_factor;    // Between KZs default → 0.0 = block (or 0.5 = fractional)
    // 2.7.32 — Option B (default OFF, documented for validation): direction-confirmation gate.
    //   Run 20 Mar 31 had 16 of 24 BUY losses as IMMEDIATE-SL (avg 30min, 1.52×ATR — exact SL setting,
    //   no TPs offset). These are direction failures, not SL-too-tight. Widening SL (Option A 3.0→4.0×ATR)
@@ -3565,6 +3579,18 @@ void InitScalperConfig() {
    g_sc.dump_dist_amplifier_factor               = 1.5;
    g_sc.dump_dist_amplifier_strong_threshold_atr = 3.0;
    g_sc.dump_dist_amplifier_strong_factor        = 2.0;
+   // v2.7.63 — Killzone amplifier defaults (tight tiers per operator "fast within secs")
+   g_sc.dump_kz_amplifier_enabled = true;
+   g_sc.dump_kz_tier1_max_min     = 5.0;    // 0-5 min: peak liquidity
+   g_sc.dump_kz_tier1_factor      = 2.0;
+   g_sc.dump_kz_tier2_max_min     = 15.0;   // 5-15 min: strong edge
+   g_sc.dump_kz_tier2_factor      = 1.5;
+   g_sc.dump_kz_tier3_max_min     = 30.0;   // 15-30 min: normal
+   g_sc.dump_kz_tier3_factor      = 1.0;
+   g_sc.dump_kz_tier4_max_min     = 60.0;   // 30-60 min: fading edge
+   g_sc.dump_kz_tier4_factor      = 0.85;
+   g_sc.dump_kz_tier5_factor      = 0.6;    // 60+ min: stale, de-risk
+   g_sc.dump_kz_no_zone_factor    = 0.0;    // Between KZs: block (0 = no trade)
    // 2.7.29 — Regime H1-strong override defaults (Run 18 Issue 1 fix).
    g_sc.regime_h1_override_factor     = 0.0;      // 0 = disabled (legacy unanimous AND-gating). 2.0 typical when enabled.
    g_sc.regime_h1_override_adx_min    = 30.0;     // Minimum M5 ADX for override to fire.
@@ -4501,6 +4527,18 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"dump_dist_amplifier_factor"))               { v=JsonGetDouble(content,"dump_dist_amplifier_factor");               if(v>=0.1 && v<=10.0) g_sc.dump_dist_amplifier_factor=v; }
    if(JsonHasKey(content,"dump_dist_amplifier_strong_threshold_atr")) { v=JsonGetDouble(content,"dump_dist_amplifier_strong_threshold_atr"); if(v>=0 && v<=20.0) g_sc.dump_dist_amplifier_strong_threshold_atr=v; }
    if(JsonHasKey(content,"dump_dist_amplifier_strong_factor"))        { v=JsonGetDouble(content,"dump_dist_amplifier_strong_factor");        if(v>=0.1 && v<=10.0) g_sc.dump_dist_amplifier_strong_factor=v; }
+   // v2.7.63 — Killzone amplifier loaders
+   if(JsonHasKey(content,"dump_kz_amplifier_enabled")) { v=JsonGetDouble(content,"dump_kz_amplifier_enabled"); g_sc.dump_kz_amplifier_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"dump_kz_tier1_max_min"))     { v=JsonGetDouble(content,"dump_kz_tier1_max_min");     if(v>=0 && v<=720) g_sc.dump_kz_tier1_max_min=v; }
+   if(JsonHasKey(content,"dump_kz_tier1_factor"))      { v=JsonGetDouble(content,"dump_kz_tier1_factor");      if(v>=0 && v<=10.0) g_sc.dump_kz_tier1_factor=v; }
+   if(JsonHasKey(content,"dump_kz_tier2_max_min"))     { v=JsonGetDouble(content,"dump_kz_tier2_max_min");     if(v>=0 && v<=720) g_sc.dump_kz_tier2_max_min=v; }
+   if(JsonHasKey(content,"dump_kz_tier2_factor"))      { v=JsonGetDouble(content,"dump_kz_tier2_factor");      if(v>=0 && v<=10.0) g_sc.dump_kz_tier2_factor=v; }
+   if(JsonHasKey(content,"dump_kz_tier3_max_min"))     { v=JsonGetDouble(content,"dump_kz_tier3_max_min");     if(v>=0 && v<=720) g_sc.dump_kz_tier3_max_min=v; }
+   if(JsonHasKey(content,"dump_kz_tier3_factor"))      { v=JsonGetDouble(content,"dump_kz_tier3_factor");      if(v>=0 && v<=10.0) g_sc.dump_kz_tier3_factor=v; }
+   if(JsonHasKey(content,"dump_kz_tier4_max_min"))     { v=JsonGetDouble(content,"dump_kz_tier4_max_min");     if(v>=0 && v<=720) g_sc.dump_kz_tier4_max_min=v; }
+   if(JsonHasKey(content,"dump_kz_tier4_factor"))      { v=JsonGetDouble(content,"dump_kz_tier4_factor");      if(v>=0 && v<=10.0) g_sc.dump_kz_tier4_factor=v; }
+   if(JsonHasKey(content,"dump_kz_tier5_factor"))      { v=JsonGetDouble(content,"dump_kz_tier5_factor");      if(v>=0 && v<=10.0) g_sc.dump_kz_tier5_factor=v; }
+   if(JsonHasKey(content,"dump_kz_no_zone_factor"))    { v=JsonGetDouble(content,"dump_kz_no_zone_factor");    if(v>=0 && v<=10.0) g_sc.dump_kz_no_zone_factor=v; }
    // 2.7.57 — TREND_CONTINUATION_BUY loaders
    if(JsonHasKey(content,"trend_continuation_buy_enabled"))          { v=JsonGetDouble(content,"trend_continuation_buy_enabled");          g_sc.trend_continuation_buy_enabled=(v>=0.5); }
    if(JsonHasKey(content,"trend_continuation_buy_h1_min"))           { v=JsonGetDouble(content,"trend_continuation_buy_h1_min");           if(v>=0 && v<=10.0) g_sc.trend_continuation_buy_h1_min=v; }
@@ -7555,6 +7593,16 @@ void JournalRecordSignal(string outcome, string gate_reason,
                          double macd_hist=0.0, double m15_adx_val=0.0, double lot_factor_val=0.0) {
    if(g_journal_db == INVALID_HANDLE) return;
    if(outcome == "SKIP" && !g_sc.journal_record_skips) return;
+
+   // v2.7.63 — Self-populate macd_hist if caller didn't pass it (most call sites use default 0.0).
+   //   Run 27 v2.7.57 had macd correctly logged at G5001 (-0.79); v2.7.62 logged 0.0 for ALL 18,804
+   //   signals because v2.7.58-v2.7.62 added new call sites that don't pass macd_hist explicitly.
+   //   This fix populates the column at the write site so the column is always meaningful.
+   if(macd_hist == 0.0 && g_h_osma_scalp != INVALID_HANDLE) {
+      double _macd_self_buf[1];
+      if(CopyBuffer(g_h_osma_scalp, 0, 0, 1, _macd_self_buf) == 1)
+         macd_hist = _macd_self_buf[0];
+   }
 
    string session  = ComputeCurrentSessionLabel();
    string killzone = ComputeCurrentKillzoneLabel();
@@ -11163,6 +11211,24 @@ void CheckNativeScalperSetups() {
       else if(_amp_dist_atr >= g_sc.dump_dist_amplifier_threshold_atr)
          dump_dist_amplifier = g_sc.dump_dist_amplifier_factor;
    }
+   // v2.7.63 — Killzone-tier amplifier (operator: "kills move fast within secs").
+   //   Peak at 0-5 min, sharp decay to de-risk past 60 min. Block in dead zones (between KZs).
+   //   Reads g_regime.killzone + g_regime.minutes_into_kz (already populated each tick).
+   double dump_kz_amplifier = 1.0;
+   if(setup_type == "MOMENTUM_DUMP" && g_sc.dump_kz_amplifier_enabled) {
+      bool _in_kz = (StringLen(g_regime.killzone) > 0 && g_regime.killzone != "NONE");
+      if(!_in_kz) {
+         // Dead zone between killzones — apply no_zone_factor (default 0 = effectively block)
+         dump_kz_amplifier = g_sc.dump_kz_no_zone_factor;
+      } else {
+         double m = (double)g_regime.minutes_into_kz;
+         if(m <= g_sc.dump_kz_tier1_max_min)      dump_kz_amplifier = g_sc.dump_kz_tier1_factor; // 0-5 min: 2.0×
+         else if(m <= g_sc.dump_kz_tier2_max_min) dump_kz_amplifier = g_sc.dump_kz_tier2_factor; // 5-15 min: 1.5×
+         else if(m <= g_sc.dump_kz_tier3_max_min) dump_kz_amplifier = g_sc.dump_kz_tier3_factor; // 15-30 min: 1.0×
+         else if(m <= g_sc.dump_kz_tier4_max_min) dump_kz_amplifier = g_sc.dump_kz_tier4_factor; // 30-60 min: 0.85×
+         else                                     dump_kz_amplifier = g_sc.dump_kz_tier5_factor; // 60+ min: 0.6×
+      }
+   }
    // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST lot factor (parity with legacy dump_factor).
    double mdct_factor = (setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST"
                          && g_sc.momentum_dump_composite_test_lot_factor > 0.0
@@ -11332,7 +11398,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * dump_pyramid_factor * dump_dist_amplifier * mdct_factor * bbr_factor * tcb_factor * tcs_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor * fast_trend_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * dump_pyramid_factor * dump_dist_amplifier * dump_kz_amplifier * mdct_factor * bbr_factor * tcb_factor * tcs_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor * fast_trend_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
