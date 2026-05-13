@@ -384,6 +384,22 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_BB_SQUEEZE_TP1_ATR_MULT":         ("geometry", "bb_squeeze_tp1_atr_mult",            "float",  0.1, 5.0),
     "FORGE_GEOMETRY_BB_SQUEEZE_TP2_ATR_MULT":         ("geometry", "bb_squeeze_tp2_atr_mult",            "float",  0.1, 10.0),
     "FORGE_TIMING_BB_SQUEEZE_COOLDOWN_SECONDS":       ("timing",   "bb_squeeze_cooldown_seconds",        "int",    0.0, 7200.0),
+
+    # ── ORB — Opening Range Breakout (Tier 2 — single configurable window) ──
+    # window_start/end_min are NY-local minutes of day. Defaults = 120/150 = London Open
+    # (02:00-02:30 NY = 07:00-07:30 GMT winter). Operator can switch to NY Open (570/585
+    # = 09:30-09:45 NY) or Asia (e.g. 1140/1170 = 19:00-19:30 NY) per backtest.
+    "FORGE_SETUP_ORB_ENABLED":                        ("setup",    "orb_enabled",                        "bool01", None, None),
+    "FORGE_ATOM_ORB_WINDOW_START_MIN":                ("atom",     "orb_window_start_min",               "int",    0.0, 1440.0),
+    "FORGE_ATOM_ORB_WINDOW_END_MIN":                  ("atom",     "orb_window_end_min",                 "int",    0.0, 1440.0),
+    "FORGE_ATOM_ORB_MIN_RANGE_ATR":                   ("atom",     "orb_min_range_atr",                  "float",  0.1, 10.0),
+    "FORGE_ATOM_ORB_MIN_BREAKOUT_ATR":                ("atom",     "orb_min_breakout_atr",               "float",  0.05, 2.0),
+    "FORGE_ATOM_ORB_ADX_MIN":                         ("atom",     "orb_adx_min",                        "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_ORB_LOT_FACTOR":                  ("geometry", "orb_lot_factor",                     "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_ORB_SL_ATR_MULT":                 ("geometry", "orb_sl_atr_mult",                    "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_ORB_TP1_ATR_MULT":                ("geometry", "orb_tp1_atr_mult",                   "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_ORB_TP2_ATR_MULT":                ("geometry", "orb_tp2_atr_mult",                   "float",  0.1, 10.0),
+    "FORGE_TIMING_ORB_COOLDOWN_SECONDS":              ("timing",   "orb_cooldown_seconds",               "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.

@@ -518,3 +518,46 @@ def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg):
     # 7. Both SKIP codes emitted
     for gate in ("bb_squeeze_adx_below_min", "bb_squeeze_cooldown"):
         assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+
+
+def test_orb_setup_wired_end_to_end(ea_src, cfg):
+    """v2.7.42 ORB — C-extended Tier 2 — Opening Range Breakout with daily reset."""
+    # 1. setup_type literal emitted
+    assert 'setup_type = "ORB"' in ea_src, \
+        "ORB setup_type literal missing from ea/FORGE.mq5 dispatch"
+    # 2. Detector helper + state machine pieces exist
+    assert "DetectOrbBreakoutEvent" in ea_src, \
+        "DetectOrbBreakoutEvent helper missing"
+    for sym in ("g_orb_window_high", "g_orb_window_low", "g_orb_window_locked", "g_orb_window_day_stamp"):
+        assert sym in ea_src, f"ORB state global {sym} missing"
+    # 3. Uses GetSessionAnchorTime() for NY-local minute-of-day
+    assert "GetSessionAnchorTime()" in ea_src, \
+        "ORB detector should use GetSessionAnchorTime for NY-local time"
+    assert "MinuteInWindow" in ea_src, \
+        "ORB detector should use MinuteInWindow helper"
+    # 4. All 11 config knobs present
+    for key in (
+        ("setup", "orb_enabled"),
+        ("atom", "orb_window_start_min"),
+        ("atom", "orb_window_end_min"),
+        ("atom", "orb_min_range_atr"),
+        ("atom", "orb_min_breakout_atr"),
+        ("atom", "orb_adx_min"),
+        ("geometry", "orb_lot_factor"),
+        ("geometry", "orb_sl_atr_mult"),
+        ("geometry", "orb_tp1_atr_mult"),
+        ("geometry", "orb_tp2_atr_mult"),
+        ("timing", "orb_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}' section"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 5. Default-OFF + sensible default window (London Open NY-local)
+    assert cfg["setup"]["orb_enabled"] == 0, "orb_enabled should default to 0"
+    assert cfg["atom"]["orb_window_start_min"] < cfg["atom"]["orb_window_end_min"], \
+        "ORB window start must precede end (within-day window)"
+    # 6. Lot factor wired
+    assert "orb_factor" in ea_src, "orb_factor not in combined_lot_factor"
+    # 7. SKIP codes
+    for gate in ("orb_adx_below_min", "orb_cooldown"):
+        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"

@@ -390,5 +390,15 @@
     "label": "BB squeeze — cooldown active",
     "explanation": "v2.7.42 BB_SQUEEZE trigger fired within timing.bb_squeeze_cooldown_seconds (default 900) of a prior BB_SQUEEZE entry in the same direction. Squeezes are rare, so cooldown is longer than the 600s baseline. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
+  },
+  "orb_adx_below_min": {
+    "label": "ORB — M5 ADX below floor",
+    "explanation": "v2.7.42 ORB (Opening Range Breakout) trigger fired — price broke beyond the locked NY-local window range — but m5_adx is below atom.orb_adx_min (default 15). Low-ADX ORBs are likely to fail follow-through.",
+    "category": "Setup gates"
+  },
+  "orb_cooldown": {
+    "label": "ORB — cooldown active",
+    "explanation": "v2.7.42 ORB breakout fired within timing.orb_cooldown_seconds (default 1800) of a prior ORB entry in the same direction. Default 1800s allows at most ~2 ORB entries per day per direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
+    "category": "Cooldowns"
   }
 }

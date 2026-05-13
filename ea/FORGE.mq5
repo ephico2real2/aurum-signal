@@ -339,6 +339,13 @@ datetime g_inside_bar_last_sell_time = 0; // wall time of last INSIDE_BAR SELL e
 // 2.7.42 — BB_SQUEEZE cooldown trackers (C-extended Tier 1 — volatility contraction breakout)
 datetime g_bb_squeeze_last_buy_time  = 0; // wall time of last BB_SQUEEZE BUY entry
 datetime g_bb_squeeze_last_sell_time = 0; // wall time of last BB_SQUEEZE SELL entry
+// 2.7.42 — ORB session-window state (C-extended Tier 2 — Opening Range Breakout)
+double   g_orb_window_high = 0.0;        // highest bid observed inside the current window
+double   g_orb_window_low  = 0.0;        // lowest bid observed inside the current window
+bool     g_orb_window_locked = false;    // true once minute-of-day passes window_end_min
+int      g_orb_window_day_stamp = 0;     // YYYYMMDD of the current day's window (for daily reset)
+datetime g_orb_last_buy_time  = 0;       // wall time of last ORB BUY entry
+datetime g_orb_last_sell_time = 0;       // wall time of last ORB SELL entry
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -574,6 +581,20 @@ struct ScalperConfig {
    double bb_squeeze_tp1_atr_mult;            // TP1 = ATR × this (default 0.5)
    double bb_squeeze_tp2_atr_mult;            // TP2 = ATR × this (default 2.0 — post-squeeze expansion runs)
    int    bb_squeeze_cooldown_seconds;        // min gap per direction (default 900 — squeezes are rare)
+   // 2.7.42 — ORB setup (C-extended Tier 2). Track high/low during a configurable
+   //   NY-local minute-of-day window; lock the range when window ends; fire on
+   //   breakout beyond the locked range by min_breakout_atr × ATR. Daily reset.
+   bool   orb_enabled;                        // master toggle (default off)
+   int    orb_window_start_min;               // NY-local minute-of-day window start (default 120 = 02:00 NY)
+   int    orb_window_end_min;                 // NY-local minute-of-day window end (default 150 = 02:30 NY)
+   double orb_min_range_atr;                  // locked range (high-low) must be ≥ this × ATR (default 1.0)
+   double orb_min_breakout_atr;               // close must be ≥ this × ATR past range edge (default 0.3)
+   double orb_adx_min;                        // M5 ADX floor (default 15)
+   double orb_lot_factor;                     // lot multiplier (default 0.5)
+   double orb_sl_atr_mult;                    // SL = ATR × this (default 1.5)
+   double orb_tp1_atr_mult;                   // TP1 = ATR × this (default 0.5)
+   double orb_tp2_atr_mult;                   // TP2 = ATR × this (default 2.0)
+   int    orb_cooldown_seconds;               // min gap per direction (default 1800)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3114,6 +3135,18 @@ void InitScalperConfig() {
    g_sc.bb_squeeze_tp1_atr_mult         = 0.5;
    g_sc.bb_squeeze_tp2_atr_mult         = 2.0;
    g_sc.bb_squeeze_cooldown_seconds     = 900;
+   // 2.7.42 — ORB setup (C-extended Tier 2; default OFF; defaults = London Open NY-local)
+   g_sc.orb_enabled                     = false;
+   g_sc.orb_window_start_min            = 120;   // 02:00 NY
+   g_sc.orb_window_end_min              = 150;   // 02:30 NY
+   g_sc.orb_min_range_atr               = 1.0;
+   g_sc.orb_min_breakout_atr            = 0.3;
+   g_sc.orb_adx_min                     = 15.0;
+   g_sc.orb_lot_factor                  = 0.5;
+   g_sc.orb_sl_atr_mult                 = 1.5;
+   g_sc.orb_tp1_atr_mult                = 0.5;
+   g_sc.orb_tp2_atr_mult                = 2.0;
+   g_sc.orb_cooldown_seconds            = 1800;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3916,6 +3949,18 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "bb_squeeze_tp1_atr_mult"))             { v=JsonGetDouble(content,"bb_squeeze_tp1_atr_mult");             if(v>=0.1&&v<=5.0) g_sc.bb_squeeze_tp1_atr_mult=v; }
    if(JsonHasKey(content, "bb_squeeze_tp2_atr_mult"))             { v=JsonGetDouble(content,"bb_squeeze_tp2_atr_mult");             if(v>=0.1&&v<=10.0) g_sc.bb_squeeze_tp2_atr_mult=v; }
    if(JsonHasKey(content, "bb_squeeze_cooldown_seconds"))         { v=JsonGetDouble(content,"bb_squeeze_cooldown_seconds");         if(v>=0&&v<=7200) g_sc.bb_squeeze_cooldown_seconds=(int)v; }
+   // 2.7.42 — ORB setup (C-extended Tier 2)
+   if(JsonHasKey(content, "orb_enabled"))                         { v=JsonGetDouble(content,"orb_enabled");                         g_sc.orb_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "orb_window_start_min"))                { v=JsonGetDouble(content,"orb_window_start_min");                if(v>=0&&v<=1440) g_sc.orb_window_start_min=(int)v; }
+   if(JsonHasKey(content, "orb_window_end_min"))                  { v=JsonGetDouble(content,"orb_window_end_min");                  if(v>=0&&v<=1440) g_sc.orb_window_end_min=(int)v; }
+   if(JsonHasKey(content, "orb_min_range_atr"))                   { v=JsonGetDouble(content,"orb_min_range_atr");                   if(v>=0.1&&v<=10.0) g_sc.orb_min_range_atr=v; }
+   if(JsonHasKey(content, "orb_min_breakout_atr"))                { v=JsonGetDouble(content,"orb_min_breakout_atr");                if(v>=0.05&&v<=2.0) g_sc.orb_min_breakout_atr=v; }
+   if(JsonHasKey(content, "orb_adx_min"))                         { v=JsonGetDouble(content,"orb_adx_min");                         if(v>=5.0&&v<=80.0) g_sc.orb_adx_min=v; }
+   if(JsonHasKey(content, "orb_lot_factor"))                      { v=JsonGetDouble(content,"orb_lot_factor");                      if(v>=0.1&&v<=2.0) g_sc.orb_lot_factor=v; }
+   if(JsonHasKey(content, "orb_sl_atr_mult"))                     { v=JsonGetDouble(content,"orb_sl_atr_mult");                     if(v>=0.5&&v<=5.0) g_sc.orb_sl_atr_mult=v; }
+   if(JsonHasKey(content, "orb_tp1_atr_mult"))                    { v=JsonGetDouble(content,"orb_tp1_atr_mult");                    if(v>=0.1&&v<=5.0) g_sc.orb_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "orb_tp2_atr_mult"))                    { v=JsonGetDouble(content,"orb_tp2_atr_mult");                    if(v>=0.1&&v<=10.0) g_sc.orb_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "orb_cooldown_seconds"))                { v=JsonGetDouble(content,"orb_cooldown_seconds");                if(v>=0&&v<=7200) g_sc.orb_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -5024,6 +5069,58 @@ int DetectBbSqueezeBreakoutEvent(const double m5_atr, const double m5_bb_u, cons
    double min_break = g_sc.bb_squeeze_min_breakout_atr * m5_atr;
    if(ask > m5_bb_u + min_break) return 1;
    if(bid < m5_bb_l - min_break) return -1;
+   return 0;
+}
+
+// 2.7.42 — ORB event detector (C-extended Tier 2). State machine:
+//   1. Daily reset (NY-local date change): clear high/low, unlock.
+//   2. Inside window [start_min, end_min): update high/low on every call.
+//   3. After window passes end_min: lock=true.
+//   4. While locked AND range ≥ min_range_atr × ATR: detect breakout
+//      (price beyond high+min_break or low-min_break by min_breakout_atr × ATR).
+//
+// Returns 1 = BUY breakout above locked high, -1 = SELL below locked low, 0 = no event.
+// Uses GetSessionAnchorTime() (NY-local when sessions_ny_anchored=1, else UTC).
+int DetectOrbBreakoutEvent(const double m5_atr) {
+   if(!g_sc.orb_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   datetime t = GetSessionAnchorTime();
+   MqlDateTime dt; TimeToStruct(t, dt);
+   int day_stamp = dt.year * 10000 + dt.mon * 100 + dt.day;
+   int now_min = dt.hour * 60 + dt.min;
+   // Daily reset: new day → clear range + unlock
+   if(day_stamp != g_orb_window_day_stamp) {
+      g_orb_window_day_stamp = day_stamp;
+      g_orb_window_high = 0.0;
+      g_orb_window_low  = 0.0;
+      g_orb_window_locked = false;
+   }
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   // Window tracking
+   bool in_window = MinuteInWindow(now_min, g_sc.orb_window_start_min, g_sc.orb_window_end_min);
+   if(in_window) {
+      // Initialize on first observation inside window
+      if(g_orb_window_high <= 0.0 || bid > g_orb_window_high) g_orb_window_high = bid;
+      if(g_orb_window_low  <= 0.0 || bid < g_orb_window_low)  g_orb_window_low  = bid;
+      g_orb_window_locked = false;
+      return 0;  // never fire inside the range-tracking window
+   }
+   // Lock when past window_end_min (only if we observed some range)
+   if(!g_orb_window_locked) {
+      if(g_orb_window_high > 0.0 && g_orb_window_low > 0.0 && g_orb_window_high > g_orb_window_low) {
+         g_orb_window_locked = true;
+      } else {
+         return 0;
+      }
+   }
+   // Range-size guard
+   double range = g_orb_window_high - g_orb_window_low;
+   if(range < g_sc.orb_min_range_atr * m5_atr) return 0;
+   // Breakout detection
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double min_break = g_sc.orb_min_breakout_atr * m5_atr;
+   if(ask > g_orb_window_high + min_break) return 1;
+   if(bid < g_orb_window_low  - min_break) return -1;
    return 0;
 }
 
@@ -8612,6 +8709,50 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — ORB trigger (C-extended Tier 2). Locked-range breakout from configurable
+   //   NY-local minute-of-day window. Detector handles daily reset + window state.
+   if(g_sc.orb_enabled && m5_atr > 0.0) {
+      // Always call the detector — it has internal state-tracking side effects
+      // (high/low updates, day reset, locking). Direction-empty check is internal.
+      int orb_event = DetectOrbBreakoutEvent(m5_atr);
+      if(direction == "" && orb_event != 0) {
+         string orb_dir = (orb_event > 0) ? "BUY" : "SELL";
+         bool orb_adx_ok = (m5_adx >= g_sc.orb_adx_min);
+         datetime orb_last = (orb_event > 0) ? g_orb_last_buy_time : g_orb_last_sell_time;
+         datetime orb_now  = TimeCurrent();
+         bool orb_cool_ok = (g_sc.orb_cooldown_seconds <= 0
+                             || orb_last == 0
+                             || (orb_now - orb_last) >= g_sc.orb_cooldown_seconds
+                             || CooldownBypassActive(orb_dir, "ORB", m5_adx));
+         if(!orb_adx_ok) {
+            JournalRecordSignal("SKIP","orb_adx_below_min","ORB",orb_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!orb_cool_ok) {
+            JournalRecordSignal("SKIP","orb_cooldown","ORB",orb_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = orb_dir;
+            setup_type = "ORB";
+            double orb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double orb_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(orb_event > 0) {
+               sl  = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(orb_ask + m5_atr * g_sc.orb_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(orb_ask + m5_atr * g_sc.orb_tp2_atr_mult, _Digits);
+               g_orb_last_buy_time = orb_now;
+            } else {
+               sl  = NormalizeDouble(orb_ask + m5_atr * g_sc.orb_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_tp2_atr_mult, _Digits);
+               g_orb_last_sell_time = orb_now;
+            }
+            PrintFormat("FORGE 2.7.42: ORB %s fired @ %.2f (range=[%.2f,%.2f] ADX=%.1f)",
+                        orb_dir, (orb_event > 0 ? orb_ask : orb_bid),
+                        g_orb_window_low, g_orb_window_high, m5_adx);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -8981,6 +9122,11 @@ void CheckNativeScalperSetups() {
                                && g_sc.bb_squeeze_lot_factor > 0.0
                                && g_sc.bb_squeeze_lot_factor < 1.0)
                                ? g_sc.bb_squeeze_lot_factor : 1.0;
+   // 2.7.42 — ORB lot factor (C-extended Tier 2). Default 0.5.
+   double orb_factor = (setup_type == "ORB"
+                        && g_sc.orb_lot_factor > 0.0
+                        && g_sc.orb_lot_factor < 1.0)
+                        ? g_sc.orb_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -8990,7 +9136,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
