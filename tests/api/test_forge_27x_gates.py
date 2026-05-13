@@ -384,7 +384,7 @@ def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg):
     assert 'Filter_Cooldown("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_Cooldown helper"
 
 
-def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg):
+def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg, gate_legend):
     """v2.7.42 VWAP_REVERSION Phase 2 — EA + config + gate legend aligned."""
     # 1. setup_type literal emitted in EA
     assert 'setup_type = "VWAP_REVERSION"' in ea_src, \
@@ -413,12 +413,14 @@ def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg):
     # 5. Lot factor present in combined_lot_factor product
     assert "vwap_reversion_factor" in ea_src, \
         "vwap_reversion_factor not multiplied into combined_lot_factor"
-    # 6. SKIP gate code emitted by EA exists
-    assert '"vwap_reversion_cooldown"' in ea_src, \
-        "EA does not emit SKIP code vwap_reversion_cooldown"
+    # 6. SKIP gate code registered (Filter_Cooldown constructs code at runtime in v2.7.43)
+    assert "vwap_reversion_cooldown" in gate_legend, \
+        "gate code vwap_reversion_cooldown not in gate_legend.json"
+    assert 'Filter_Cooldown("VWAP_REVERSION"' in ea_src, \
+        "VWAP_REVERSION not migrated to Filter_Cooldown helper"
 
 
-def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg):
+def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg, gate_legend):
     """v2.7.42 FIB_CONFLUENCE Phase 2 — EA + config + gate legend aligned."""
     # 1. setup_type literal emitted in EA
     assert 'setup_type = "FIB_CONFLUENCE"' in ea_src, \
@@ -450,9 +452,11 @@ def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg):
     # 6. Lot factor present in combined_lot_factor product
     assert "fib_confluence_factor" in ea_src, \
         "fib_confluence_factor not multiplied into combined_lot_factor"
-    # 7. SKIP gate code emitted by EA exists
-    assert '"fib_confluence_cooldown"' in ea_src, \
-        "EA does not emit SKIP code fib_confluence_cooldown"
+    # 7. SKIP gate code registered (Filter_Cooldown constructs code at runtime in v2.7.43)
+    assert "fib_confluence_cooldown" in gate_legend, \
+        "gate code fib_confluence_cooldown not in gate_legend.json"
+    assert 'Filter_Cooldown("FIB_CONFLUENCE"' in ea_src, \
+        "FIB_CONFLUENCE not migrated to Filter_Cooldown helper"
 
 
 def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
@@ -495,7 +499,7 @@ def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
     assert 'Filter_Cooldown("INSIDE_BAR"' in ea_src, "INSIDE_BAR not migrated to Filter_Cooldown helper"
 
 
-def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg):
+def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg, gate_legend):
     """v2.7.42 BB_SQUEEZE — C-extended Tier 1 — stateless percentile-rank detector."""
     # 1. setup_type literal emitted
     assert 'setup_type = "BB_SQUEEZE"' in ea_src, \
@@ -530,12 +534,14 @@ def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg):
     # 6. Lot factor in combined_lot_factor product
     assert "bb_squeeze_factor" in ea_src, \
         "bb_squeeze_factor not multiplied into combined_lot_factor"
-    # 7. Both SKIP codes emitted
+    # 7. Both SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
     for gate in ("bb_squeeze_adx_below_min", "bb_squeeze_cooldown"):
-        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+        assert gate in gate_legend, f"gate code {gate} not in gate_legend.json"
+    assert 'Filter_AdxFloor("BB_SQUEEZE"' in ea_src, "BB_SQUEEZE not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("BB_SQUEEZE"' in ea_src, "BB_SQUEEZE not migrated to Filter_Cooldown helper"
 
 
-def test_orb_setup_wired_end_to_end(ea_src, cfg):
+def test_orb_setup_wired_end_to_end(ea_src, cfg, gate_legend):
     """v2.7.42 ORB — C-extended Tier 2 — Opening Range Breakout with daily reset."""
     # 1. setup_type literal emitted
     assert 'setup_type = "ORB"' in ea_src, \
@@ -573,12 +579,14 @@ def test_orb_setup_wired_end_to_end(ea_src, cfg):
         "ORB window start must precede end (within-day window)"
     # 6. Lot factor wired
     assert "orb_factor" in ea_src, "orb_factor not in combined_lot_factor"
-    # 7. SKIP codes
+    # 7. SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
     for gate in ("orb_adx_below_min", "orb_cooldown"):
-        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+        assert gate in gate_legend, f"gate code {gate} not in gate_legend.json"
+    assert 'Filter_AdxFloor("ORB"' in ea_src, "ORB not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("ORB"' in ea_src, "ORB not migrated to Filter_Cooldown helper"
 
 
-def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg):
+def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg, gate_legend):
     """v2.7.42 GAP_AND_GO — C-extended Tier 2 — bar-time-skip + price-jump."""
     # 1. setup_type literal emitted
     assert 'setup_type = "GAP_AND_GO"' in ea_src, \
@@ -610,11 +618,13 @@ def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg):
         "gap_and_go min < max"
     # 6. Lot factor wired
     assert "gap_and_go_factor" in ea_src, "gap_and_go_factor not in combined_lot_factor"
-    # 7. SKIP code
-    assert '"gap_and_go_cooldown"' in ea_src, "EA does not emit gap_and_go_cooldown SKIP"
+    # 7. SKIP code registered (Filter_Cooldown constructs code at runtime in v2.7.43)
+    assert "gap_and_go_cooldown" in gate_legend, "gate code gap_and_go_cooldown not in gate_legend.json"
+    assert 'Filter_Cooldown("GAP_AND_GO"' in ea_src, \
+        "GAP_AND_GO not migrated to Filter_Cooldown helper"
 
 
-def test_swing_infra_and_double_patterns_wired(ea_src, cfg):
+def test_swing_infra_and_double_patterns_wired(ea_src, cfg, gate_legend):
     """v2.7.42 C-extended Tier 3 — swing-point ring buffer + DOUBLE_TOP/BOTTOM."""
     # 1. Swing-point infra: struct + globals + helper functions
     assert "struct SwingPoint" in ea_src, "SwingPoint struct missing"
@@ -653,13 +663,17 @@ def test_swing_infra_and_double_patterns_wired(ea_src, cfg):
     assert cfg["setup"]["double_bottom_enabled"] == 0
     # 6. Shared lot factor in combined_lot_factor
     assert "double_pattern_factor" in ea_src, "double_pattern_factor not in combined_lot_factor"
-    # 7. All 4 SKIP codes
+    # 7. All 4 SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
     for gate in ("double_top_adx_below_min", "double_top_cooldown",
                  "double_bottom_adx_below_min", "double_bottom_cooldown"):
-        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+        assert gate in gate_legend, f"gate code {gate} not in gate_legend.json"
+    assert 'Filter_AdxFloor("DOUBLE_TOP"' in ea_src, "DOUBLE_TOP not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("DOUBLE_TOP"' in ea_src, "DOUBLE_TOP not migrated to Filter_Cooldown helper"
+    assert 'Filter_AdxFloor("DOUBLE_BOTTOM"' in ea_src, "DOUBLE_BOTTOM not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("DOUBLE_BOTTOM"' in ea_src, "DOUBLE_BOTTOM not migrated to Filter_Cooldown helper"
 
 
-def test_head_and_shoulders_setups_wired(ea_src, cfg):
+def test_head_and_shoulders_setups_wired(ea_src, cfg, gate_legend):
     """v2.7.42 C-extended Tier 3 — HEAD_AND_SHOULDERS + INVERSE_HEAD_AND_SHOULDERS."""
     # Detectors + setup_type literals
     for sym in ("DetectHeadAndShouldersEvent", "DetectInverseHeadAndShouldersEvent"):
@@ -687,13 +701,21 @@ def test_head_and_shoulders_setups_wired(ea_src, cfg):
     assert cfg["setup"]["inverse_head_and_shoulders_enabled"] == 0
     # Shared lot factor wired
     assert "hs_factor" in ea_src, "hs_factor not in combined_lot_factor"
-    # 4 SKIP codes
+    # 4 SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
     for gate in ("head_and_shoulders_adx_below_min", "head_and_shoulders_cooldown",
                  "inverse_head_and_shoulders_adx_below_min", "inverse_head_and_shoulders_cooldown"):
-        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+        assert gate in gate_legend, f"gate code {gate} not in gate_legend.json"
+    assert 'Filter_AdxFloor("HEAD_AND_SHOULDERS"' in ea_src, \
+        "HEAD_AND_SHOULDERS not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("HEAD_AND_SHOULDERS"' in ea_src, \
+        "HEAD_AND_SHOULDERS not migrated to Filter_Cooldown helper"
+    assert 'Filter_AdxFloor("INVERSE_HEAD_AND_SHOULDERS"' in ea_src, \
+        "INVERSE_HEAD_AND_SHOULDERS not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("INVERSE_HEAD_AND_SHOULDERS"' in ea_src, \
+        "INVERSE_HEAD_AND_SHOULDERS not migrated to Filter_Cooldown helper"
 
 
-def test_flag_pennant_setup_wired(ea_src, cfg):
+def test_flag_pennant_setup_wired(ea_src, cfg, gate_legend):
     """v2.7.42 C-extended Tier 3 — FLAG_PENNANT (impulse + consolidation + breakout)."""
     assert 'setup_type = "FLAG_PENNANT"' in ea_src
     assert "DetectFlagPennantEvent" in ea_src
@@ -715,11 +737,14 @@ def test_flag_pennant_setup_wired(ea_src, cfg):
         assert name in cfg[section]
     assert cfg["setup"]["flag_pennant_enabled"] == 0
     assert "flag_pennant_factor" in ea_src
+    # SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
     for gate in ("flag_pennant_adx_below_min", "flag_pennant_cooldown"):
-        assert f'"{gate}"' in ea_src
+        assert gate in gate_legend, f"gate code {gate} not in gate_legend.json"
+    assert 'Filter_AdxFloor("FLAG_PENNANT"' in ea_src, "FLAG_PENNANT not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("FLAG_PENNANT"' in ea_src, "FLAG_PENNANT not migrated to Filter_Cooldown helper"
 
 
-def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg):
+def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg, gate_legend):
     """v2.7.42 C-extended Tier 3 FINAL — TRENDLINE_BOUNCE + SR_FLIP."""
     for sym in ("DetectTrendlineBounceEvent", "DetectSrFlipEvent"):
         assert sym in ea_src, f"{sym} missing"
@@ -750,6 +775,11 @@ def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg):
     assert cfg["setup"]["sr_flip_enabled"] == 0
     assert "trendline_bounce_factor" in ea_src
     assert "sr_flip_factor" in ea_src
+    # SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
     for gate in ("trendline_bounce_adx_below_min", "trendline_bounce_cooldown",
                  "sr_flip_adx_below_min", "sr_flip_cooldown"):
-        assert f'"{gate}"' in ea_src
+        assert gate in gate_legend, f"gate code {gate} not in gate_legend.json"
+    assert 'Filter_AdxFloor("TRENDLINE_BOUNCE"' in ea_src, "TRENDLINE_BOUNCE not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("TRENDLINE_BOUNCE"' in ea_src, "TRENDLINE_BOUNCE not migrated to Filter_Cooldown helper"
+    assert 'Filter_AdxFloor("SR_FLIP"' in ea_src, "SR_FLIP not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("SR_FLIP"' in ea_src, "SR_FLIP not migrated to Filter_Cooldown helper"

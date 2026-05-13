@@ -700,17 +700,36 @@ checks, `risk_per_trade` calculation, or correlation guardrails inside this func
 
 ### Reference implementations
 
-v2.7.43 migrates **2 of the 14 setups** to the new helpers as reference: `MA_CROSSOVER`
-(uses all three filters: AdxFloor + M15TrendAligned + Cooldown) and `INSIDE_BAR`
-(AdxFloor + Cooldown only — no M15 filter). The remaining 12 setups (BB_BREAKOUT,
-BB_BOUNCE, BB_PULLBACK_SCALP, MOMENTUM_DUMP, BB_BREAKOUT_RETEST, VWAP_REVERSION,
-FIB_CONFLUENCE, BB_SQUEEZE, ORB, GAP_AND_GO, DOUBLE_TOP/BOTTOM, H&S/IH&S, FLAG_PENNANT,
-TRENDLINE_BOUNCE, SR_FLIP, FRACTIONAL_SELL_IN_BULL, BULL_DAY_DIP_BUY) stay monolithic
-for now; their migration follows the same pattern when touched.
+v2.7.43 migrates **all 14 of the v2.7.42 setups** to the new layered helpers:
 
-The MA_CROSSOVER dispatch shrank from ~30 lines to ~16 lines. Net code WAS NOT smaller
-(the helpers added ~150 lines) but the dispatch is now LEGIBLE in terms of the 12-layer
-model: every line reads as a layer.
+| Setup | Filters used |
+|---|---|
+| `MA_CROSSOVER` | `Filter_AdxFloor` + `Filter_M15TrendAligned` + `Filter_Cooldown` |
+| `INSIDE_BAR` | `Filter_AdxFloor` + `Filter_Cooldown` |
+| `VWAP_REVERSION` | `Filter_Cooldown` (H1 agreement is inside the detector) |
+| `FIB_CONFLUENCE` | `Filter_Cooldown` (H1 agreement is inside the detector) |
+| `BB_SQUEEZE` | `Filter_AdxFloor` + `Filter_Cooldown` |
+| `ORB` | `Filter_AdxFloor` + `Filter_Cooldown` (detector still called unconditionally — has window-state side effects) |
+| `GAP_AND_GO` | `Filter_Cooldown` (no ADX gate in dispatch) |
+| `DOUBLE_TOP` / `DOUBLE_BOTTOM` | `Filter_AdxFloor` + `Filter_Cooldown` (single-direction; single `g_<setup>_last_time` tracker) |
+| `HEAD_AND_SHOULDERS` / `INVERSE_HEAD_AND_SHOULDERS` | `Filter_AdxFloor` + `Filter_Cooldown` (single-direction) |
+| `FLAG_PENNANT` | `Filter_AdxFloor` + `Filter_Cooldown` |
+| `TRENDLINE_BOUNCE` | `Filter_AdxFloor` + `Filter_Cooldown` |
+| `SR_FLIP` | `Filter_AdxFloor` + `Filter_Cooldown` |
+
+Every migrated dispatch also calls `Score_SetupConfidence(...)` for informational
+scoring in the PrintFormat line — score has no behavior effect, it's diagnostic only.
+
+The 7 pre-v2.7.42 setups (the 5 primary scalp setups: `BB_BREAKOUT`, `BB_BOUNCE`,
+`BB_PULLBACK_SCALP`, `MOMENTUM_DUMP`, `BB_BREAKOUT_RETEST`; and the 2 v2.7.38 composites:
+`FRACTIONAL_SELL_IN_BULL`, `BULL_DAY_DIP_BUY`) stay monolithic — their dispatch is
+intertwined with cascade / trailing-add / hidden-divergence logic that the simple
+Filter_* chain does not yet cover. Their migration is a separate concern.
+
+Net code grew by ~150 lines from the helper definitions, but each migrated dispatch
+shrank by ~12-15 lines and now reads as the 12-layer model: every line is a single
+layer. The cost is concentrated in the helpers (one-time); the benefit compounds
+across every setup that's added in the future.
 
 ---
 
@@ -721,3 +740,4 @@ model: every line reads as a layer.
 | 2026-05-12 | Initial doc. 7 core patterns catalogued (Filter, Bypass, Amplifier, Composite, State tracker, Cooldown, Bypass-list). §9 knob design. §10 anti-patterns. §11 decision flow showing pattern composition. §12 pattern selection decision tree. Cross-referenced from Decision Stack, Naming Conventions, Regime Taxonomy, Lot Sizing Reference, Trailing-Add Ladder feature doc. |
 | 2026-05-12 | v2.7.42 backfill of 11 new C-extended setups (commits `04c166c`..`7d42a10`) + Phase 2 naming-convention renames (commits `21b5b8d`, `5acd97f`): §4 amplifier registry adds 12 setup-specific lot throttles (inverse-amplifier subsection); §5 composite registry adds 11 new setup-composite Det*Event helpers + setup_type strings; §6 state-tracker registry adds 28 cooldown trackers + multi-value swing-buffer + ORB-window state. All audited against §2/§3/§4/§7 patterns: 100% conformance (3+ SKIP codes each → gate_legend, CooldownBypassActive hooked per setup, safe-default 1.0 fold for all lot factors, 0-guarded cooldown queries). |
 | 2026-05-12 | v2.7.43 — §15 added. Extracts Layer 4 atoms (5 helpers: `Atom_M5AdxAbove`, `Atom_M15TrendAligned`, `Atom_H1TrendAligned`, `Atom_M5AtrPositive`, `Atom_M5RsiInRange`), Layer 5 filters (3 helpers with auto-emitted SKIP codes: `Filter_AdxFloor`, `Filter_M15TrendAligned`, `Filter_Cooldown` with internal `CooldownBypassActive` hook), Layer 6 scoring (`Score_SetupConfidence` weighted sum 0..100, informational only), Layer 8 risk wrapper (`Risk_ApproveLot` semantic rename). MA_CROSSOVER + INSIDE_BAR migrated as reference implementations; other 12 setups stay monolithic for now. Tests updated to assert dispatch uses Filter_* helpers + gate codes exist in legend. |
+| 2026-05-12 | v2.7.43 — completed migration of remaining 12 v2.7.42 setups (VWAP_REVERSION, FIB_CONFLUENCE, BB_SQUEEZE, ORB, GAP_AND_GO, DOUBLE_TOP/BOTTOM, H&S/IH&S, FLAG_PENNANT, TRENDLINE_BOUNCE, SR_FLIP) to layered Filter_*/Atom_*/Score_* helpers. §15 updated to reflect all 14 setups now use the layered pattern. Tests pivoted to `gate_legend.json` membership checks + `Filter_*("SETUP_NAME"` substring assertions (the literal `"<setup>_cooldown"` string is no longer present in EA dispatch — it's constructed at runtime inside Filter_Cooldown). 72/72 tests still PASS. The 7 pre-v2.7.42 setups (5 primary + 2 v2.7.38 composites) stay monolithic — their dispatch is interwoven with cascade/trailing-add/hidden-div logic the current helpers don't cover. |

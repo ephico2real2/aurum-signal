@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.111"
+#property version "2.113"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.41";
+const string FORGE_VERSION = "2.7.43";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -9164,24 +9164,21 @@ void CheckNativeScalperSetups() {
    // 2.7.42 — VWAP_REVERSION trigger (Phase 2). Pullback-to-VWAP in established
    //   H1 trend direction (gold-friendly). H1 direction is built into the
    //   detector — so only cooldown can block here.
-   if(direction == "" && g_sc.vwap_reversion_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (single Filter_Cooldown gate; H1 trend agreement is in the detector)
+   if(direction == "" && g_sc.vwap_reversion_enabled && Atom_M5AtrPositive(m5_atr)) {
       int vwr_event = DetectVwapReversionEvent(m5_atr, h1_trend_strength);
       if(vwr_event != 0) {
          string vwr_dir = (vwr_event > 0) ? "BUY" : "SELL";
          datetime vwr_last = (vwr_event > 0) ? g_vwap_reversion_last_buy_time : g_vwap_reversion_last_sell_time;
-         datetime vwr_now  = TimeCurrent();
-         bool vwr_cool_ok = (g_sc.vwap_reversion_cooldown_seconds <= 0
-                             || vwr_last == 0
-                             || (vwr_now - vwr_last) >= g_sc.vwap_reversion_cooldown_seconds
-                             || CooldownBypassActive(vwr_dir, "VWAP_REVERSION", m5_adx));
-         if(!vwr_cool_ok) {
-            JournalRecordSignal("SKIP","vwap_reversion_cooldown","VWAP_REVERSION",vwr_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         if(Filter_Cooldown("VWAP_REVERSION","vwap_reversion",vwr_dir,
+                            vwr_last, g_sc.vwap_reversion_cooldown_seconds, m5_adx,
+                            mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)) {
             direction  = vwr_dir;
             setup_type = "VWAP_REVERSION";
+            int vwr_score = Score_SetupConfidence(vwr_event, m5_adx, 15.0, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double vwr_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double vwr_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime vwr_now = TimeCurrent();
             if(vwr_event > 0) {
                sl  = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(vwr_ask + m5_atr * g_sc.vwap_reversion_tp1_atr_mult, _Digits);
@@ -9193,32 +9190,29 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_tp2_atr_mult, _Digits);
                g_vwap_reversion_last_sell_time = vwr_now;
             }
-            PrintFormat("FORGE 2.7.42: VWAP_REVERSION %s fired @ %.2f (vwap=%.2f, h1_trend=%.2f, ADX=%.1f)",
-                        vwr_dir, (vwr_event > 0 ? vwr_ask : vwr_bid), g_vwap_price, h1_trend_strength, m5_adx);
+            PrintFormat("FORGE 2.7.43: VWAP_REVERSION %s @ %.2f (vwap=%.2f h1=%.2f ADX=%.1f score=%d/100)",
+                        vwr_dir, (vwr_event > 0 ? vwr_ask : vwr_bid), g_vwap_price, h1_trend_strength, m5_adx, vwr_score);
          }
       }
    }
 
    // 2.7.42 — FIB_CONFLUENCE trigger (Phase 2). Retrace to fib 38.2/50/61.8 +
    //   reference overlap (EMA20/EMA50/VWAP) in established H1 trend direction.
-   if(direction == "" && g_sc.fib_confluence_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (single Filter_Cooldown gate; H1 trend agreement is in the detector)
+   if(direction == "" && g_sc.fib_confluence_enabled && Atom_M5AtrPositive(m5_atr)) {
       int fc_event = DetectFibConfluenceEvent(m5_atr, h1_trend_strength);
       if(fc_event != 0) {
          string fc_dir = (fc_event > 0) ? "BUY" : "SELL";
          datetime fc_last = (fc_event > 0) ? g_fib_confluence_last_buy_time : g_fib_confluence_last_sell_time;
-         datetime fc_now  = TimeCurrent();
-         bool fc_cool_ok = (g_sc.fib_confluence_cooldown_seconds <= 0
-                            || fc_last == 0
-                            || (fc_now - fc_last) >= g_sc.fib_confluence_cooldown_seconds
-                            || CooldownBypassActive(fc_dir, "FIB_CONFLUENCE", m5_adx));
-         if(!fc_cool_ok) {
-            JournalRecordSignal("SKIP","fib_confluence_cooldown","FIB_CONFLUENCE",fc_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         if(Filter_Cooldown("FIB_CONFLUENCE","fib_confluence",fc_dir,
+                            fc_last, g_sc.fib_confluence_cooldown_seconds, m5_adx,
+                            mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)) {
             direction  = fc_dir;
             setup_type = "FIB_CONFLUENCE";
+            int fc_score = Score_SetupConfidence(fc_event, m5_adx, 15.0, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double fc_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double fc_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime fc_now = TimeCurrent();
             if(fc_event > 0) {
                sl  = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(fc_ask + m5_atr * g_sc.fib_confluence_tp1_atr_mult, _Digits);
@@ -9230,8 +9224,8 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_tp2_atr_mult, _Digits);
                g_fib_confluence_last_sell_time = fc_now;
             }
-            PrintFormat("FORGE 2.7.42: FIB_CONFLUENCE %s fired @ %.2f (fib382=%.2f, fib50=%.2f, fib618=%.2f, h1_trend=%.2f)",
-                        fc_dir, (fc_event > 0 ? fc_ask : fc_bid), g_fib_382, g_fib_50, g_fib_618, h1_trend_strength);
+            PrintFormat("FORGE 2.7.43: FIB_CONFLUENCE %s @ %.2f (fib382=%.2f fib50=%.2f fib618=%.2f h1=%.2f score=%d/100)",
+                        fc_dir, (fc_event > 0 ? fc_ask : fc_bid), g_fib_382, g_fib_50, g_fib_618, h1_trend_strength, fc_score);
          }
       }
    }
@@ -9277,28 +9271,24 @@ void CheckNativeScalperSetups() {
 
    // 2.7.42 — BB_SQUEEZE trigger (C-extended Tier 1). Squeeze % rank + band
    //   breakout → directional entry. ADX + cooldown gates.
-   if(direction == "" && g_sc.bb_squeeze_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (ADX floor + cooldown via Filter_*)
+   if(direction == "" && g_sc.bb_squeeze_enabled && Atom_M5AtrPositive(m5_atr)) {
       int sq_event = DetectBbSqueezeBreakoutEvent(m5_atr, m5_bb_u, m5_bb_l);
       if(sq_event != 0) {
          string sq_dir = (sq_event > 0) ? "BUY" : "SELL";
-         bool sq_adx_ok = (m5_adx >= g_sc.bb_squeeze_adx_min);
          datetime sq_last = (sq_event > 0) ? g_bb_squeeze_last_buy_time : g_bb_squeeze_last_sell_time;
-         datetime sq_now  = TimeCurrent();
-         bool sq_cool_ok = (g_sc.bb_squeeze_cooldown_seconds <= 0
-                            || sq_last == 0
-                            || (sq_now - sq_last) >= g_sc.bb_squeeze_cooldown_seconds
-                            || CooldownBypassActive(sq_dir, "BB_SQUEEZE", m5_adx));
-         if(!sq_adx_ok) {
-            JournalRecordSignal("SKIP","bb_squeeze_adx_below_min","BB_SQUEEZE",sq_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!sq_cool_ok) {
-            JournalRecordSignal("SKIP","bb_squeeze_cooldown","BB_SQUEEZE",sq_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool sq_ok = Filter_AdxFloor("BB_SQUEEZE","bb_squeeze",sq_dir, m5_adx, g_sc.bb_squeeze_adx_min,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                   && Filter_Cooldown("BB_SQUEEZE","bb_squeeze",sq_dir,
+                                      sq_last, g_sc.bb_squeeze_cooldown_seconds, m5_adx,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(sq_ok) {
             direction  = sq_dir;
             setup_type = "BB_SQUEEZE";
+            int sq_score = Score_SetupConfidence(sq_event, m5_adx, g_sc.bb_squeeze_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double sq_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double sq_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime sq_now = TimeCurrent();
             if(sq_event > 0) {
                sl  = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(sq_ask + m5_atr * g_sc.bb_squeeze_tp1_atr_mult, _Digits);
@@ -9310,38 +9300,33 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_tp2_atr_mult, _Digits);
                g_bb_squeeze_last_sell_time = sq_now;
             }
-            PrintFormat("FORGE 2.7.42: BB_SQUEEZE %s fired @ %.2f (bb_u=%.2f bb_l=%.2f ADX=%.1f)",
-                        sq_dir, (sq_event > 0 ? sq_ask : sq_bid), m5_bb_u, m5_bb_l, m5_adx);
+            PrintFormat("FORGE 2.7.43: BB_SQUEEZE %s @ %.2f (bb_u=%.2f bb_l=%.2f ADX=%.1f score=%d/100)",
+                        sq_dir, (sq_event > 0 ? sq_ask : sq_bid), m5_bb_u, m5_bb_l, m5_adx, sq_score);
          }
       }
    }
 
    // 2.7.42 — ORB trigger (C-extended Tier 2). Locked-range breakout from configurable
    //   NY-local minute-of-day window. Detector handles daily reset + window state.
-   if(g_sc.orb_enabled && m5_atr > 0.0) {
-      // Always call the detector — it has internal state-tracking side effects
-      // (high/low updates, day reset, locking). Direction-empty check is internal.
+   // 2.7.43 — layered (detector preserved unconditional for window state side effects;
+   //   filter chain only runs if event fires and slot is empty).
+   if(g_sc.orb_enabled && Atom_M5AtrPositive(m5_atr)) {
       int orb_event = DetectOrbBreakoutEvent(m5_atr);
       if(direction == "" && orb_event != 0) {
          string orb_dir = (orb_event > 0) ? "BUY" : "SELL";
-         bool orb_adx_ok = (m5_adx >= g_sc.orb_adx_min);
          datetime orb_last = (orb_event > 0) ? g_orb_last_buy_time : g_orb_last_sell_time;
-         datetime orb_now  = TimeCurrent();
-         bool orb_cool_ok = (g_sc.orb_cooldown_seconds <= 0
-                             || orb_last == 0
-                             || (orb_now - orb_last) >= g_sc.orb_cooldown_seconds
-                             || CooldownBypassActive(orb_dir, "ORB", m5_adx));
-         if(!orb_adx_ok) {
-            JournalRecordSignal("SKIP","orb_adx_below_min","ORB",orb_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!orb_cool_ok) {
-            JournalRecordSignal("SKIP","orb_cooldown","ORB",orb_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool orb_ok = Filter_AdxFloor("ORB","orb",orb_dir, m5_adx, g_sc.orb_adx_min,
+                                       mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                    && Filter_Cooldown("ORB","orb",orb_dir,
+                                       orb_last, g_sc.orb_cooldown_seconds, m5_adx,
+                                       mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(orb_ok) {
             direction  = orb_dir;
             setup_type = "ORB";
+            int orb_score = Score_SetupConfidence(orb_event, m5_adx, g_sc.orb_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double orb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double orb_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime orb_now = TimeCurrent();
             if(orb_event > 0) {
                sl  = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(orb_ask + m5_atr * g_sc.orb_tp1_atr_mult, _Digits);
@@ -9353,33 +9338,30 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_tp2_atr_mult, _Digits);
                g_orb_last_sell_time = orb_now;
             }
-            PrintFormat("FORGE 2.7.42: ORB %s fired @ %.2f (range=[%.2f,%.2f] ADX=%.1f)",
+            PrintFormat("FORGE 2.7.43: ORB %s @ %.2f (range=[%.2f,%.2f] ADX=%.1f score=%d/100)",
                         orb_dir, (orb_event > 0 ? orb_ask : orb_bid),
-                        g_orb_window_low, g_orb_window_high, m5_adx);
+                        g_orb_window_low, g_orb_window_high, m5_adx, orb_score);
          }
       }
    }
 
    // 2.7.42 — GAP_AND_GO trigger (C-extended Tier 2). Bar-time-skip + price-jump
    //   detection. Single-fire enforced by cooldown (default 4h).
-   if(direction == "" && g_sc.gap_and_go_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (single Filter_Cooldown gate; gap detection is in the detector)
+   if(direction == "" && g_sc.gap_and_go_enabled && Atom_M5AtrPositive(m5_atr)) {
       int gap_event = DetectGapAndGoEvent(m5_atr);
       if(gap_event != 0) {
          string gap_dir = (gap_event > 0) ? "BUY" : "SELL";
          datetime gap_last = (gap_event > 0) ? g_gap_and_go_last_buy_time : g_gap_and_go_last_sell_time;
-         datetime gap_now  = TimeCurrent();
-         bool gap_cool_ok = (g_sc.gap_and_go_cooldown_seconds <= 0
-                             || gap_last == 0
-                             || (gap_now - gap_last) >= g_sc.gap_and_go_cooldown_seconds
-                             || CooldownBypassActive(gap_dir, "GAP_AND_GO", m5_adx));
-         if(!gap_cool_ok) {
-            JournalRecordSignal("SKIP","gap_and_go_cooldown","GAP_AND_GO",gap_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         if(Filter_Cooldown("GAP_AND_GO","gap_and_go",gap_dir,
+                            gap_last, g_sc.gap_and_go_cooldown_seconds, m5_adx,
+                            mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)) {
             direction  = gap_dir;
             setup_type = "GAP_AND_GO";
+            int gap_score = Score_SetupConfidence(gap_event, m5_adx, 15.0, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double gap_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double gap_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime gap_now = TimeCurrent();
             if(gap_event > 0) {
                sl  = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(gap_ask + m5_atr * g_sc.gap_and_go_tp1_atr_mult, _Digits);
@@ -9391,10 +9373,11 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_tp2_atr_mult, _Digits);
                g_gap_and_go_last_sell_time = gap_now;
             }
-            PrintFormat("FORGE 2.7.42: GAP_AND_GO %s fired @ %.2f (skip=%ds, gap_atr=%.2f)",
+            PrintFormat("FORGE 2.7.43: GAP_AND_GO %s @ %.2f (skip=%ds gap_atr=%.2f score=%d/100)",
                         gap_dir, (gap_event > 0 ? gap_ask : gap_bid),
                         (int)(iTime(_Symbol, PERIOD_M5, 0) - iTime(_Symbol, PERIOD_M5, 1)),
-                        MathAbs(iOpen(_Symbol, PERIOD_M5, 0) - iClose(_Symbol, PERIOD_M5, 1)) / m5_atr);
+                        MathAbs(iOpen(_Symbol, PERIOD_M5, 0) - iClose(_Symbol, PERIOD_M5, 1)) / m5_atr,
+                        gap_score);
          }
       }
    }
@@ -9409,154 +9392,130 @@ void CheckNativeScalperSetups() {
 
    // 2.7.42 — DOUBLE_TOP trigger (Tier 3). SELL on neckline break after two recent
    //   swing highs within peak_tolerance_atr × ATR + intermediate swing low.
-   if(direction == "" && g_sc.double_top_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (single-direction SELL; single g_double_top_last_time tracker)
+   if(direction == "" && g_sc.double_top_enabled && Atom_M5AtrPositive(m5_atr)) {
       int dt_event = DetectDoubleTopEvent(m5_atr);
       if(dt_event != 0) {
          string dt_dir = "SELL";
-         bool dt_adx_ok = (m5_adx >= g_sc.double_pattern_adx_min);
-         datetime dt_now = TimeCurrent();
-         bool dt_cool_ok = (g_sc.double_pattern_cooldown_seconds <= 0
-                            || g_double_top_last_time == 0
-                            || (dt_now - g_double_top_last_time) >= g_sc.double_pattern_cooldown_seconds
-                            || CooldownBypassActive(dt_dir, "DOUBLE_TOP", m5_adx));
-         if(!dt_adx_ok) {
-            JournalRecordSignal("SKIP","double_top_adx_below_min","DOUBLE_TOP",dt_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!dt_cool_ok) {
-            JournalRecordSignal("SKIP","double_top_cooldown","DOUBLE_TOP",dt_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool dt_ok = Filter_AdxFloor("DOUBLE_TOP","double_top",dt_dir, m5_adx, g_sc.double_pattern_adx_min,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                   && Filter_Cooldown("DOUBLE_TOP","double_top",dt_dir,
+                                      g_double_top_last_time, g_sc.double_pattern_cooldown_seconds, m5_adx,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(dt_ok) {
             direction  = dt_dir;
             setup_type = "DOUBLE_TOP";
+            int dt_score = Score_SetupConfidence(-1, m5_adx, g_sc.double_pattern_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double dt_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double dt_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             sl  = NormalizeDouble(dt_ask + m5_atr * g_sc.double_pattern_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(dt_bid - m5_atr * g_sc.double_pattern_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(dt_bid - m5_atr * g_sc.double_pattern_tp2_atr_mult, _Digits);
-            g_double_top_last_time = dt_now;
-            PrintFormat("FORGE 2.7.42: DOUBLE_TOP SELL fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
-                        dt_bid, m5_adx, h1_trend_strength);
+            g_double_top_last_time = TimeCurrent();
+            PrintFormat("FORGE 2.7.43: DOUBLE_TOP SELL @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        dt_bid, m5_adx, h1_trend_strength, dt_score);
          }
       }
    }
 
    // 2.7.42 — DOUBLE_BOTTOM trigger (Tier 3). BUY mirror of DOUBLE_TOP.
-   if(direction == "" && g_sc.double_bottom_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (single-direction BUY)
+   if(direction == "" && g_sc.double_bottom_enabled && Atom_M5AtrPositive(m5_atr)) {
       int db_event = DetectDoubleBottomEvent(m5_atr);
       if(db_event != 0) {
          string db_dir = "BUY";
-         bool db_adx_ok = (m5_adx >= g_sc.double_pattern_adx_min);
-         datetime db_now = TimeCurrent();
-         bool db_cool_ok = (g_sc.double_pattern_cooldown_seconds <= 0
-                            || g_double_bottom_last_time == 0
-                            || (db_now - g_double_bottom_last_time) >= g_sc.double_pattern_cooldown_seconds
-                            || CooldownBypassActive(db_dir, "DOUBLE_BOTTOM", m5_adx));
-         if(!db_adx_ok) {
-            JournalRecordSignal("SKIP","double_bottom_adx_below_min","DOUBLE_BOTTOM",db_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!db_cool_ok) {
-            JournalRecordSignal("SKIP","double_bottom_cooldown","DOUBLE_BOTTOM",db_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool db_ok = Filter_AdxFloor("DOUBLE_BOTTOM","double_bottom",db_dir, m5_adx, g_sc.double_pattern_adx_min,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                   && Filter_Cooldown("DOUBLE_BOTTOM","double_bottom",db_dir,
+                                      g_double_bottom_last_time, g_sc.double_pattern_cooldown_seconds, m5_adx,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(db_ok) {
             direction  = db_dir;
             setup_type = "DOUBLE_BOTTOM";
+            int db_score = Score_SetupConfidence(1, m5_adx, g_sc.double_pattern_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double db_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double db_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             sl  = NormalizeDouble(db_bid - m5_atr * g_sc.double_pattern_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(db_ask + m5_atr * g_sc.double_pattern_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(db_ask + m5_atr * g_sc.double_pattern_tp2_atr_mult, _Digits);
-            g_double_bottom_last_time = db_now;
-            PrintFormat("FORGE 2.7.42: DOUBLE_BOTTOM BUY fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
-                        db_ask, m5_adx, h1_trend_strength);
+            g_double_bottom_last_time = TimeCurrent();
+            PrintFormat("FORGE 2.7.43: DOUBLE_BOTTOM BUY @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        db_ask, m5_adx, h1_trend_strength, db_score);
          }
       }
    }
 
    // 2.7.42 — HEAD_AND_SHOULDERS trigger (Tier 3). SELL on neckline break.
-   if(direction == "" && g_sc.head_and_shoulders_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (single-direction SELL)
+   if(direction == "" && g_sc.head_and_shoulders_enabled && Atom_M5AtrPositive(m5_atr)) {
       if(DetectHeadAndShouldersEvent(m5_atr) != 0) {
          string hs_dir = "SELL";
-         bool hs_adx_ok = (m5_adx >= g_sc.hs_adx_min);
-         datetime hs_now = TimeCurrent();
-         bool hs_cool_ok = (g_sc.hs_cooldown_seconds <= 0
-                            || g_head_and_shoulders_last_time == 0
-                            || (hs_now - g_head_and_shoulders_last_time) >= g_sc.hs_cooldown_seconds
-                            || CooldownBypassActive(hs_dir, "HEAD_AND_SHOULDERS", m5_adx));
-         if(!hs_adx_ok) {
-            JournalRecordSignal("SKIP","head_and_shoulders_adx_below_min","HEAD_AND_SHOULDERS",hs_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!hs_cool_ok) {
-            JournalRecordSignal("SKIP","head_and_shoulders_cooldown","HEAD_AND_SHOULDERS",hs_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool hs_ok = Filter_AdxFloor("HEAD_AND_SHOULDERS","head_and_shoulders",hs_dir, m5_adx, g_sc.hs_adx_min,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                   && Filter_Cooldown("HEAD_AND_SHOULDERS","head_and_shoulders",hs_dir,
+                                      g_head_and_shoulders_last_time, g_sc.hs_cooldown_seconds, m5_adx,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(hs_ok) {
             direction  = hs_dir;
             setup_type = "HEAD_AND_SHOULDERS";
+            int hs_score = Score_SetupConfidence(-1, m5_adx, g_sc.hs_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double hs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double hs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             sl  = NormalizeDouble(hs_ask + m5_atr * g_sc.hs_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(hs_bid - m5_atr * g_sc.hs_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(hs_bid - m5_atr * g_sc.hs_tp2_atr_mult, _Digits);
-            g_head_and_shoulders_last_time = hs_now;
-            PrintFormat("FORGE 2.7.42: HEAD_AND_SHOULDERS SELL fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
-                        hs_bid, m5_adx, h1_trend_strength);
+            g_head_and_shoulders_last_time = TimeCurrent();
+            PrintFormat("FORGE 2.7.43: HEAD_AND_SHOULDERS SELL @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        hs_bid, m5_adx, h1_trend_strength, hs_score);
          }
       }
    }
 
    // 2.7.42 — INVERSE_HEAD_AND_SHOULDERS trigger (Tier 3). BUY mirror.
-   if(direction == "" && g_sc.inverse_head_and_shoulders_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (single-direction BUY)
+   if(direction == "" && g_sc.inverse_head_and_shoulders_enabled && Atom_M5AtrPositive(m5_atr)) {
       if(DetectInverseHeadAndShouldersEvent(m5_atr) != 0) {
          string ihs_dir = "BUY";
-         bool ihs_adx_ok = (m5_adx >= g_sc.hs_adx_min);
-         datetime ihs_now = TimeCurrent();
-         bool ihs_cool_ok = (g_sc.hs_cooldown_seconds <= 0
-                             || g_inverse_head_and_shoulders_last_time == 0
-                             || (ihs_now - g_inverse_head_and_shoulders_last_time) >= g_sc.hs_cooldown_seconds
-                             || CooldownBypassActive(ihs_dir, "INVERSE_HEAD_AND_SHOULDERS", m5_adx));
-         if(!ihs_adx_ok) {
-            JournalRecordSignal("SKIP","inverse_head_and_shoulders_adx_below_min","INVERSE_HEAD_AND_SHOULDERS",ihs_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!ihs_cool_ok) {
-            JournalRecordSignal("SKIP","inverse_head_and_shoulders_cooldown","INVERSE_HEAD_AND_SHOULDERS",ihs_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool ihs_ok = Filter_AdxFloor("INVERSE_HEAD_AND_SHOULDERS","inverse_head_and_shoulders",ihs_dir, m5_adx, g_sc.hs_adx_min,
+                                       mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                    && Filter_Cooldown("INVERSE_HEAD_AND_SHOULDERS","inverse_head_and_shoulders",ihs_dir,
+                                       g_inverse_head_and_shoulders_last_time, g_sc.hs_cooldown_seconds, m5_adx,
+                                       mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(ihs_ok) {
             direction  = ihs_dir;
             setup_type = "INVERSE_HEAD_AND_SHOULDERS";
+            int ihs_score = Score_SetupConfidence(1, m5_adx, g_sc.hs_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double ihs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double ihs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             sl  = NormalizeDouble(ihs_bid - m5_atr * g_sc.hs_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(ihs_ask + m5_atr * g_sc.hs_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(ihs_ask + m5_atr * g_sc.hs_tp2_atr_mult, _Digits);
-            g_inverse_head_and_shoulders_last_time = ihs_now;
-            PrintFormat("FORGE 2.7.42: INVERSE_HEAD_AND_SHOULDERS BUY fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
-                        ihs_ask, m5_adx, h1_trend_strength);
+            g_inverse_head_and_shoulders_last_time = TimeCurrent();
+            PrintFormat("FORGE 2.7.43: INVERSE_HEAD_AND_SHOULDERS BUY @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        ihs_ask, m5_adx, h1_trend_strength, ihs_score);
          }
       }
    }
 
    // 2.7.42 — FLAG_PENNANT trigger (Tier 3). Impulse + consolidation + breakout.
-   if(direction == "" && g_sc.flag_pennant_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (bidirectional)
+   if(direction == "" && g_sc.flag_pennant_enabled && Atom_M5AtrPositive(m5_atr)) {
       int fp_event = DetectFlagPennantEvent(m5_atr);
       if(fp_event != 0) {
          string fp_dir = (fp_event > 0) ? "BUY" : "SELL";
-         bool fp_adx_ok = (m5_adx >= g_sc.flag_pennant_adx_min);
          datetime fp_last = (fp_event > 0) ? g_flag_pennant_last_buy_time : g_flag_pennant_last_sell_time;
-         datetime fp_now  = TimeCurrent();
-         bool fp_cool_ok = (g_sc.flag_pennant_cooldown_seconds <= 0
-                            || fp_last == 0
-                            || (fp_now - fp_last) >= g_sc.flag_pennant_cooldown_seconds
-                            || CooldownBypassActive(fp_dir, "FLAG_PENNANT", m5_adx));
-         if(!fp_adx_ok) {
-            JournalRecordSignal("SKIP","flag_pennant_adx_below_min","FLAG_PENNANT",fp_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!fp_cool_ok) {
-            JournalRecordSignal("SKIP","flag_pennant_cooldown","FLAG_PENNANT",fp_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool fp_ok = Filter_AdxFloor("FLAG_PENNANT","flag_pennant",fp_dir, m5_adx, g_sc.flag_pennant_adx_min,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                   && Filter_Cooldown("FLAG_PENNANT","flag_pennant",fp_dir,
+                                      fp_last, g_sc.flag_pennant_cooldown_seconds, m5_adx,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(fp_ok) {
             direction  = fp_dir;
             setup_type = "FLAG_PENNANT";
+            int fp_score = Score_SetupConfidence(fp_event, m5_adx, g_sc.flag_pennant_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double fp_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double fp_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime fp_now = TimeCurrent();
             if(fp_event > 0) {
                sl  = NormalizeDouble(fp_bid - m5_atr * g_sc.flag_pennant_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(fp_ask + m5_atr * g_sc.flag_pennant_tp1_atr_mult, _Digits);
@@ -9568,35 +9527,31 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(fp_bid - m5_atr * g_sc.flag_pennant_tp2_atr_mult, _Digits);
                g_flag_pennant_last_sell_time = fp_now;
             }
-            PrintFormat("FORGE 2.7.42: FLAG_PENNANT %s fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
-                        fp_dir, (fp_event > 0 ? fp_ask : fp_bid), m5_adx, h1_trend_strength);
+            PrintFormat("FORGE 2.7.43: FLAG_PENNANT %s @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        fp_dir, (fp_event > 0 ? fp_ask : fp_bid), m5_adx, h1_trend_strength, fp_score);
          }
       }
    }
 
    // 2.7.42 — TRENDLINE_BOUNCE trigger (Tier 3 final).
-   if(direction == "" && g_sc.trendline_bounce_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (bidirectional)
+   if(direction == "" && g_sc.trendline_bounce_enabled && Atom_M5AtrPositive(m5_atr)) {
       int tb_event = DetectTrendlineBounceEvent(m5_atr);
       if(tb_event != 0) {
          string tb_dir = (tb_event > 0) ? "BUY" : "SELL";
-         bool tb_adx_ok = (m5_adx >= g_sc.trendline_adx_min);
          datetime tb_last = (tb_event > 0) ? g_trendline_bounce_last_buy_time : g_trendline_bounce_last_sell_time;
-         datetime tb_now  = TimeCurrent();
-         bool tb_cool_ok = (g_sc.trendline_bounce_cooldown_seconds <= 0
-                            || tb_last == 0
-                            || (tb_now - tb_last) >= g_sc.trendline_bounce_cooldown_seconds
-                            || CooldownBypassActive(tb_dir, "TRENDLINE_BOUNCE", m5_adx));
-         if(!tb_adx_ok) {
-            JournalRecordSignal("SKIP","trendline_bounce_adx_below_min","TRENDLINE_BOUNCE",tb_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!tb_cool_ok) {
-            JournalRecordSignal("SKIP","trendline_bounce_cooldown","TRENDLINE_BOUNCE",tb_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool tb_ok = Filter_AdxFloor("TRENDLINE_BOUNCE","trendline_bounce",tb_dir, m5_adx, g_sc.trendline_adx_min,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                   && Filter_Cooldown("TRENDLINE_BOUNCE","trendline_bounce",tb_dir,
+                                      tb_last, g_sc.trendline_bounce_cooldown_seconds, m5_adx,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(tb_ok) {
             direction  = tb_dir;
             setup_type = "TRENDLINE_BOUNCE";
+            int tb_score = Score_SetupConfidence(tb_event, m5_adx, g_sc.trendline_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double tb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double tb_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime tb_now = TimeCurrent();
             if(tb_event > 0) {
                sl  = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(tb_ask + m5_atr * g_sc.trendline_bounce_tp1_atr_mult, _Digits);
@@ -9608,35 +9563,31 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_tp2_atr_mult, _Digits);
                g_trendline_bounce_last_sell_time = tb_now;
             }
-            PrintFormat("FORGE 2.7.42: TRENDLINE_BOUNCE %s fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
-                        tb_dir, (tb_event > 0 ? tb_ask : tb_bid), m5_adx, h1_trend_strength);
+            PrintFormat("FORGE 2.7.43: TRENDLINE_BOUNCE %s @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        tb_dir, (tb_event > 0 ? tb_ask : tb_bid), m5_adx, h1_trend_strength, tb_score);
          }
       }
    }
 
    // 2.7.42 — SR_FLIP trigger (Tier 3 final).
-   if(direction == "" && g_sc.sr_flip_enabled && m5_atr > 0.0) {
+   // 2.7.43 — layered (bidirectional)
+   if(direction == "" && g_sc.sr_flip_enabled && Atom_M5AtrPositive(m5_atr)) {
       int sf_event = DetectSrFlipEvent(m5_atr);
       if(sf_event != 0) {
          string sf_dir = (sf_event > 0) ? "BUY" : "SELL";
-         bool sf_adx_ok = (m5_adx >= g_sc.sr_flip_adx_min);
          datetime sf_last = (sf_event > 0) ? g_sr_flip_last_buy_time : g_sr_flip_last_sell_time;
-         datetime sf_now  = TimeCurrent();
-         bool sf_cool_ok = (g_sc.sr_flip_cooldown_seconds <= 0
-                            || sf_last == 0
-                            || (sf_now - sf_last) >= g_sc.sr_flip_cooldown_seconds
-                            || CooldownBypassActive(sf_dir, "SR_FLIP", m5_adx));
-         if(!sf_adx_ok) {
-            JournalRecordSignal("SKIP","sr_flip_adx_below_min","SR_FLIP",sf_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!sf_cool_ok) {
-            JournalRecordSignal("SKIP","sr_flip_cooldown","SR_FLIP",sf_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool sf_ok = Filter_AdxFloor("SR_FLIP","sr_flip",sf_dir, m5_adx, g_sc.sr_flip_adx_min,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                   && Filter_Cooldown("SR_FLIP","sr_flip",sf_dir,
+                                      sf_last, g_sc.sr_flip_cooldown_seconds, m5_adx,
+                                      mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(sf_ok) {
             direction  = sf_dir;
             setup_type = "SR_FLIP";
+            int sf_score = Score_SetupConfidence(sf_event, m5_adx, g_sc.sr_flip_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double sf_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double sf_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime sf_now = TimeCurrent();
             if(sf_event > 0) {
                sl  = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(sf_ask + m5_atr * g_sc.sr_flip_tp1_atr_mult, _Digits);
@@ -9648,8 +9599,8 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_tp2_atr_mult, _Digits);
                g_sr_flip_last_sell_time = sf_now;
             }
-            PrintFormat("FORGE 2.7.42: SR_FLIP %s fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
-                        sf_dir, (sf_event > 0 ? sf_ask : sf_bid), m5_adx, h1_trend_strength);
+            PrintFormat("FORGE 2.7.43: SR_FLIP %s @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        sf_dir, (sf_event > 0 ? sf_ask : sf_bid), m5_adx, h1_trend_strength, sf_score);
          }
       }
    }
