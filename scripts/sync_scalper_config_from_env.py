@@ -372,6 +372,18 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_INSIDE_BAR_TP1_ATR_MULT":         ("geometry", "inside_bar_tp1_atr_mult",            "float",  0.1, 5.0),
     "FORGE_GEOMETRY_INSIDE_BAR_TP2_ATR_MULT":         ("geometry", "inside_bar_tp2_atr_mult",            "float",  0.1, 10.0),
     "FORGE_TIMING_INSIDE_BAR_COOLDOWN_SECONDS":       ("timing",   "inside_bar_cooldown_seconds",        "int",    0.0, 7200.0),
+
+    # ── BB Squeeze (Tier 1 — volatility contraction → directional expansion) ──
+    "FORGE_SETUP_BB_SQUEEZE_ENABLED":                 ("setup",    "bb_squeeze_enabled",                 "bool01", None, None),
+    "FORGE_ATOM_BB_SQUEEZE_LOOKBACK_BARS":            ("atom",     "bb_squeeze_lookback_bars",           "int",    10.0, 200.0),
+    "FORGE_ATOM_BB_SQUEEZE_PCTILE_THRESHOLD":         ("atom",     "bb_squeeze_pctile_threshold",        "float",  1.0, 50.0),
+    "FORGE_ATOM_BB_SQUEEZE_MIN_BREAKOUT_ATR":         ("atom",     "bb_squeeze_min_breakout_atr",        "float",  0.05, 2.0),
+    "FORGE_ATOM_BB_SQUEEZE_ADX_MIN":                  ("atom",     "bb_squeeze_adx_min",                 "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_BB_SQUEEZE_LOT_FACTOR":           ("geometry", "bb_squeeze_lot_factor",              "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_BB_SQUEEZE_SL_ATR_MULT":          ("geometry", "bb_squeeze_sl_atr_mult",             "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_BB_SQUEEZE_TP1_ATR_MULT":         ("geometry", "bb_squeeze_tp1_atr_mult",            "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_BB_SQUEEZE_TP2_ATR_MULT":         ("geometry", "bb_squeeze_tp2_atr_mult",            "float",  0.1, 10.0),
+    "FORGE_TIMING_BB_SQUEEZE_COOLDOWN_SECONDS":       ("timing",   "bb_squeeze_cooldown_seconds",        "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.

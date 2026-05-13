@@ -339,7 +339,8 @@
     "ma_crossover_enabled": 0,
     "vwap_reversion_enabled": 0,
     "fib_confluence_enabled": 0,
-    "inside_bar_enabled": 0
+    "inside_bar_enabled": 0,
+    "bb_squeeze_enabled": 0
   },
 
   "atom": {
@@ -356,7 +357,12 @@
     "fib_confluence_min_swing_atr": 2.0,
 
     "inside_bar_min_outer_atr": 1.0,
-    "inside_bar_adx_min": 20.0
+    "inside_bar_adx_min": 20.0,
+
+    "bb_squeeze_lookback_bars": 100,
+    "bb_squeeze_pctile_threshold": 20.0,
+    "bb_squeeze_min_breakout_atr": 0.3,
+    "bb_squeeze_adx_min": 15.0
   },
 
   "geometry": {
@@ -380,7 +386,12 @@
     "inside_bar_lot_factor": 0.5,
     "inside_bar_sl_atr_mult": 1.0,
     "inside_bar_tp1_atr_mult": 0.5,
-    "inside_bar_tp2_atr_mult": 1.5
+    "inside_bar_tp2_atr_mult": 1.5,
+
+    "bb_squeeze_lot_factor": 0.5,
+    "bb_squeeze_sl_atr_mult": 1.5,
+    "bb_squeeze_tp1_atr_mult": 0.5,
+    "bb_squeeze_tp2_atr_mult": 2.0
   },
 
   "timing": {
@@ -389,6 +400,7 @@
     "ma_crossover_cooldown_seconds": 600,
     "vwap_reversion_cooldown_seconds": 600,
     "fib_confluence_cooldown_seconds": 600,
-    "inside_bar_cooldown_seconds": 600
+    "inside_bar_cooldown_seconds": 600,
+    "bb_squeeze_cooldown_seconds": 900
   }
 }

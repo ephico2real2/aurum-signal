@@ -380,5 +380,15 @@
     "label": "Inside bar — cooldown active",
     "explanation": "v2.7.42 INSIDE_BAR trigger fired within timing.inside_bar_cooldown_seconds (default 600) of a prior INSIDE_BAR entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
+  },
+  "bb_squeeze_adx_below_min": {
+    "label": "BB squeeze — M5 ADX below floor",
+    "explanation": "v2.7.42 BB_SQUEEZE detected (bandwidth in lowest pctile_threshold % of last lookback_bars) and band breakout fired, but m5_adx is below atom.bb_squeeze_adx_min (default 15). Note this floor is intentionally lower than other setups since the squeeze itself is a pre-condition.",
+    "category": "Setup gates"
+  },
+  "bb_squeeze_cooldown": {
+    "label": "BB squeeze — cooldown active",
+    "explanation": "v2.7.42 BB_SQUEEZE trigger fired within timing.bb_squeeze_cooldown_seconds (default 900) of a prior BB_SQUEEZE entry in the same direction. Squeezes are rare, so cooldown is longer than the 600s baseline. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
+    "category": "Cooldowns"
   }
 }

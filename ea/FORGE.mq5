@@ -336,6 +336,9 @@ datetime g_fib_confluence_last_sell_time = 0; // wall time of last FIB_CONFLUENC
 // 2.7.42 — INSIDE_BAR cooldown trackers (C-extended Tier 1 — 2-bar pattern breakout)
 datetime g_inside_bar_last_buy_time  = 0; // wall time of last INSIDE_BAR BUY entry
 datetime g_inside_bar_last_sell_time = 0; // wall time of last INSIDE_BAR SELL entry
+// 2.7.42 — BB_SQUEEZE cooldown trackers (C-extended Tier 1 — volatility contraction breakout)
+datetime g_bb_squeeze_last_buy_time  = 0; // wall time of last BB_SQUEEZE BUY entry
+datetime g_bb_squeeze_last_sell_time = 0; // wall time of last BB_SQUEEZE SELL entry
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -558,6 +561,19 @@ struct ScalperConfig {
    double inside_bar_tp1_atr_mult;            // TP1 = ATR × this (default 0.5)
    double inside_bar_tp2_atr_mult;            // TP2 = ATR × this (default 1.5)
    int    inside_bar_cooldown_seconds;        // min gap per direction (default 600)
+   // 2.7.42 — BB_SQUEEZE setup (C-extended Tier 1). Detects current BB bandwidth in
+   //   lowest pctile_threshold % of last lookback_bars M5 bandwidths, then fires on
+   //   directional breakout beyond bands by min_breakout_atr × ATR.
+   bool   bb_squeeze_enabled;                 // master toggle (default off)
+   int    bb_squeeze_lookback_bars;           // bandwidth history window for percentile rank (default 100)
+   double bb_squeeze_pctile_threshold;        // percentile threshold for "in squeeze" (default 20.0 = lowest 20%)
+   double bb_squeeze_min_breakout_atr;        // close must be ≥ this × ATR past the band (default 0.3)
+   double bb_squeeze_adx_min;                 // M5 ADX floor (default 15 — lower; squeeze is its own pre-filter)
+   double bb_squeeze_lot_factor;              // lot multiplier (default 0.5)
+   double bb_squeeze_sl_atr_mult;             // SL = ATR × this (default 1.5)
+   double bb_squeeze_tp1_atr_mult;            // TP1 = ATR × this (default 0.5)
+   double bb_squeeze_tp2_atr_mult;            // TP2 = ATR × this (default 2.0 — post-squeeze expansion runs)
+   int    bb_squeeze_cooldown_seconds;        // min gap per direction (default 900 — squeezes are rare)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3087,6 +3103,17 @@ void InitScalperConfig() {
    g_sc.inside_bar_tp1_atr_mult         = 0.5;
    g_sc.inside_bar_tp2_atr_mult         = 1.5;
    g_sc.inside_bar_cooldown_seconds     = 600;
+   // 2.7.42 — BB_SQUEEZE setup (C-extended Tier 1; default OFF)
+   g_sc.bb_squeeze_enabled              = false;
+   g_sc.bb_squeeze_lookback_bars        = 100;
+   g_sc.bb_squeeze_pctile_threshold     = 20.0;
+   g_sc.bb_squeeze_min_breakout_atr     = 0.3;
+   g_sc.bb_squeeze_adx_min              = 15.0;
+   g_sc.bb_squeeze_lot_factor           = 0.5;
+   g_sc.bb_squeeze_sl_atr_mult          = 1.5;
+   g_sc.bb_squeeze_tp1_atr_mult         = 0.5;
+   g_sc.bb_squeeze_tp2_atr_mult         = 2.0;
+   g_sc.bb_squeeze_cooldown_seconds     = 900;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3878,6 +3905,17 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "inside_bar_tp1_atr_mult"))             { v=JsonGetDouble(content,"inside_bar_tp1_atr_mult");             if(v>=0.1&&v<=5.0) g_sc.inside_bar_tp1_atr_mult=v; }
    if(JsonHasKey(content, "inside_bar_tp2_atr_mult"))             { v=JsonGetDouble(content,"inside_bar_tp2_atr_mult");             if(v>=0.1&&v<=10.0) g_sc.inside_bar_tp2_atr_mult=v; }
    if(JsonHasKey(content, "inside_bar_cooldown_seconds"))         { v=JsonGetDouble(content,"inside_bar_cooldown_seconds");         if(v>=0&&v<=7200) g_sc.inside_bar_cooldown_seconds=(int)v; }
+   // 2.7.42 — BB_SQUEEZE setup (C-extended Tier 1)
+   if(JsonHasKey(content, "bb_squeeze_enabled"))                  { v=JsonGetDouble(content,"bb_squeeze_enabled");                  g_sc.bb_squeeze_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "bb_squeeze_lookback_bars"))            { v=JsonGetDouble(content,"bb_squeeze_lookback_bars");            if(v>=10&&v<=200) g_sc.bb_squeeze_lookback_bars=(int)v; }
+   if(JsonHasKey(content, "bb_squeeze_pctile_threshold"))         { v=JsonGetDouble(content,"bb_squeeze_pctile_threshold");         if(v>=1.0&&v<=50.0) g_sc.bb_squeeze_pctile_threshold=v; }
+   if(JsonHasKey(content, "bb_squeeze_min_breakout_atr"))         { v=JsonGetDouble(content,"bb_squeeze_min_breakout_atr");         if(v>=0.05&&v<=2.0) g_sc.bb_squeeze_min_breakout_atr=v; }
+   if(JsonHasKey(content, "bb_squeeze_adx_min"))                  { v=JsonGetDouble(content,"bb_squeeze_adx_min");                  if(v>=5.0&&v<=80.0) g_sc.bb_squeeze_adx_min=v; }
+   if(JsonHasKey(content, "bb_squeeze_lot_factor"))               { v=JsonGetDouble(content,"bb_squeeze_lot_factor");               if(v>=0.1&&v<=2.0) g_sc.bb_squeeze_lot_factor=v; }
+   if(JsonHasKey(content, "bb_squeeze_sl_atr_mult"))              { v=JsonGetDouble(content,"bb_squeeze_sl_atr_mult");              if(v>=0.5&&v<=5.0) g_sc.bb_squeeze_sl_atr_mult=v; }
+   if(JsonHasKey(content, "bb_squeeze_tp1_atr_mult"))             { v=JsonGetDouble(content,"bb_squeeze_tp1_atr_mult");             if(v>=0.1&&v<=5.0) g_sc.bb_squeeze_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "bb_squeeze_tp2_atr_mult"))             { v=JsonGetDouble(content,"bb_squeeze_tp2_atr_mult");             if(v>=0.1&&v<=10.0) g_sc.bb_squeeze_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "bb_squeeze_cooldown_seconds"))         { v=JsonGetDouble(content,"bb_squeeze_cooldown_seconds");         if(v>=0&&v<=7200) g_sc.bb_squeeze_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -4945,6 +4983,47 @@ int DetectInsideBarBreakoutEvent(const double m5_atr) {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    if(ask > h1) return 1;   // BUY breakout above inside-bar high
    if(bid < l1) return -1;  // SELL breakout below inside-bar low
+   return 0;
+}
+
+// 2.7.42 — BB_SQUEEZE event detector (C-extended Tier 1). Returns 1 = BUY
+// breakout above bb_upper, -1 = SELL breakout below bb_lower, 0 = no event.
+// Stateless: reads N bars of BB upper/lower per call via CopyBuffer; ranks
+// current bandwidth against the historical distribution; fires only when in
+// the lowest pctile_threshold % AND current price breaks band by min_breakout_atr × ATR.
+//
+// MQL5 iBands buffer indices: 0 = middle (SMA), 1 = upper, 2 = lower.
+int DetectBbSqueezeBreakoutEvent(const double m5_atr, const double m5_bb_u, const double m5_bb_l) {
+   if(!g_sc.bb_squeeze_enabled) return 0;
+   if(m5_atr <= 0.0 || m5_bb_u <= 0.0 || m5_bb_l <= 0.0) return 0;
+   int N = g_sc.bb_squeeze_lookback_bars;
+   if(N < 10) N = 10;
+   if(N > 200) N = 200;
+   double bbu[200], bbl[200];
+   if(CopyBuffer(g_mtf[0].h_bb, 1, 1, N, bbu) != N) return 0;
+   if(CopyBuffer(g_mtf[0].h_bb, 2, 1, N, bbl) != N) return 0;
+   // Current bandwidth = bar[1] (most recent closed bar)
+   double cur_bw = bbu[0] - bbl[0];
+   if(cur_bw <= 0.0) return 0;
+   // Rank: count of historical bandwidths strictly less than cur_bw
+   int less_count = 0;
+   int valid_count = 0;
+   for(int i = 1; i < N; i++) {
+      double bw = bbu[i] - bbl[i];
+      if(bw > 0.0) {
+         valid_count++;
+         if(bw < cur_bw) less_count++;
+      }
+   }
+   if(valid_count < 10) return 0;
+   double percentile = (double)less_count / (double)valid_count * 100.0;
+   if(percentile > g_sc.bb_squeeze_pctile_threshold) return 0;
+   // Squeeze condition met — now check breakout
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double min_break = g_sc.bb_squeeze_min_breakout_atr * m5_atr;
+   if(ask > m5_bb_u + min_break) return 1;
+   if(bid < m5_bb_l - min_break) return -1;
    return 0;
 }
 
@@ -8492,6 +8571,47 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — BB_SQUEEZE trigger (C-extended Tier 1). Squeeze % rank + band
+   //   breakout → directional entry. ADX + cooldown gates.
+   if(direction == "" && g_sc.bb_squeeze_enabled && m5_atr > 0.0) {
+      int sq_event = DetectBbSqueezeBreakoutEvent(m5_atr, m5_bb_u, m5_bb_l);
+      if(sq_event != 0) {
+         string sq_dir = (sq_event > 0) ? "BUY" : "SELL";
+         bool sq_adx_ok = (m5_adx >= g_sc.bb_squeeze_adx_min);
+         datetime sq_last = (sq_event > 0) ? g_bb_squeeze_last_buy_time : g_bb_squeeze_last_sell_time;
+         datetime sq_now  = TimeCurrent();
+         bool sq_cool_ok = (g_sc.bb_squeeze_cooldown_seconds <= 0
+                            || sq_last == 0
+                            || (sq_now - sq_last) >= g_sc.bb_squeeze_cooldown_seconds
+                            || CooldownBypassActive(sq_dir, "BB_SQUEEZE", m5_adx));
+         if(!sq_adx_ok) {
+            JournalRecordSignal("SKIP","bb_squeeze_adx_below_min","BB_SQUEEZE",sq_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!sq_cool_ok) {
+            JournalRecordSignal("SKIP","bb_squeeze_cooldown","BB_SQUEEZE",sq_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = sq_dir;
+            setup_type = "BB_SQUEEZE";
+            double sq_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double sq_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(sq_event > 0) {
+               sl  = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(sq_ask + m5_atr * g_sc.bb_squeeze_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(sq_ask + m5_atr * g_sc.bb_squeeze_tp2_atr_mult, _Digits);
+               g_bb_squeeze_last_buy_time = sq_now;
+            } else {
+               sl  = NormalizeDouble(sq_ask + m5_atr * g_sc.bb_squeeze_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_tp2_atr_mult, _Digits);
+               g_bb_squeeze_last_sell_time = sq_now;
+            }
+            PrintFormat("FORGE 2.7.42: BB_SQUEEZE %s fired @ %.2f (bb_u=%.2f bb_l=%.2f ADX=%.1f)",
+                        sq_dir, (sq_event > 0 ? sq_ask : sq_bid), m5_bb_u, m5_bb_l, m5_adx);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -8856,6 +8976,11 @@ void CheckNativeScalperSetups() {
                                && g_sc.inside_bar_lot_factor > 0.0
                                && g_sc.inside_bar_lot_factor < 1.0)
                                ? g_sc.inside_bar_lot_factor : 1.0;
+   // 2.7.42 — BB_SQUEEZE lot factor (C-extended Tier 1). Default 0.5.
+   double bb_squeeze_factor = (setup_type == "BB_SQUEEZE"
+                               && g_sc.bb_squeeze_lot_factor > 0.0
+                               && g_sc.bb_squeeze_lot_factor < 1.0)
+                               ? g_sc.bb_squeeze_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -8865,7 +8990,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the

@@ -478,3 +478,43 @@ def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
     # 6. Both SKIP gate codes emitted by EA exist
     for gate in ("inside_bar_adx_below_min", "inside_bar_cooldown"):
         assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+
+
+def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg):
+    """v2.7.42 BB_SQUEEZE — C-extended Tier 1 — stateless percentile-rank detector."""
+    # 1. setup_type literal emitted
+    assert 'setup_type = "BB_SQUEEZE"' in ea_src, \
+        "BB_SQUEEZE setup_type literal missing from ea/FORGE.mq5 dispatch"
+    # 2. Detector helper exists
+    assert "DetectBbSqueezeBreakoutEvent" in ea_src, \
+        "DetectBbSqueezeBreakoutEvent helper missing from ea/FORGE.mq5"
+    # 3. Detector reads BB upper (buf 1) and lower (buf 2)
+    assert "CopyBuffer(g_mtf[0].h_bb, 1, 1," in ea_src, \
+        "detector should CopyBuffer BB upper (buf 1)"
+    assert "CopyBuffer(g_mtf[0].h_bb, 2, 1," in ea_src, \
+        "detector should CopyBuffer BB lower (buf 2)"
+    # 4. All 10 config knobs present
+    for key in (
+        ("setup", "bb_squeeze_enabled"),
+        ("atom", "bb_squeeze_lookback_bars"),
+        ("atom", "bb_squeeze_pctile_threshold"),
+        ("atom", "bb_squeeze_min_breakout_atr"),
+        ("atom", "bb_squeeze_adx_min"),
+        ("geometry", "bb_squeeze_lot_factor"),
+        ("geometry", "bb_squeeze_sl_atr_mult"),
+        ("geometry", "bb_squeeze_tp1_atr_mult"),
+        ("geometry", "bb_squeeze_tp2_atr_mult"),
+        ("timing", "bb_squeeze_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}' section"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 5. Default-OFF
+    assert cfg["setup"]["bb_squeeze_enabled"] == 0, \
+        "bb_squeeze_enabled should default to 0 (C-extended Tier 1 ships OFF)"
+    # 6. Lot factor in combined_lot_factor product
+    assert "bb_squeeze_factor" in ea_src, \
+        "bb_squeeze_factor not multiplied into combined_lot_factor"
+    # 7. Both SKIP codes emitted
+    for gate in ("bb_squeeze_adx_below_min", "bb_squeeze_cooldown"):
+        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
