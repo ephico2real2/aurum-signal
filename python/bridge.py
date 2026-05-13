@@ -26,6 +26,7 @@ from reconciler  import get_reconciler
 from status_report import report_component_status
 from trading_session import (
     get_ea_killzone,
+    get_ea_session,
     get_trading_session_utc,
     sydney_open_alert_info,
     get_current_killzone_utc,
@@ -580,8 +581,35 @@ def _log_mt5_forge_integration_hint():
             "MT5_CMD_FILE_MIRROR (docs/FORGE_BRIDGE.md)."
         )
 
+_SESSION_STALE_WARN_GAP_SEC = 300  # log at most once every 5 minutes per fallback episode
+_session_last_stale_warn_ts: float = 0.0
+
+
 def _session() -> str:
-    """Return current kill-zone session from UTC clock (see trading_session.py)."""
+    """Return current trading-session label.
+
+    v2.7.50 — EA-anchored authority (same principle as v2.7.49 for killzone):
+    MT5 is where orders fire, so the EA's broker-clock session label is the only one
+    with causal authority over trade decisions. Reads forge_session_state.label from
+    market_data.json (matches forge_signals.session exactly). Falls back to bridge's
+    own UTC-clock compute via get_trading_session_utc() only when market_data.json is
+    missing or stale, with throttled WARN so a degraded EA path doesn't go unnoticed.
+    """
+    global _session_last_stale_warn_ts
+    label, _age = get_ea_session(MARKET_FILE, max_age_sec=MT5_STALE_SEC)
+    if label is not None:
+        return label
+    # Fallback: EA file missing or stale. Use bridge's own clock so live status
+    # still has SOMETHING — but warn (throttled) so the operator notices.
+    now_ts = time.time()
+    if now_ts - _session_last_stale_warn_ts >= _SESSION_STALE_WARN_GAP_SEC:
+        _session_last_stale_warn_ts = now_ts
+        age_str = f"{_age:.0f}s" if _age is not None else "n/a"
+        log.warning(
+            "BRIDGE: session fallback to UTC-clock compute — market_data.json "
+            "unreadable or stale (age=%s). EA-anchored session unavailable.",
+            age_str,
+        )
     return get_trading_session_utc()
 
 
@@ -2604,7 +2632,8 @@ class Bridge:
                 mt5=mt5,
                 regime_context=regime_context,
                 bridge_mode=self._effective_mode(),
-                trading_session_label=self._current_session or get_trading_session_utc(),
+                # v2.7.50 — fresh _session() goes through EA-anchored path with UTC fallback
+                trading_session_label=self._current_session or _session(),
                 mt5_stale_sec=MT5_STALE_SEC,
                 signal_id=signal.get("signal_id"),
                 direction=signal.get("direction"),
@@ -5103,8 +5132,13 @@ class Bridge:
             "circuit_breaker":   self._mt5_blind_override,
             "mt5_fresh":         _mt5_fresh,
             "strategy_tester":   bool((mt5 or {}).get("strategy_tester")),
-            "session":           self._current_session,
-            "session_utc":       get_trading_session_utc(),
+            # v2.7.50 — EA-anchored session. self._current_session is fed by _session()
+            # which reads forge_session_state.label from market_data.json (broker-clock,
+            # matches forge_signals.session). session_local_check is bridge's own
+            # UTC-clock compute kept solely for divergence detection (DST cutover days,
+            # broker skew). UI renders it as a red alert when it diverges.
+            "session":              self._current_session,
+            "session_local_check":  get_trading_session_utc(),
             "killzone":          self._current_killzone,
             "killzone_start_ts": self._killzone_start_ts,
             "session_id":        self._current_session_id,

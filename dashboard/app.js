@@ -446,7 +446,8 @@ function AurumChat({liveData}){
   const ctx=()=>{if(!liveData)return'No live data.';
     const a=liveData.account||{},s=liveData.sentinel||{},p=liveData.performance||{};
     const ex=liveData.execution||{},tv=liveData.tradingview||{};
-    const sess=liveData.session_utc||liveData.session||'—';
+    // v2.7.50 — prefer EA-anchored session; bridge's UTC-clock compute is the fallback
+    const sess=liveData.session||liveData.session_local_check||'—';
     const tvRef=tv.last!=null?Number(tv.last).toFixed(2):'—';
     const tvAge=tv.age_seconds!=null?fmtAgeSec(tv.age_seconds):'—';
     const mid=ex.usable&&ex.mid!=null?Number(ex.mid).toFixed(2):'—';
@@ -699,7 +700,7 @@ function ATHENA(){
 
   const D=data||{
     mode:'DISCONNECTED',effective_mode:'DISCONNECTED',
-    session:'UNKNOWN',session_utc:'',killzone:'',killzone_local_check:'',cycle:0,
+    session:'UNKNOWN',session_local_check:'',killzone:'',killzone_local_check:'',cycle:0,
     account_type:'UNKNOWN',broker:'',server:'',
     mt5_connected:false,circuit_breaker:false,
     sentinel_active:false,mt5_fresh:false,mt5_quote_stale:true,chart_symbol:null,
@@ -820,8 +821,28 @@ function ATHENA(){
         )}
         <span style={{fontSize:9,color:T.text,fontFamily:T.mono}}>{timeStr}</span>
         <span style={{display:'flex',alignItems:'center',gap:6,fontSize:9,color:T.text,fontFamily:T.mono}}>
-          <span title="session_utc = UTC kill-zone clock; session = last BRIDGE write">
-            {D.session_utc||D.session}</span>
+          {/* v2.7.50 — session is EA-anchored (broker clock, matches forge_signals.session).
+              session_local_check is bridge's own UTC-clock compute, used only for divergence
+              detection: render in red when it disagrees with the authoritative EA value.
+              Same authority pattern as v2.7.49 killzone. */}
+          {(() => {
+            const ea = D.session || '';
+            const local = D.session_local_check || '';
+            const diverged = ea && local && ea !== local && ea !== 'UNKNOWN' && ea !== 'OFF_HOURS';
+            const shown = ea || local || 'UNKNOWN';
+            const isFallback = (!ea || ea === 'UNKNOWN') && local;
+            const color = diverged ? T.red : T.text;
+            const title = diverged
+              ? `Session — EA says ${ea}, bridge UTC-clock says ${local}. Likely DST cutover or broker clock skew.`
+              : isFallback
+                ? `Session — EA market_data.json unavailable; bridge UTC-clock fallback showing ${local}.`
+                : `Session — EA-anchored (${ea}). Bridge UTC-clock check: ${local || 'matching'}.`;
+            return (
+              <span title={title} style={{color}}>
+                {shown}{diverged ? ` ≠ ${local}` : isFallback ? '?' : ''}
+              </span>
+            );
+          })()}
           {/* v2.7.49 — killzone is EA-anchored (broker clock, matches forge_signals.killzone).
               killzone_local_check is bridge's own UTC-clock compute, used only for divergence
               detection: render in red when it disagrees with the authoritative EA value

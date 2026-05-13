@@ -550,8 +550,12 @@ def api_live():
         "timestamp":       datetime.now(timezone.utc).isoformat(),
         "mode":            status.get("mode", "UNKNOWN"),
         "effective_mode":  status.get("effective_mode", "UNKNOWN"),
-        "session":           status.get("session", "OFF_HOURS"),
-        "session_utc":       get_trading_session_utc(),
+        # v2.7.50 — session is EA-anchored (status["session"] is bridge's mirror of
+        # forge_session_state.label from market_data.json — see bridge._session()).
+        # session_local_check is bridge's own UTC-clock compute, kept for divergence
+        # detection in the dashboard. Mirrors the v2.7.49 killzone pattern.
+        "session":              status.get("session", "OFF_HOURS"),
+        "session_local_check":  get_trading_session_utc(),
         # v2.7.49 — killzone is now EA-anchored. status["killzone"] is bridge's
         # mirror of the EA's broker-clock-anchored label (read from market_data.json
         # via _killzone() — see bridge.py). killzone_local_check is bridge's OWN

@@ -20,7 +20,7 @@ from scribe import get_scribe
 from herald import get_herald
 from status_report import report_component_status
 from market_data import build_execution_quote, fmt_age_short, safe_float
-from trading_session import get_trading_session_utc, session_clock_summary
+from trading_session import get_ea_session, get_trading_session_utc, session_clock_summary
 from mcp_client import MCPSession
 from vision import Vision
 
@@ -427,11 +427,15 @@ class Aurum:
     def _build_context(self) -> str:
         lines = []
 
-        # Mode + time (session from UTC kill zones — same logic as BRIDGE/trading_session.py)
+        # Mode + time. Session is EA-anchored (v2.7.50): read from market_data.json
+        # (forge_session_state.label) so LENS sees the same session label the EA used
+        # to decide trades. Fall back to UTC-clock compute when market_data.json is
+        # missing/stale — same precedence as bridge._session().
         status   = _read_json(STATUS_FILE)
         mode     = status.get("mode", self._mode)
         now_utc  = datetime.now(timezone.utc)
-        session  = get_trading_session_utc(now_utc)
+        ea_session, _ = get_ea_session(MARKET_FILE, max_age_sec=60)
+        session  = ea_session if ea_session is not None else get_trading_session_utc(now_utc)
         lines.append(f"MODE: {mode}  SESSION: {session}")
         lines.append(f"TIME: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append(session_clock_summary())
