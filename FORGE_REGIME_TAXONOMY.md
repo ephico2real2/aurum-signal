@@ -957,21 +957,27 @@ Each Tier 1 composite (per `FORGE_COMPOSITE_ROADMAP.md`) gets a killzone-aware r
 
 Adding `MaxTradesPerKZ` as an env knob + `killzone_trade_cap` as a new entry in `gate_legend.json` prevents over-trading the same window. Default 3-5 per killzone. **Defer to v2.7.38** — not v2.7.36 / v2.7.37 scope. Logged here as a known follow-up.
 
-### §11.6 Logging mandate — `killzone` column in SIGNALS
+### §11.6 Logging mandate — `killzone` + `minutes_into_kz` columns in SIGNALS ✅ SHIPPED
 
-The v2.7.36 SIGNALS schema extension (`docs/FORGE_LOGGING_EXTENSION_DESIGN.md`) should add `killzone TEXT DEFAULT 'OFF_KZ'` as a new column. Mandatory for retrospective composite validation against the Mar 31 → Apr 8 case study — without it, we can't tell whether a given TAKEN entry landed in the prime window or a low-edge bucket.
+**Status**: SHIPPED. `killzone` shipped in v2.7.36; `minutes_into_kz` shipped in v2.7.45 (2026-05-12).
 
-**Migration**:
+Mandatory for retrospective composite validation against the Mar 31 → Apr 8 case study — without it, we can't tell whether a given TAKEN entry landed in the prime window or a low-edge bucket. `minutes_into_kz` specifically powers the Judas-Swing detector (first 60 min of `LONDON_OPEN_KZ`) for composite refinements per §11.4.
+
+**EA-side schema** (`ea/FORGE.mq5` ScalperJournalEnsureSchema):
 ```sql
-ALTER TABLE SIGNALS ADD COLUMN killzone TEXT DEFAULT 'OFF_KZ';
+ALTER TABLE SIGNALS ADD COLUMN killzone TEXT DEFAULT '';
 ALTER TABLE SIGNALS ADD COLUMN minutes_into_kz INTEGER DEFAULT 0;
 ```
 
-Bridge mirror (`python/bridge.py`):
+**EA-side write** (`JournalRecordSignal`): computed fresh from `g_scalper_killzone_start_time` at emit time (not via `g_regime.minutes_into_kz`) so early-gate SKIP paths that fire before `RegimeUpdate()` still log accurate values.
+
+**SCRIBE mirror** (`python/scribe.py`):
 ```sql
-ALTER TABLE forge_signals ADD COLUMN killzone TEXT DEFAULT 'OFF_KZ';
 ALTER TABLE forge_signals ADD COLUMN minutes_into_kz INTEGER DEFAULT 0;
 ```
+SELECT/INSERT propagation handles the additive column via `has_min_into_kz` detection — old EA journal DBs without the column emit `0` per the `else ", 0"` fallback (same pattern as the killzone fallback).
+
+Tests: `tests/api/test_forge_27x_gates.py::test_minutes_into_kz_logged`, `::test_minutes_into_kz_scribe_mirror`.
 
 ### §11.7 DST handling — reference implementation
 
@@ -1018,4 +1024,5 @@ Mirrored from research doc §9 — must all pass before killzone code merges:
 | 2026-05-12 | **§10.5.1b added — Phase 2 rename batch grows 20 → 36 knobs.** `.env.example` coverage audit on 2026-05-12 surfaced 16 FORGE_* keys mapped in `sync_scalper_config_from_env.py` but missing from `.env.example` (9 ACTIVE in `.env`, never documented). Backfilled in commit `db10e34` under legacy names + added to the Phase 2 rename plan. Categories: 4 BB_BREAKOUT additional gates, 4 SELL_STOP_CONT cascade knobs, 4 MOMENTUM_DUMP per-direction overrides, 4 lot-sizing internals. 4 of the 16 use names already cited as canonical examples in `FORGE_NAMING_CONVENTIONS.md §4` (`FORGE_GEOMETRY_DUMP_LOT_FACTOR*`, `FORGE_ATOM_DUMP_RSI_MAX_BUY`, `FORGE_ATOM_DUMP_H1_TREND_MAX_SELL`). Python-safety re-verified — zero hits across all 36. LEGACY_ALIASES dict in §10.5.2 expanded accordingly. SKILL.md gained Mandatory Check C to prevent recurrence. |
 | 2026-05-12 | **§10.5.1c added — v2.7.38 composites split (Phase 2 batch grows 36 → 45 knobs).** Operator Option B locked in: `composites.*` was overloaded in v2.7.38, lumping 2 GATE-acting composites (BLOCK_SELL_IN_CHOP, INTRADAY_REVERSAL_TO_SELL_V3) together with 2 NEW SETUP-TYPES (FRACTIONAL_SELL_IN_BULL, BULL_DAY_DIP_BUY). Per the new §4.9 scope-precision rule in `FORGE_NAMING_CONVENTIONS.md`, the 2 setup-types get split out: enable flags → `setup.*` (2), lot/SL/TP knobs → `geometry.*` (6), re-entry cooldown → `timing.*` (1). 9 new renames added to §10.5.2 LEGACY_ALIASES (total now 45). BLOCK_SELL_IN_CHOP + INTRADAY_REVERSAL_TO_SELL stay under `composites.*` — they are multi-atom predicates that gate/amplify existing setups, not new setup types. Decision committed before any code rollout, so the v2.7.38 shipped names remain valid via alias resolution. |
 | 2026-05-12 | **§10.5.1d added — v2.7.40 `ScalperLot` → `ScalperLotFactor` lot pipeline unification.** Phase 2 batch grows 45 → 46. The pre-v2.7.40 lot pipeline had two absolute sources of truth (`lot_sizing.fixed_lot` JSON and `ScalperLot` MT5 input). Per the "one absolute base, everything else is a multiplier" principle, the MT5 input is renamed `ScalperLotFactor` and re-semanticized as a multiplier sitting at the top of `combined_lot_factor` (default 1.0 = no-op). `fixed_lot` retains full authority as THE absolute base — fully tunable via `.env` (`FORGE_FIXED_LOT`). New env mirror `FORGE_GLOBAL_SCALPER_LOT_FACTOR` (GLOBAL scope per §4) for headless control. **No LEGACY_ALIASES** for the MT5 input — rename = safe-default fallback (MQL5 ignores unknown `.set` keys, so old `ScalperLot=0.08` lines silently lose effect, falling back to the new input's default 1.0). Unlocks ad-hoc half/double-sizing (0.5/2.0) without touching `fixed_lot`. Run 24's 0.01-lot trap (`0.08 × 0.125 floor`) explained and fixed in one change. Cross-referenced from `docs/FORGE_LOT_SIZING_REFERENCE.md §0/§1.1/§6/§7`. |
+| 2026-05-12 | **v2.7.45 — §11.6 `minutes_into_kz` SHIPPED**: EA ALTER TABLE SIGNALS + JournalRecordSignal INSERT now log `minutes_into_kz INTEGER`, computed fresh from `g_scalper_killzone_start_time` (not from g_regime — early-gate SKIP paths fire before RegimeUpdate). SCRIBE mirror: forge_signals column + ALTER migration + has_min_into_kz source-column detection + r[33] propagation (shifts v37 atoms to r[34], v37g3 to r[58]). Backward-compat: old EA journal DBs without the column emit 0 via the fallback branch (same pattern as killzone). Tests: 2 new in test_forge_27x_gates.py (76/76 PASS). |
 | 2026-05-12 | **v2.7.44 — Phase 2 SHIPPED**: `struct RegimeState` (16 fields per §3 + §11.3) + `void RegimeUpdate(...)` populator + 1 call site in `CheckNativeScalperSetups()`. Additive only — all 13 legacy §1.1 globals (`g_regime_label`, `g_regime_confidence`, `g_daily_bear_bias`, `g_daily_bull_bias`, `g_daily_flip_now`, etc.) stay intact, all filter chains continue reading them directly. Two NEW computed fields: `intraday_label` (M5+M15 derived; 5 enum values incl. `DECLINING`/`RISING`) and `intraday_counter_htf` (Apr 8 PM gap closer). Original Phase 2 target was v2.7.37; shipped 7 releases late at v2.7.44 because v2.7.36→.43 prioritized composite framework (Phase 1), naming-convention renames (§10.5), 14-setup expansion + Filter_*/Atom_*/Score_* layered helper extraction. Phase 3 migration (callers → `g_regime.*`) and Phase 4 cleanup (legacy globals removed) still pending — sequence TBD per operator validation needs. Tests: `test_regime_state_struct_declared`, `test_regime_update_function_called`. |

@@ -819,3 +819,42 @@ def test_regime_update_function_called(ea_src):
         "Phase 2 must keep g_regime_label assignment intact (additive only — Phase 3 migrates callers)"
     assert "g_daily_bear_bias" in ea_src and "g_daily_bull_bias" in ea_src, \
         "Phase 2 must keep g_daily_*_bias globals (additive only — Phase 4 removes them)"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v2.7.45 — minutes_into_kz column (FORGE_REGIME_TAXONOMY.md §11.6)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_minutes_into_kz_logged(ea_src):
+    """v2.7.45 §11.6: minutes_into_kz reaches the SIGNALS journal.
+
+    EA-side requirements:
+      - ALTER TABLE adds the column to the journal SIGNALS table
+      - JournalRecordSignal INSERT includes the column
+      - Value is computed fresh from g_scalper_killzone_start_time (RegimeUpdate
+        may not have run for early-gate SKIP paths like spread/session_off)
+    """
+    assert "ALTER TABLE SIGNALS ADD COLUMN minutes_into_kz INTEGER" in ea_src, \
+        "SIGNALS schema missing minutes_into_kz ALTER (§11.6)"
+    assert "minutes_into_kz" in ea_src.split('INSERT INTO SIGNALS')[1].split('VALUES')[0], \
+        "INSERT INTO SIGNALS column list missing minutes_into_kz"
+    assert "minutes_into_kz_now = (g_scalper_killzone_start_time > 0)" in ea_src, \
+        "minutes_into_kz must be computed fresh from g_scalper_killzone_start_time, not read from g_regime"
+
+
+def test_minutes_into_kz_scribe_mirror():
+    """v2.7.45 §11.6: scribe.py mirrors minutes_into_kz from EA journal to forge_signals."""
+    from pathlib import Path as _Path
+    scribe = (_Path(__file__).parent.parent.parent / "python" / "scribe.py").read_text()
+    # CREATE TABLE has the column
+    assert "minutes_into_kz INTEGER DEFAULT 0" in scribe, \
+        "scribe.py CREATE TABLE forge_signals missing minutes_into_kz"
+    # ALTER TABLE migration for existing DBs
+    assert 'ALTER TABLE forge_signals ADD COLUMN minutes_into_kz INTEGER' in scribe, \
+        "scribe.py missing ALTER TABLE migration for minutes_into_kz"
+    # SELECT propagation from source SIGNALS
+    assert 'has_min_into_kz = "minutes_into_kz" in src_cols' in scribe, \
+        "scribe.py missing source-column detection for minutes_into_kz"
+    # INSERT INTO forge_signals column list
+    assert "killzone, minutes_into_kz" in scribe, \
+        "scribe.py forge_signals INSERT missing minutes_into_kz alongside killzone"
