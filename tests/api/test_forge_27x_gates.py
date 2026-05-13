@@ -858,3 +858,38 @@ def test_minutes_into_kz_scribe_mirror():
     # INSERT INTO forge_signals column list
     assert "killzone, minutes_into_kz" in scribe, \
         "scribe.py forge_signals INSERT missing minutes_into_kz alongside killzone"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v2.7.46 — per-killzone trade cap (FORGE_REGIME_TAXONOMY.md §11.5)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_killzone_trade_cap_wired_end_to_end(ea_src, cfg, gate_legend, sync_src, defaults):
+    """v2.7.46 §11.5: per-killzone trade cap is fully wired (config + EA + gate + sync)."""
+    # 1. ScalperConfig field + default + JsonHasKey parse
+    assert "killzones_max_trades_per_kz" in ea_src, \
+        "ScalperConfig field killzones_max_trades_per_kz missing"
+    assert 'JsonHasKey(content, "killzones_max_trades_per_kz")' in ea_src, \
+        "EA JSON loader missing killzones_max_trades_per_kz read"
+    # 2. ScalperKillzoneCapOK helper + gate wiring
+    assert "bool ScalperKillzoneCapOK()" in ea_src, \
+        "ScalperKillzoneCapOK helper function missing"
+    assert "!ScalperKillzoneCapOK()" in ea_src, \
+        "ScalperKillzoneCapOK not called in dispatch path"
+    assert 'JournalRecordSignal("SKIP","killzone_trade_cap"' in ea_src, \
+        "EA must emit SKIP killzone_trade_cap when cap hit"
+    # 3. Counter increment on TAKEN entry (alongside session_trades++)
+    assert "g_scalper_killzone_trades++" in ea_src, \
+        "g_scalper_killzone_trades must be incremented when a TAKEN entry fires"
+    # 4. Gate code in gate_legend.json
+    assert "killzone_trade_cap" in gate_legend, \
+        "gate_legend.json missing killzone_trade_cap entry"
+    assert gate_legend["killzone_trade_cap"].get("category") == "Session / Time", \
+        "killzone_trade_cap should be categorized under Session / Time"
+    # 5. Config defaults + sync mapping (active config + defaults JSON)
+    assert cfg["session_filter"]["killzones_max_trades_per_kz"] == 0, \
+        "killzones_max_trades_per_kz should default to 0 (disabled — operator opts in)"
+    assert defaults["session_filter"]["killzones_max_trades_per_kz"] == 0, \
+        "defaults.json killzones_max_trades_per_kz should be 0"
+    assert "FORGE_GATE_KILLZONE_MAX_TRADES" in sync_src, \
+        "sync_scalper_config_from_env.py missing FORGE_GATE_KILLZONE_MAX_TRADES mapping"

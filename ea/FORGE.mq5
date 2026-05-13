@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.115"
+#property version "2.116"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.45";
+const string FORGE_VERSION = "2.7.46";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -811,6 +811,7 @@ struct ScalperConfig {
    // ICT Killzones (NY-time minute-of-day; killzones are always NY-anchored)
    bool   killzones_enabled;
    bool   killzones_gate_entries;
+   int    killzones_max_trades_per_kz;     // 2.7.46 §11.5 — per-killzone trade cap (0 = disabled)
    int    kz_asia_start_min;
    int    kz_asia_end_min;
    int    kz_london_open_start_min;
@@ -3468,6 +3469,7 @@ void InitScalperConfig() {
    // ICT killzones (NY minute-of-day)
    g_sc.killzones_enabled        = false;
    g_sc.killzones_gate_entries   = false;
+   g_sc.killzones_max_trades_per_kz = 0;   // 2.7.46 §11.5 — 0=disabled (operator opts in via FORGE_GATE_KILLZONE_MAX_TRADES)
    g_sc.kz_asia_start_min        = 19*60;   // 19:00 NY (wraps to 03:00)
    g_sc.kz_asia_end_min          =  3*60;
    g_sc.kz_london_open_start_min =  2*60;
@@ -4111,6 +4113,7 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "broker_gmt_offset_summer")) { v=JsonGetDouble(content,"broker_gmt_offset_summer"); if(v>=-12&&v<=14) g_sc.broker_gmt_offset_summer=(int)v; }
    if(JsonHasKey(content, "killzones_enabled"))        { v=JsonGetDouble(content,"killzones_enabled");        g_sc.killzones_enabled=(v>=0.5); }
    if(JsonHasKey(content, "killzones_gate_entries"))   { v=JsonGetDouble(content,"killzones_gate_entries");   g_sc.killzones_gate_entries=(v>=0.5); }
+   if(JsonHasKey(content, "killzones_max_trades_per_kz")) { v=JsonGetDouble(content,"killzones_max_trades_per_kz"); if(v>=0.0&&v<=99.0) g_sc.killzones_max_trades_per_kz=(int)v; }
    if(JsonHasKey(content, "kz_asia_start_min"))         { v=JsonGetDouble(content,"kz_asia_start_min");         if(v>=0&&v<=1439) g_sc.kz_asia_start_min        =(int)v; }
    if(JsonHasKey(content, "kz_asia_end_min"))           { v=JsonGetDouble(content,"kz_asia_end_min");           if(v>=0&&v<=1440) g_sc.kz_asia_end_min          =(int)v; }
    if(JsonHasKey(content, "kz_london_open_start_min"))  { v=JsonGetDouble(content,"kz_london_open_start_min");  if(v>=0&&v<=1439) g_sc.kz_london_open_start_min =(int)v; }
@@ -5877,6 +5880,22 @@ bool ScalperSessionOK() {
       if(StringLen(ComputeCurrentKillzoneLabel()) == 0) return false;
    }
    return true;
+}
+
+// 2.7.46 — FORGE_REGIME_TAXONOMY.md §11.5 — per-killzone trade cap.
+//   Returns false when:
+//     (1) killzones_enabled  (master toggle for the whole KZ machinery), AND
+//     (2) killzones_max_trades_per_kz > 0 (operator-set cap), AND
+//     (3) a killzone is currently active (empty label = no cap), AND
+//     (4) the per-KZ taken-trade counter has reached the cap.
+//   Counter g_scalper_killzone_trades is incremented on every TAKEN entry and reset
+//   on killzone transition (see line ~5862) + daily reset (~5837), so the cap is
+//   naturally scoped to the current window. Default 0 = disabled (no behavior change).
+bool ScalperKillzoneCapOK() {
+   if(!g_sc.killzones_enabled) return true;
+   if(g_sc.killzones_max_trades_per_kz <= 0) return true;
+   if(StringLen(ComputeCurrentKillzoneLabel()) == 0) return true;
+   return g_scalper_killzone_trades < g_sc.killzones_max_trades_per_kz;
 }
 
 bool ScalperTesterSessionOK() {
@@ -7790,6 +7809,18 @@ void CheckNativeScalperSetups() {
          JournalRecordSignal("SKIP","session_off","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
       }
       g_scalper_prev_session_blocked = true;
+      return;
+   }
+   // 2.7.46 §11.5 — per-killzone trade cap (default OFF). Operator opts in via
+   //   FORGE_GATE_KILLZONE_MAX_TRADES=5 (or similar). Blocks further entries
+   //   in the current killzone window once cap is reached; counter resets on
+   //   killzone transition (line ~5862) and on daily reset (~5837).
+   if(!ScalperKillzoneCapOK()) {
+      datetime _kc_bar = iTime(_Symbol, PERIOD_M5, 0);
+      if(_kc_bar != g_scalper_last_sesswarn_log_bar) {
+         g_scalper_last_sesswarn_log_bar = _kc_bar;
+         JournalRecordSignal("SKIP","killzone_trade_cap","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
+      }
       return;
    }
    // Session-start visibility log (2.7.4): fire once on session_off → active transition
@@ -10223,6 +10254,8 @@ void CheckNativeScalperSetups() {
    }
 
    g_scalper_session_trades++;
+   // 2.7.46 §11.5 — increment per-killzone counter alongside session counter so the cap gate sees fresh state on next tick
+   g_scalper_killzone_trades++;
    g_scalper_last_entry_bar = iTime(_Symbol, PERIOD_M5, 0);
    if(g_scalper_last_direction != direction)
       g_scalper_last_direction_time = TimeCurrent();
