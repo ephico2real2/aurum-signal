@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.114"
+#property version "2.115"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.44";
+const string FORGE_VERSION = "2.7.45";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -6649,6 +6649,8 @@ bool JournalInit() {
    // 2.7.36 — killzone column (additive; silently ignored when already present)
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN killzone TEXT DEFAULT '';");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_killzone ON SIGNALS(killzone);");
+   // 2.7.45 — minutes_into_kz column (FORGE_REGIME_TAXONOMY.md §11.6 — Judas-window detector for retrospective composite validation)
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN minutes_into_kz INTEGER DEFAULT 0;");
    // 2.7.37 — Layer-4 atom telemetry (24 columns; additive ALTERs are no-ops if column exists)
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_trend REAL;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_trend REAL;");
@@ -6847,6 +6849,10 @@ void JournalRecordSignal(string outcome, string gate_reason,
 
    string session  = ComputeCurrentSessionLabel();
    string killzone = ComputeCurrentKillzoneLabel();
+   // 2.7.45 — minutes_into_kz computed fresh (RegimeUpdate may not have run for early-gate SKIPs)
+   int minutes_into_kz_now = (g_scalper_killzone_start_time > 0)
+                             ? (int)((TimeTradeServer() - g_scalper_killzone_start_time) / 60)
+                             : 0;
 
    string sql = "INSERT INTO SIGNALS "
       "(time, symbol, setup_type, direction, outcome, gate_reason, "
@@ -6854,7 +6860,7 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
       "pattern_score, h1_trend, regime_label, regime_confidence, "
       "adx_trend_regime, high_vol_trend, session, killzone, magic, synced, run_id, "
-      "macd_histogram, m15_adx, lot_factor, "
+      "macd_histogram, m15_adx, lot_factor, minutes_into_kz, "
       // 2.7.37 — Layer-4 atom telemetry (24 cols sourced from g_eval_* globals
       // populated by ForgeEvalAtoms() at the top of CheckScalperEntry)
       "h4_trend, m15_trend, h1_di_balance, "
@@ -6909,6 +6915,8 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + DoubleToString(macd_hist, 6) + ", "
       + DoubleToString(m15_adx_val, 2) + ", "
       + DoubleToString(lot_factor_val, 4) + ", "
+      // 2.7.45 — minutes_into_kz (FORGE_REGIME_TAXONOMY.md §11.6 — Judas-window detector)
+      + IntegerToString(minutes_into_kz_now) + ", "
       // 2.7.37 Layer-4 atoms
       + DoubleToString(g_eval_h4_trend,      4) + ", "
       + DoubleToString(g_eval_m15_trend,     4) + ", "

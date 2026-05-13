@@ -147,6 +147,7 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     high_vol_trend    INTEGER,
     session           TEXT,
     killzone          TEXT,
+    minutes_into_kz   INTEGER DEFAULT 0,
     magic             INTEGER,
     journal_source    TEXT DEFAULT 'live',
     -- 2.7.37 Layer-4 atom telemetry (24 cols)
@@ -602,7 +603,7 @@ class Scribe:
                     rsi_divergence TEXT, psar_state TEXT, pattern_score INTEGER,
                     h1_trend REAL, regime_label TEXT, regime_confidence REAL,
                     adx_trend_regime INTEGER, high_vol_trend INTEGER,
-                    session TEXT, killzone TEXT, magic INTEGER,
+                    session TEXT, killzone TEXT, minutes_into_kz INTEGER DEFAULT 0, magic INTEGER,
                     h4_trend REAL, m15_trend REAL, h1_di_balance REAL,
                     day_open REAL, day_high REAL, day_low REAL,
                     m5_open_1 REAL, m5_high_1 REAL, m5_low_1 REAL, m5_close_1 REAL,
@@ -665,6 +666,12 @@ class Scribe:
             conn.execute("ALTER TABLE forge_signals ADD COLUMN killzone TEXT DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_killzone ON forge_signals(killzone)")
             log.info("SCRIBE migration: added killzone to forge_signals")
+        if "minutes_into_kz" not in fs_cols:
+            # minutes_into_kz — minutes since current killzone started, for Judas-window
+            # detection + retrospective composite validation (added in FORGE 2.7.45 per
+            # FORGE_REGIME_TAXONOMY.md §11.6).
+            conn.execute("ALTER TABLE forge_signals ADD COLUMN minutes_into_kz INTEGER DEFAULT 0")
+            log.info("SCRIBE migration: added minutes_into_kz to forge_signals")
         # 2.7.37 — Layer-4 atom telemetry (24 cols; closes Decision Stack §6 gap)
         _v37_cols = [
             ("h4_trend",       "REAL"),
@@ -1040,6 +1047,7 @@ class Scribe:
             has_m15_adx    = "m15_adx"        in src_cols
             has_lot_factor = "lot_factor"      in src_cols
             has_killzone   = "killzone"       in src_cols
+            has_min_into_kz = "minutes_into_kz" in src_cols
             # 2.7.37 — detect Layer-4 atom telemetry columns on source SIGNALS
             v37_cols = [
                 "h4_trend", "m15_trend", "h1_di_balance",
@@ -1174,6 +1182,7 @@ class Scribe:
                 + (", m15_adx"        if has_m15_adx    else ", NULL")
                 + (", lot_factor"     if has_lot_factor  else ", NULL")
                 + (", killzone"       if has_killzone   else ", ''")
+                + (", minutes_into_kz" if has_min_into_kz else ", 0")
                 # 2.7.37 — all 24 atom telemetry cols appended together (all-or-nothing)
                 + (", " + ", ".join(v37_cols) if has_v37 else ", " + ", ".join(["NULL"] * len(v37_cols)))
                 # 2.7.37 Group 3 — 45 more cols, same all-or-nothing pattern
@@ -1212,13 +1221,15 @@ class Scribe:
                 ts_utc   = datetime.fromtimestamp(r[1], tz=_tz.utc).isoformat()
                 aurum_rid = aurum_run_id_map.get(wall_time, 0)
                 killzone_val = r[32] if len(r) > 32 else ""
-                # 2.7.37 — 24 atom columns at positions r[33]..r[56]
-                v37_vals = tuple(r[33 + i] if len(r) > 33 + i else None for i in range(24))
-                # 2.7.37 Group 3 — 45 more cols at positions r[57]..r[101]
-                v37g3_vals = tuple(r[57 + i] if len(r) > 57 + i else None for i in range(45))
+                # 2.7.45 — minutes_into_kz at r[33] (FORGE_REGIME_TAXONOMY.md §11.6)
+                min_into_kz_val = r[33] if len(r) > 33 else 0
+                # 2.7.37 — 24 atom columns at positions r[34]..r[57] (was r[33]..r[56] before 2.7.45)
+                v37_vals = tuple(r[34 + i] if len(r) > 34 + i else None for i in range(24))
+                # 2.7.37 Group 3 — 45 more cols at positions r[58]..r[102] (was r[57]..r[101] before 2.7.45)
+                v37g3_vals = tuple(r[58 + i] if len(r) > 58 + i else None for i in range(45))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
-                    r[29], r[30], r[31], wall_time, aurum_rid, killzone_val,
+                    r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
                     *v37_vals, *v37g3_vals,
                 ))
                 synced_ids.append(fid)
@@ -1236,7 +1247,7 @@ class Scribe:
                         "rsi_divergence, psar_state, pattern_score, h1_trend, "
                         "regime_label, regime_confidence, adx_trend_regime, "
                         "high_vol_trend, session, magic, journal_source, run_id, "
-                        "macd_histogram, m15_adx, lot_factor, wall_time, aurum_run_id, killzone, "
+                        "macd_histogram, m15_adx, lot_factor, wall_time, aurum_run_id, killzone, minutes_into_kz, "
                         # 2.7.37 atoms — 24 cols
                         "h4_trend, m15_trend, h1_di_balance, "
                         "day_open, day_high, day_low, "
