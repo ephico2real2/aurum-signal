@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.134"
+#property version "2.135"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.64";
+const string FORGE_VERSION = "2.7.65";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -255,6 +255,14 @@ double   g_eval_m30_trend        = 0.0;
 // v2.7.64 — Mirror h1/m5 trend locals to globals so WriteMarketData can expose them in market_data.json
 double   g_eval_h1_trend         = 0.0;
 double   g_eval_m5_trend         = 0.0;
+// v2.7.65 — Velocity / momentum-rate atoms (operator: "how do we measure how fast price moves?")
+//   All computed in ForgeEvalAtoms() each tick from broker M5 indicator handles + price.
+//   Available in market_data.json entry_atoms block AND usable for gating MOMENTUM_DUMP.
+double   g_eval_m5_velocity_1bar  = 0.0; // |close[0] - close[1]| / atr — single M5 bar speed
+double   g_eval_m5_velocity_5bar  = 0.0; // |close[0] - close[5]| / atr — sustained 5-bar displacement
+double   g_eval_m5_adx_delta_5bar = 0.0; // adx[0] - adx[5] — momentum strengthening (>0) or fading (<0)
+double   g_eval_m5_macd_slope_5bar= 0.0; // (macd[0] - macd[5]) / atr — MACD direction change rate
+double   g_eval_m5_atr_ratio_5bar = 0.0; // atr[0] / atr[5] — volatility expansion (>1) or contraction (<1)
 double   g_eval_h1_di_plus       = 0.0;
 double   g_eval_h1_di_minus      = 0.0;
 double   g_eval_h1_di_balance    = 0.0;
@@ -3277,7 +3285,13 @@ void WriteMarketData() {
    j += "\"m5_doji\":"            + IntegerToString(g_eval_m5_doji)           + ",";
    j += "\"long_upper_wick\":"    + IntegerToString(g_eval_long_upper_wick)   + ",";
    j += "\"long_lower_wick\":"    + IntegerToString(g_eval_long_lower_wick)   + ",";
-   j += "\"m5_range_expanding\":" + IntegerToString(g_eval_m5_range_expanding);
+   j += "\"m5_range_expanding\":" + IntegerToString(g_eval_m5_range_expanding) + ",";
+   // v2.7.65 — Velocity / momentum-rate atoms (price-speed measurement)
+   j += "\"m5_velocity_1bar\":"   + DoubleToString(g_eval_m5_velocity_1bar, 4)  + ",";
+   j += "\"m5_velocity_5bar\":"   + DoubleToString(g_eval_m5_velocity_5bar, 4)  + ",";
+   j += "\"m5_adx_delta_5bar\":"  + DoubleToString(g_eval_m5_adx_delta_5bar, 2) + ",";
+   j += "\"m5_macd_slope_5bar\":" + DoubleToString(g_eval_m5_macd_slope_5bar, 4) + ",";
+   j += "\"m5_atr_ratio_5bar\":"  + DoubleToString(g_eval_m5_atr_ratio_5bar, 3);
    // pattern_score is setup-specific (caller-passed to JournalRecordSignal), not a tick-state global —
    // not exposed here. Use SIGNALS table for per-trade pattern_score.
    j += "},";
@@ -5625,6 +5639,47 @@ void ForgeEvalAtoms() {
    if(g_mtf[2].h_ma50 != INVALID_HANDLE && CopyBuffer(g_mtf[2].h_ma50, 0, 0, 1, _buf) == 1) m30_e50 = _buf[0];
    if(g_mtf[2].h_atr  != INVALID_HANDLE && CopyBuffer(g_mtf[2].h_atr,  0, 0, 1, _buf) == 1) m30_atr_v = _buf[0];
    g_eval_m30_trend = (m30_atr_v > 0.0) ? (m30_e20 - m30_e50) / MathMax(m30_atr_v, point) : 0.0;
+
+   // v2.7.65 — Velocity / momentum-rate atoms (M5 timeframe, 5-bar lookback = 25 minutes window)
+   //   m5_velocity_1bar : |close[0] - close[1]| / atr — single-bar speed (NY-open spike detector)
+   //   m5_velocity_5bar : |close[0] - close[5]| / atr — sustained 5-bar move (judas + reversal capture)
+   //   m5_adx_delta_5bar: adx[0] - adx[5] — momentum strengthening (>0) or fading (<0)
+   //   m5_macd_slope_5bar: (macd[0]-macd[5])/atr — MACD direction change rate
+   //   m5_atr_ratio_5bar: atr[0]/atr[5] — volatility expansion (>1) or contraction (<1)
+   double _v_buf6[6], _v_atr_buf6[6], _v_adx_buf6[6];
+   double m5_close_now = 0, m5_close_5 = 0, m5_atr_now = 0, m5_atr_5 = 0, m5_adx_now = 0, m5_adx_5 = 0;
+   double m5_macd0_buf[6], m5_macd1_buf[6];
+   double m5_macd_now = 0, m5_macd_5 = 0;
+   // Use closed-bar shift 1..6 so we don't read partial bar 0
+   if(CopyClose(_Symbol, PERIOD_M5, 0, 6, _v_buf6) == 6) {
+      m5_close_now = _v_buf6[5];   // newest closed bar
+      m5_close_5   = _v_buf6[0];   // 5 bars back
+   }
+   if(g_mtf[0].h_atr != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_atr, 0, 0, 6, _v_atr_buf6) == 6) {
+      m5_atr_now = _v_atr_buf6[5];
+      m5_atr_5   = _v_atr_buf6[0];
+   }
+   if(g_mtf[0].h_adx != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_adx, 0, 0, 6, _v_adx_buf6) == 6) {
+      m5_adx_now = _v_adx_buf6[5];
+      m5_adx_5   = _v_adx_buf6[0];
+   }
+   if(g_h_osma_scalp != INVALID_HANDLE
+      && CopyBuffer(g_h_osma_scalp, 0, 0, 6, m5_macd0_buf) == 6) {
+      m5_macd_now = m5_macd0_buf[5];
+      m5_macd_5   = m5_macd0_buf[0];
+   }
+   if(m5_atr_now > 0.0) {
+      // 1-bar velocity uses last 2 closes (now vs 1 bar back = element 4)
+      g_eval_m5_velocity_1bar  = MathAbs(_v_buf6[5] - _v_buf6[4]) / m5_atr_now;
+      g_eval_m5_velocity_5bar  = MathAbs(m5_close_now - m5_close_5) / m5_atr_now;
+      g_eval_m5_macd_slope_5bar = (m5_macd_now - m5_macd_5) / m5_atr_now;
+   } else {
+      g_eval_m5_velocity_1bar = 0;
+      g_eval_m5_velocity_5bar = 0;
+      g_eval_m5_macd_slope_5bar = 0;
+   }
+   g_eval_m5_adx_delta_5bar = m5_adx_now - m5_adx_5;
+   g_eval_m5_atr_ratio_5bar = (m5_atr_5 > 0.0) ? (m5_atr_now / m5_atr_5) : 1.0;
 
    // M1 ATR
    if(g_m1_atr != INVALID_HANDLE && CopyBuffer(g_m1_atr, 0, 0, 1, _buf) == 1) g_eval_m1_atr = _buf[0];
