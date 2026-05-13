@@ -40,7 +40,12 @@ logs/
 node_modules/
 tests/playwright-report/
 tests/test-results/
+test-results/
 tests/.cache/
+
+# ── EA snapshots (local-only operator backups) ─────────────────────
+ea-backup/
+ea-copy/
 
 # ── Python ─────────────────────────────────────────────────────────
 .venv/

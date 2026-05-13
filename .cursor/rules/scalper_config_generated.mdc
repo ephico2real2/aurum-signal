@@ -1,0 +1,10 @@
+---
+description: Never hand-edit generated scalper_config.json — use defaults + scalper-env-sync
+alwaysApply: true
+---
+
+# Scalper JSON — generated file
+
+- **Do not** use `StrReplace`, `Write`, or manual edits on **`config/scalper_config.json`**. It is **generated** and will be overwritten by **`make scalper-env-sync`** / **`make forge-compile`**.
+- **Do** change **`config/scalper_config.defaults.json`** (and optional **`.env`** keys listed in **`scripts/sync_scalper_config_from_env.py`** `MAPPING`), then run **`make scalper-env-sync`** so **`config/scalper_config.json`** updates.
+- Reference: **`docs/SCALPER_CONFIG_PIPELINE.md`**.
