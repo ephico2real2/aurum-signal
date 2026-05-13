@@ -26,7 +26,12 @@ You are performing a rigorous technical validation of the FORGE EA entry logic a
 | `/Users/olasumbo/signal_system/.env.example` | **Cheat sheet** — all documented FORGE_ variables with descriptions |
 | `/Users/olasumbo/signal_system/python/scribe.py` | Live trading SCRIBE — reads signals/trades from live EA |
 | `/Users/olasumbo/signal_system/python/regime.py` | Regime detection — market context used by EA for lot sizing |
-| `/Users/olasumbo/signal_system/python/*.py` | All Python services — bridge, athena_api, herald, sentinel, etc. |
+| `/Users/olasumbo/signal_system/python/trading_session.py` | v2.7.49+: `get_ea_killzone()` / `get_ea_session()` readers for market_data.json; `_kz_window()` reads scalper_config.json |
+| `/Users/olasumbo/signal_system/python/bridge.py` | v2.7.49+: `_killzone()` / `_session()` EA-anchored with UTC fallback + throttled WARN |
+| `/Users/olasumbo/signal_system/python/athena_api.py` | v2.7.47+: `/api/backtest/run/:id` TAKEN entries return killzone+minutes_into_kz; v2.7.49+: `/api/live` returns `*_local_check` divergence fields |
+| `/Users/olasumbo/signal_system/python/aurum.py` | v2.7.50+: LENS prompt context reads `get_ea_session(MARKET_FILE)` |
+| `/Users/olasumbo/signal_system/python/backtest_compare.py` | v2.7.48: KZ + RegimeState breakdowns in run-vs-run comparator |
+| `/Users/olasumbo/signal_system/python/*.py` | All other Python services — herald, sentinel, lens, etc. |
 | `/Users/olasumbo/signal_system/schemas/` | DB schema definitions — cross-check against scribe.py CREATE TABLE and ALTER TABLE migrations |
 | `/Users/olasumbo/signal_system/dashboard/` | Athena UI — app.js, index.html — cross-check API field names used in UI against athena_api.py response shapes |
 | `/Users/olasumbo/signal_system/tests/` | Test specs — flag any tests that reference removed gates, stale config keys, or outdated field names |
@@ -46,9 +51,30 @@ Every `/forge-ea-review` run MUST emit explicit results for these two checks. Th
 - Also catch the case-mismatch class: lowercase keys in `.env` (e.g. `adx_hysteresis_enabled=1`) that *look* like FORGE config but bypass the `FORGE_*` uppercase prefix the sync script requires — also a **FAIL**
 
 #### Mandatory Check B — Gate legend completeness (must PASS or list all failures)
-- Extract every gate code emitted by `ea/FORGE.mq5` (pattern: `JournalRecordSignal("SKIP","<code>",...)`)
-- For each: confirm a matching key exists in `config/gate_legend.json`, OR the code matches a `_patterns` wildcard (e.g. `warmup_*`)
+- Extract every gate code emitted by `ea/FORGE.mq5`. Two emission patterns must BOTH be considered:
+  1. **Literal codes** — `JournalRecordSignal("SKIP","<code>", ...)` direct string literal in the EA
+  2. **Runtime-constructed codes** (v2.7.43+ layered helpers) — `Filter_AdxFloor`, `Filter_Cooldown`, `Filter_M15TrendAligned` build the SKIP code at emission time as `<setup_lower> + "_adx_below_min"` / `"_cooldown"` / `"_m15_misalign"`. The literal string never appears in `ea/FORGE.mq5` — only the call-site arguments do. Naively grepping for literals MISSES these (codex caught this as a false-positive WARNING on 2026-05-13).
+
+  Use this exact one-liner to enumerate BOTH classes:
+  ```python
+  import re, pathlib
+  ea = pathlib.Path('ea/FORGE.mq5').read_text()
+  # 1. Literal codes
+  literal_codes = set(re.findall(r'JournalRecordSignal\(\s*"SKIP"\s*,\s*"([a-z_][a-z0-9_]+)"', ea))
+  # 2. v2.7.43+ Filter_*-constructed codes (setup_lower + suffix)
+  filter_adx  = re.findall(r'Filter_AdxFloor\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea)
+  filter_cool = re.findall(r'Filter_Cooldown\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea)
+  filter_m15  = re.findall(r'Filter_M15TrendAligned\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea)
+  constructed = (
+      {f"{s}_adx_below_min" for s in filter_adx}
+      | {f"{s}_cooldown" for s in filter_cool}
+      | {f"{s}_m15_misalign" for s in filter_m15}
+  )
+  all_emitted = literal_codes | constructed
+  ```
+- For each emitted code (literal OR constructed): confirm a matching key exists in `config/gate_legend.json`, OR the code matches a `_patterns` wildcard (e.g. `warmup_*`)
 - Any EA-emitted gate without a legend entry or wildcard match is a **FAIL** — monitoring tools and analysis reports show raw codes with no human label
+- The reverse direction (legend entries with no emission source) is **acceptable** when the entry maps to a Filter_*-constructed code from one of the v2.7.42 setups; do NOT flag those as stale. Real stale entries are ones with no literal emission AND no Filter_* call site that would construct them.
 - Report exact missing codes and the EA file:line where each is emitted
 
 #### Mandatory Check C — Sync mapping ↔ .env.example parity (must PASS or list all failures)
@@ -317,9 +343,21 @@ A. Dead FORGE_* env vars: enumerate every FORGE_* key in .env, confirm each maps
    whitelist in tests/api/test_forge_27x_gates.py. Also flag any lowercase config-
    looking keys in .env (e.g. adx_hysteresis_enabled=1) that bypass the FORGE_*
    prefix. Each unmapped/unwhitelisted var = FAIL.
-B. Gate legend completeness: enumerate every JournalRecordSignal("SKIP","<code>",...)
-   in ea/FORGE.mq5, confirm <code> has a key in config/gate_legend.json OR matches a
-   _patterns wildcard. Each missing code = FAIL.
+B. Gate legend completeness: enumerate BOTH literal AND runtime-constructed gate
+   codes from ea/FORGE.mq5:
+     (i)  literal: JournalRecordSignal("SKIP","<code>",...) string args
+     (ii) constructed (v2.7.43+ layered helpers): for each call site
+          Filter_AdxFloor("<NAME>","<lower>",...) emit "<lower>_adx_below_min";
+          Filter_Cooldown("<NAME>","<lower>",...) emit "<lower>_cooldown";
+          Filter_M15TrendAligned("<NAME>","<lower>",...) emit "<lower>_m15_misalign".
+   Confirm each (literal OR constructed) has a key in config/gate_legend.json OR
+   matches a _patterns wildcard. Each missing code = FAIL.
+   CAUTION: a naive grep-for-literal-string approach MISSES the 26+ codes that
+   v2.7.42 setups construct at runtime — on 2026-05-13 codex flagged 20 valid
+   legend entries as "stale" because it didn't enumerate Filter_* call sites.
+   Always do BOTH passes.
+   The reverse direction (legend entry with no emission source) is ACCEPTABLE
+   when the entry would be constructed by a Filter_* call site; do NOT flag.
 C. Sync mapping ↔ .env.example parity: enumerate every "FORGE_*" key in
    sync_scalper_config_from_env.py MAPPING, confirm each has a matching
    `# FORGE_*=` or `FORGE_*=` line in .env.example. Each sync-mapped key missing
@@ -367,6 +405,44 @@ These patterns have caused real bugs — always validate:
 - **H1 DI sell gate**: require_h1_di_sell=1 blocks SELL when H1 DI+>=DI-. No ADX bypass (unlike BUY gate which bypasses at counter_buy_adx_threshold=28). Verify this asymmetry is intentional and documented.
 - **Cascade slots [2..8] vs [4]**: BUY LIMIT previously at slot[4] now at slot[9]. Any slot loop must scan 0..9 (not 0..4). Verify all three slot loops use `< 10`.
 
+### v2.7.43+ Compose architecture (NEW — added 2026-05-13 after sweeping regime-taxonomy alignment)
+
+- **14 of 21 setup_types use the layered compose** (Filter_AdxFloor → Filter_M15TrendAligned (opt) → Filter_Cooldown → Score_SetupConfidence, each `Filter_*` emitting a SKIP code constructed from `setup_lower` at runtime). These 14 are the v2.7.42 additions: MA_CROSSOVER, VWAP_REVERSION, FIB_CONFLUENCE, INSIDE_BAR, BB_SQUEEZE, ORB, GAP_AND_GO, DOUBLE_TOP, DOUBLE_BOTTOM, HEAD_AND_SHOULDERS, INVERSE_HEAD_AND_SHOULDERS, FLAG_PENNANT, TRENDLINE_BOUNCE, SR_FLIP.
+- **7 setups stay monolithic** (BB_BREAKOUT, BB_BREAKOUT_RETEST, BB_BOUNCE, BB_PULLBACK_SCALP, MOMENTUM_DUMP, FRACTIONAL_SELL_IN_BULL, BULL_DAY_DIP_BUY) — their dispatch has gates (H4 RSI/ADX, MACD, hidden-div, BB-contraction, cascade arming, trailing-add) the layered helpers don't yet cover. Migration is §5 Phase 3 work, gated by validation rule.
+- **Gate codes for the 14 layered setups are runtime-constructed** — they do NOT appear as literal strings in `ea/FORGE.mq5`. Mandatory Check B MUST enumerate Filter_* call sites (see updated Check B above). Codex's literal-grep approach missed 20 valid gate_legend entries on 2026-05-13 → false-positive WARNING.
+
+### v2.7.44+ RegimeState struct + Phase 2 additive intro
+
+- **`struct RegimeState` exists in EA** (`ea/FORGE.mq5:1020`) with 16 fields across 5 layers. **Populated each tick via `RegimeUpdate(...)` (~ea/FORGE.mq5:7761)** called from `CheckNativeScalperSetups`.
+- **Legacy globals STILL EXIST** alongside the struct (Phase 2 is additive — no behavior change). `g_regime_label`, `g_regime_confidence`, `g_daily_*`, `g_adx_trend_regime` are all preserved. Filter chains in the 7 monolithic setups still read them directly. §5 Phase 3 will migrate callers; §5 Phase 4 will delete the legacy globals. Do NOT flag legacy-global usage as "should use g_regime.*" yet — that's planned future work.
+- **3 NEW SIGNALS columns** added v2.7.47: `htf_h1_strong INTEGER`, `intraday_label TEXT`, `intraday_counter_htf INTEGER`. Mirror to forge_signals via scribe.py ALTER migrations. Column-index shift in scribe's INSERT loop: trio at r[34..36], v37 atoms at r[37..60], v37g3 at r[61..105].
+- **`minutes_into_kz` column** added v2.7.45 to SIGNALS + forge_signals. EA computes fresh at JournalRecordSignal site (not via g_regime.minutes_into_kz) so early-gate SKIP paths fire pre-RegimeUpdate still log accurate values.
+
+### v2.7.46+ New gate codes (all default-OFF, operator opts in)
+
+- **`killzone_trade_cap`** (v2.7.46) — emitted by `ScalperKillzoneCapOK()` when `killzones_max_trades_per_kz` cap is hit. Knob: `FORGE_GATE_KILLZONE_MAX_TRADES` (0=disabled). Counter `g_scalper_killzone_trades` increments on TAKEN, resets on KZ transition + daily reset.
+- **`dump_judas_window`** (v2.7.51 §11.4) — emitted in MOMENTUM_DUMP SELL dispatch when killzone=LONDON_OPEN_KZ AND minutes_into_kz<60 AND `dump_judas_window_block` knob is on. Knob: `FORGE_GATE_DUMP_JUDAS_WINDOW_BLOCK` (0=disabled).
+- **`kz_warmup`** (v2.7.52) — emitted at top-level dispatch when active KZ AND minutes_into_kz<`kz_warmup_min`. Knob: `FORGE_GATE_KZ_WARMUP_MIN` (0=disabled, 15 typical per arongroups stop-hunt research).
+- All 3 throttle via the shared `g_scalper_last_sesswarn_log_bar` marker — co-existence with `session_off`.
+
+### v2.7.49+ EA-anchored time-label authority (FORGE_REGIME_TAXONOMY.md §11.7b)
+
+- **MT5 is the authoritative clock for both killzone AND session labels.** Operator decision 2026-05-13: orders fire from MT5, so EA's broker-clock view is the only one with causal authority.
+- **Bridge `_killzone()`** (`bridge.py:631`) reads `forge_session_state.killzone` from `market_data.json` via `get_ea_killzone(MARKET_FILE, max_age_sec=MT5_STALE_SEC)`. Falls back to `get_current_killzone_utc()` only when stale/missing; emits throttled WARN log on fallback (every 5 min max).
+- **Bridge `_session()`** (`bridge.py:594`) — same pattern with `get_ea_session()` reading `forge_session_state.label`.
+- **athena_api `/api/live`** returns `killzone`+`killzone_local_check` and `session`+`session_local_check` — the `_local_check` fields are bridge's UTC-clock compute used for DIVERGENCE detection only, not as a source of truth.
+- **athena_api `/api/health`** intentionally retains `killzone_utc`+`session_utc` — heartbeat fields, not authoritative.
+- **aurum.py LENS prompt context** reads `get_ea_session(MARKET_FILE)` at `aurum.py:437` so the agent sees the EA's session label.
+- **Dashboard** flips precedence to `D.killzone || D.killzone_local_check` (and same for session); renders divergence in red. Default-state field names: `session_local_check` (not `session_utc`) and `killzone_local_check` (not `killzone_utc`).
+- **Window definitions (`kz_*_start_min`)** read from `config/scalper_config.json:session_filter.kz_*_*_min` first (EA-authoritative), env vars second, hard-coded NY-minute defaults third — verified by `trading_session._kz_window()`.
+
+### v2.7.51 §11.4 KZ-aware composite refinements
+
+- **`bull_day_dip_buy_prime_amplifier`** (default 1.0) — multiplies BULL_DAY_DIP_BUY lot factor by N when killzone ∈ {NY_OPEN_KZ, LONDON_CLOSE_KZ}. Wired at `ea/FORGE.mq5:10168-10170`. Silent operation (no SKIP).
+- **`intraday_reversal_require_prime_kz`** (default false) — when on, `IsIntradayReversalSellActive()` returns false outside prime KZ (final check at `ea/FORGE.mq5:5196`). Silent operation.
+- **`dump_judas_window_block`** (default false) — see new gate codes above.
+- `BLOCK_SELL_IN_CHOP` is already always-on (no refinement needed); `CHOP_LADDER_BUY_GRID` composite doesn't exist in EA yet — both intentionally skipped from §11.4.
+
 ---
 
 ## NOTES
@@ -374,7 +450,7 @@ These patterns have caused real bugs — always validate:
 - The review doc path is always `docs/FORGE_ENTRY_CONDITIONS_CODEX_REVIEW.md` (overwrite on each run)
 - The Codex sandbox may block file writes — if that happens, the agent reports findings in output and Claude Code writes the file manually from those findings
 - Run this skill after any significant change to `ea/FORGE.mq5`, `scalper_config.json`, `FORGE_ENTRY_CONDITIONS.md`, `scribe.py`, or `dashboard/app.js`
-- Current EA version: FORGE v2.7.12. Post-2.7.12 review found 0 FAILs (all prior FAILs fixed).
+- Current EA version: FORGE v2.7.52 (2026-05-13). Last review found 0 FAILs, 1 real WARNING (5 bridge-direct env vars need whitelist entry), 0 real findings beyond hygiene. The codex agent's 20-entry "stale gate_legend" WARNING was a false positive — it missed runtime-constructed codes from Filter_* helpers; the skill's Mandatory Check B now explicitly handles both literal AND constructed codes.
 - Run 11 is the next backtest — validate before starting Run 11 that H1 DI sell gate and cascade multi-leg are correctly wired.
 - **TAKEN ENTRIES P&L missing cascade deals**: `all_trades` SQL was missing `volume`; cascade magics (+20000..+20009) excluded from P&L. Fixed in 2.7.12 session. Always re-verify `volume` is in SELECT and cascade offsets are summed.
 - **lot_per_leg was null**: `volume` not fetched in all_trades query. Fixed. Verify `lot_per_leg` is non-null for all TAKEN entries.

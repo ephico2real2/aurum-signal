@@ -1017,3 +1017,127 @@ def test_athena_api_returns_killzone_minutes_in_taken_entries():
     taken_block = api[taken_block_start:taken_block_start + 800]
     assert "killzone" in taken_block, "TAKEN entries SELECT missing killzone column"
     assert "minutes_into_kz" in taken_block, "TAKEN entries SELECT missing minutes_into_kz column"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v2.7.43+ Gate-legend reachability — catches stale legend entries in CI
+# rather than waiting for /forge-ea-review. See FORGE_LAYERED_GATE_LIFECYCLE.md §6.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_gate_legend_entries_reachable_in_EA(ea_src, gate_legend):
+    """Every gate_legend.json entry must be reachable from EA source. Three
+    classes of reachability are accepted:
+
+      1. **Direct literal**     `JournalRecordSignal("SKIP","<code>",...)` —
+         the gate code is a string argument to the journal call directly.
+
+      2. **Indirect literal**   `string _reason = "<code>"; ... JournalRecordSignal(...,_reason,...)` —
+         the gate code appears as a quoted literal somewhere in EA source but
+         not necessarily as a direct JournalRecordSignal arg. Common for dynamic
+         classifier gates like MACD quadrants (`entry_quality_macd_q0_bull_rising`
+         at ea/FORGE.mq5:8546) and RSI conditional codes
+         (`entry_quality_rsi_sell_adx_floor` at ea/FORGE.mq5:8835).
+
+      3. **Runtime-constructed** v2.7.43+ Filter_* helper call sites:
+            Filter_AdxFloor("<NAME>","<lower>",...)        → "<lower>_adx_below_min"
+            Filter_Cooldown("<NAME>","<lower>",...)        → "<lower>_cooldown"
+            Filter_M15TrendAligned("<NAME>","<lower>",...) → "<lower>_m15_misalign"
+
+      4. **Wildcard match** — entries like `warmup_*` cover any prefixed code.
+
+    Catches stale entries early: if all emission paths for a legend key are
+    removed but the legend entry isn't cleaned up, this test fails in CI rather
+    than surfacing in a quarterly /forge-ea-review.
+
+    Why this matters: codex's 2026-05-13 review flagged 20 legend entries as
+    "stale" because its grep-for-literal-Journal-arg approach missed both the
+    runtime construction (class 3) and indirect literal (class 2) patterns.
+    The /forge-ea-review SKILL.md was updated to enumerate constructed codes;
+    this test is the CI-side complement that covers all reachability classes.
+
+    See FORGE_LAYERED_GATE_LIFECYCLE.md §6 for the underlying lifecycle.
+    """
+    import re
+
+    # 3. Runtime-constructed codes from v2.7.43+ Filter_* helper call sites
+    filter_adx  = re.findall(r'Filter_AdxFloor\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea_src)
+    filter_cool = re.findall(r'Filter_Cooldown\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea_src)
+    filter_m15  = re.findall(r'Filter_M15TrendAligned\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea_src)
+    constructed = (
+        {f"{s}_adx_below_min" for s in filter_adx}
+        | {f"{s}_cooldown"      for s in filter_cool}
+        | {f"{s}_m15_misalign"  for s in filter_m15}
+    )
+
+    # 4. Wildcard patterns from legend itself
+    legend_keys = {k for k in gate_legend if not k.startswith("_")}
+    patterns = list(gate_legend.get("_patterns", {}).keys())
+
+    def matches_pattern(code: str, pats: list) -> bool:
+        return any(p.endswith("_*") and code.startswith(p[:-1]) for p in pats)
+
+    # For each legend key, classify reachability:
+    #   - constructed (class 3) — already in `constructed` set
+    #   - wildcard (class 4)    — matches_pattern() returns True
+    #   - literal (class 1+2)   — `"<key>"` appears anywhere in EA source
+    stale = []
+    for key in legend_keys:
+        if key in constructed:
+            continue
+        if matches_pattern(key, patterns):
+            continue
+        # Check for literal occurrence (handles both direct JournalRecordSignal
+        # args AND indirect assignments like `_qreason = "entry_quality_..."`)
+        if f'"{key}"' in ea_src:
+            continue
+        stale.append(key)
+
+    stale = sorted(stale)
+    assert not stale, (
+        f"gate_legend.json has {len(stale)} unreachable entries (no literal "
+        f"in EA source AND no Filter_* call site that constructs them AND no "
+        f"wildcard match):\n  "
+        + "\n  ".join(stale)
+        + "\n\nEither restore the EA emission / Filter_* call site / wildcard "
+        "pattern, or remove the legend entry. See FORGE_LAYERED_GATE_LIFECYCLE.md."
+    )
+
+
+def test_filter_helper_call_sites_have_legend_coverage(ea_src, gate_legend):
+    """Reverse direction of the reachability check: every Filter_* call site
+    must produce a code that has a legend entry (or matches a wildcard).
+
+    Catches the other drift: a new setup is added with Filter_AdxFloor("NEW",...)
+    but the operator forgets to add `new_adx_below_min` to gate_legend.json.
+    Without this test the gate emits at runtime but monitoring tools show a raw
+    undecoded code.
+    """
+    import re
+
+    filter_adx  = re.findall(r'Filter_AdxFloor\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea_src)
+    filter_cool = re.findall(r'Filter_Cooldown\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea_src)
+    filter_m15  = re.findall(r'Filter_M15TrendAligned\(\s*"[A-Z_]+"\s*,\s*"([a-z_][a-z0-9_]+)"', ea_src)
+
+    constructed = (
+        {f"{s}_adx_below_min" for s in filter_adx}
+        | {f"{s}_cooldown"      for s in filter_cool}
+        | {f"{s}_m15_misalign"  for s in filter_m15}
+    )
+
+    legend_keys = {k for k in gate_legend if not k.startswith("_")}
+    patterns = list(gate_legend.get("_patterns", {}).keys())
+
+    def matches_pattern(code: str, pats: list) -> bool:
+        return any(p.endswith("_*") and code.startswith(p[:-1]) for p in pats)
+
+    uncovered = sorted(
+        c for c in constructed
+        if c not in legend_keys and not matches_pattern(c, patterns)
+    )
+
+    assert not uncovered, (
+        f"{len(uncovered)} Filter_* call sites produce codes with no legend entry "
+        f"(monitoring tools will show raw undecoded codes):\n  "
+        + "\n  ".join(uncovered)
+        + "\n\nAdd these to config/gate_legend.json with category + explanation."
+    )
