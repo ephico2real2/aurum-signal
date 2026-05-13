@@ -331,6 +331,16 @@
     "explanation": "v2.7.35 MOMENTUM_DUMP SELL trigger fired but H1 trend strength is at or above dump_sell_h1_max (default 2.0 when enabled). At very strong H1 bullish bias, counter-trend SELLs into a bull rally have negative expectancy. Run 23 G5004 (h1=2.06 -$19), G5008 (h1=2.27 -$47), G5020 (h1=1.05 -$21) — equivalent winners at similar h1_trend banked only $3-5 each. Net trade-off strongly positive.",
     "category": "Entry Quality"
   },
+  "dump_rsi_floor_sell": {
+    "label": "Dump-catch SELL — RSI floor (deep oversold protection)",
+    "explanation": "v2.7.55 MOMENTUM_DUMP SELL blocked because m5_rsi ≤ dump_sell_min_rsi (default 30). Prevents selling INTO deep oversold where mean-reversion buyers wait — gold's standard-deviation oversold zone. Run 26 G5003 Mar 31 12:40 (RSI 32.4 SELL) was the canonical fail case this gate now blocks.",
+    "category": "Entry Quality"
+  },
+  "dump_below_bbl_block_sell": {
+    "label": "Dump-catch SELL — price below BB lower band (conjoint with RSI ≤ 35)",
+    "explanation": "v2.7.55 + v2.7.55.1 MOMENTUM_DUMP SELL blocked because price < m5_bb_l AND m5_rsi ≤ dump_below_bbl_block_max_rsi (default 35). Mean-reversion zone protection — gold reverts UP from below BB lower band. Pairs with new BB_LOWER_REVERSION_BUY setup (same condition triggers BUY entry). Conjoint RSI gate (v2.7.55.1) preserves G5001/G5002 continuation-dump winners (RSI 38-40) while blocking G5003-style entries (RSI ≤ 35).",
+    "category": "Entry Quality"
+  },
   "dump_adx_block": {
     "label": "Dump-catch — ADX below minimum",
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but M5 ADX was below dump_min_adx. Filters whipsaw spikes that lack trend confirmation.",
