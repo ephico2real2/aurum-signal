@@ -10,6 +10,36 @@ patterns rather than reporting them as normal: atr=0, identical prices, P&L movi
 without trade count changing, unknown gate_reason values, all-skip runs, cascade
 magics firing unexpectedly.
 
+## Service operations during monitoring — ALWAYS use Makefile targets
+
+The project root has a comprehensive `Makefile` (`/Users/olasumbo/signal_system/Makefile`).
+If during monitoring you need to restart, reload, recompile, or sync anything,
+**check `make help` first** — there's almost certainly a target. Never use raw
+`kill <pid>` / `launchctl unload-load` / `pkill` — they break because
+`KeepAlive.Crashed=true` doesn't respawn on clean SIGTERM. The Makefile targets
+encode the correct unload/load sequence + post-restart health probe.
+
+Common targets you'll need during a monitoring session:
+
+| Action | Target |
+|---|---|
+| Reload ATHENA after API change | `make reload-athena` |
+| Reload BRIDGE | `make reload-bridge` |
+| Reload all Python services | `make reload` |
+| Full restart (re-render plists) | `make restart` |
+| Compile FORGE.mq5 → .ex5 | `make forge-compile` (operator may need F7 in MetaEditor on macOS Wine) |
+| forge-compile + open MT5 | `make forge-refresh` |
+| forge-compile + restart MT5 + verify | `make forge-reload` |
+| Verify FORGE is live (poll market_data.json) | `make forge-verify-live` |
+| Regenerate scalper_config.json from defaults + .env | `make scalper-env-sync` |
+| Live tail ATHENA log | `make logs-athena` |
+| FORGE SKIP rollup last 24h | `make monitor-forge-skips` |
+| List all run_ids | `make journal-list` |
+| Purge a specific run | `make journal-reset-run RUN=N` |
+
+Full reference is in project root `CLAUDE.md` under "Service operations — ALWAYS
+use Makefile targets" + `make help` for the complete 698-line listing.
+
 ---
 
 ## STRICT ANALYSIS PROTOCOL — Think Like an Expert Quant/Scalper
