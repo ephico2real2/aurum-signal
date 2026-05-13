@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.113"
+#property version "2.114"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.43";
+const string FORGE_VERSION = "2.7.44";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1006,6 +1006,40 @@ string g_regime_label = "";
 double g_regime_confidence = 0;
 bool   g_regime_apply_policy = false;
 double g_regime_ct_min_conf = 0.55;
+
+// 2.7.44 — Phase 2 RegimeState struct (FORGE_REGIME_TAXONOMY.md §3 + §11.3).
+//   Additive: legacy g_regime_* / g_daily_* / per-tick locals all STAY. This struct mirrors
+//   them each tick via RegimeUpdate() so new code can read one canonical view. Phase 3 will
+//   migrate filter chains to g_regime.* one setup at a time; Phase 4 deletes legacy globals.
+struct RegimeState {
+   // Layer 1: HTF regime (H1+H4 integrated)
+   string htf_label;            // mirrors g_regime_label: TREND_BULL | TREND_BEAR | RANGE | VOLATILE | ""
+   double htf_confidence;       // mirrors g_regime_confidence
+   bool   htf_h1_strong;        // h1_trend ≥ override_factor × thr AND m5_adx ≥ override_adx_min
+
+   // Layer 2: Intraday regime (NEW — M5+M15 derived; closes Apr 8 PM gap)
+   string intraday_label;       // TREND_BULL | TREND_BEAR | RANGE | DECLINING | RISING
+   double intraday_confidence;
+   bool   intraday_counter_htf; // TRUE when intraday counters HTF direction
+
+   // Layer 3: Daily slope (collapsed from 7 g_daily_* vars to 4)
+   double daily_slope_atr;      // = g_daily_slope_pts / g_daily_atr_pts (signed, normalized)
+   bool   daily_bear_bias;      // mirrors g_daily_bear_bias
+   bool   daily_bull_bias;      // mirrors g_daily_bull_bias
+   bool   daily_flip_now;       // mirrors g_daily_flip_now
+
+   // Layer 4: Volatility
+   bool   high_vol;             // mirrors per-tick high_vol_trend local
+   double m5_adx;               // raw M5 ADX (exposed for atom queries)
+
+   // Layer 5: Session / killzone / news (§11.3)
+   string session;              // ASIA | LONDON | NY | ""
+   string killzone;             // NY_OPEN_KZ | LONDON_OPEN_KZ | LONDON_CLOSE_KZ | ASIAN_KZ | ""
+   int    minutes_into_kz;      // minutes since current killzone started (Judas Swing detector)
+   bool   news_active;          // mirrors news_filter hot state
+};
+
+RegimeState g_regime;            // populated each tick by RegimeUpdate() — single source of truth
 
 // V2: Volume Profile — POC + VWAP computed from M5 CopyTickVolume
 double   g_poc_price = 0.0;
@@ -7644,6 +7678,69 @@ bool CheckEntryQuality(const string direction, const double atr,
    return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2.7.44 — RegimeUpdate (FORGE_REGIME_TAXONOMY.md §3 + §5 Phase 2).
+//
+// Populates g_regime each tick by mirroring existing globals and computing the
+// two NEW concepts (intraday_label, intraday_counter_htf). Phase 2 is purely
+// ADDITIVE — no existing global is read-only-after, no caller is migrated yet,
+// no behavior changes. Filter chains keep reading g_regime_label / g_daily_*
+// directly; this struct only exists so future Phase 3 code can move one setup
+// at a time to g_regime.* without re-deriving values.
+//
+// Call site: end of the per-tick locals block inside CheckNativeScalperSetups
+// (after high_vol_trend + g_regime_label classification complete).
+//
+// Cost: one struct assignment + 2 string equality checks + 1 div + a min/abs.
+// Negligible per-tick overhead.
+// ─────────────────────────────────────────────────────────────────────────────
+void RegimeUpdate(double m5_adx_in, double m5_rsi_in,
+                  double h1_trend_strength_in,
+                  double m15_trend_strength_htf_in, bool m15_bull_htf_in, bool m15_bear_htf_in,
+                  bool high_vol_trend_in, double trend_thr_eff_in) {
+   datetime now = TimeTradeServer();
+
+   // Layer 1 — HTF (mirrors existing globals)
+   g_regime.htf_label      = g_regime_label;
+   g_regime.htf_confidence = g_regime_confidence;
+   g_regime.htf_h1_strong  = (g_sc.regime_h1_override_factor > 0.0
+                           && m5_adx_in >= g_sc.regime_h1_override_adx_min
+                           && MathAbs(h1_trend_strength_in) >= g_sc.regime_h1_override_factor * trend_thr_eff_in);
+
+   // Layer 2 — Intraday (NEW; M5 RSI + M15 EMA structure; closes Apr 8 PM gap)
+   string intraday;
+   if      (m15_bull_htf_in && m5_rsi_in >= 50.0) intraday = "TREND_BULL";
+   else if (m15_bear_htf_in && m5_rsi_in <= 50.0) intraday = "TREND_BEAR";
+   else if (m15_bull_htf_in && m5_rsi_in <  40.0) intraday = "DECLINING";  // bull HTF, bearish M5
+   else if (m15_bear_htf_in && m5_rsi_in >  60.0) intraday = "RISING";     // bear HTF, bullish M5
+   else                                            intraday = "RANGE";
+   g_regime.intraday_label      = intraday;
+   g_regime.intraday_confidence = MathMin(1.0, MathAbs(m15_trend_strength_htf_in));
+   if      (g_regime.htf_label == "TREND_BULL") g_regime.intraday_counter_htf = (intraday == "TREND_BEAR" || intraday == "DECLINING");
+   else if (g_regime.htf_label == "TREND_BEAR") g_regime.intraday_counter_htf = (intraday == "TREND_BULL" || intraday == "RISING");
+   else                                          g_regime.intraday_counter_htf = false;
+
+   // Layer 3 — Daily slope (collapses g_daily_slope_pts / g_daily_atr_pts to one ATR-normalized signed value)
+   g_regime.daily_slope_atr = (g_daily_atr_pts > 0.0) ? (g_daily_slope_pts / g_daily_atr_pts) : 0.0;
+   g_regime.daily_bear_bias = g_daily_bear_bias;
+   g_regime.daily_bull_bias = g_daily_bull_bias;
+   g_regime.daily_flip_now  = g_daily_flip_now;
+
+   // Layer 4 — Volatility
+   g_regime.high_vol = high_vol_trend_in;
+   g_regime.m5_adx   = m5_adx_in;
+
+   // Layer 5 — Session / killzone / news (§11.3)
+   g_regime.session         = ComputeCurrentSessionLabel();
+   g_regime.killzone        = ComputeCurrentKillzoneLabel();
+   g_regime.minutes_into_kz = (g_scalper_killzone_start_time > 0)
+                              ? (int)((now - g_scalper_killzone_start_time) / 60)
+                              : 0;
+   g_regime.news_active     = (g_nf_have_window
+                            && now >= g_nf_block_start
+                            && now <= g_nf_block_end);
+}
+
 void CheckNativeScalperSetups() {
    EnsureIndicators();
    EnsureMTFIndicators();
@@ -7947,6 +8044,14 @@ void CheckNativeScalperSetups() {
    }
    else                                             g_regime_label = "RANGE";
    g_regime_confidence = 1.0;
+
+   // 2.7.44 — Phase 2: populate canonical g_regime struct from existing globals + 2 NEW
+   //   intraday concepts (FORGE_REGIME_TAXONOMY.md §3 + §5 Phase 2). Additive only —
+   //   filter chains continue to read g_regime_label / g_daily_* directly until Phase 3.
+   RegimeUpdate(m5_adx, m5_rsi,
+                h1_trend_strength,
+                m15_trend_strength_htf, m15_bull_htf, m15_bear_htf,
+                high_vol_trend, trend_thr_eff);
 
    // M1 — execution TF confirmation (bias remains H1/H4/regime only)
    double m1_ema20 = (CopyBuffer(g_m1_ma20,0,0,1,buf)==1) ? buf[0] : 0;

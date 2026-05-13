@@ -46,6 +46,9 @@ tests/.cache/
 # ── EA snapshots (local-only operator backups) ─────────────────────
 ea-backup/
 ea-copy/
+# In-repo working snapshots used during long refactors (FORGE.mq5.bak.<step>)
+ea/*.bak.*
+ea/FORGE.mq5.bak*
 
 # ── Python ─────────────────────────────────────────────────────────
 .venv/
