@@ -170,6 +170,7 @@
 
     "killzones_enabled": 0,
     "killzones_gate_entries": 0,
+    "killzones_max_trades_per_kz": 0,
     "kz_asia_start_min":         1140,
     "kz_asia_end_min":            180,
     "kz_london_open_start_min":   120,

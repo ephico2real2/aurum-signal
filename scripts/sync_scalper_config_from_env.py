@@ -295,6 +295,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_ASIA_END_MIN":             ("session_filter", "asia_end_min",              "int",    None, 1440.0),
     "FORGE_KILLZONES_ENABLED":        ("session_filter", "killzones_enabled",         "bool01", None,  None),
     "FORGE_KILLZONES_GATE_ENTRIES":   ("session_filter", "killzones_gate_entries",    "bool01", None,  None),
+    # 2.7.46 §11.5 — per-killzone trade cap (0=disabled). GATE scope per FORGE_NAMING_CONVENTIONS.md §4.
+    "FORGE_GATE_KILLZONE_MAX_TRADES": ("session_filter", "killzones_max_trades_per_kz", "int",    0.0,  99.0),
     "FORGE_KZ_ASIA_START_MIN":        ("session_filter", "kz_asia_start_min",         "int",    0.0,  1439.0),
     "FORGE_KZ_ASIA_END_MIN":          ("session_filter", "kz_asia_end_min",           "int",    0.0,  1440.0),
     "FORGE_KZ_LONDON_OPEN_START_MIN": ("session_filter", "kz_london_open_start_min",  "int",    0.0,  1439.0),
