@@ -455,5 +455,25 @@
     "label": "Flag/Pennant — cooldown active",
     "explanation": "v2.7.42 FLAG_PENNANT fired within timing.flag_pennant_cooldown_seconds (default 1200) of prior entry.",
     "category": "Cooldowns"
+  },
+  "trendline_bounce_adx_below_min": {
+    "label": "Trendline bounce — M5 ADX below floor",
+    "explanation": "v2.7.42 TRENDLINE_BOUNCE matched (line fit through 2 same-direction swings + touch within tolerance + bar rejection) but m5_adx is below atom.trendline_adx_min (default 15).",
+    "category": "Setup gates"
+  },
+  "trendline_bounce_cooldown": {
+    "label": "Trendline bounce — cooldown active",
+    "explanation": "v2.7.42 TRENDLINE_BOUNCE fired within timing.trendline_bounce_cooldown_seconds (default 1200) of prior entry.",
+    "category": "Cooldowns"
+  },
+  "sr_flip_adx_below_min": {
+    "label": "S/R flip — M5 ADX below floor",
+    "explanation": "v2.7.42 SR_FLIP matched (broken level retests as opposite role + bar rejection) but m5_adx is below atom.sr_flip_adx_min (default 15).",
+    "category": "Setup gates"
+  },
+  "sr_flip_cooldown": {
+    "label": "S/R flip — cooldown active",
+    "explanation": "v2.7.42 SR_FLIP fired within timing.sr_flip_cooldown_seconds (default 1200) of prior entry.",
+    "category": "Cooldowns"
   }
 }

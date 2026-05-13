@@ -347,7 +347,9 @@
     "double_bottom_enabled": 0,
     "head_and_shoulders_enabled": 0,
     "inverse_head_and_shoulders_enabled": 0,
-    "flag_pennant_enabled": 0
+    "flag_pennant_enabled": 0,
+    "trendline_bounce_enabled": 0,
+    "sr_flip_enabled": 0
   },
 
   "atom": {
@@ -396,7 +398,13 @@
     "flag_pennant_impulse_min_atr": 2.0,
     "flag_pennant_consolidation_bars": 5,
     "flag_pennant_consolidation_max_atr": 0.8,
-    "flag_pennant_adx_min": 15.0
+    "flag_pennant_adx_min": 15.0,
+
+    "trendline_touch_tolerance_atr": 0.3,
+    "trendline_adx_min": 15.0,
+
+    "sr_flip_tolerance_atr": 0.3,
+    "sr_flip_adx_min": 15.0
   },
 
   "geometry": {
@@ -450,7 +458,17 @@
     "flag_pennant_lot_factor": 0.5,
     "flag_pennant_sl_atr_mult": 1.5,
     "flag_pennant_tp1_atr_mult": 0.5,
-    "flag_pennant_tp2_atr_mult": 2.0
+    "flag_pennant_tp2_atr_mult": 2.0,
+
+    "trendline_bounce_lot_factor": 0.5,
+    "trendline_bounce_sl_atr_mult": 1.5,
+    "trendline_bounce_tp1_atr_mult": 0.5,
+    "trendline_bounce_tp2_atr_mult": 1.5,
+
+    "sr_flip_lot_factor": 0.5,
+    "sr_flip_sl_atr_mult": 1.5,
+    "sr_flip_tp1_atr_mult": 0.5,
+    "sr_flip_tp2_atr_mult": 1.5
   },
 
   "timing": {
@@ -465,6 +483,8 @@
     "gap_and_go_cooldown_seconds": 14400,
     "double_pattern_cooldown_seconds": 1200,
     "hs_cooldown_seconds": 1200,
-    "flag_pennant_cooldown_seconds": 1200
+    "flag_pennant_cooldown_seconds": 1200,
+    "trendline_bounce_cooldown_seconds": 1200,
+    "sr_flip_cooldown_seconds": 1200
   }
 }

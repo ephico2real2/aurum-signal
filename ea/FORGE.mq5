@@ -370,6 +370,12 @@ datetime g_inverse_head_and_shoulders_last_time = 0;  // wall time of last IH&S 
 // 2.7.42 — FLAG_PENNANT cooldown trackers (C-extended Tier 3)
 datetime g_flag_pennant_last_buy_time  = 0;
 datetime g_flag_pennant_last_sell_time = 0;
+// 2.7.42 — TRENDLINE_BOUNCE cooldown trackers (C-extended Tier 3)
+datetime g_trendline_bounce_last_buy_time  = 0;
+datetime g_trendline_bounce_last_sell_time = 0;
+// 2.7.42 — SR_FLIP cooldown trackers (C-extended Tier 3)
+datetime g_sr_flip_last_buy_time  = 0;
+datetime g_sr_flip_last_sell_time = 0;
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -673,6 +679,24 @@ struct ScalperConfig {
    double flag_pennant_tp1_atr_mult;
    double flag_pennant_tp2_atr_mult;
    int    flag_pennant_cooldown_seconds;
+   // 2.7.42 — TRENDLINE_BOUNCE setup (C-extended Tier 3 — final)
+   bool   trendline_bounce_enabled;
+   double trendline_touch_tolerance_atr;
+   double trendline_adx_min;
+   double trendline_bounce_lot_factor;
+   double trendline_bounce_sl_atr_mult;
+   double trendline_bounce_tp1_atr_mult;
+   double trendline_bounce_tp2_atr_mult;
+   int    trendline_bounce_cooldown_seconds;
+   // 2.7.42 — SR_FLIP setup (C-extended Tier 3 — final)
+   bool   sr_flip_enabled;
+   double sr_flip_tolerance_atr;
+   double sr_flip_adx_min;
+   double sr_flip_lot_factor;
+   double sr_flip_sl_atr_mult;
+   double sr_flip_tp1_atr_mult;
+   double sr_flip_tp2_atr_mult;
+   int    sr_flip_cooldown_seconds;
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3271,6 +3295,24 @@ void InitScalperConfig() {
    g_sc.flag_pennant_tp1_atr_mult           = 0.5;
    g_sc.flag_pennant_tp2_atr_mult           = 2.0;
    g_sc.flag_pennant_cooldown_seconds       = 1200;
+   // 2.7.42 — TRENDLINE_BOUNCE (Tier 3; default OFF)
+   g_sc.trendline_bounce_enabled            = false;
+   g_sc.trendline_touch_tolerance_atr       = 0.3;
+   g_sc.trendline_adx_min                   = 15.0;
+   g_sc.trendline_bounce_lot_factor         = 0.5;
+   g_sc.trendline_bounce_sl_atr_mult        = 1.5;
+   g_sc.trendline_bounce_tp1_atr_mult       = 0.5;
+   g_sc.trendline_bounce_tp2_atr_mult       = 1.5;
+   g_sc.trendline_bounce_cooldown_seconds   = 1200;
+   // 2.7.42 — SR_FLIP (Tier 3; default OFF)
+   g_sc.sr_flip_enabled                     = false;
+   g_sc.sr_flip_tolerance_atr               = 0.3;
+   g_sc.sr_flip_adx_min                     = 15.0;
+   g_sc.sr_flip_lot_factor                  = 0.5;
+   g_sc.sr_flip_sl_atr_mult                 = 1.5;
+   g_sc.sr_flip_tp1_atr_mult                = 0.5;
+   g_sc.sr_flip_tp2_atr_mult                = 1.5;
+   g_sc.sr_flip_cooldown_seconds            = 1200;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -4132,6 +4174,24 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "flag_pennant_tp1_atr_mult"))           { v=JsonGetDouble(content,"flag_pennant_tp1_atr_mult");           if(v>=0.1&&v<=5.0) g_sc.flag_pennant_tp1_atr_mult=v; }
    if(JsonHasKey(content, "flag_pennant_tp2_atr_mult"))           { v=JsonGetDouble(content,"flag_pennant_tp2_atr_mult");           if(v>=0.1&&v<=10.0) g_sc.flag_pennant_tp2_atr_mult=v; }
    if(JsonHasKey(content, "flag_pennant_cooldown_seconds"))       { v=JsonGetDouble(content,"flag_pennant_cooldown_seconds");       if(v>=0&&v<=7200) g_sc.flag_pennant_cooldown_seconds=(int)v; }
+   // 2.7.42 — TRENDLINE_BOUNCE (Tier 3)
+   if(JsonHasKey(content, "trendline_bounce_enabled"))            { v=JsonGetDouble(content,"trendline_bounce_enabled");            g_sc.trendline_bounce_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "trendline_touch_tolerance_atr"))       { v=JsonGetDouble(content,"trendline_touch_tolerance_atr");       if(v>=0.05&&v<=2.0) g_sc.trendline_touch_tolerance_atr=v; }
+   if(JsonHasKey(content, "trendline_adx_min"))                   { v=JsonGetDouble(content,"trendline_adx_min");                   if(v>=5.0&&v<=80.0) g_sc.trendline_adx_min=v; }
+   if(JsonHasKey(content, "trendline_bounce_lot_factor"))         { v=JsonGetDouble(content,"trendline_bounce_lot_factor");         if(v>=0.1&&v<=2.0) g_sc.trendline_bounce_lot_factor=v; }
+   if(JsonHasKey(content, "trendline_bounce_sl_atr_mult"))        { v=JsonGetDouble(content,"trendline_bounce_sl_atr_mult");        if(v>=0.5&&v<=5.0) g_sc.trendline_bounce_sl_atr_mult=v; }
+   if(JsonHasKey(content, "trendline_bounce_tp1_atr_mult"))       { v=JsonGetDouble(content,"trendline_bounce_tp1_atr_mult");       if(v>=0.1&&v<=5.0) g_sc.trendline_bounce_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "trendline_bounce_tp2_atr_mult"))       { v=JsonGetDouble(content,"trendline_bounce_tp2_atr_mult");       if(v>=0.1&&v<=10.0) g_sc.trendline_bounce_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "trendline_bounce_cooldown_seconds"))   { v=JsonGetDouble(content,"trendline_bounce_cooldown_seconds");   if(v>=0&&v<=7200) g_sc.trendline_bounce_cooldown_seconds=(int)v; }
+   // 2.7.42 — SR_FLIP (Tier 3)
+   if(JsonHasKey(content, "sr_flip_enabled"))                     { v=JsonGetDouble(content,"sr_flip_enabled");                     g_sc.sr_flip_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "sr_flip_tolerance_atr"))               { v=JsonGetDouble(content,"sr_flip_tolerance_atr");               if(v>=0.05&&v<=2.0) g_sc.sr_flip_tolerance_atr=v; }
+   if(JsonHasKey(content, "sr_flip_adx_min"))                     { v=JsonGetDouble(content,"sr_flip_adx_min");                     if(v>=5.0&&v<=80.0) g_sc.sr_flip_adx_min=v; }
+   if(JsonHasKey(content, "sr_flip_lot_factor"))                  { v=JsonGetDouble(content,"sr_flip_lot_factor");                  if(v>=0.1&&v<=2.0) g_sc.sr_flip_lot_factor=v; }
+   if(JsonHasKey(content, "sr_flip_sl_atr_mult"))                 { v=JsonGetDouble(content,"sr_flip_sl_atr_mult");                 if(v>=0.5&&v<=5.0) g_sc.sr_flip_sl_atr_mult=v; }
+   if(JsonHasKey(content, "sr_flip_tp1_atr_mult"))                { v=JsonGetDouble(content,"sr_flip_tp1_atr_mult");                if(v>=0.1&&v<=5.0) g_sc.sr_flip_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "sr_flip_tp2_atr_mult"))                { v=JsonGetDouble(content,"sr_flip_tp2_atr_mult");                if(v>=0.1&&v<=10.0) g_sc.sr_flip_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "sr_flip_cooldown_seconds"))            { v=JsonGetDouble(content,"sr_flip_cooldown_seconds");            if(v>=0&&v<=7200) g_sc.sr_flip_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -5560,6 +5620,91 @@ int DetectFlagPennantEvent(const double m5_atr) {
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    if(impulse > 0.0 && ask > cons_high) return 1;
    if(impulse < 0.0 && bid < cons_low)  return -1;
+   return 0;
+}
+
+// 2.7.42 — TRENDLINE_BOUNCE event detector (Tier 3). Returns 1 = BUY bounce off
+// rising trendline (uptrend support), -1 = SELL bounce off falling trendline
+// (downtrend resistance), 0 = no event. Fits a line through the last 2 same-
+// direction swings; fires when current price touches the line within tolerance
+// AND current bar shows directional rejection.
+int DetectTrendlineBounceEvent(const double m5_atr) {
+   if(!g_sc.trendline_bounce_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   double tol = g_sc.trendline_touch_tolerance_atr * m5_atr;
+   datetime now = TimeCurrent();
+   double c0 = iClose(_Symbol, PERIOD_M5, 0);
+   double o0 = iOpen (_Symbol, PERIOD_M5, 0);
+   if(c0 <= 0.0 || o0 <= 0.0) return 0;
+   // Uptrend line via 2 most-recent swing lows (rising lows = up support)
+   SwingPoint lows[2];
+   if(GetRecentSwings(-1, 2, lows) >= 2) {
+      double dt = (double)(lows[0].time - lows[1].time);
+      if(dt > 0.0) {
+         double slope = (lows[0].price - lows[1].price) / dt;
+         if(slope > 0.0) {
+            double line_now = lows[0].price + slope * (double)(now - lows[0].time);
+            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(MathAbs(bid - line_now) <= tol && c0 > o0) return 1;
+         }
+      }
+   }
+   // Downtrend line via 2 most-recent swing highs (falling highs = down resistance)
+   SwingPoint highs[2];
+   if(GetRecentSwings(1, 2, highs) >= 2) {
+      double dt = (double)(highs[0].time - highs[1].time);
+      if(dt > 0.0) {
+         double slope = (highs[0].price - highs[1].price) / dt;
+         if(slope < 0.0) {
+            double line_now = highs[0].price + slope * (double)(now - highs[0].time);
+            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            if(MathAbs(ask - line_now) <= tol && c0 < o0) return -1;
+         }
+      }
+   }
+   return 0;
+}
+
+// 2.7.42 — SR_FLIP event detector (Tier 3). Returns 1 = BUY (broken resistance
+// retests as support), -1 = SELL (broken support retests as resistance), 0 = no
+// event. Walks recent swings (5 each direction); for each, checks if a recent
+// close exceeded the level (break) and current price has returned within tolerance.
+// Fires on bar-direction rejection.
+int DetectSrFlipEvent(const double m5_atr) {
+   if(!g_sc.sr_flip_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   double tol = g_sc.sr_flip_tolerance_atr * m5_atr;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double c0 = iClose(_Symbol, PERIOD_M5, 0);
+   double o0 = iOpen (_Symbol, PERIOD_M5, 0);
+   if(c0 <= 0.0 || o0 <= 0.0) return 0;
+   // Broken resistance flipped to support: walk recent swing highs
+   SwingPoint highs[5];
+   int hc = GetRecentSwings(1, 5, highs);
+   for(int i = 0; i < hc; i++) {
+      double level = highs[i].price;
+      if(MathAbs(bid - level) > tol) continue;  // not at the level
+      bool was_broken_above = false;
+      for(int j = 1; j <= 10; j++) {
+         double c = iClose(_Symbol, PERIOD_M5, j);
+         if(c > level + tol) { was_broken_above = true; break; }
+      }
+      if(was_broken_above && c0 > o0) return 1;  // BUY: bouncing off ex-resistance as support
+   }
+   // Broken support flipped to resistance: walk recent swing lows
+   SwingPoint lows[5];
+   int lc = GetRecentSwings(-1, 5, lows);
+   for(int i = 0; i < lc; i++) {
+      double level = lows[i].price;
+      if(MathAbs(ask - level) > tol) continue;
+      bool was_broken_below = false;
+      for(int j = 1; j <= 10; j++) {
+         double c = iClose(_Symbol, PERIOD_M5, j);
+         if(c < level - tol) { was_broken_below = true; break; }
+      }
+      if(was_broken_below && c0 < o0) return -1;  // SELL: rejecting ex-support as resistance
+   }
    return 0;
 }
 
@@ -9231,11 +9376,11 @@ void CheckNativeScalperSetups() {
       }
    }
 
-   // 2.7.42 — Tier 3 swing-point maintenance. Update the ring buffer on each new M5 bar.
-   //   Runs when any Tier 3 swing-based setup is enabled (consumed by Double Top/Bottom,
-   //   H&S, Inverse H&S, and future Flag/Pennant/Trendline/SR-Flip).
+   // 2.7.42 — Tier 3 swing-point maintenance. Update the ring buffer on each new M5 bar
+   //   when any swing-consuming setup is enabled.
    if(g_sc.double_top_enabled || g_sc.double_bottom_enabled
-      || g_sc.head_and_shoulders_enabled || g_sc.inverse_head_and_shoulders_enabled) {
+      || g_sc.head_and_shoulders_enabled || g_sc.inverse_head_and_shoulders_enabled
+      || g_sc.trendline_bounce_enabled || g_sc.sr_flip_enabled) {
       UpdateSwingsOnNewBar();
    }
 
@@ -9402,6 +9547,86 @@ void CheckNativeScalperSetups() {
             }
             PrintFormat("FORGE 2.7.42: FLAG_PENNANT %s fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
                         fp_dir, (fp_event > 0 ? fp_ask : fp_bid), m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
+   // 2.7.42 — TRENDLINE_BOUNCE trigger (Tier 3 final).
+   if(direction == "" && g_sc.trendline_bounce_enabled && m5_atr > 0.0) {
+      int tb_event = DetectTrendlineBounceEvent(m5_atr);
+      if(tb_event != 0) {
+         string tb_dir = (tb_event > 0) ? "BUY" : "SELL";
+         bool tb_adx_ok = (m5_adx >= g_sc.trendline_adx_min);
+         datetime tb_last = (tb_event > 0) ? g_trendline_bounce_last_buy_time : g_trendline_bounce_last_sell_time;
+         datetime tb_now  = TimeCurrent();
+         bool tb_cool_ok = (g_sc.trendline_bounce_cooldown_seconds <= 0
+                            || tb_last == 0
+                            || (tb_now - tb_last) >= g_sc.trendline_bounce_cooldown_seconds
+                            || CooldownBypassActive(tb_dir, "TRENDLINE_BOUNCE", m5_adx));
+         if(!tb_adx_ok) {
+            JournalRecordSignal("SKIP","trendline_bounce_adx_below_min","TRENDLINE_BOUNCE",tb_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!tb_cool_ok) {
+            JournalRecordSignal("SKIP","trendline_bounce_cooldown","TRENDLINE_BOUNCE",tb_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = tb_dir;
+            setup_type = "TRENDLINE_BOUNCE";
+            double tb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double tb_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(tb_event > 0) {
+               sl  = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(tb_ask + m5_atr * g_sc.trendline_bounce_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(tb_ask + m5_atr * g_sc.trendline_bounce_tp2_atr_mult, _Digits);
+               g_trendline_bounce_last_buy_time = tb_now;
+            } else {
+               sl  = NormalizeDouble(tb_ask + m5_atr * g_sc.trendline_bounce_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_tp2_atr_mult, _Digits);
+               g_trendline_bounce_last_sell_time = tb_now;
+            }
+            PrintFormat("FORGE 2.7.42: TRENDLINE_BOUNCE %s fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
+                        tb_dir, (tb_event > 0 ? tb_ask : tb_bid), m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
+   // 2.7.42 — SR_FLIP trigger (Tier 3 final).
+   if(direction == "" && g_sc.sr_flip_enabled && m5_atr > 0.0) {
+      int sf_event = DetectSrFlipEvent(m5_atr);
+      if(sf_event != 0) {
+         string sf_dir = (sf_event > 0) ? "BUY" : "SELL";
+         bool sf_adx_ok = (m5_adx >= g_sc.sr_flip_adx_min);
+         datetime sf_last = (sf_event > 0) ? g_sr_flip_last_buy_time : g_sr_flip_last_sell_time;
+         datetime sf_now  = TimeCurrent();
+         bool sf_cool_ok = (g_sc.sr_flip_cooldown_seconds <= 0
+                            || sf_last == 0
+                            || (sf_now - sf_last) >= g_sc.sr_flip_cooldown_seconds
+                            || CooldownBypassActive(sf_dir, "SR_FLIP", m5_adx));
+         if(!sf_adx_ok) {
+            JournalRecordSignal("SKIP","sr_flip_adx_below_min","SR_FLIP",sf_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!sf_cool_ok) {
+            JournalRecordSignal("SKIP","sr_flip_cooldown","SR_FLIP",sf_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = sf_dir;
+            setup_type = "SR_FLIP";
+            double sf_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double sf_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(sf_event > 0) {
+               sl  = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(sf_ask + m5_atr * g_sc.sr_flip_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(sf_ask + m5_atr * g_sc.sr_flip_tp2_atr_mult, _Digits);
+               g_sr_flip_last_buy_time = sf_now;
+            } else {
+               sl  = NormalizeDouble(sf_ask + m5_atr * g_sc.sr_flip_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_tp2_atr_mult, _Digits);
+               g_sr_flip_last_sell_time = sf_now;
+            }
+            PrintFormat("FORGE 2.7.42: SR_FLIP %s fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
+                        sf_dir, (sf_event > 0 ? sf_ask : sf_bid), m5_adx, h1_trend_strength);
          }
       }
    }
@@ -9800,6 +10025,16 @@ void CheckNativeScalperSetups() {
                                  && g_sc.flag_pennant_lot_factor > 0.0
                                  && g_sc.flag_pennant_lot_factor < 1.0)
                                  ? g_sc.flag_pennant_lot_factor : 1.0;
+   // 2.7.42 — TRENDLINE_BOUNCE lot factor (Tier 3 final)
+   double trendline_bounce_factor = (setup_type == "TRENDLINE_BOUNCE"
+                                     && g_sc.trendline_bounce_lot_factor > 0.0
+                                     && g_sc.trendline_bounce_lot_factor < 1.0)
+                                     ? g_sc.trendline_bounce_lot_factor : 1.0;
+   // 2.7.42 — SR_FLIP lot factor (Tier 3 final)
+   double sr_flip_factor = (setup_type == "SR_FLIP"
+                            && g_sc.sr_flip_lot_factor > 0.0
+                            && g_sc.sr_flip_lot_factor < 1.0)
+                            ? g_sc.sr_flip_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -9809,7 +10044,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the

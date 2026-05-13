@@ -702,3 +702,39 @@ def test_flag_pennant_setup_wired(ea_src, cfg):
     assert "flag_pennant_factor" in ea_src
     for gate in ("flag_pennant_adx_below_min", "flag_pennant_cooldown"):
         assert f'"{gate}"' in ea_src
+
+
+def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg):
+    """v2.7.42 C-extended Tier 3 FINAL — TRENDLINE_BOUNCE + SR_FLIP."""
+    for sym in ("DetectTrendlineBounceEvent", "DetectSrFlipEvent"):
+        assert sym in ea_src, f"{sym} missing"
+    assert 'setup_type = "TRENDLINE_BOUNCE"' in ea_src
+    assert 'setup_type = "SR_FLIP"' in ea_src
+    for key in (
+        ("setup", "trendline_bounce_enabled"),
+        ("atom", "trendline_touch_tolerance_atr"),
+        ("atom", "trendline_adx_min"),
+        ("geometry", "trendline_bounce_lot_factor"),
+        ("geometry", "trendline_bounce_sl_atr_mult"),
+        ("geometry", "trendline_bounce_tp1_atr_mult"),
+        ("geometry", "trendline_bounce_tp2_atr_mult"),
+        ("timing", "trendline_bounce_cooldown_seconds"),
+        ("setup", "sr_flip_enabled"),
+        ("atom", "sr_flip_tolerance_atr"),
+        ("atom", "sr_flip_adx_min"),
+        ("geometry", "sr_flip_lot_factor"),
+        ("geometry", "sr_flip_sl_atr_mult"),
+        ("geometry", "sr_flip_tp1_atr_mult"),
+        ("geometry", "sr_flip_tp2_atr_mult"),
+        ("timing", "sr_flip_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg
+        assert name in cfg[section]
+    assert cfg["setup"]["trendline_bounce_enabled"] == 0
+    assert cfg["setup"]["sr_flip_enabled"] == 0
+    assert "trendline_bounce_factor" in ea_src
+    assert "sr_flip_factor" in ea_src
+    for gate in ("trendline_bounce_adx_below_min", "trendline_bounce_cooldown",
+                 "sr_flip_adx_below_min", "sr_flip_cooldown"):
+        assert f'"{gate}"' in ea_src

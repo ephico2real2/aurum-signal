@@ -455,6 +455,26 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_FLAG_PENNANT_TP1_ATR_MULT":       ("geometry", "flag_pennant_tp1_atr_mult",          "float",  0.1, 5.0),
     "FORGE_GEOMETRY_FLAG_PENNANT_TP2_ATR_MULT":       ("geometry", "flag_pennant_tp2_atr_mult",          "float",  0.1, 10.0),
     "FORGE_TIMING_FLAG_PENNANT_COOLDOWN_SECONDS":     ("timing",   "flag_pennant_cooldown_seconds",      "int",    0.0, 7200.0),
+
+    # ── Trendline Bounce (Tier 3 — diagonal trendline through 2 same-direction swings) ──
+    "FORGE_SETUP_TRENDLINE_BOUNCE_ENABLED":           ("setup",    "trendline_bounce_enabled",           "bool01", None, None),
+    "FORGE_ATOM_TRENDLINE_TOUCH_TOLERANCE_ATR":       ("atom",     "trendline_touch_tolerance_atr",      "float",  0.05, 2.0),
+    "FORGE_ATOM_TRENDLINE_ADX_MIN":                   ("atom",     "trendline_adx_min",                  "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_TRENDLINE_BOUNCE_LOT_FACTOR":     ("geometry", "trendline_bounce_lot_factor",        "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_TRENDLINE_BOUNCE_SL_ATR_MULT":    ("geometry", "trendline_bounce_sl_atr_mult",       "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_TRENDLINE_BOUNCE_TP1_ATR_MULT":   ("geometry", "trendline_bounce_tp1_atr_mult",      "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_TRENDLINE_BOUNCE_TP2_ATR_MULT":   ("geometry", "trendline_bounce_tp2_atr_mult",      "float",  0.1, 10.0),
+    "FORGE_TIMING_TRENDLINE_BOUNCE_COOLDOWN_SECONDS": ("timing",   "trendline_bounce_cooldown_seconds",  "int",    0.0, 7200.0),
+
+    # ── S/R Flip (Tier 3 — broken level retests as opposite role) ──
+    "FORGE_SETUP_SR_FLIP_ENABLED":                    ("setup",    "sr_flip_enabled",                    "bool01", None, None),
+    "FORGE_ATOM_SR_FLIP_TOLERANCE_ATR":               ("atom",     "sr_flip_tolerance_atr",              "float",  0.05, 2.0),
+    "FORGE_ATOM_SR_FLIP_ADX_MIN":                     ("atom",     "sr_flip_adx_min",                    "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_SR_FLIP_LOT_FACTOR":              ("geometry", "sr_flip_lot_factor",                 "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_SR_FLIP_SL_ATR_MULT":             ("geometry", "sr_flip_sl_atr_mult",                "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_SR_FLIP_TP1_ATR_MULT":            ("geometry", "sr_flip_tp1_atr_mult",               "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_SR_FLIP_TP2_ATR_MULT":            ("geometry", "sr_flip_tp2_atr_mult",               "float",  0.1, 10.0),
+    "FORGE_TIMING_SR_FLIP_COOLDOWN_SECONDS":          ("timing",   "sr_flip_cooldown_seconds",           "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.
