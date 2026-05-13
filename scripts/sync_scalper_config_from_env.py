@@ -442,6 +442,19 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_HS_TP1_ATR_MULT":                 ("geometry", "hs_tp1_atr_mult",                    "float",  0.1, 5.0),
     "FORGE_GEOMETRY_HS_TP2_ATR_MULT":                 ("geometry", "hs_tp2_atr_mult",                    "float",  0.1, 10.0),
     "FORGE_TIMING_HS_COOLDOWN_SECONDS":               ("timing",   "hs_cooldown_seconds",                "int",    0.0, 7200.0),
+
+    # ── Flag/Pennant (Tier 3 — impulse + consolidation + breakout, stateless) ──
+    "FORGE_SETUP_FLAG_PENNANT_ENABLED":               ("setup",    "flag_pennant_enabled",               "bool01", None, None),
+    "FORGE_ATOM_FLAG_PENNANT_IMPULSE_LOOKBACK_BARS":  ("atom",     "flag_pennant_impulse_lookback_bars", "int",    3.0, 30.0),
+    "FORGE_ATOM_FLAG_PENNANT_IMPULSE_MIN_ATR":        ("atom",     "flag_pennant_impulse_min_atr",       "float",  0.5, 10.0),
+    "FORGE_ATOM_FLAG_PENNANT_CONSOLIDATION_BARS":     ("atom",     "flag_pennant_consolidation_bars",    "int",    2.0, 20.0),
+    "FORGE_ATOM_FLAG_PENNANT_CONSOLIDATION_MAX_ATR":  ("atom",     "flag_pennant_consolidation_max_atr", "float",  0.1, 5.0),
+    "FORGE_ATOM_FLAG_PENNANT_ADX_MIN":                ("atom",     "flag_pennant_adx_min",               "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_FLAG_PENNANT_LOT_FACTOR":         ("geometry", "flag_pennant_lot_factor",            "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_FLAG_PENNANT_SL_ATR_MULT":        ("geometry", "flag_pennant_sl_atr_mult",           "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_FLAG_PENNANT_TP1_ATR_MULT":       ("geometry", "flag_pennant_tp1_atr_mult",          "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_FLAG_PENNANT_TP2_ATR_MULT":       ("geometry", "flag_pennant_tp2_atr_mult",          "float",  0.1, 10.0),
+    "FORGE_TIMING_FLAG_PENNANT_COOLDOWN_SECONDS":     ("timing",   "flag_pennant_cooldown_seconds",      "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.

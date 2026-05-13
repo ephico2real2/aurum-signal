@@ -346,7 +346,8 @@
     "double_top_enabled": 0,
     "double_bottom_enabled": 0,
     "head_and_shoulders_enabled": 0,
-    "inverse_head_and_shoulders_enabled": 0
+    "inverse_head_and_shoulders_enabled": 0,
+    "flag_pennant_enabled": 0
   },
 
   "atom": {
@@ -389,7 +390,13 @@
 
     "hs_shoulder_tolerance_atr": 0.3,
     "hs_head_prominence_atr": 0.8,
-    "hs_adx_min": 15.0
+    "hs_adx_min": 15.0,
+
+    "flag_pennant_impulse_lookback_bars": 10,
+    "flag_pennant_impulse_min_atr": 2.0,
+    "flag_pennant_consolidation_bars": 5,
+    "flag_pennant_consolidation_max_atr": 0.8,
+    "flag_pennant_adx_min": 15.0
   },
 
   "geometry": {
@@ -438,7 +445,12 @@
     "hs_lot_factor": 0.5,
     "hs_sl_atr_mult": 1.5,
     "hs_tp1_atr_mult": 0.5,
-    "hs_tp2_atr_mult": 1.5
+    "hs_tp2_atr_mult": 1.5,
+
+    "flag_pennant_lot_factor": 0.5,
+    "flag_pennant_sl_atr_mult": 1.5,
+    "flag_pennant_tp1_atr_mult": 0.5,
+    "flag_pennant_tp2_atr_mult": 2.0
   },
 
   "timing": {
@@ -452,6 +464,7 @@
     "orb_cooldown_seconds": 1800,
     "gap_and_go_cooldown_seconds": 14400,
     "double_pattern_cooldown_seconds": 1200,
-    "hs_cooldown_seconds": 1200
+    "hs_cooldown_seconds": 1200,
+    "flag_pennant_cooldown_seconds": 1200
   }
 }

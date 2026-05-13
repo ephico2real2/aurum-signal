@@ -676,3 +676,29 @@ def test_head_and_shoulders_setups_wired(ea_src, cfg):
     for gate in ("head_and_shoulders_adx_below_min", "head_and_shoulders_cooldown",
                  "inverse_head_and_shoulders_adx_below_min", "inverse_head_and_shoulders_cooldown"):
         assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+
+
+def test_flag_pennant_setup_wired(ea_src, cfg):
+    """v2.7.42 C-extended Tier 3 — FLAG_PENNANT (impulse + consolidation + breakout)."""
+    assert 'setup_type = "FLAG_PENNANT"' in ea_src
+    assert "DetectFlagPennantEvent" in ea_src
+    for key in (
+        ("setup", "flag_pennant_enabled"),
+        ("atom", "flag_pennant_impulse_lookback_bars"),
+        ("atom", "flag_pennant_impulse_min_atr"),
+        ("atom", "flag_pennant_consolidation_bars"),
+        ("atom", "flag_pennant_consolidation_max_atr"),
+        ("atom", "flag_pennant_adx_min"),
+        ("geometry", "flag_pennant_lot_factor"),
+        ("geometry", "flag_pennant_sl_atr_mult"),
+        ("geometry", "flag_pennant_tp1_atr_mult"),
+        ("geometry", "flag_pennant_tp2_atr_mult"),
+        ("timing", "flag_pennant_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg
+        assert name in cfg[section]
+    assert cfg["setup"]["flag_pennant_enabled"] == 0
+    assert "flag_pennant_factor" in ea_src
+    for gate in ("flag_pennant_adx_below_min", "flag_pennant_cooldown"):
+        assert f'"{gate}"' in ea_src

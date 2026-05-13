@@ -445,5 +445,15 @@
     "label": "Inverse Head & Shoulders — cooldown active",
     "explanation": "v2.7.42 INVERSE_HEAD_AND_SHOULDERS fired within timing.hs_cooldown_seconds of prior entry.",
     "category": "Cooldowns"
+  },
+  "flag_pennant_adx_below_min": {
+    "label": "Flag/Pennant — M5 ADX below floor",
+    "explanation": "v2.7.42 FLAG_PENNANT pattern matched (impulse + consolidation + breakout) but m5_adx is below atom.flag_pennant_adx_min (default 15).",
+    "category": "Setup gates"
+  },
+  "flag_pennant_cooldown": {
+    "label": "Flag/Pennant — cooldown active",
+    "explanation": "v2.7.42 FLAG_PENNANT fired within timing.flag_pennant_cooldown_seconds (default 1200) of prior entry.",
+    "category": "Cooldowns"
   }
 }

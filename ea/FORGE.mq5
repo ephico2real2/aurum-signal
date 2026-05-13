@@ -367,6 +367,9 @@ datetime g_double_bottom_last_time  = 0;  // wall time of last DOUBLE_BOTTOM ent
 // 2.7.42 — HEAD_AND_SHOULDERS / INVERSE_H&S cooldown trackers (C-extended Tier 3)
 datetime g_head_and_shoulders_last_time         = 0;  // wall time of last H&S entry (SELL-only)
 datetime g_inverse_head_and_shoulders_last_time = 0;  // wall time of last IH&S entry (BUY-only)
+// 2.7.42 — FLAG_PENNANT cooldown trackers (C-extended Tier 3)
+datetime g_flag_pennant_last_buy_time  = 0;
+datetime g_flag_pennant_last_sell_time = 0;
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -657,6 +660,19 @@ struct ScalperConfig {
    double hs_tp1_atr_mult;
    double hs_tp2_atr_mult;
    int    hs_cooldown_seconds;
+   // 2.7.42 — FLAG_PENNANT setup (C-extended Tier 3). Impulse + consolidation +
+   //   breakout. Stateless detector — reads M5 OHLC on demand.
+   bool   flag_pennant_enabled;
+   int    flag_pennant_impulse_lookback_bars;  // bars to scan for impulse (default 10)
+   double flag_pennant_impulse_min_atr;        // impulse magnitude in ATR (default 2.0)
+   int    flag_pennant_consolidation_bars;     // bars to scan for consolidation (default 5)
+   double flag_pennant_consolidation_max_atr;  // consolidation range max (default 0.8)
+   double flag_pennant_adx_min;
+   double flag_pennant_lot_factor;
+   double flag_pennant_sl_atr_mult;
+   double flag_pennant_tp1_atr_mult;
+   double flag_pennant_tp2_atr_mult;
+   int    flag_pennant_cooldown_seconds;
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3243,6 +3259,18 @@ void InitScalperConfig() {
    g_sc.hs_tp1_atr_mult                     = 0.5;
    g_sc.hs_tp2_atr_mult                     = 1.5;
    g_sc.hs_cooldown_seconds                 = 1200;
+   // 2.7.42 — FLAG_PENNANT (Tier 3; default OFF)
+   g_sc.flag_pennant_enabled                = false;
+   g_sc.flag_pennant_impulse_lookback_bars  = 10;
+   g_sc.flag_pennant_impulse_min_atr        = 2.0;
+   g_sc.flag_pennant_consolidation_bars     = 5;
+   g_sc.flag_pennant_consolidation_max_atr  = 0.8;
+   g_sc.flag_pennant_adx_min                = 15.0;
+   g_sc.flag_pennant_lot_factor             = 0.5;
+   g_sc.flag_pennant_sl_atr_mult            = 1.5;
+   g_sc.flag_pennant_tp1_atr_mult           = 0.5;
+   g_sc.flag_pennant_tp2_atr_mult           = 2.0;
+   g_sc.flag_pennant_cooldown_seconds       = 1200;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -4092,6 +4120,18 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "hs_tp1_atr_mult"))                     { v=JsonGetDouble(content,"hs_tp1_atr_mult");                     if(v>=0.1&&v<=5.0) g_sc.hs_tp1_atr_mult=v; }
    if(JsonHasKey(content, "hs_tp2_atr_mult"))                     { v=JsonGetDouble(content,"hs_tp2_atr_mult");                     if(v>=0.1&&v<=10.0) g_sc.hs_tp2_atr_mult=v; }
    if(JsonHasKey(content, "hs_cooldown_seconds"))                 { v=JsonGetDouble(content,"hs_cooldown_seconds");                 if(v>=0&&v<=7200) g_sc.hs_cooldown_seconds=(int)v; }
+   // 2.7.42 — FLAG_PENNANT (Tier 3)
+   if(JsonHasKey(content, "flag_pennant_enabled"))                { v=JsonGetDouble(content,"flag_pennant_enabled");                g_sc.flag_pennant_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "flag_pennant_impulse_lookback_bars"))  { v=JsonGetDouble(content,"flag_pennant_impulse_lookback_bars");  if(v>=3&&v<=30) g_sc.flag_pennant_impulse_lookback_bars=(int)v; }
+   if(JsonHasKey(content, "flag_pennant_impulse_min_atr"))        { v=JsonGetDouble(content,"flag_pennant_impulse_min_atr");        if(v>=0.5&&v<=10.0) g_sc.flag_pennant_impulse_min_atr=v; }
+   if(JsonHasKey(content, "flag_pennant_consolidation_bars"))     { v=JsonGetDouble(content,"flag_pennant_consolidation_bars");     if(v>=2&&v<=20) g_sc.flag_pennant_consolidation_bars=(int)v; }
+   if(JsonHasKey(content, "flag_pennant_consolidation_max_atr"))  { v=JsonGetDouble(content,"flag_pennant_consolidation_max_atr");  if(v>=0.1&&v<=5.0) g_sc.flag_pennant_consolidation_max_atr=v; }
+   if(JsonHasKey(content, "flag_pennant_adx_min"))                { v=JsonGetDouble(content,"flag_pennant_adx_min");                if(v>=5.0&&v<=80.0) g_sc.flag_pennant_adx_min=v; }
+   if(JsonHasKey(content, "flag_pennant_lot_factor"))             { v=JsonGetDouble(content,"flag_pennant_lot_factor");             if(v>=0.1&&v<=2.0) g_sc.flag_pennant_lot_factor=v; }
+   if(JsonHasKey(content, "flag_pennant_sl_atr_mult"))            { v=JsonGetDouble(content,"flag_pennant_sl_atr_mult");            if(v>=0.5&&v<=5.0) g_sc.flag_pennant_sl_atr_mult=v; }
+   if(JsonHasKey(content, "flag_pennant_tp1_atr_mult"))           { v=JsonGetDouble(content,"flag_pennant_tp1_atr_mult");           if(v>=0.1&&v<=5.0) g_sc.flag_pennant_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "flag_pennant_tp2_atr_mult"))           { v=JsonGetDouble(content,"flag_pennant_tp2_atr_mult");           if(v>=0.1&&v<=10.0) g_sc.flag_pennant_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "flag_pennant_cooldown_seconds"))       { v=JsonGetDouble(content,"flag_pennant_cooldown_seconds");       if(v>=0&&v<=7200) g_sc.flag_pennant_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -5477,6 +5517,50 @@ int DetectInverseHeadAndShouldersEvent(const double m5_atr) {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    if(ask <= neckline) return 0;
    return 1;
+}
+
+// 2.7.42 — FLAG_PENNANT event detector (Tier 3). Returns 1 = BUY (bullish flag
+// breakout), -1 = SELL (bearish flag breakout), 0 = no event. Stateless.
+//
+// Detection: scan last impulse_lookback_bars (shifts consol_bars+1 .. consol_bars+impulse_bars)
+// for a directional close-to-close move ≥ impulse_min_atr × ATR. Then check that
+// the consolidation_bars most recent (shifts 1..consol_bars) have total range ≤
+// consolidation_max_atr × ATR. Fire when current price breaks consolidation high
+// (if impulse was up) or low (if impulse was down).
+int DetectFlagPennantEvent(const double m5_atr) {
+   if(!g_sc.flag_pennant_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   int imp_bars = g_sc.flag_pennant_impulse_lookback_bars;
+   int cons_bars = g_sc.flag_pennant_consolidation_bars;
+   if(imp_bars < 3 || cons_bars < 2) return 0;
+   // Consolidation range (shifts 1..cons_bars)
+   double cons_high = 0.0;
+   double cons_low  = 1e10;
+   for(int i = 1; i <= cons_bars; i++) {
+      double h = iHigh(_Symbol, PERIOD_M5, i);
+      double l = iLow (_Symbol, PERIOD_M5, i);
+      if(h <= 0.0 || l <= 0.0) return 0;
+      if(h > cons_high) cons_high = h;
+      if(l < cons_low)  cons_low  = l;
+   }
+   if(cons_high <= 0.0 || cons_low >= 1e10) return 0;
+   double cons_range = cons_high - cons_low;
+   if(cons_range <= 0.0) return 0;
+   if(cons_range > g_sc.flag_pennant_consolidation_max_atr * m5_atr) return 0;
+   // Impulse: close at end of impulse window vs close at start
+   int imp_start_shift = cons_bars + imp_bars;
+   int imp_end_shift   = cons_bars + 1;
+   double imp_start_close = iClose(_Symbol, PERIOD_M5, imp_start_shift);
+   double imp_end_close   = iClose(_Symbol, PERIOD_M5, imp_end_shift);
+   if(imp_start_close <= 0.0 || imp_end_close <= 0.0) return 0;
+   double impulse = imp_end_close - imp_start_close;
+   if(MathAbs(impulse) < g_sc.flag_pennant_impulse_min_atr * m5_atr) return 0;
+   // Breakout in impulse direction
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(impulse > 0.0 && ask > cons_high) return 1;
+   if(impulse < 0.0 && bid < cons_low)  return -1;
+   return 0;
 }
 
 // #4 BULL_DAY_DIP_BUY_V3 — 16-atom dip-buy on choppy bull days
@@ -9282,6 +9366,46 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — FLAG_PENNANT trigger (Tier 3). Impulse + consolidation + breakout.
+   if(direction == "" && g_sc.flag_pennant_enabled && m5_atr > 0.0) {
+      int fp_event = DetectFlagPennantEvent(m5_atr);
+      if(fp_event != 0) {
+         string fp_dir = (fp_event > 0) ? "BUY" : "SELL";
+         bool fp_adx_ok = (m5_adx >= g_sc.flag_pennant_adx_min);
+         datetime fp_last = (fp_event > 0) ? g_flag_pennant_last_buy_time : g_flag_pennant_last_sell_time;
+         datetime fp_now  = TimeCurrent();
+         bool fp_cool_ok = (g_sc.flag_pennant_cooldown_seconds <= 0
+                            || fp_last == 0
+                            || (fp_now - fp_last) >= g_sc.flag_pennant_cooldown_seconds
+                            || CooldownBypassActive(fp_dir, "FLAG_PENNANT", m5_adx));
+         if(!fp_adx_ok) {
+            JournalRecordSignal("SKIP","flag_pennant_adx_below_min","FLAG_PENNANT",fp_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!fp_cool_ok) {
+            JournalRecordSignal("SKIP","flag_pennant_cooldown","FLAG_PENNANT",fp_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = fp_dir;
+            setup_type = "FLAG_PENNANT";
+            double fp_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double fp_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(fp_event > 0) {
+               sl  = NormalizeDouble(fp_bid - m5_atr * g_sc.flag_pennant_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(fp_ask + m5_atr * g_sc.flag_pennant_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(fp_ask + m5_atr * g_sc.flag_pennant_tp2_atr_mult, _Digits);
+               g_flag_pennant_last_buy_time = fp_now;
+            } else {
+               sl  = NormalizeDouble(fp_ask + m5_atr * g_sc.flag_pennant_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(fp_bid - m5_atr * g_sc.flag_pennant_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(fp_bid - m5_atr * g_sc.flag_pennant_tp2_atr_mult, _Digits);
+               g_flag_pennant_last_sell_time = fp_now;
+            }
+            PrintFormat("FORGE 2.7.42: FLAG_PENNANT %s fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
+                        fp_dir, (fp_event > 0 ? fp_ask : fp_bid), m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -9671,6 +9795,11 @@ void CheckNativeScalperSetups() {
                        && g_sc.hs_lot_factor > 0.0
                        && g_sc.hs_lot_factor < 1.0)
                        ? g_sc.hs_lot_factor : 1.0;
+   // 2.7.42 — FLAG_PENNANT lot factor (Tier 3)
+   double flag_pennant_factor = (setup_type == "FLAG_PENNANT"
+                                 && g_sc.flag_pennant_lot_factor > 0.0
+                                 && g_sc.flag_pennant_lot_factor < 1.0)
+                                 ? g_sc.flag_pennant_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -9680,7 +9809,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
