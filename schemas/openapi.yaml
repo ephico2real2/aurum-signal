@@ -837,6 +837,18 @@ paths:
                 summary: "17 · Latest MT5 deals mirrored from FORGE journal TRADES"
                 value:
                   sql: "SELECT id, journal_source, run_id, deal_ticket, magic, profit, comment, time FROM forge_journal_trades ORDER BY id DESC LIMIT 40"
+              forge_signals_by_killzone:
+                summary: "18 · FORGE signals grouped by ICT killzone (TAKEN vs SKIP)"
+                value:
+                  sql: "SELECT COALESCE(NULLIF(killzone,''),'(none)') AS kz, outcome, COUNT(*) AS n FROM forge_signals GROUP BY 1, outcome ORDER BY kz, outcome"
+              forge_signals_killzone_session_matrix:
+                summary: "19 · Cross-tab of killzone × session for TAKEN entries (sanity-check anchor alignment)"
+                value:
+                  sql: "SELECT COALESCE(NULLIF(killzone,''),'(none)') AS kz, session, COUNT(*) AS n FROM forge_signals WHERE outcome = 'TAKEN' GROUP BY 1, 2 ORDER BY kz, session"
+              system_events_killzone_changes:
+                summary: "20 · BRIDGE KILLZONE_CHANGE audit trail (transition timestamps + prev→new notes)"
+                value:
+                  sql: "SELECT id, timestamp, triggered_by, session, notes FROM system_events WHERE event_type = 'KILLZONE_CHANGE' ORDER BY id DESC LIMIT 50"
             # --END_SCRIBE_OPENAPI_EXAMPLES--
       responses:
         "200":
