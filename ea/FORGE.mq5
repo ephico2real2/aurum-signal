@@ -1141,6 +1141,14 @@ bool Filter_Cooldown(const string setup_type, const string setup_lower, const st
 int Score_SetupConfidence(const int direction_sign, const double m5_adx, const double adx_floor,
                          const double h1_trend_strength, const double h1_strong_threshold);
 double Risk_ApproveLot(const double base_lot, const double combined_lot_factor_product);
+// Generalized TF-parameterized atoms (HTF/MTF/LTF aware per §4.6)
+bool Tf_IsHtf(const ENUM_TIMEFRAMES tf);
+bool Tf_IsMtf(const ENUM_TIMEFRAMES tf);
+bool Tf_IsLtf(const ENUM_TIMEFRAMES tf);
+bool Atom_AdxAbove(const ENUM_TIMEFRAMES tf, const double threshold);
+bool Atom_RsiInRange(const ENUM_TIMEFRAMES tf, const double lo, const double hi);
+bool Atom_AtrPositive(const ENUM_TIMEFRAMES tf);
+bool Atom_TrendAligned(const ENUM_TIMEFRAMES tf, const int direction, const bool strict);
 
 struct EntryLeg {
    string order_type;      // AUTO | BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP | BUY_STOP_LIMIT | SELL_STOP_LIMIT
@@ -11111,6 +11119,114 @@ bool Atom_M5AtrPositive(const double m5_atr) {
 // Atom: is M5 RSI in the range [lo, hi]?
 bool Atom_M5RsiInRange(const double m5_rsi, const double lo, const double hi) {
    return m5_rsi >= lo && m5_rsi <= hi;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Generalized TF-parameterized atoms (HTF/MTF/LTF aware per FORGE_NAMING_CONVENTIONS.md §4.6).
+// Accept ENUM_TIMEFRAMES and dispatch to the right indicator handle. Use these
+// when a setup needs to alternate between TFs (e.g. compare M5 vs H4 atom),
+// or when adding a new setup that wants an atom at a non-M5 timeframe (e.g.
+// H4 trend alignment for a swing-based reversal, M30 ADX for a slower scalp).
+//
+// HTF/MTF/LTF scope categories per §4.6:
+//   HTF = H1 + H4 + D1   (Higher Time Frame — context/regime)
+//   MTF = M15 + M30      (Middle Time Frame — confirmation)
+//   LTF = M1 + M5        (Lower Time Frame — execution)
+//
+// The specific-TF helpers above (Atom_M5AdxAbove, Atom_M15TrendAligned, etc.) take
+// pre-computed indicator values (cheaper at the call site when the value is
+// already in scope). The generalized helpers below read from handles on every
+// call (one CopyBuffer per atom). Pick the right pattern for your call site.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Scope validators — return true if the TF belongs to the named category per §4.6.
+bool Tf_IsHtf(const ENUM_TIMEFRAMES tf) {
+   return tf == PERIOD_H1 || tf == PERIOD_H4 || tf == PERIOD_D1;
+}
+bool Tf_IsMtf(const ENUM_TIMEFRAMES tf) {
+   return tf == PERIOD_M15 || tf == PERIOD_M30;
+}
+bool Tf_IsLtf(const ENUM_TIMEFRAMES tf) {
+   return tf == PERIOD_M1 || tf == PERIOD_M5;
+}
+
+// Internal: resolve indicator handle for a given TF. Returns INVALID_HANDLE
+// when the TF is unmapped (e.g., RSI on M1 — FORGE doesn't track that today).
+int _AdxHandleForTf(const ENUM_TIMEFRAMES tf) {
+   if(tf == PERIOD_M5)  return g_mtf[0].h_adx;
+   if(tf == PERIOD_M15) return g_mtf[1].h_adx;
+   if(tf == PERIOD_M30) return g_mtf[2].h_adx;
+   if(tf == PERIOD_H1)  return g_h_adx;
+   if(tf == PERIOD_H4)  return g_h4_adx;
+   return INVALID_HANDLE;
+}
+int _RsiHandleForTf(const ENUM_TIMEFRAMES tf) {
+   if(tf == PERIOD_M5)  return g_mtf[0].h_rsi;
+   if(tf == PERIOD_M15) return g_mtf[1].h_rsi;
+   if(tf == PERIOD_M30) return g_mtf[2].h_rsi;
+   if(tf == PERIOD_H1)  return g_h_rsi;
+   if(tf == PERIOD_H4)  return g_h4_rsi;
+   return INVALID_HANDLE;
+}
+int _AtrHandleForTf(const ENUM_TIMEFRAMES tf) {
+   if(tf == PERIOD_M1)  return g_m1_atr;
+   if(tf == PERIOD_M5)  return g_mtf[0].h_atr;
+   if(tf == PERIOD_M15) return g_mtf[1].h_atr;
+   if(tf == PERIOD_M30) return g_mtf[2].h_atr;
+   if(tf == PERIOD_H1)  return g_h_atr;
+   if(tf == PERIOD_H4)  return g_h4_atr;
+   return INVALID_HANDLE;
+}
+bool _EmaHandlesForTf(const ENUM_TIMEFRAMES tf, int &ma20_out, int &ma50_out) {
+   if(tf == PERIOD_M1)  { ma20_out = g_m1_ma20;     ma50_out = g_m1_ma50;     return true; }
+   if(tf == PERIOD_M5)  { ma20_out = g_mtf[0].h_ma20; ma50_out = g_mtf[0].h_ma50; return true; }
+   if(tf == PERIOD_M15) { ma20_out = g_mtf[1].h_ma20; ma50_out = g_mtf[1].h_ma50; return true; }
+   if(tf == PERIOD_M30) { ma20_out = g_mtf[2].h_ma20; ma50_out = g_mtf[2].h_ma50; return true; }
+   if(tf == PERIOD_H1)  { ma20_out = g_h_ma20;      ma50_out = g_h_ma50;      return true; }
+   if(tf == PERIOD_H4)  { ma20_out = g_h4_ma20;     ma50_out = g_h4_ma50;     return true; }
+   ma20_out = INVALID_HANDLE; ma50_out = INVALID_HANDLE;
+   return false;
+}
+
+// Atom (generalized): is ADX on the given TF at or above threshold?
+bool Atom_AdxAbove(const ENUM_TIMEFRAMES tf, const double threshold) {
+   int handle = _AdxHandleForTf(tf);
+   if(handle == INVALID_HANDLE) return false;
+   double buf[1];
+   if(CopyBuffer(handle, 0, 0, 1, buf) != 1) return false;
+   return buf[0] >= threshold;
+}
+
+// Atom (generalized): is RSI on the given TF in [lo, hi]?
+bool Atom_RsiInRange(const ENUM_TIMEFRAMES tf, const double lo, const double hi) {
+   int handle = _RsiHandleForTf(tf);
+   if(handle == INVALID_HANDLE) return false;
+   double buf[1];
+   if(CopyBuffer(handle, 0, 0, 1, buf) != 1) return false;
+   return buf[0] >= lo && buf[0] <= hi;
+}
+
+// Atom (generalized): is ATR on the given TF > 0?
+bool Atom_AtrPositive(const ENUM_TIMEFRAMES tf) {
+   int handle = _AtrHandleForTf(tf);
+   if(handle == INVALID_HANDLE) return false;
+   double buf[1];
+   if(CopyBuffer(handle, 0, 0, 1, buf) != 1) return false;
+   return buf[0] > 0.0;
+}
+
+// Atom (generalized): is EMA20 vs EMA50 sign on the given TF aligned with direction?
+// direction: +1 = BUY, -1 = SELL. strict=true rejects flat (diff==0).
+bool Atom_TrendAligned(const ENUM_TIMEFRAMES tf, const int direction, const bool strict = false) {
+   int ma20, ma50;
+   if(!_EmaHandlesForTf(tf, ma20, ma50)) return false;
+   if(ma20 == INVALID_HANDLE || ma50 == INVALID_HANDLE) return false;
+   double e20[1], e50[1];
+   if(CopyBuffer(ma20, 0, 1, 1, e20) != 1) return false;
+   if(CopyBuffer(ma50, 0, 1, 1, e50) != 1) return false;
+   double diff = e20[0] - e50[0];
+   if(direction > 0) return strict ? (diff > 0.0) : (diff >= 0.0);
+   return strict ? (diff < 0.0) : (diff <= 0.0);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
