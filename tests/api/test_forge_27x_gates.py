@@ -642,3 +642,37 @@ def test_swing_infra_and_double_patterns_wired(ea_src, cfg):
     for gate in ("double_top_adx_below_min", "double_top_cooldown",
                  "double_bottom_adx_below_min", "double_bottom_cooldown"):
         assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+
+
+def test_head_and_shoulders_setups_wired(ea_src, cfg):
+    """v2.7.42 C-extended Tier 3 — HEAD_AND_SHOULDERS + INVERSE_HEAD_AND_SHOULDERS."""
+    # Detectors + setup_type literals
+    for sym in ("DetectHeadAndShouldersEvent", "DetectInverseHeadAndShouldersEvent"):
+        assert sym in ea_src, f"{sym} missing"
+    assert 'setup_type = "HEAD_AND_SHOULDERS"' in ea_src
+    assert 'setup_type = "INVERSE_HEAD_AND_SHOULDERS"' in ea_src
+    # Config knobs (10)
+    for key in (
+        ("setup", "head_and_shoulders_enabled"),
+        ("setup", "inverse_head_and_shoulders_enabled"),
+        ("atom", "hs_shoulder_tolerance_atr"),
+        ("atom", "hs_head_prominence_atr"),
+        ("atom", "hs_adx_min"),
+        ("geometry", "hs_lot_factor"),
+        ("geometry", "hs_sl_atr_mult"),
+        ("geometry", "hs_tp1_atr_mult"),
+        ("geometry", "hs_tp2_atr_mult"),
+        ("timing", "hs_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"missing section {section}"
+        assert name in cfg[section], f"missing {section}.{name}"
+    # Default-OFF
+    assert cfg["setup"]["head_and_shoulders_enabled"] == 0
+    assert cfg["setup"]["inverse_head_and_shoulders_enabled"] == 0
+    # Shared lot factor wired
+    assert "hs_factor" in ea_src, "hs_factor not in combined_lot_factor"
+    # 4 SKIP codes
+    for gate in ("head_and_shoulders_adx_below_min", "head_and_shoulders_cooldown",
+                 "inverse_head_and_shoulders_adx_below_min", "inverse_head_and_shoulders_cooldown"):
+        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"

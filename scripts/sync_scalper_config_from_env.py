@@ -430,6 +430,18 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_DOUBLE_PATTERN_TP1_ATR_MULT":     ("geometry", "double_pattern_tp1_atr_mult",        "float",  0.1, 5.0),
     "FORGE_GEOMETRY_DOUBLE_PATTERN_TP2_ATR_MULT":     ("geometry", "double_pattern_tp2_atr_mult",        "float",  0.1, 10.0),
     "FORGE_TIMING_DOUBLE_PATTERN_COOLDOWN_SECONDS":   ("timing",   "double_pattern_cooldown_seconds",    "int",    0.0, 7200.0),
+
+    # ── H&S / Inverse H&S (Tier 3 — 3-swing reversal pattern with neckline) ──
+    "FORGE_SETUP_HEAD_AND_SHOULDERS_ENABLED":         ("setup",    "head_and_shoulders_enabled",         "bool01", None, None),
+    "FORGE_SETUP_INVERSE_HEAD_AND_SHOULDERS_ENABLED": ("setup",    "inverse_head_and_shoulders_enabled", "bool01", None, None),
+    "FORGE_ATOM_HS_SHOULDER_TOLERANCE_ATR":           ("atom",     "hs_shoulder_tolerance_atr",          "float",  0.05, 2.0),
+    "FORGE_ATOM_HS_HEAD_PROMINENCE_ATR":              ("atom",     "hs_head_prominence_atr",             "float",  0.1, 10.0),
+    "FORGE_ATOM_HS_ADX_MIN":                          ("atom",     "hs_adx_min",                         "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_HS_LOT_FACTOR":                   ("geometry", "hs_lot_factor",                      "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_HS_SL_ATR_MULT":                  ("geometry", "hs_sl_atr_mult",                     "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_HS_TP1_ATR_MULT":                 ("geometry", "hs_tp1_atr_mult",                    "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_HS_TP2_ATR_MULT":                 ("geometry", "hs_tp2_atr_mult",                    "float",  0.1, 10.0),
+    "FORGE_TIMING_HS_COOLDOWN_SECONDS":               ("timing",   "hs_cooldown_seconds",                "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.

@@ -425,5 +425,25 @@
     "label": "Double Bottom — cooldown active",
     "explanation": "v2.7.42 DOUBLE_BOTTOM fired within timing.double_pattern_cooldown_seconds (default 1200) of a prior DOUBLE_BOTTOM entry. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
+  },
+  "head_and_shoulders_adx_below_min": {
+    "label": "Head & Shoulders — M5 ADX below floor",
+    "explanation": "v2.7.42 HEAD_AND_SHOULDERS pattern matched (3 swing highs: shoulder/head/shoulder with head prominence + 2-swing-low neckline + price below neckline) but m5_adx is below atom.hs_adx_min (default 15).",
+    "category": "Setup gates"
+  },
+  "head_and_shoulders_cooldown": {
+    "label": "Head & Shoulders — cooldown active",
+    "explanation": "v2.7.42 HEAD_AND_SHOULDERS fired within timing.hs_cooldown_seconds (default 1200) of prior entry.",
+    "category": "Cooldowns"
+  },
+  "inverse_head_and_shoulders_adx_below_min": {
+    "label": "Inverse Head & Shoulders — M5 ADX below floor",
+    "explanation": "v2.7.42 INVERSE_HEAD_AND_SHOULDERS matched (mirror of H&S: 3 swing lows with head being lowest + 2-swing-high neckline + price above neckline) but ADX below atom.hs_adx_min.",
+    "category": "Setup gates"
+  },
+  "inverse_head_and_shoulders_cooldown": {
+    "label": "Inverse Head & Shoulders — cooldown active",
+    "explanation": "v2.7.42 INVERSE_HEAD_AND_SHOULDERS fired within timing.hs_cooldown_seconds of prior entry.",
+    "category": "Cooldowns"
   }
 }

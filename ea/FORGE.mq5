@@ -364,6 +364,9 @@ datetime   g_swings_last_update_bar = 0;
 // 2.7.42 — DOUBLE_TOP / DOUBLE_BOTTOM cooldown trackers (C-extended Tier 3)
 datetime g_double_top_last_time     = 0;  // wall time of last DOUBLE_TOP entry (SELL-only)
 datetime g_double_bottom_last_time  = 0;  // wall time of last DOUBLE_BOTTOM entry (BUY-only)
+// 2.7.42 — HEAD_AND_SHOULDERS / INVERSE_H&S cooldown trackers (C-extended Tier 3)
+datetime g_head_and_shoulders_last_time         = 0;  // wall time of last H&S entry (SELL-only)
+datetime g_inverse_head_and_shoulders_last_time = 0;  // wall time of last IH&S entry (BUY-only)
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -641,6 +644,19 @@ struct ScalperConfig {
    double double_pattern_tp1_atr_mult;        // TP1 = ATR × this (default 0.5)
    double double_pattern_tp2_atr_mult;        // TP2 = ATR × this (default 1.5)
    int    double_pattern_cooldown_seconds;    // min gap per pattern (default 1200)
+   // 2.7.42 — HEAD_AND_SHOULDERS / INVERSE_H&S setup (C-extended Tier 3). Uses
+   //   3 same-direction swings (left shoulder / head / right shoulder) + 2 lows
+   //   as neckline. H&S is SELL-only; Inverse H&S is BUY-only.
+   bool   head_and_shoulders_enabled;
+   bool   inverse_head_and_shoulders_enabled;
+   double hs_shoulder_tolerance_atr;          // shoulders within this × ATR of each other (default 0.3)
+   double hs_head_prominence_atr;             // head must exceed avg shoulder by this × ATR (default 0.8)
+   double hs_adx_min;                         // M5 ADX floor (default 15)
+   double hs_lot_factor;
+   double hs_sl_atr_mult;
+   double hs_tp1_atr_mult;
+   double hs_tp2_atr_mult;
+   int    hs_cooldown_seconds;
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3216,6 +3232,17 @@ void InitScalperConfig() {
    g_sc.double_pattern_tp1_atr_mult         = 0.5;
    g_sc.double_pattern_tp2_atr_mult         = 1.5;
    g_sc.double_pattern_cooldown_seconds     = 1200;
+   // 2.7.42 — HEAD_AND_SHOULDERS / INVERSE_H&S (Tier 3; default OFF)
+   g_sc.head_and_shoulders_enabled          = false;
+   g_sc.inverse_head_and_shoulders_enabled  = false;
+   g_sc.hs_shoulder_tolerance_atr           = 0.3;
+   g_sc.hs_head_prominence_atr              = 0.8;
+   g_sc.hs_adx_min                          = 15.0;
+   g_sc.hs_lot_factor                       = 0.5;
+   g_sc.hs_sl_atr_mult                      = 1.5;
+   g_sc.hs_tp1_atr_mult                     = 0.5;
+   g_sc.hs_tp2_atr_mult                     = 1.5;
+   g_sc.hs_cooldown_seconds                 = 1200;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -4054,6 +4081,17 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "double_pattern_tp1_atr_mult"))         { v=JsonGetDouble(content,"double_pattern_tp1_atr_mult");         if(v>=0.1&&v<=5.0) g_sc.double_pattern_tp1_atr_mult=v; }
    if(JsonHasKey(content, "double_pattern_tp2_atr_mult"))         { v=JsonGetDouble(content,"double_pattern_tp2_atr_mult");         if(v>=0.1&&v<=10.0) g_sc.double_pattern_tp2_atr_mult=v; }
    if(JsonHasKey(content, "double_pattern_cooldown_seconds"))     { v=JsonGetDouble(content,"double_pattern_cooldown_seconds");     if(v>=0&&v<=7200) g_sc.double_pattern_cooldown_seconds=(int)v; }
+   // 2.7.42 — HEAD_AND_SHOULDERS / INVERSE_H&S (Tier 3)
+   if(JsonHasKey(content, "head_and_shoulders_enabled"))          { v=JsonGetDouble(content,"head_and_shoulders_enabled");          g_sc.head_and_shoulders_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "inverse_head_and_shoulders_enabled"))  { v=JsonGetDouble(content,"inverse_head_and_shoulders_enabled");  g_sc.inverse_head_and_shoulders_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "hs_shoulder_tolerance_atr"))           { v=JsonGetDouble(content,"hs_shoulder_tolerance_atr");           if(v>=0.05&&v<=2.0) g_sc.hs_shoulder_tolerance_atr=v; }
+   if(JsonHasKey(content, "hs_head_prominence_atr"))              { v=JsonGetDouble(content,"hs_head_prominence_atr");              if(v>=0.1&&v<=10.0) g_sc.hs_head_prominence_atr=v; }
+   if(JsonHasKey(content, "hs_adx_min"))                          { v=JsonGetDouble(content,"hs_adx_min");                          if(v>=5.0&&v<=80.0) g_sc.hs_adx_min=v; }
+   if(JsonHasKey(content, "hs_lot_factor"))                       { v=JsonGetDouble(content,"hs_lot_factor");                       if(v>=0.1&&v<=2.0) g_sc.hs_lot_factor=v; }
+   if(JsonHasKey(content, "hs_sl_atr_mult"))                      { v=JsonGetDouble(content,"hs_sl_atr_mult");                      if(v>=0.5&&v<=5.0) g_sc.hs_sl_atr_mult=v; }
+   if(JsonHasKey(content, "hs_tp1_atr_mult"))                     { v=JsonGetDouble(content,"hs_tp1_atr_mult");                     if(v>=0.1&&v<=5.0) g_sc.hs_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "hs_tp2_atr_mult"))                     { v=JsonGetDouble(content,"hs_tp2_atr_mult");                     if(v>=0.1&&v<=10.0) g_sc.hs_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "hs_cooldown_seconds"))                 { v=JsonGetDouble(content,"hs_cooldown_seconds");                 if(v>=0&&v<=7200) g_sc.hs_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -5375,6 +5413,70 @@ int DetectDoubleBottomEvent(const double m5_atr) {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    if(ask <= ridge) return 0;
    return 1;  // BUY
+}
+
+// 2.7.42 — HEAD_AND_SHOULDERS event detector (Tier 3). Returns -1 = SELL on
+// neckline break, 0 = no event. 3 swing highs: right shoulder (newest), head
+// (highest), left shoulder (oldest). Head must exceed avg shoulder by
+// hs_head_prominence_atr × ATR; shoulders within hs_shoulder_tolerance_atr of
+// each other. Neckline = avg of 2 swing lows between the highs. Fire when
+// current price closes below neckline.
+int DetectHeadAndShouldersEvent(const double m5_atr) {
+   if(!g_sc.head_and_shoulders_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   SwingPoint highs[3];
+   if(GetRecentSwings(1, 3, highs) < 3) return 0;
+   double rs   = highs[0].price;  // right shoulder (most recent high)
+   double head = highs[1].price;
+   double ls   = highs[2].price;  // left shoulder (oldest)
+   if(head <= rs || head <= ls) return 0;
+   if(MathAbs(rs - ls) > g_sc.hs_shoulder_tolerance_atr * m5_atr) return 0;
+   double avg_shoulder = (rs + ls) * 0.5;
+   if((head - avg_shoulder) < g_sc.hs_head_prominence_atr * m5_atr) return 0;
+   SwingPoint lows[8];
+   int lc = GetRecentSwings(-1, 8, lows);
+   double low_left = 0.0, low_right = 0.0;
+   for(int i = 0; i < lc; i++) {
+      if(lows[i].time > highs[2].time && lows[i].time < highs[1].time && low_left == 0.0)
+         low_left = lows[i].price;
+      else if(lows[i].time > highs[1].time && lows[i].time < highs[0].time && low_right == 0.0)
+         low_right = lows[i].price;
+   }
+   if(low_left <= 0.0 || low_right <= 0.0) return 0;
+   double neckline = (low_left + low_right) * 0.5;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(bid >= neckline) return 0;
+   return -1;
+}
+
+// 2.7.42 — INVERSE_HEAD_AND_SHOULDERS event detector (Tier 3). Returns 1 = BUY
+// on neckline break, 0 = no event. Mirror: 3 swing lows + 2 swing highs as neckline.
+int DetectInverseHeadAndShouldersEvent(const double m5_atr) {
+   if(!g_sc.inverse_head_and_shoulders_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   SwingPoint lows[3];
+   if(GetRecentSwings(-1, 3, lows) < 3) return 0;
+   double rs   = lows[0].price;  // right shoulder trough (most recent low)
+   double head = lows[1].price;  // head = lowest low
+   double ls   = lows[2].price;
+   if(head >= rs || head >= ls) return 0;
+   if(MathAbs(rs - ls) > g_sc.hs_shoulder_tolerance_atr * m5_atr) return 0;
+   double avg_shoulder = (rs + ls) * 0.5;
+   if((avg_shoulder - head) < g_sc.hs_head_prominence_atr * m5_atr) return 0;
+   SwingPoint highs[8];
+   int hc = GetRecentSwings(1, 8, highs);
+   double high_left = 0.0, high_right = 0.0;
+   for(int i = 0; i < hc; i++) {
+      if(highs[i].time > lows[2].time && highs[i].time < lows[1].time && high_left == 0.0)
+         high_left = highs[i].price;
+      else if(highs[i].time > lows[1].time && highs[i].time < lows[0].time && high_right == 0.0)
+         high_right = highs[i].price;
+   }
+   if(high_left <= 0.0 || high_right <= 0.0) return 0;
+   double neckline = (high_left + high_right) * 0.5;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(ask <= neckline) return 0;
+   return 1;
 }
 
 // #4 BULL_DAY_DIP_BUY_V3 — 16-atom dip-buy on choppy bull days
@@ -9046,9 +9148,10 @@ void CheckNativeScalperSetups() {
    }
 
    // 2.7.42 — Tier 3 swing-point maintenance. Update the ring buffer on each new M5 bar.
-   //   Runs unconditionally (whether any Tier 3 setup is enabled) so the buffer is
-   //   warm whenever an operator flips one ON. Cheap — ~10 iHigh/iLow reads per new bar.
-   if(g_sc.double_top_enabled || g_sc.double_bottom_enabled) {
+   //   Runs when any Tier 3 swing-based setup is enabled (consumed by Double Top/Bottom,
+   //   H&S, Inverse H&S, and future Flag/Pennant/Trendline/SR-Flip).
+   if(g_sc.double_top_enabled || g_sc.double_bottom_enabled
+      || g_sc.head_and_shoulders_enabled || g_sc.inverse_head_and_shoulders_enabled) {
       UpdateSwingsOnNewBar();
    }
 
@@ -9113,6 +9216,68 @@ void CheckNativeScalperSetups() {
             g_double_bottom_last_time = db_now;
             PrintFormat("FORGE 2.7.42: DOUBLE_BOTTOM BUY fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
                         db_ask, m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
+   // 2.7.42 — HEAD_AND_SHOULDERS trigger (Tier 3). SELL on neckline break.
+   if(direction == "" && g_sc.head_and_shoulders_enabled && m5_atr > 0.0) {
+      if(DetectHeadAndShouldersEvent(m5_atr) != 0) {
+         string hs_dir = "SELL";
+         bool hs_adx_ok = (m5_adx >= g_sc.hs_adx_min);
+         datetime hs_now = TimeCurrent();
+         bool hs_cool_ok = (g_sc.hs_cooldown_seconds <= 0
+                            || g_head_and_shoulders_last_time == 0
+                            || (hs_now - g_head_and_shoulders_last_time) >= g_sc.hs_cooldown_seconds
+                            || CooldownBypassActive(hs_dir, "HEAD_AND_SHOULDERS", m5_adx));
+         if(!hs_adx_ok) {
+            JournalRecordSignal("SKIP","head_and_shoulders_adx_below_min","HEAD_AND_SHOULDERS",hs_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!hs_cool_ok) {
+            JournalRecordSignal("SKIP","head_and_shoulders_cooldown","HEAD_AND_SHOULDERS",hs_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = hs_dir;
+            setup_type = "HEAD_AND_SHOULDERS";
+            double hs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double hs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            sl  = NormalizeDouble(hs_ask + m5_atr * g_sc.hs_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(hs_bid - m5_atr * g_sc.hs_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(hs_bid - m5_atr * g_sc.hs_tp2_atr_mult, _Digits);
+            g_head_and_shoulders_last_time = hs_now;
+            PrintFormat("FORGE 2.7.42: HEAD_AND_SHOULDERS SELL fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
+                        hs_bid, m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
+   // 2.7.42 — INVERSE_HEAD_AND_SHOULDERS trigger (Tier 3). BUY mirror.
+   if(direction == "" && g_sc.inverse_head_and_shoulders_enabled && m5_atr > 0.0) {
+      if(DetectInverseHeadAndShouldersEvent(m5_atr) != 0) {
+         string ihs_dir = "BUY";
+         bool ihs_adx_ok = (m5_adx >= g_sc.hs_adx_min);
+         datetime ihs_now = TimeCurrent();
+         bool ihs_cool_ok = (g_sc.hs_cooldown_seconds <= 0
+                             || g_inverse_head_and_shoulders_last_time == 0
+                             || (ihs_now - g_inverse_head_and_shoulders_last_time) >= g_sc.hs_cooldown_seconds
+                             || CooldownBypassActive(ihs_dir, "INVERSE_HEAD_AND_SHOULDERS", m5_adx));
+         if(!ihs_adx_ok) {
+            JournalRecordSignal("SKIP","inverse_head_and_shoulders_adx_below_min","INVERSE_HEAD_AND_SHOULDERS",ihs_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!ihs_cool_ok) {
+            JournalRecordSignal("SKIP","inverse_head_and_shoulders_cooldown","INVERSE_HEAD_AND_SHOULDERS",ihs_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = ihs_dir;
+            setup_type = "INVERSE_HEAD_AND_SHOULDERS";
+            double ihs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double ihs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            sl  = NormalizeDouble(ihs_bid - m5_atr * g_sc.hs_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(ihs_ask + m5_atr * g_sc.hs_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(ihs_ask + m5_atr * g_sc.hs_tp2_atr_mult, _Digits);
+            g_inverse_head_and_shoulders_last_time = ihs_now;
+            PrintFormat("FORGE 2.7.42: INVERSE_HEAD_AND_SHOULDERS BUY fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
+                        ihs_ask, m5_adx, h1_trend_strength);
          }
       }
    }
@@ -9501,6 +9666,11 @@ void CheckNativeScalperSetups() {
                                    && g_sc.double_pattern_lot_factor > 0.0
                                    && g_sc.double_pattern_lot_factor < 1.0)
                                    ? g_sc.double_pattern_lot_factor : 1.0;
+   // 2.7.42 — HEAD_AND_SHOULDERS / INVERSE_H&S lot factor (Tier 3). Shared.
+   double hs_factor = ((setup_type == "HEAD_AND_SHOULDERS" || setup_type == "INVERSE_HEAD_AND_SHOULDERS")
+                       && g_sc.hs_lot_factor > 0.0
+                       && g_sc.hs_lot_factor < 1.0)
+                       ? g_sc.hs_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -9510,7 +9680,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
