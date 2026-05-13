@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.129"
+#property version "2.130"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.59";
+const string FORGE_VERSION = "2.7.60";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -579,6 +579,23 @@ struct ScalperConfig {
    double dump_pyramid_step;                // 2.7.56: increment per consecutive group (default 1.0)
    double dump_pyramid_max_factor;          // 2.7.56: cap (default 5.0)
    bool   dump_cascade_enabled;             // v2.7.59: allow ArmPostTP1Ladder for MOMENTUM_DUMP (default true; v2.7.28 had hardcoded off)
+   // v2.7.60 — MOMENTUM_DUMP V2 composite (catch G5001/G5002, block G5003-style late entries).
+   //   Multi-atom alignment replaces over-blocking dump_sell_h1_max=0.5. SELL example:
+   //     h4_trend ≤ h4_max (HTF bearish leads H1) + macd_hist < macd_max (M5 momentum) +
+   //     price < vwap − vwap_atr_min×ATR + price < poc − poc_atr_min×ATR +
+   //     NOT (m5_adx ≥ max_adx AND m5_rsi ≤ late_rsi_block)   [exhaustion-block].
+   bool   dump_v2_enabled;                  // master toggle for V2 atoms (default true)
+   double dump_sell_h4_max;                 // SELL: h4_trend ≤ this (default 0.0 = bearish/neutral)
+   double dump_buy_h4_min;                  // BUY: h4_trend ≥ this (default 0.0 = bullish/neutral)
+   double dump_sell_macd_max;               // SELL: macd_hist < this (default 0.0)
+   double dump_buy_macd_min;                // BUY: macd_hist > this (default 0.0)
+   double dump_sell_vwap_atr_min;           // SELL: price < vwap − this×ATR (default 0.3)
+   double dump_buy_vwap_atr_min;            // BUY: price > vwap + this×ATR (default 0.3)
+   double dump_sell_poc_atr_min;            // SELL: price < poc − this×ATR (default 0.3)
+   double dump_buy_poc_atr_min;             // BUY: price > poc + this×ATR (default 0.3)
+   double dump_max_adx;                     // shared exhaustion-block ADX ceiling (default 42)
+   double dump_sell_late_rsi_block;         // SELL exhaustion: blocks when adx≥max_adx AND rsi ≤ this (default 36)
+   double dump_buy_late_rsi_block;          // BUY exhaustion: blocks when adx≥max_adx AND rsi ≥ this (default 64)
    // 2.7.32 — Option B (default OFF, documented for validation): direction-confirmation gate.
    //   Run 20 Mar 31 had 16 of 24 BUY losses as IMMEDIATE-SL (avg 30min, 1.52×ATR — exact SL setting,
    //   no TPs offset). These are direction failures, not SL-too-tight. Widening SL (Option A 3.0→4.0×ATR)
@@ -3509,6 +3526,19 @@ void InitScalperConfig() {
    g_sc.dump_pyramid_step             = 1.0;
    g_sc.dump_pyramid_max_factor       = 5.0;
    g_sc.dump_cascade_enabled          = true;     // v2.7.59 — allow MOMENTUM_DUMP cascade (was hardcoded off in v2.7.28)
+   // v2.7.60 — MOMENTUM_DUMP V2 composite defaults (validated on G5001=4559.73 12:30:29)
+   g_sc.dump_v2_enabled               = true;
+   g_sc.dump_sell_h4_max              = 0.0;      // SELL needs H4 bearish/neutral
+   g_sc.dump_buy_h4_min               = 0.0;      // BUY needs H4 bullish/neutral
+   g_sc.dump_sell_macd_max            = 0.0;
+   g_sc.dump_buy_macd_min             = 0.0;
+   g_sc.dump_sell_vwap_atr_min        = 0.3;
+   g_sc.dump_buy_vwap_atr_min         = 0.3;
+   g_sc.dump_sell_poc_atr_min         = 0.3;
+   g_sc.dump_buy_poc_atr_min          = 0.3;
+   g_sc.dump_max_adx                  = 42.0;     // exhaustion ceiling (G5003 was 43.9 ≥ 42 → blocked)
+   g_sc.dump_sell_late_rsi_block      = 36.0;     // SELL exhaustion: blocks when adx≥42 AND rsi ≤ 36
+   g_sc.dump_buy_late_rsi_block       = 64.0;     // BUY exhaustion: blocks when adx≥42 AND rsi ≥ 64
    // 2.7.29 — Regime H1-strong override defaults (Run 18 Issue 1 fix).
    g_sc.regime_h1_override_factor     = 0.0;      // 0 = disabled (legacy unanimous AND-gating). 2.0 typical when enabled.
    g_sc.regime_h1_override_adx_min    = 30.0;     // Minimum M5 ADX for override to fire.
@@ -4423,6 +4453,19 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"bb_lower_reversion_buy_consec_loss_cooldown_sec")){ v=JsonGetDouble(content,"bb_lower_reversion_buy_consec_loss_cooldown_sec");if(v>=0 && v<=7200) g_sc.bb_lower_reversion_buy_consec_loss_cooldown_sec=(int)v; }
    if(JsonHasKey(content,"bb_lower_reversion_buy_h4_min"))                  { v=JsonGetDouble(content,"bb_lower_reversion_buy_h4_min");                  if(v>=-10.0 && v<=10.0) g_sc.bb_lower_reversion_buy_h4_min=v; }
    if(JsonHasKey(content,"dump_cascade_enabled"))                           { v=JsonGetDouble(content,"dump_cascade_enabled");                           g_sc.dump_cascade_enabled=(v>=0.5); }
+   // v2.7.60 — MD V2 composite loaders
+   if(JsonHasKey(content,"dump_v2_enabled"))         { v=JsonGetDouble(content,"dump_v2_enabled");         g_sc.dump_v2_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"dump_sell_h4_max"))        { v=JsonGetDouble(content,"dump_sell_h4_max");        if(v>=-10.0 && v<=10.0) g_sc.dump_sell_h4_max=v; }
+   if(JsonHasKey(content,"dump_buy_h4_min"))         { v=JsonGetDouble(content,"dump_buy_h4_min");         if(v>=-10.0 && v<=10.0) g_sc.dump_buy_h4_min=v; }
+   if(JsonHasKey(content,"dump_sell_macd_max"))      { v=JsonGetDouble(content,"dump_sell_macd_max");      if(v>=-10.0 && v<=10.0) g_sc.dump_sell_macd_max=v; }
+   if(JsonHasKey(content,"dump_buy_macd_min"))       { v=JsonGetDouble(content,"dump_buy_macd_min");       if(v>=-10.0 && v<=10.0) g_sc.dump_buy_macd_min=v; }
+   if(JsonHasKey(content,"dump_sell_vwap_atr_min"))  { v=JsonGetDouble(content,"dump_sell_vwap_atr_min");  if(v>=0 && v<=5.0) g_sc.dump_sell_vwap_atr_min=v; }
+   if(JsonHasKey(content,"dump_buy_vwap_atr_min"))   { v=JsonGetDouble(content,"dump_buy_vwap_atr_min");   if(v>=0 && v<=5.0) g_sc.dump_buy_vwap_atr_min=v; }
+   if(JsonHasKey(content,"dump_sell_poc_atr_min"))   { v=JsonGetDouble(content,"dump_sell_poc_atr_min");   if(v>=0 && v<=5.0) g_sc.dump_sell_poc_atr_min=v; }
+   if(JsonHasKey(content,"dump_buy_poc_atr_min"))    { v=JsonGetDouble(content,"dump_buy_poc_atr_min");    if(v>=0 && v<=5.0) g_sc.dump_buy_poc_atr_min=v; }
+   if(JsonHasKey(content,"dump_max_adx"))            { v=JsonGetDouble(content,"dump_max_adx");            if(v>=0 && v<=80) g_sc.dump_max_adx=v; }
+   if(JsonHasKey(content,"dump_sell_late_rsi_block")){ v=JsonGetDouble(content,"dump_sell_late_rsi_block");if(v>=0 && v<=100) g_sc.dump_sell_late_rsi_block=v; }
+   if(JsonHasKey(content,"dump_buy_late_rsi_block")) { v=JsonGetDouble(content,"dump_buy_late_rsi_block"); if(v>=0 && v<=100) g_sc.dump_buy_late_rsi_block=v; }
    // 2.7.57 — TREND_CONTINUATION_BUY loaders
    if(JsonHasKey(content,"trend_continuation_buy_enabled"))          { v=JsonGetDouble(content,"trend_continuation_buy_enabled");          g_sc.trend_continuation_buy_enabled=(v>=0.5); }
    if(JsonHasKey(content,"trend_continuation_buy_h1_min"))           { v=JsonGetDouble(content,"trend_continuation_buy_h1_min");           if(v>=0 && v<=10.0) g_sc.trend_continuation_buy_h1_min=v; }
@@ -9817,6 +9860,39 @@ void CheckNativeScalperSetups() {
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
          } else {
+            // v2.7.60 — MD V2 composite checked here (catches G5001/G5002 quality SELLs, blocks G5003 exhaustion).
+            //   Requires multi-atom alignment: h4 bearish + macd_hist neg + price below VWAP/POC.
+            //   Exhaustion-block: ADX≥max_adx AND RSI≤late_rsi_block = blowoff late entry.
+            //   G5001 (h4=-0.88, macd=-0.79, 1.9×ATR<VWAP, 1.7×ATR<POC, adx=33.9) → all align, no exhaustion → TAKE
+            //   G5003 (adx=43.9, rsi=35.1) → exhaustion-block → SKIP
+            bool _md_v2_block = false;
+            string _md_v2_gate = "";
+            if(g_sc.dump_v2_enabled) {
+               double _md_macd_buf[1];
+               double _md_macd = (g_h_osma_scalp != INVALID_HANDLE
+                                  && CopyBuffer(g_h_osma_scalp, 0, 0, 1, _md_macd_buf) == 1)
+                                 ? _md_macd_buf[0] : 0.0;
+               bool _md_misalign =
+                     (h4_trend_strength > g_sc.dump_sell_h4_max)
+                  || (_md_macd >= g_sc.dump_sell_macd_max)
+                  || (g_vwap_price > 0
+                      && mid >= g_vwap_price - g_sc.dump_sell_vwap_atr_min * m5_atr)
+                  || (g_poc_price > 0
+                      && mid >= g_poc_price - g_sc.dump_sell_poc_atr_min * m5_atr);
+               bool _md_exhaustion =
+                     (g_sc.dump_max_adx > 0
+                      && m5_adx >= g_sc.dump_max_adx
+                      && m5_rsi <= g_sc.dump_sell_late_rsi_block);
+               if(_md_exhaustion)      { _md_v2_block = true; _md_v2_gate = "dump_v2_exhaustion_sell"; }
+               else if(_md_misalign)   { _md_v2_block = true; _md_v2_gate = "dump_v2_misalign_sell"; }
+            }
+            if(_md_v2_block) {
+               if(!_logged) {
+                  g_scalper_last_dump_log_bar = _dump_bar;
+                  JournalRecordSignal("SKIP",_md_v2_gate,"MOMENTUM_DUMP","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+            } else {
             // All filters pass — fire market SELL entry
             direction = "SELL";
             setup_type = "MOMENTUM_DUMP";
@@ -9834,6 +9910,7 @@ void CheckNativeScalperSetups() {
             PrintFormat("FORGE 2.7.54: MOMENTUM_DUMP SELL fired @ %.2f (move=%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f, regime=%s, SL=%.1f×ATR, TP1=%.1f×ATR)",
                         bid, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx, g_regime_label,
                         g_sc.dump_sl_atr_mult_sell, g_sc.dump_tp1_atr_mult_sell);
+            }   // v2.7.60 — close inner if(!_md_v2_block) else
          }
       } else if(dump_buy_trig) {
          // BUY mirror — same filter chain with sign flips.
@@ -9909,6 +9986,37 @@ void CheckNativeScalperSetups() {
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
          } else {
+            // v2.7.60 — MD V2 composite for BUY (mirror of SELL).
+            //   Require: h4_trend ≥ h4_min, macd_hist > macd_max, price > VWAP/POC by ≥atr_min×ATR.
+            //   Exhaustion-block: ADX≥max_adx AND RSI≥late_rsi_block (overbought blowoff).
+            bool _mdb_v2_block = false;
+            string _mdb_v2_gate = "";
+            if(g_sc.dump_v2_enabled) {
+               double _mdb_macd_buf[1];
+               double _mdb_macd = (g_h_osma_scalp != INVALID_HANDLE
+                                  && CopyBuffer(g_h_osma_scalp, 0, 0, 1, _mdb_macd_buf) == 1)
+                                 ? _mdb_macd_buf[0] : 0.0;
+               bool _mdb_misalign =
+                     (h4_trend_strength < g_sc.dump_buy_h4_min)
+                  || (_mdb_macd <= g_sc.dump_buy_macd_min)
+                  || (g_vwap_price > 0
+                      && mid <= g_vwap_price + g_sc.dump_buy_vwap_atr_min * m5_atr)
+                  || (g_poc_price > 0
+                      && mid <= g_poc_price + g_sc.dump_buy_poc_atr_min * m5_atr);
+               bool _mdb_exhaustion =
+                     (g_sc.dump_max_adx > 0
+                      && m5_adx >= g_sc.dump_max_adx
+                      && m5_rsi >= g_sc.dump_buy_late_rsi_block);
+               if(_mdb_exhaustion)   { _mdb_v2_block = true; _mdb_v2_gate = "dump_v2_exhaustion_buy"; }
+               else if(_mdb_misalign){ _mdb_v2_block = true; _mdb_v2_gate = "dump_v2_misalign_buy"; }
+            }
+            if(_mdb_v2_block) {
+               if(!_logged_b) {
+                  g_scalper_last_dump_log_bar = _dump_bar;
+                  JournalRecordSignal("SKIP",_mdb_v2_gate,"MOMENTUM_DUMP","BUY",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+            } else {
             // All filters pass — fire market BUY entry
             direction = "BUY";
             setup_type = "MOMENTUM_DUMP";
@@ -9921,6 +10029,7 @@ void CheckNativeScalperSetups() {
             PrintFormat("FORGE 2.7.54: MOMENTUM_DUMP BUY fired @ %.2f (move=+%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f, SL=%.1f×ATR, TP1=%.1f×ATR)",
                         ask, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx,
                         g_sc.dump_sl_atr_mult_buy, g_sc.dump_tp1_atr_mult_buy);
+            }   // v2.7.60 — close inner if(!_mdb_v2_block) else
          }
       }
    }
