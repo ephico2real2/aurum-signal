@@ -1,5 +1,5 @@
 {
-  "version": "2.7.67",
+  "version": "2.7.68",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -333,8 +333,8 @@
     "dump_sell_h1_max": 2,
     "dump_sl_atr_mult_buy": 3.5,
     "dump_sl_atr_mult_sell": 3.5,
-    "dump_tp1_atr_mult_buy": 1,
-    "dump_tp1_atr_mult_sell": 1.2,
+    "dump_tp1_atr_mult_buy": 0.7,
+    "dump_tp1_atr_mult_sell": 0.7,
     "dump_max_hold_seconds": 0,
     "dump_sell_min_rsi": 30,
     "dump_sell_block_below_bb_l": 1,
@@ -397,8 +397,8 @@
     "max_num_trades": 30,
     "staged_entry_enabled": 1,
     "staged_initial_legs": 3,
-    "staged_add_interval_sec": 25,
-    "staged_add_min_favorable_points": 500,
+    "staged_add_interval_sec": 5,
+    "staged_add_min_favorable_points": 100,
     "staged_favorable_from_entry_only": 0,
     "recovery_leg_boost_enabled": 1,
     "recovery_leg_boost_dd_pct_min": 1.0,
