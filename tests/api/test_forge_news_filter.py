@@ -417,7 +417,12 @@ def test_forge_bb_bounce_entries_pass_through_check_entry_quality() -> None:
     src = forge_source()
     body = news_function_body(src, "CheckNativeScalperSetups")
     bounce_setup_pos = body.index('setup_type = "BB_BOUNCE";')
-    quality_pos = body.index("CheckEntryQuality(direction, m5_atr, m5_bb_u, m5_bb_l)")
+    quality_match = re.search(
+        r"CheckEntryQuality\s*\(\s*direction\s*,\s*m5_atr\s*,\s*m5_bb_u\s*,\s*m5_bb_l\s*,",
+        body,
+    )
+    assert quality_match, "CheckEntryQuality call (direction,m5_atr,m5_bb_u,m5_bb_l,...) not found"
+    quality_pos = quality_match.start()
     execute_pos = body.index("// Execute the native scalper trade group")
     assert bounce_setup_pos < quality_pos < execute_pos
 

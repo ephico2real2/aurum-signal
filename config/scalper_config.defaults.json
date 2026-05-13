@@ -226,7 +226,7 @@
     "require_bb_expansion": 1,
     "news_post_guard_skip_min": 15,
     "dd_equity_close_all_pct": 3.0,
-    "news_filter_enabled": 0,
+    "news_filter_enabled": 1,
     "news_filter_currencies": "USD,EUR,GBP",
     "news_filter_low_before": 5,
     "news_filter_low_after": 5,

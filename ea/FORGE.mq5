@@ -6658,7 +6658,7 @@ void CheckNativeScalperSetups() {
       datetime m5b_og = iTime(_Symbol, PERIOD_M5, 0);
       if(m5b_og != g_scalper_last_opengroups_log_bar) {
          g_scalper_last_opengroups_log_bar = m5b_og;
-         PrintFormat("FORGE SCALPER: skip gate=open_groups open=%d max=%d", open_groups, g_sc.max_open_groups);
+      PrintFormat("FORGE SCALPER: skip gate=open_groups open=%d max=%d", open_groups, g_sc.max_open_groups);
          JournalRecordSignal("SKIP","open_groups","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
       }
       return;
@@ -6667,8 +6667,8 @@ void CheckNativeScalperSetups() {
       datetime m5b_sc = iTime(_Symbol, PERIOD_M5, 0);
       if(m5b_sc != g_scalper_last_sesscap_log_bar) {
          g_scalper_last_sesscap_log_bar = m5b_sc;
-         PrintFormat("FORGE SCALPER: skip gate=session_trade_cap trades=%d max=%d",
-                     g_scalper_session_trades, g_sc.max_trades_per_session);
+      PrintFormat("FORGE SCALPER: skip gate=session_trade_cap trades=%d max=%d",
+                  g_scalper_session_trades, g_sc.max_trades_per_session);
          JournalRecordSignal("SKIP","session_trade_cap","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
       }
       return;
@@ -6678,7 +6678,7 @@ void CheckNativeScalperSetups() {
       datetime m5b_cd = iTime(_Symbol, PERIOD_M5, 0);
       if(m5b_cd != g_scalper_last_cooldown_log_bar) {
          g_scalper_last_cooldown_log_bar = m5b_cd;
-         PrintFormat("FORGE SCALPER: skip gate=cooldown remaining_sec=%d", remaining);
+      PrintFormat("FORGE SCALPER: skip gate=cooldown remaining_sec=%d", remaining);
          JournalRecordSignal("SKIP","cooldown","","",SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,0,0,0,0,0,0,0,0,0);
       }
       return;
@@ -6782,7 +6782,7 @@ void CheckNativeScalperSetups() {
    bool breakout_m15_req_eff = g_sc.breakout_require_m15;
    if(in_tester) {
       if(!g_sc.bounce_respect_adx_max_in_tester)
-         bounce_adx_max_eff = 99.0;
+      bounce_adx_max_eff = 99.0;
       breakout_adx_min_eff = g_sc.breakout_adx_min;
       breakout_adx_min_sell_eff = g_sc.breakout_adx_min_sell;
       trend_thr_eff = MathMax(0.08, g_sc.trend_strength_atr_threshold * 0.45);
@@ -7070,7 +7070,7 @@ void CheckNativeScalperSetups() {
                    || (_now_psb - g_pullback_scalp_last_buy_time) >= g_sc.pullback_scalp_cooldown_seconds
                    || CooldownBypassActive("BUY", "BB_PULLBACK_SCALP", m5_adx));  // 2.7.41 — bypass when last TP1 + TREND_BULL + ADX ok
             if(pullback_buy_ok) {
-               direction = "BUY";
+         direction = "BUY";
                double pb_sl  = NormalizeDouble(bid - m5_atr * g_sc.pullback_scalp_sl_atr_mult, _Digits);
                double pb_tp1 = NormalizeDouble(ask + m5_atr * g_sc.pullback_scalp_tp1_atr_mult, _Digits);
                double pb_tp2 = NormalizeDouble(ask + m5_atr * g_sc.pullback_scalp_tp2_atr_mult, _Digits);
@@ -7155,7 +7155,7 @@ void CheckNativeScalperSetups() {
                    || (_now_pss - g_pullback_scalp_last_sell_time) >= g_sc.pullback_scalp_cooldown_seconds
                    || CooldownBypassActive("SELL", "BB_PULLBACK_SCALP", m5_adx));  // 2.7.41 — bypass when last TP1 + TREND_BEAR + ADX ok
             if(pullback_sell_ok) {
-               direction = "SELL";
+         direction = "SELL";
                double pb_sl_s  = NormalizeDouble(ask + m5_atr * g_sc.pullback_scalp_sl_atr_mult, _Digits);
                double pb_tp1_s = NormalizeDouble(bid - m5_atr * g_sc.pullback_scalp_tp1_atr_mult, _Digits);
                double pb_tp2_s = NormalizeDouble(bid - m5_atr * g_sc.pullback_scalp_tp2_atr_mult, _Digits);
@@ -7453,10 +7453,10 @@ void CheckNativeScalperSetups() {
                g_retest.bars_waited = 0;
                PrintFormat("FORGE SCALPER: breakout BUY — waiting for retest at %.2f", m5_bb_u);
             } else {
-               direction = "BUY";
+         direction = "BUY";
                sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
-               setup_type = "BB_BREAKOUT";
-            }
+         setup_type = "BB_BREAKOUT";
+      }
             } // end h1_di_ok block
          }
       }
@@ -7780,10 +7780,10 @@ void CheckNativeScalperSetups() {
                g_retest.bars_waited = 0;
                PrintFormat("FORGE SCALPER: breakout SELL — waiting for retest at %.2f", m5_bb_l);
             } else {
-               direction = "SELL";
+         direction = "SELL";
                sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
-               setup_type = "BB_BREAKOUT";
-            }
+         setup_type = "BB_BREAKOUT";
+      }
             } // end adx_dur_ok && rsi_decl_ok
          }
          } // end ADX-sell-min else block (inner: if/else-if/else within session-OK else)
@@ -8456,12 +8456,12 @@ void CheckNativeScalperSetups() {
             ok = g_trade.BuyLimit(lot, limit_px, _Symbol, NormalizeDouble(sl, _Digits),
                                   NormalizeDouble(tp_for_this, _Digits), 0, 0, comment);
          } else {
-            if(!ValidateStops(ask, sl, tp_for_this, ORDER_TYPE_BUY)) {
-               Print("FORGE SCALPER: invalid BUY stops for group ", group_id, " leg ", i + 1);
-               continue;
-            }
-            ok = g_trade.Buy(lot, _Symbol, ask, NormalizeDouble(sl, _Digits),
-                             NormalizeDouble(tp_for_this, _Digits), comment);
+         if(!ValidateStops(ask, sl, tp_for_this, ORDER_TYPE_BUY)) {
+            Print("FORGE SCALPER: invalid BUY stops for group ", group_id, " leg ", i + 1);
+            continue;
+         }
+         ok = g_trade.Buy(lot, _Symbol, ask, NormalizeDouble(sl, _Digits),
+                          NormalizeDouble(tp_for_this, _Digits), comment);
          }
       } else {
          if(g_sc.native_scalper_use_limit_entry && !is_breakout_setup && m5_bb_u > 0) {
@@ -8472,13 +8472,13 @@ void CheckNativeScalperSetups() {
             }
             ok = g_trade.SellLimit(lot, limit_px, _Symbol, NormalizeDouble(sl, _Digits),
                                    NormalizeDouble(tp_for_this, _Digits), 0, 0, comment);
-         } else {
-            if(!ValidateStops(bid, sl, tp_for_this, ORDER_TYPE_SELL)) {
-               Print("FORGE SCALPER: invalid SELL stops for group ", group_id, " leg ", i + 1);
-               continue;
-            }
-            ok = g_trade.Sell(lot, _Symbol, bid, NormalizeDouble(sl, _Digits),
-                              NormalizeDouble(tp_for_this, _Digits), comment);
+      } else {
+         if(!ValidateStops(bid, sl, tp_for_this, ORDER_TYPE_SELL)) {
+            Print("FORGE SCALPER: invalid SELL stops for group ", group_id, " leg ", i + 1);
+            continue;
+         }
+         ok = g_trade.Sell(lot, _Symbol, bid, NormalizeDouble(sl, _Digits),
+                           NormalizeDouble(tp_for_this, _Digits), comment);
          }
       }
       if(ok) opened++;

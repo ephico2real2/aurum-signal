@@ -120,6 +120,24 @@ def test_lot_factor_high_no_larger_than_mid(cfg):
     )
 
 
+def test_adx_lot_factor_floor_not_silent_reduction(cfg):
+    """ADX lot factors must NOT drop below 0.5.
+
+    Codex audit history (2.7.x): adx_lot_factor_high was silently 0.125, firing 0.02 lots
+    on perfect SELL setups at ADX > 35. Operator policy 2026-05-12: high-tier may be 0.5
+    (deliberate de-risk in trend-exhaustion zone), but anything below 0.5 is the old
+    silent-reduction bug returning. Mid-tier (ADX 35-44) stays at 1.0 by policy.
+    """
+    s = cfg["safety"]
+    mid = s["breakout_adx_lot_factor_mid"]
+    high = s["breakout_adx_lot_factor_high"]
+    assert mid == 1.0, f"breakout_adx_lot_factor_mid={mid} — must be 1.0 (mid tier should not reduce)"
+    assert 0.5 <= high <= 1.0, (
+        f"breakout_adx_lot_factor_high={high} outside [0.5, 1.0] — "
+        f"<0.5 reintroduces the silent-reduction bug fixed in 2.7.x"
+    )
+
+
 def test_adx_lot_thresholds_ordered(cfg):
     """mid threshold < high threshold (tiering must be monotonic)."""
     s = cfg["safety"]
