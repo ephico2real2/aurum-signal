@@ -333,6 +333,9 @@ datetime g_vwap_reversion_last_sell_time = 0; // wall time of last VWAP_REVERSIO
 // 2.7.42 — FIB_CONFLUENCE cooldown trackers (Phase 2 — fib level + EMA/VWAP overlap pullback)
 datetime g_fib_confluence_last_buy_time  = 0; // wall time of last FIB_CONFLUENCE BUY entry
 datetime g_fib_confluence_last_sell_time = 0; // wall time of last FIB_CONFLUENCE SELL entry
+// 2.7.42 — INSIDE_BAR cooldown trackers (C-extended Tier 1 — 2-bar pattern breakout)
+datetime g_inside_bar_last_buy_time  = 0; // wall time of last INSIDE_BAR BUY entry
+datetime g_inside_bar_last_sell_time = 0; // wall time of last INSIDE_BAR SELL entry
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -544,6 +547,17 @@ struct ScalperConfig {
    double fib_confluence_tp1_atr_mult;        // TP1 = ATR × this (default 0.5)
    double fib_confluence_tp2_atr_mult;        // TP2 = ATR × this (default 1.3 — back toward swing extreme)
    int    fib_confluence_cooldown_seconds;    // min gap per direction (default 600)
+   // 2.7.42 — INSIDE_BAR setup (C-extended Tier 1). Trivial 2-bar pattern: bar[1]
+   //   fully inside bar[2], breakout fires when current price exceeds bar[1] extremes.
+   //   No new state — pure OHLC compare.
+   bool   inside_bar_enabled;                 // master toggle (default off)
+   double inside_bar_min_outer_atr;           // outer bar (bar[2]) size in ATR (default 1.0; filters micro-patterns)
+   double inside_bar_adx_min;                 // M5 ADX floor for entry (default 20)
+   double inside_bar_lot_factor;              // lot multiplier (default 0.5)
+   double inside_bar_sl_atr_mult;             // SL = ATR × this (default 1.0 — tight, pattern is clear)
+   double inside_bar_tp1_atr_mult;            // TP1 = ATR × this (default 0.5)
+   double inside_bar_tp2_atr_mult;            // TP2 = ATR × this (default 1.5)
+   int    inside_bar_cooldown_seconds;        // min gap per direction (default 600)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3064,6 +3078,15 @@ void InitScalperConfig() {
    g_sc.fib_confluence_tp1_atr_mult         = 0.5;
    g_sc.fib_confluence_tp2_atr_mult         = 1.3;
    g_sc.fib_confluence_cooldown_seconds     = 600;
+   // 2.7.42 — INSIDE_BAR setup (C-extended Tier 1; default OFF)
+   g_sc.inside_bar_enabled              = false;
+   g_sc.inside_bar_min_outer_atr        = 1.0;
+   g_sc.inside_bar_adx_min              = 20.0;
+   g_sc.inside_bar_lot_factor           = 0.5;
+   g_sc.inside_bar_sl_atr_mult          = 1.0;
+   g_sc.inside_bar_tp1_atr_mult         = 0.5;
+   g_sc.inside_bar_tp2_atr_mult         = 1.5;
+   g_sc.inside_bar_cooldown_seconds     = 600;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3846,6 +3869,15 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "fib_confluence_tp1_atr_mult"))         { v=JsonGetDouble(content,"fib_confluence_tp1_atr_mult");         if(v>=0.1&&v<=5.0) g_sc.fib_confluence_tp1_atr_mult=v; }
    if(JsonHasKey(content, "fib_confluence_tp2_atr_mult"))         { v=JsonGetDouble(content,"fib_confluence_tp2_atr_mult");         if(v>=0.1&&v<=10.0) g_sc.fib_confluence_tp2_atr_mult=v; }
    if(JsonHasKey(content, "fib_confluence_cooldown_seconds"))     { v=JsonGetDouble(content,"fib_confluence_cooldown_seconds");     if(v>=0&&v<=7200) g_sc.fib_confluence_cooldown_seconds=(int)v; }
+   // 2.7.42 — INSIDE_BAR setup (C-extended Tier 1)
+   if(JsonHasKey(content, "inside_bar_enabled"))                  { v=JsonGetDouble(content,"inside_bar_enabled");                  g_sc.inside_bar_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "inside_bar_min_outer_atr"))            { v=JsonGetDouble(content,"inside_bar_min_outer_atr");            if(v>=0.1&&v<=10.0) g_sc.inside_bar_min_outer_atr=v; }
+   if(JsonHasKey(content, "inside_bar_adx_min"))                  { v=JsonGetDouble(content,"inside_bar_adx_min");                  if(v>=5.0&&v<=80.0) g_sc.inside_bar_adx_min=v; }
+   if(JsonHasKey(content, "inside_bar_lot_factor"))               { v=JsonGetDouble(content,"inside_bar_lot_factor");               if(v>=0.1&&v<=2.0) g_sc.inside_bar_lot_factor=v; }
+   if(JsonHasKey(content, "inside_bar_sl_atr_mult"))              { v=JsonGetDouble(content,"inside_bar_sl_atr_mult");              if(v>=0.5&&v<=5.0) g_sc.inside_bar_sl_atr_mult=v; }
+   if(JsonHasKey(content, "inside_bar_tp1_atr_mult"))             { v=JsonGetDouble(content,"inside_bar_tp1_atr_mult");             if(v>=0.1&&v<=5.0) g_sc.inside_bar_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "inside_bar_tp2_atr_mult"))             { v=JsonGetDouble(content,"inside_bar_tp2_atr_mult");             if(v>=0.1&&v<=10.0) g_sc.inside_bar_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "inside_bar_cooldown_seconds"))         { v=JsonGetDouble(content,"inside_bar_cooldown_seconds");         if(v>=0&&v<=7200) g_sc.inside_bar_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -4889,6 +4921,30 @@ int DetectFibConfluenceEvent(const double m5_atr, const double h1_trend_strength
    // Step 4: direction by H1 trend agreement (trend-continuation pullback)
    if(h1_trend_strength > 0.0) return 1;
    if(h1_trend_strength < 0.0) return -1;
+   return 0;
+}
+
+// 2.7.42 — INSIDE_BAR event detector (C-extended Tier 1). Returns 1 = BUY
+// breakout above bar[1].high, -1 = SELL breakout below bar[1].low, 0 = no
+// event. Inside-bar pattern: bar[1] fully contained inside bar[2] (highs
+// AND lows). Outer bar (bar[2]) must be at least min_outer_atr × ATR.
+int DetectInsideBarBreakoutEvent(const double m5_atr) {
+   if(!g_sc.inside_bar_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   double h1 = iHigh(_Symbol, PERIOD_M5, 1);
+   double l1 = iLow (_Symbol, PERIOD_M5, 1);
+   double h2 = iHigh(_Symbol, PERIOD_M5, 2);
+   double l2 = iLow (_Symbol, PERIOD_M5, 2);
+   if(h1 <= 0.0 || l1 <= 0.0 || h2 <= 0.0 || l2 <= 0.0) return 0;
+   // Inside-bar pattern: bar[1] fully inside bar[2]
+   if(!(h1 < h2 && l1 > l2)) return 0;
+   // Outer-bar size filter (avoid micro-patterns)
+   if((h2 - l2) < g_sc.inside_bar_min_outer_atr * m5_atr) return 0;
+   // Breakout: current price beyond bar[1] extremes
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(ask > h1) return 1;   // BUY breakout above inside-bar high
+   if(bid < l1) return -1;  // SELL breakout below inside-bar low
    return 0;
 }
 
@@ -8395,6 +8451,47 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — INSIDE_BAR trigger (C-extended Tier 1). bar[1] inside bar[2] →
+   //   breakout fires on price beyond bar[1] extremes. ADX + cooldown gates.
+   if(direction == "" && g_sc.inside_bar_enabled && m5_atr > 0.0) {
+      int ib_event = DetectInsideBarBreakoutEvent(m5_atr);
+      if(ib_event != 0) {
+         string ib_dir = (ib_event > 0) ? "BUY" : "SELL";
+         bool ib_adx_ok = (m5_adx >= g_sc.inside_bar_adx_min);
+         datetime ib_last = (ib_event > 0) ? g_inside_bar_last_buy_time : g_inside_bar_last_sell_time;
+         datetime ib_now  = TimeCurrent();
+         bool ib_cool_ok = (g_sc.inside_bar_cooldown_seconds <= 0
+                            || ib_last == 0
+                            || (ib_now - ib_last) >= g_sc.inside_bar_cooldown_seconds
+                            || CooldownBypassActive(ib_dir, "INSIDE_BAR", m5_adx));
+         if(!ib_adx_ok) {
+            JournalRecordSignal("SKIP","inside_bar_adx_below_min","INSIDE_BAR",ib_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!ib_cool_ok) {
+            JournalRecordSignal("SKIP","inside_bar_cooldown","INSIDE_BAR",ib_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = ib_dir;
+            setup_type = "INSIDE_BAR";
+            double ib_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double ib_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(ib_event > 0) {
+               sl  = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(ib_ask + m5_atr * g_sc.inside_bar_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(ib_ask + m5_atr * g_sc.inside_bar_tp2_atr_mult, _Digits);
+               g_inside_bar_last_buy_time = ib_now;
+            } else {
+               sl  = NormalizeDouble(ib_ask + m5_atr * g_sc.inside_bar_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_tp2_atr_mult, _Digits);
+               g_inside_bar_last_sell_time = ib_now;
+            }
+            PrintFormat("FORGE 2.7.42: INSIDE_BAR %s fired @ %.2f (ADX=%.1f, h1_trend=%.2f)",
+                        ib_dir, (ib_event > 0 ? ib_ask : ib_bid), m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -8754,6 +8851,11 @@ void CheckNativeScalperSetups() {
                                    && g_sc.fib_confluence_lot_factor > 0.0
                                    && g_sc.fib_confluence_lot_factor < 1.0)
                                    ? g_sc.fib_confluence_lot_factor : 1.0;
+   // 2.7.42 — INSIDE_BAR lot factor (C-extended Tier 1). Default 0.5.
+   double inside_bar_factor = (setup_type == "INSIDE_BAR"
+                               && g_sc.inside_bar_lot_factor > 0.0
+                               && g_sc.inside_bar_lot_factor < 1.0)
+                               ? g_sc.inside_bar_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -8763,7 +8865,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the

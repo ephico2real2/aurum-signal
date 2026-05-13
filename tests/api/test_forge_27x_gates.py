@@ -445,3 +445,36 @@ def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg):
     # 7. SKIP gate code emitted by EA exists
     assert '"fib_confluence_cooldown"' in ea_src, \
         "EA does not emit SKIP code fib_confluence_cooldown"
+
+
+def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
+    """v2.7.42 INSIDE_BAR — C-extended Tier 1 — trivial 2-bar pattern, no new state."""
+    # 1. setup_type literal emitted in EA
+    assert 'setup_type = "INSIDE_BAR"' in ea_src, \
+        "INSIDE_BAR setup_type literal missing from ea/FORGE.mq5 dispatch"
+    # 2. Detector helper exists
+    assert "DetectInsideBarBreakoutEvent" in ea_src, \
+        "DetectInsideBarBreakoutEvent helper missing from ea/FORGE.mq5"
+    # 3. All 8 config knobs present in active config
+    for key in (
+        ("setup", "inside_bar_enabled"),
+        ("atom", "inside_bar_min_outer_atr"),
+        ("atom", "inside_bar_adx_min"),
+        ("geometry", "inside_bar_lot_factor"),
+        ("geometry", "inside_bar_sl_atr_mult"),
+        ("geometry", "inside_bar_tp1_atr_mult"),
+        ("geometry", "inside_bar_tp2_atr_mult"),
+        ("timing", "inside_bar_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}' section"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 4. Default-OFF
+    assert cfg["setup"]["inside_bar_enabled"] == 0, \
+        "inside_bar_enabled should default to 0 (C-extended Tier 1 ships OFF)"
+    # 5. Lot factor present in combined_lot_factor product
+    assert "inside_bar_factor" in ea_src, \
+        "inside_bar_factor not multiplied into combined_lot_factor"
+    # 6. Both SKIP gate codes emitted by EA exist
+    for gate in ("inside_bar_adx_below_min", "inside_bar_cooldown"):
+        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"

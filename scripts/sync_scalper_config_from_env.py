@@ -362,6 +362,16 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_FIB_CONFLUENCE_TP1_ATR_MULT":     ("geometry", "fib_confluence_tp1_atr_mult",        "float",  0.1, 5.0),
     "FORGE_GEOMETRY_FIB_CONFLUENCE_TP2_ATR_MULT":     ("geometry", "fib_confluence_tp2_atr_mult",        "float",  0.1, 10.0),
     "FORGE_TIMING_FIB_CONFLUENCE_COOLDOWN_SECONDS":   ("timing",   "fib_confluence_cooldown_seconds",    "int",    0.0, 7200.0),
+
+    # ── Inside Bar Breakout (Tier 1 — trivial 2-bar pattern, no new state) ──
+    "FORGE_SETUP_INSIDE_BAR_ENABLED":                 ("setup",    "inside_bar_enabled",                 "bool01", None, None),
+    "FORGE_ATOM_INSIDE_BAR_MIN_OUTER_ATR":            ("atom",     "inside_bar_min_outer_atr",           "float",  0.1, 10.0),
+    "FORGE_ATOM_INSIDE_BAR_ADX_MIN":                  ("atom",     "inside_bar_adx_min",                 "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_INSIDE_BAR_LOT_FACTOR":           ("geometry", "inside_bar_lot_factor",              "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_INSIDE_BAR_SL_ATR_MULT":          ("geometry", "inside_bar_sl_atr_mult",             "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_INSIDE_BAR_TP1_ATR_MULT":         ("geometry", "inside_bar_tp1_atr_mult",            "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_INSIDE_BAR_TP2_ATR_MULT":         ("geometry", "inside_bar_tp2_atr_mult",            "float",  0.1, 10.0),
+    "FORGE_TIMING_INSIDE_BAR_COOLDOWN_SECONDS":       ("timing",   "inside_bar_cooldown_seconds",        "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.

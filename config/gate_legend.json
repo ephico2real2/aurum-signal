@@ -370,5 +370,15 @@
     "label": "Fib confluence — cooldown active",
     "explanation": "v2.7.42 FIB_CONFLUENCE trigger fired (price retraced to fib 38.2/50/61.8 of recent swing with ≥atom.fib_confluence_min_confluences reference overlaps from EMA20/EMA50/VWAP) within timing.fib_confluence_cooldown_seconds (default 600) of a prior FIB_CONFLUENCE entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
+  },
+  "inside_bar_adx_below_min": {
+    "label": "Inside bar — M5 ADX below floor",
+    "explanation": "v2.7.42 INSIDE_BAR pattern detected (bar[1] fully inside bar[2], outer ≥ min_outer_atr × ATR) and current price broke beyond bar[1] extremes, but m5_adx is below atom.inside_bar_adx_min (default 20). Inside-bar breakouts in low-ADX chop produce false signals.",
+    "category": "Setup gates"
+  },
+  "inside_bar_cooldown": {
+    "label": "Inside bar — cooldown active",
+    "explanation": "v2.7.42 INSIDE_BAR trigger fired within timing.inside_bar_cooldown_seconds (default 600) of a prior INSIDE_BAR entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
+    "category": "Cooldowns"
   }
 }
