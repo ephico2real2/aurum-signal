@@ -1116,6 +1116,31 @@ TradeGroup g_groups[];
 string JsonEscape(const string s);
 bool JsonHasKey(const string &json, const string &key);
 double ApplyNativeSlExtraBuffer(const bool is_buy, double sl, const double point);
+// 2.7.43 — Layer 4/5/6/8 helpers (FORGE_LOGIC_TAXONOMY.md alignment) forward declarations
+bool Atom_M5AdxAbove(const double threshold);
+bool Atom_M15TrendAligned(const int direction, const bool strict);
+bool Atom_H1TrendAligned(const double h1_trend_strength, const int direction, const double min_strength);
+bool Atom_M5AtrPositive(const double m5_atr);
+bool Atom_M5RsiInRange(const double m5_rsi, const double lo, const double hi);
+bool Filter_AdxFloor(const string setup_type, const string setup_lower, const string direction,
+                    const double m5_adx, const double threshold,
+                    const double mid, const double spread, const double m5_atr,
+                    const double m5_rsi, const double m5_bb_u, const double m5_bb_l,
+                    const double m5_bb_m, const double h1_trend_strength);
+bool Filter_M15TrendAligned(const string setup_type, const string setup_lower, const string direction,
+                           const int direction_sign,
+                           const double mid, const double spread, const double m5_atr,
+                           const double m5_rsi, const double m5_adx,
+                           const double m5_bb_u, const double m5_bb_l, const double m5_bb_m,
+                           const double h1_trend_strength);
+bool Filter_Cooldown(const string setup_type, const string setup_lower, const string direction,
+                    const datetime last_time, const int cooldown_seconds, const double m5_adx,
+                    const double mid, const double spread, const double m5_atr,
+                    const double m5_rsi, const double m5_bb_u, const double m5_bb_l,
+                    const double m5_bb_m, const double h1_trend_strength);
+int Score_SetupConfidence(const int direction_sign, const double m5_adx, const double adx_floor,
+                         const double h1_trend_strength, const double h1_strong_threshold);
+double Risk_ApproveLot(const double base_lot, const double combined_lot_factor_product);
 
 struct EntryLeg {
    string order_type;      // AUTO | BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP | BUY_STOP_LIMIT | SELL_STOP_LIMIT
@@ -9085,40 +9110,32 @@ void CheckNativeScalperSetups() {
    //   DetectMaCrossoverEvent). BUY on up-cross, SELL on down-cross. Gates: ADX ≥
    //   ma_crossover_adx_min, M15 trend agreement (existing m15_ok_buy/sell), per-
    //   direction cooldown with v2.7.41 bypass-on-TP-win. Lot factor 0.5 (lagging).
-   if(direction == "" && g_sc.ma_crossover_enabled && m5_atr > 0.0) {
+   // 2.7.43 — REFERENCE IMPLEMENTATION using layered helpers (FORGE_LOGIC_TAXONOMY.md).
+   //   Demonstrates: Layer-3 detector (DetectMaCrossoverEvent) → Layer-5 filter chain
+   //   (Filter_AdxFloor, Filter_M15TrendAligned, Filter_Cooldown) → Layer-6 scoring →
+   //   Layer-9 geometry → state-update. Each filter emits its own SKIP code on fail
+   //   and short-circuits the chain. ~half the line count of the inline pattern.
+   if(direction == "" && g_sc.ma_crossover_enabled && Atom_M5AtrPositive(m5_atr)) {
       int mac_event = DetectMaCrossoverEvent();
       if(mac_event != 0) {
          string mac_dir = (mac_event > 0) ? "BUY" : "SELL";
-         bool mac_adx_ok = (m5_adx >= g_sc.ma_crossover_adx_min);
-         // Local recompute of M15 trend agreement (m15_ok_buy/sell locals are out
-         // of scope at this point in CheckNativeScalperSetups). g_mtf[1] is M15.
-         bool mac_m15_ok = true;
-         double mac_m15_e20[1], mac_m15_e50[1];
-         if(CopyBuffer(g_mtf[1].h_ma20, 0, 1, 1, mac_m15_e20) == 1
-            && CopyBuffer(g_mtf[1].h_ma50, 0, 1, 1, mac_m15_e50) == 1) {
-            double mac_m15_diff = mac_m15_e20[0] - mac_m15_e50[0];
-            mac_m15_ok = (mac_event > 0) ? (mac_m15_diff >= 0.0) : (mac_m15_diff <= 0.0);
-         }
          datetime mac_last = (mac_event > 0) ? g_ma_crossover_last_buy_time : g_ma_crossover_last_sell_time;
-         datetime mac_now  = TimeCurrent();
-         bool mac_cool_ok = (g_sc.ma_crossover_cooldown_seconds <= 0
-                             || mac_last == 0
-                             || (mac_now - mac_last) >= g_sc.ma_crossover_cooldown_seconds
-                             || CooldownBypassActive(mac_dir, "MA_CROSSOVER", m5_adx));
-         if(!mac_adx_ok) {
-            JournalRecordSignal("SKIP","ma_crossover_adx_below_min","MA_CROSSOVER",mac_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!mac_m15_ok) {
-            JournalRecordSignal("SKIP","ma_crossover_m15_misalign","MA_CROSSOVER",mac_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!mac_cool_ok) {
-            JournalRecordSignal("SKIP","ma_crossover_cooldown","MA_CROSSOVER",mac_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool ok = Filter_AdxFloor("MA_CROSSOVER","ma_crossover",mac_dir,
+                                   m5_adx, g_sc.ma_crossover_adx_min,
+                                   mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                && Filter_M15TrendAligned("MA_CROSSOVER","ma_crossover",mac_dir,mac_event,
+                                          mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                && Filter_Cooldown("MA_CROSSOVER","ma_crossover",mac_dir,
+                                   mac_last, g_sc.ma_crossover_cooldown_seconds, m5_adx,
+                                   mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(ok) {
             direction  = mac_dir;
             setup_type = "MA_CROSSOVER";
+            int mac_score = Score_SetupConfidence(mac_event, m5_adx, g_sc.ma_crossover_adx_min,
+                                                  h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double mac_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double mac_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime mac_now = TimeCurrent();
             if(mac_event > 0) {
                sl  = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(mac_ask + m5_atr * g_sc.ma_crossover_tp1_atr_mult, _Digits);
@@ -9130,8 +9147,8 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_tp2_atr_mult, _Digits);
                g_ma_crossover_last_sell_time = mac_now;
             }
-            PrintFormat("FORGE 2.7.42: MA_CROSSOVER %s fired @ %.2f (M5 EMA20×EMA50, ADX=%.1f, h1_trend=%.2f)",
-                        mac_dir, (mac_event > 0 ? mac_ask : mac_bid), m5_adx, h1_trend_strength);
+            PrintFormat("FORGE 2.7.43: MA_CROSSOVER %s fired @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        mac_dir, (mac_event > 0 ? mac_ask : mac_bid), m5_adx, h1_trend_strength, mac_score);
          }
       }
    }
@@ -9213,28 +9230,26 @@ void CheckNativeScalperSetups() {
 
    // 2.7.42 — INSIDE_BAR trigger (C-extended Tier 1). bar[1] inside bar[2] →
    //   breakout fires on price beyond bar[1] extremes. ADX + cooldown gates.
-   if(direction == "" && g_sc.inside_bar_enabled && m5_atr > 0.0) {
+   // 2.7.43 — Layered helpers (INSIDE_BAR — second reference; no M15 filter, just ADX + cooldown)
+   if(direction == "" && g_sc.inside_bar_enabled && Atom_M5AtrPositive(m5_atr)) {
       int ib_event = DetectInsideBarBreakoutEvent(m5_atr);
       if(ib_event != 0) {
          string ib_dir = (ib_event > 0) ? "BUY" : "SELL";
-         bool ib_adx_ok = (m5_adx >= g_sc.inside_bar_adx_min);
          datetime ib_last = (ib_event > 0) ? g_inside_bar_last_buy_time : g_inside_bar_last_sell_time;
-         datetime ib_now  = TimeCurrent();
-         bool ib_cool_ok = (g_sc.inside_bar_cooldown_seconds <= 0
-                            || ib_last == 0
-                            || (ib_now - ib_last) >= g_sc.inside_bar_cooldown_seconds
-                            || CooldownBypassActive(ib_dir, "INSIDE_BAR", m5_adx));
-         if(!ib_adx_ok) {
-            JournalRecordSignal("SKIP","inside_bar_adx_below_min","INSIDE_BAR",ib_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else if(!ib_cool_ok) {
-            JournalRecordSignal("SKIP","inside_bar_cooldown","INSIDE_BAR",ib_dir,
-               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
-         } else {
+         bool ok = Filter_AdxFloor("INSIDE_BAR","inside_bar",ib_dir,
+                                   m5_adx, g_sc.inside_bar_adx_min,
+                                   mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)
+                && Filter_Cooldown("INSIDE_BAR","inside_bar",ib_dir,
+                                   ib_last, g_sc.inside_bar_cooldown_seconds, m5_adx,
+                                   mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
+         if(ok) {
             direction  = ib_dir;
             setup_type = "INSIDE_BAR";
+            int ib_score = Score_SetupConfidence(ib_event, m5_adx, g_sc.inside_bar_adx_min,
+                                                 h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double ib_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double ib_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            datetime ib_now = TimeCurrent();
             if(ib_event > 0) {
                sl  = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(ib_ask + m5_atr * g_sc.inside_bar_tp1_atr_mult, _Digits);
@@ -9246,8 +9261,8 @@ void CheckNativeScalperSetups() {
                tp2 = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_tp2_atr_mult, _Digits);
                g_inside_bar_last_sell_time = ib_now;
             }
-            PrintFormat("FORGE 2.7.42: INSIDE_BAR %s fired @ %.2f (ADX=%.1f, h1_trend=%.2f)",
-                        ib_dir, (ib_event > 0 ? ib_ask : ib_bid), m5_adx, h1_trend_strength);
+            PrintFormat("FORGE 2.7.43: INSIDE_BAR %s fired @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
+                        ib_dir, (ib_event > 0 ? ib_ask : ib_bid), m5_adx, h1_trend_strength, ib_score);
          }
       }
    }
@@ -11051,6 +11066,146 @@ int ForgeResolveNumTrades(const int base_n, const int env_lo, const int env_hi, 
       + " env=[" + IntegerToString(lo) + "," + IntegerToString(hi) + "] " + parts;
    return n;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2.7.43 — Layered architecture helpers (FORGE_LOGIC_TAXONOMY.md alignment)
+// ═══════════════════════════════════════════════════════════════════════════
+// Layer 4 (atomic predicates), Layer 5 (filter chain), Layer 6 (scoring),
+// Layer 8 (risk engine). Reusable across all setup dispatchers.
+//
+// Layer 4 — Atomic Predicates: pure bool-returning predicates. Each one
+// asks ONE question about the market state. Stateless, easy to test.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Atom: is the current M5 ADX at or above a threshold?
+bool Atom_M5AdxAbove(const double threshold) {
+   double buf[1];
+   if(CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, buf) != 1) return false;
+   return buf[0] >= threshold;
+}
+
+// Atom: is M15 EMA20 vs EMA50 aligned with the given direction (+1=BUY, -1=SELL)?
+// Allows equality (sideways/flat) for either direction — strict requires non-zero diff.
+bool Atom_M15TrendAligned(const int direction, const bool strict = false) {
+   double e20[1], e50[1];
+   if(CopyBuffer(g_mtf[1].h_ma20, 0, 1, 1, e20) != 1) return false;
+   if(CopyBuffer(g_mtf[1].h_ma50, 0, 1, 1, e50) != 1) return false;
+   double diff = e20[0] - e50[0];
+   if(direction > 0) return strict ? (diff > 0.0) : (diff >= 0.0);
+   return strict ? (diff < 0.0) : (diff <= 0.0);
+}
+
+// Atom: is H1 trend strength aligned with direction AND magnitude ≥ min_strength?
+// h1_trend_strength is passed in (computed by caller from indicator state).
+bool Atom_H1TrendAligned(const double h1_trend_strength, const int direction, const double min_strength) {
+   if(MathAbs(h1_trend_strength) < min_strength) return false;
+   if(direction > 0) return h1_trend_strength > 0.0;
+   return h1_trend_strength < 0.0;
+}
+
+// Atom: is M5 ATR > 0 (sanity check before any ATR-multiplier arithmetic)?
+bool Atom_M5AtrPositive(const double m5_atr) {
+   return m5_atr > 0.0;
+}
+
+// Atom: is M5 RSI in the range [lo, hi]?
+bool Atom_M5RsiInRange(const double m5_rsi, const double lo, const double hi) {
+   return m5_rsi >= lo && m5_rsi <= hi;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Layer 5 — Filter Chain: helpers that combine an atom check with a SKIP-log
+// emission + early-return signal. Caller idiom: `if(!Filter_X(...)) return;`.
+// Each filter emits its own gate_code on failure (see config/gate_legend.json).
+// ───────────────────────────────────────────────────────────────────────────
+
+// Filter: ADX floor — emits "<setup>_adx_below_min" on fail.
+// setup_lower is the setup_type lowercased (caller supplies it to avoid runtime lowercasing).
+bool Filter_AdxFloor(const string setup_type, const string setup_lower, const string direction,
+                    const double m5_adx, const double threshold,
+                    const double mid, const double spread, const double m5_atr,
+                    const double m5_rsi, const double m5_bb_u, const double m5_bb_l,
+                    const double m5_bb_m, const double h1_trend_strength) {
+   if(Atom_M5AdxAbove(threshold) || m5_adx >= threshold) return true;
+   JournalRecordSignal("SKIP", setup_lower + "_adx_below_min", setup_type, direction,
+                       mid, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m,
+                       0, h1_trend_strength, 0);
+   return false;
+}
+
+// Filter: M15 trend agreement — emits "<setup>_m15_misalign" on fail.
+bool Filter_M15TrendAligned(const string setup_type, const string setup_lower, const string direction,
+                           const int direction_sign,
+                           const double mid, const double spread, const double m5_atr,
+                           const double m5_rsi, const double m5_adx,
+                           const double m5_bb_u, const double m5_bb_l, const double m5_bb_m,
+                           const double h1_trend_strength) {
+   if(Atom_M15TrendAligned(direction_sign)) return true;
+   JournalRecordSignal("SKIP", setup_lower + "_m15_misalign", setup_type, direction,
+                       mid, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m,
+                       0, h1_trend_strength, 0);
+   return false;
+}
+
+// Filter: per-direction cooldown — emits "<setup>_cooldown" on fail.
+// last_time is the BUY-side or SELL-side timestamp for this setup (caller picks).
+// Pairs with CooldownBypassActive (§3 bypass pattern).
+bool Filter_Cooldown(const string setup_type, const string setup_lower, const string direction,
+                    const datetime last_time, const int cooldown_seconds, const double m5_adx,
+                    const double mid, const double spread, const double m5_atr,
+                    const double m5_rsi, const double m5_bb_u, const double m5_bb_l,
+                    const double m5_bb_m, const double h1_trend_strength) {
+   datetime now = TimeCurrent();
+   bool cool_ok = (cooldown_seconds <= 0
+                   || last_time == 0
+                   || (now - last_time) >= cooldown_seconds
+                   || CooldownBypassActive(direction, setup_type, m5_adx));
+   if(cool_ok) return true;
+   JournalRecordSignal("SKIP", setup_lower + "_cooldown", setup_type, direction,
+                       mid, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m,
+                       0, h1_trend_strength, 0);
+   return false;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Layer 6 — Scoring Engine: weighted confidence score 0..100 from atom
+// evaluations. v2.7.43 first cut: informational only — logged via PrintFormat
+// on TAKEN. No score-gate yet (operator can add one once scores are observed).
+// ───────────────────────────────────────────────────────────────────────────
+
+// Score: weighted confidence from independent atoms.
+// Weights are fixed constants (sum=100); future versions may move to atom.* knobs.
+// direction_sign: +1=BUY, -1=SELL.
+int Score_SetupConfidence(const int direction_sign, const double m5_adx, const double adx_floor,
+                         const double h1_trend_strength, const double h1_strong_threshold) {
+   int score = 0;
+   // (+30) M5 ADX above floor — gates fire only when trend strength qualifies
+   if(m5_adx >= adx_floor) score += 30;
+   // (+25) ADX strongly above floor (well above bar — extra conviction)
+   if(m5_adx >= adx_floor + 10.0) score += 25;
+   // (+25) M15 trend agreement
+   if(Atom_M15TrendAligned(direction_sign)) score += 25;
+   // (+20) H1 trend agreement with magnitude
+   if(Atom_H1TrendAligned(h1_trend_strength, direction_sign, h1_strong_threshold)) score += 20;
+   return MathMin(100, score);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Layer 8 — Risk Engine: named wrapper around the combined_lot_factor product
+// line. v2.7.43 first cut: pure semantic rename — no behavior change. Future
+// versions can add max_daily_drawdown / risk_per_trade gates here.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Risk: compute final per-leg lot from base + multipliers + factors.
+// base_lot * scalper_lot_factor * Πfactors, floored at floor_mult.
+// Caller passes the precomputed combined multiplier product.
+double Risk_ApproveLot(const double base_lot, const double combined_lot_factor_product) {
+   return NormalizeLot(base_lot * combined_lot_factor_product);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// End layered helpers
+// ═══════════════════════════════════════════════════════════════════════════
 
 bool JsonHasKey(const string &json, const string &key) {
    string search = "\"" + key + "\"";

@@ -371,9 +371,17 @@ def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg):
     # 5. Lot factor present in combined_lot_factor product (don't quietly drop)
     assert "ma_crossover_factor" in ea_src, \
         "ma_crossover_factor not multiplied into combined_lot_factor"
-    # 6. All 3 SKIP gate codes emitted by EA exist in gate_legend.json
+    # 6. All 3 SKIP gate codes are emitted (via Filter_* helpers in v2.7.43 — constructed
+    #    from setup_lower + suffix at runtime, so check gate_legend.json instead of ea_src)
+    import json as _json
+    from pathlib import Path as _Path
+    legend = _json.loads((_Path(__file__).parent.parent.parent / "config" / "gate_legend.json").read_text())
     for gate in ("ma_crossover_adx_below_min", "ma_crossover_m15_misalign", "ma_crossover_cooldown"):
-        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+        assert gate in legend, f"gate code {gate} not in gate_legend.json"
+    # Verify the dispatch uses the layered helpers (Filter_AdxFloor, Filter_M15TrendAligned, Filter_Cooldown)
+    assert 'Filter_AdxFloor("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_AdxFloor helper"
+    assert 'Filter_M15TrendAligned("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_M15TrendAligned helper"
+    assert 'Filter_Cooldown("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_Cooldown helper"
 
 
 def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg):
@@ -475,9 +483,16 @@ def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
     # 5. Lot factor present in combined_lot_factor product
     assert "inside_bar_factor" in ea_src, \
         "inside_bar_factor not multiplied into combined_lot_factor"
-    # 6. Both SKIP gate codes emitted by EA exist
+    # 6. Both SKIP gate codes registered (Filter_* helpers construct codes from
+    #    setup_lower + suffix at runtime in v2.7.43)
+    import json as _json
+    from pathlib import Path as _Path
+    legend = _json.loads((_Path(__file__).parent.parent.parent / "config" / "gate_legend.json").read_text())
     for gate in ("inside_bar_adx_below_min", "inside_bar_cooldown"):
-        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+        assert gate in legend, f"gate code {gate} not in gate_legend.json"
+    # Verify dispatch uses the layered helpers
+    assert 'Filter_AdxFloor("INSIDE_BAR"' in ea_src, "INSIDE_BAR not migrated to Filter_AdxFloor helper"
+    assert 'Filter_Cooldown("INSIDE_BAR"' in ea_src, "INSIDE_BAR not migrated to Filter_Cooldown helper"
 
 
 def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg):

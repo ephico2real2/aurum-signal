@@ -645,9 +645,79 @@ You want to add a new logic check. Ask:
 
 ---
 
+## §15. Layered helpers (v2.7.43)
+
+The patterns above describe *what* shape each layer takes when inlined into a setup
+dispatcher. v2.7.43 extracts the most common idioms as reusable helper functions in
+`ea/FORGE.mq5`, letting a dispatch block compose layers 4 → 5 → 6 → 9 → 8 explicitly
+instead of inlining each as ad-hoc code. The helpers are forward-declared near
+line 1117 and defined near line 11055 (above the JsonHasKey utility block).
+
+### Layer 4 — Atom helpers (5)
+
+| Helper | Returns | What it asks |
+|---|---|---|
+| `Atom_M5AdxAbove(threshold)` | bool | Is current M5 ADX ≥ threshold? |
+| `Atom_M15TrendAligned(direction, strict=false)` | bool | Is M15 EMA20–EMA50 sign aligned with direction (+1=BUY, -1=SELL)? `strict=true` rejects ties. |
+| `Atom_H1TrendAligned(h1_trend_strength, direction, min_strength)` | bool | Is H1 trend strength aligned with direction AND magnitude ≥ min_strength? |
+| `Atom_M5AtrPositive(m5_atr)` | bool | Sanity check: m5_atr > 0 (guard before ATR-multiplier arithmetic) |
+| `Atom_M5RsiInRange(m5_rsi, lo, hi)` | bool | Is M5 RSI in [lo, hi]? |
+
+### Layer 5 — Filter helpers (3)
+
+Each combines an atom check with a SKIP-log emission. Caller idiom: `if(!Filter_X(...)) return;` or `bool ok = Filter_A(...) && Filter_B(...) && Filter_C(...);`
+
+| Helper | Emits on fail | Bypass-hook |
+|---|---|---|
+| `Filter_AdxFloor(setup, setup_lower, dir, m5_adx, threshold, ...journal_args)` | `<setup_lower>_adx_below_min` | n/a |
+| `Filter_M15TrendAligned(setup, setup_lower, dir, dir_sign, ...journal_args)` | `<setup_lower>_m15_misalign` | n/a |
+| `Filter_Cooldown(setup, setup_lower, dir, last_time, cool_sec, m5_adx, ...journal_args)` | `<setup_lower>_cooldown` | calls `CooldownBypassActive(dir, setup, m5_adx)` internally per §3 |
+
+`setup_lower` is the setup_type lowercased (e.g. `"ma_crossover"`); caller passes it
+rather than runtime-lowercasing for clarity in code review.
+
+### Layer 6 — Scoring helper (1, informational)
+
+`Score_SetupConfidence(direction_sign, m5_adx, adx_floor, h1_trend_strength, h1_strong_threshold)` → `int` 0..100.
+
+Weighted sum of independent atom evaluations (sum=100):
+- +30 ADX ≥ floor
+- +25 ADX ≥ floor + 10 (strongly above)
+- +25 M15 trend aligned
+- +20 H1 trend aligned with magnitude
+
+First cut is **informational only** — logged via `PrintFormat` on TAKEN; no score-gate
+yet. Future versions may add `atom.<setup>_min_score` knobs to block low-confidence
+entries after operator observes score distributions in run journals.
+
+### Layer 8 — Risk helper (1, semantic wrapper)
+
+`Risk_ApproveLot(base_lot, combined_lot_factor_product)` → `double`.
+
+Wraps `NormalizeLot(base_lot * combined_lot_factor)`. v2.7.43 first cut is a pure
+semantic rename — no behavior change. Future versions can absorb `max_daily_drawdown`
+checks, `risk_per_trade` calculation, or correlation guardrails inside this function.
+
+### Reference implementations
+
+v2.7.43 migrates **2 of the 14 setups** to the new helpers as reference: `MA_CROSSOVER`
+(uses all three filters: AdxFloor + M15TrendAligned + Cooldown) and `INSIDE_BAR`
+(AdxFloor + Cooldown only — no M15 filter). The remaining 12 setups (BB_BREAKOUT,
+BB_BOUNCE, BB_PULLBACK_SCALP, MOMENTUM_DUMP, BB_BREAKOUT_RETEST, VWAP_REVERSION,
+FIB_CONFLUENCE, BB_SQUEEZE, ORB, GAP_AND_GO, DOUBLE_TOP/BOTTOM, H&S/IH&S, FLAG_PENNANT,
+TRENDLINE_BOUNCE, SR_FLIP, FRACTIONAL_SELL_IN_BULL, BULL_DAY_DIP_BUY) stay monolithic
+for now; their migration follows the same pattern when touched.
+
+The MA_CROSSOVER dispatch shrank from ~30 lines to ~16 lines. Net code WAS NOT smaller
+(the helpers added ~150 lines) but the dispatch is now LEGIBLE in terms of the 12-layer
+model: every line reads as a layer.
+
+---
+
 ## §14. Changelog
 
 | Date | Change |
 |------|--------|
 | 2026-05-12 | Initial doc. 7 core patterns catalogued (Filter, Bypass, Amplifier, Composite, State tracker, Cooldown, Bypass-list). §9 knob design. §10 anti-patterns. §11 decision flow showing pattern composition. §12 pattern selection decision tree. Cross-referenced from Decision Stack, Naming Conventions, Regime Taxonomy, Lot Sizing Reference, Trailing-Add Ladder feature doc. |
 | 2026-05-12 | v2.7.42 backfill of 11 new C-extended setups (commits `04c166c`..`7d42a10`) + Phase 2 naming-convention renames (commits `21b5b8d`, `5acd97f`): §4 amplifier registry adds 12 setup-specific lot throttles (inverse-amplifier subsection); §5 composite registry adds 11 new setup-composite Det*Event helpers + setup_type strings; §6 state-tracker registry adds 28 cooldown trackers + multi-value swing-buffer + ORB-window state. All audited against §2/§3/§4/§7 patterns: 100% conformance (3+ SKIP codes each → gate_legend, CooldownBypassActive hooked per setup, safe-default 1.0 fold for all lot factors, 0-guarded cooldown queries). |
+| 2026-05-12 | v2.7.43 — §15 added. Extracts Layer 4 atoms (5 helpers: `Atom_M5AdxAbove`, `Atom_M15TrendAligned`, `Atom_H1TrendAligned`, `Atom_M5AtrPositive`, `Atom_M5RsiInRange`), Layer 5 filters (3 helpers with auto-emitted SKIP codes: `Filter_AdxFloor`, `Filter_M15TrendAligned`, `Filter_Cooldown` with internal `CooldownBypassActive` hook), Layer 6 scoring (`Score_SetupConfidence` weighted sum 0..100, informational only), Layer 8 risk wrapper (`Risk_ApproveLot` semantic rename). MA_CROSSOVER + INSIDE_BAR migrated as reference implementations; other 12 setups stay monolithic for now. Tests updated to assert dispatch uses Filter_* helpers + gate codes exist in legend. |
