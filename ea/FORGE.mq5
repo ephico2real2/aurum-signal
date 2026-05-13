@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.137"
+#property version "2.138"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.67";
+const string FORGE_VERSION = "2.7.68";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -263,6 +263,21 @@ double   g_eval_m5_velocity_5bar  = 0.0; // |close[0] - close[5]| / atr — sust
 double   g_eval_m5_adx_delta_5bar = 0.0; // adx[0] - adx[5] — momentum strengthening (>0) or fading (<0)
 double   g_eval_m5_macd_slope_5bar= 0.0; // (macd[0] - macd[5]) / atr — MACD direction change rate
 double   g_eval_m5_atr_ratio_5bar = 0.0; // atr[0] / atr[5] — volatility expansion (>1) or contraction (<1)
+// v2.7.68 — ICT/SMC market-formation atoms (price structure detection, non-repainting closed-bars-only).
+//   30-bar M5 lookback. 5-bar fractal pivot (N=2 left + center + 2 right) for swing detection.
+double   g_eval_last_swing_high_price    = 0.0; // most recent confirmed M5 swing high
+double   g_eval_last_swing_low_price     = 0.0; // most recent confirmed M5 swing low
+int      g_eval_last_swing_high_bars_ago = -1;  // bars since the swing high (-1 = none in window)
+int      g_eval_last_swing_low_bars_ago  = -1;
+int      g_eval_bos_direction            = 0;   // +1=bullish BOS (close > last swing high), -1=bearish, 0=none
+int      g_eval_bos_bars_ago             = -1;  // bars since BOS confirmation (-1 = none)
+double   g_eval_bullish_fvg_low          = 0.0; // most recent bullish FVG bounds (gap above bar i)
+double   g_eval_bullish_fvg_high         = 0.0;
+double   g_eval_bearish_fvg_low          = 0.0; // most recent bearish FVG bounds
+double   g_eval_bearish_fvg_high         = 0.0;
+double   g_eval_last_bullish_ob_low      = 0.0; // last bearish candle low before bullish breakout
+double   g_eval_last_bearish_ob_high     = 0.0; // last bullish candle high before bearish breakdown
+int      g_eval_liquidity_sweep_recent   = 0;   // +1=buy-side sweep, -1=sell-side, 0=none
 double   g_eval_h1_di_plus       = 0.0;
 double   g_eval_h1_di_minus      = 0.0;
 double   g_eval_h1_di_balance    = 0.0;
@@ -3307,7 +3322,21 @@ void WriteMarketData() {
    j += "\"m5_velocity_5bar\":"   + DoubleToString(g_eval_m5_velocity_5bar, 4)  + ",";
    j += "\"m5_adx_delta_5bar\":"  + DoubleToString(g_eval_m5_adx_delta_5bar, 2) + ",";
    j += "\"m5_macd_slope_5bar\":" + DoubleToString(g_eval_m5_macd_slope_5bar, 4) + ",";
-   j += "\"m5_atr_ratio_5bar\":"  + DoubleToString(g_eval_m5_atr_ratio_5bar, 3);
+   j += "\"m5_atr_ratio_5bar\":"  + DoubleToString(g_eval_m5_atr_ratio_5bar, 3) + ",";
+   // v2.7.68 — ICT/SMC market-formation atoms (price structure detection)
+   j += "\"last_swing_high_price\":"    + DoubleToString(g_eval_last_swing_high_price, 2)  + ",";
+   j += "\"last_swing_low_price\":"     + DoubleToString(g_eval_last_swing_low_price, 2)   + ",";
+   j += "\"last_swing_high_bars_ago\":" + IntegerToString(g_eval_last_swing_high_bars_ago) + ",";
+   j += "\"last_swing_low_bars_ago\":"  + IntegerToString(g_eval_last_swing_low_bars_ago)  + ",";
+   j += "\"bos_direction\":"            + IntegerToString(g_eval_bos_direction)            + ",";
+   j += "\"bos_bars_ago\":"             + IntegerToString(g_eval_bos_bars_ago)             + ",";
+   j += "\"bullish_fvg_low\":"          + DoubleToString(g_eval_bullish_fvg_low, 2)        + ",";
+   j += "\"bullish_fvg_high\":"         + DoubleToString(g_eval_bullish_fvg_high, 2)       + ",";
+   j += "\"bearish_fvg_low\":"          + DoubleToString(g_eval_bearish_fvg_low, 2)        + ",";
+   j += "\"bearish_fvg_high\":"         + DoubleToString(g_eval_bearish_fvg_high, 2)       + ",";
+   j += "\"last_bullish_ob_low\":"      + DoubleToString(g_eval_last_bullish_ob_low, 2)    + ",";
+   j += "\"last_bearish_ob_high\":"     + DoubleToString(g_eval_last_bearish_ob_high, 2)   + ",";
+   j += "\"liquidity_sweep_recent\":"   + IntegerToString(g_eval_liquidity_sweep_recent);
    // pattern_score is setup-specific (caller-passed to JournalRecordSignal), not a tick-state global —
    // not exposed here. Use SIGNALS table for per-trade pattern_score.
    j += "},";
@@ -5722,6 +5751,123 @@ void ForgeEvalAtoms() {
    }
    g_eval_m5_adx_delta_5bar = m5_adx_now - m5_adx_5;
    g_eval_m5_atr_ratio_5bar = (m5_atr_5 > 0.0) ? (m5_atr_now / m5_atr_5) : 1.0;
+
+   // v2.7.68 — ICT/SMC market-formation atoms (price structure, closed-bars only, non-repainting).
+   //   Methodology per MQL5 articles 15017 + 16340 + 20569 (BOS, OB, FVG, liquidity sweep).
+   //   30-bar M5 lookback. 5-bar fractal pivot (N=2). Indexing: shift 1 = newest closed bar.
+   const int SMC_LOOKBACK = 30;
+   double smc_highs[30], smc_lows[30], smc_opens[30], smc_closes[30];
+   bool _smc_data_ok = (CopyHigh(_Symbol, PERIOD_M5, 1, SMC_LOOKBACK, smc_highs)  == SMC_LOOKBACK
+                    && CopyLow (_Symbol, PERIOD_M5, 1, SMC_LOOKBACK, smc_lows)   == SMC_LOOKBACK
+                    && CopyOpen(_Symbol, PERIOD_M5, 1, SMC_LOOKBACK, smc_opens)  == SMC_LOOKBACK
+                    && CopyClose(_Symbol,PERIOD_M5, 1, SMC_LOOKBACK, smc_closes) == SMC_LOOKBACK);
+   if(_smc_data_ok) {
+      // MQL5 CopyHigh with shift=1 returns array where [0]=oldest, [SMC_LOOKBACK-1]=newest closed bar.
+      int newest = SMC_LOOKBACK - 1;  // index of bar 1 (most recent closed)
+
+      // 1) SWING HIGH/LOW (5-bar fractal: center > 2 left AND 2 right neighbors)
+      //    Scan from second-most-recent backward (need 2 right bars to confirm).
+      g_eval_last_swing_high_price = 0.0;
+      g_eval_last_swing_high_bars_ago = -1;
+      for(int i = newest - 2; i >= 2; i--) {
+         if(smc_highs[i] > smc_highs[i-1] && smc_highs[i] > smc_highs[i-2]
+            && smc_highs[i] > smc_highs[i+1] && smc_highs[i] > smc_highs[i+2]) {
+            g_eval_last_swing_high_price = smc_highs[i];
+            g_eval_last_swing_high_bars_ago = newest - i;
+            break;
+         }
+      }
+      g_eval_last_swing_low_price = 0.0;
+      g_eval_last_swing_low_bars_ago = -1;
+      for(int i = newest - 2; i >= 2; i--) {
+         if(smc_lows[i] < smc_lows[i-1] && smc_lows[i] < smc_lows[i-2]
+            && smc_lows[i] < smc_lows[i+1] && smc_lows[i] < smc_lows[i+2]) {
+            g_eval_last_swing_low_price = smc_lows[i];
+            g_eval_last_swing_low_bars_ago = newest - i;
+            break;
+         }
+      }
+
+      // 2) BOS (Break of Structure) — most recent closed-bar close beyond last swing high/low
+      g_eval_bos_direction = 0;
+      g_eval_bos_bars_ago = -1;
+      // Walk back from newest bar, looking for first bar close beyond the swing levels
+      for(int i = newest; i >= 0; i--) {
+         if(g_eval_last_swing_high_price > 0.0 && smc_closes[i] > g_eval_last_swing_high_price
+            && (newest - i) <= 10) {  // BOS must be within last 10 closed bars to be "recent"
+            g_eval_bos_direction = 1;
+            g_eval_bos_bars_ago = newest - i;
+            break;
+         }
+         if(g_eval_last_swing_low_price > 0.0 && smc_closes[i] < g_eval_last_swing_low_price
+            && (newest - i) <= 10) {
+            g_eval_bos_direction = -1;
+            g_eval_bos_bars_ago = newest - i;
+            break;
+         }
+      }
+
+      // 3) FVG (Fair Value Gap) — 3-bar imbalance, scan most recent 15 bars
+      //    Bullish FVG: bar[i+2].low > bar[i].high (gap up between bar i+2 and bar i, bar i+1 spans gap)
+      //    Bearish FVG: bar[i+2].high < bar[i].low (gap down)
+      g_eval_bullish_fvg_low = 0.0;
+      g_eval_bullish_fvg_high = 0.0;
+      g_eval_bearish_fvg_low = 0.0;
+      g_eval_bearish_fvg_high = 0.0;
+      for(int i = newest - 2; i >= newest - 15 && i >= 0; i--) {
+         if(g_eval_bullish_fvg_low == 0.0 && smc_lows[i+2] > smc_highs[i]) {
+            g_eval_bullish_fvg_low  = smc_highs[i];   // gap bottom
+            g_eval_bullish_fvg_high = smc_lows[i+2];  // gap top
+         }
+         if(g_eval_bearish_fvg_high == 0.0 && smc_highs[i+2] < smc_lows[i]) {
+            g_eval_bearish_fvg_low  = smc_highs[i+2]; // gap top
+            g_eval_bearish_fvg_high = smc_lows[i];    // gap bottom (higher)
+         }
+         if(g_eval_bullish_fvg_low > 0.0 && g_eval_bearish_fvg_low > 0.0) break;
+      }
+
+      // 4) ORDER BLOCK — last opposing candle before sharp move (last 15 bars)
+      //    Bullish OB: last bearish candle (close<open) followed by 2+ bullish candles closing above
+      //    Bearish OB: last bullish candle (close>open) followed by 2+ bearish candles closing below
+      g_eval_last_bullish_ob_low = 0.0;
+      g_eval_last_bearish_ob_high = 0.0;
+      for(int i = newest - 3; i >= newest - 15 && i >= 0; i--) {
+         bool bearish_i = (smc_closes[i] < smc_opens[i]);
+         bool bull_next_2 = (smc_closes[i+1] > smc_opens[i+1] && smc_closes[i+2] > smc_opens[i+2]
+                             && smc_closes[i+2] > smc_highs[i]);
+         if(g_eval_last_bullish_ob_low == 0.0 && bearish_i && bull_next_2) {
+            g_eval_last_bullish_ob_low = smc_lows[i];
+         }
+         bool bull_i  = (smc_closes[i] > smc_opens[i]);
+         bool bear_next_2 = (smc_closes[i+1] < smc_opens[i+1] && smc_closes[i+2] < smc_opens[i+2]
+                             && smc_closes[i+2] < smc_lows[i]);
+         if(g_eval_last_bearish_ob_high == 0.0 && bull_i && bear_next_2) {
+            g_eval_last_bearish_ob_high = smc_highs[i];
+         }
+         if(g_eval_last_bullish_ob_low > 0.0 && g_eval_last_bearish_ob_high > 0.0) break;
+      }
+
+      // 5) LIQUIDITY SWEEP — wick beyond prior swing then close back inside (last 5 bars)
+      g_eval_liquidity_sweep_recent = 0;
+      if(g_eval_last_swing_high_price > 0.0) {
+         for(int i = newest; i >= newest - 5 && i >= 0; i--) {
+            // Buy-side sweep: wick above swing high but close BELOW it
+            if(smc_highs[i] > g_eval_last_swing_high_price && smc_closes[i] < g_eval_last_swing_high_price) {
+               g_eval_liquidity_sweep_recent = 1;
+               break;
+            }
+         }
+      }
+      if(g_eval_liquidity_sweep_recent == 0 && g_eval_last_swing_low_price > 0.0) {
+         for(int i = newest; i >= newest - 5 && i >= 0; i--) {
+            // Sell-side sweep: wick below swing low but close ABOVE it
+            if(smc_lows[i] < g_eval_last_swing_low_price && smc_closes[i] > g_eval_last_swing_low_price) {
+               g_eval_liquidity_sweep_recent = -1;
+               break;
+            }
+         }
+      }
+   }
 
    // M1 ATR
    if(g_m1_atr != INVALID_HANDLE && CopyBuffer(g_m1_atr, 0, 0, 1, _buf) == 1) g_eval_m1_atr = _buf[0];
