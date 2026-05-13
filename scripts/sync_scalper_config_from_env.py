@@ -361,6 +361,19 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_DUMP_PYRAMID_MAX_FACTOR":    ("safety", "dump_pyramid_max_factor",      "float",  0.1,  20.0),
     # v2.7.59 — MOMENTUM_DUMP cascade enable (gate the v2.7.28 hardcoded skip)
     "FORGE_GATE_DUMP_CASCADE_ENABLED":           ("safety", "dump_cascade_enabled",         "bool01", None, None),
+    # v2.7.60 — MD V2 composite
+    "FORGE_GATE_DUMP_V2_ENABLED":                ("safety", "dump_v2_enabled",              "bool01", None, None),
+    "FORGE_GATE_DUMP_SELL_H4_MAX":               ("safety", "dump_sell_h4_max",             "float",  -10.0, 10.0),
+    "FORGE_GATE_DUMP_BUY_H4_MIN":                ("safety", "dump_buy_h4_min",              "float",  -10.0, 10.0),
+    "FORGE_GATE_DUMP_SELL_MACD_MAX":             ("safety", "dump_sell_macd_max",           "float",  -10.0, 10.0),
+    "FORGE_GATE_DUMP_BUY_MACD_MIN":              ("safety", "dump_buy_macd_min",            "float",  -10.0, 10.0),
+    "FORGE_GATE_DUMP_SELL_VWAP_ATR_MIN":         ("safety", "dump_sell_vwap_atr_min",       "float",  0.0,   5.0),
+    "FORGE_GATE_DUMP_BUY_VWAP_ATR_MIN":          ("safety", "dump_buy_vwap_atr_min",        "float",  0.0,   5.0),
+    "FORGE_GATE_DUMP_SELL_POC_ATR_MIN":          ("safety", "dump_sell_poc_atr_min",        "float",  0.0,   5.0),
+    "FORGE_GATE_DUMP_BUY_POC_ATR_MIN":           ("safety", "dump_buy_poc_atr_min",         "float",  0.0,   5.0),
+    "FORGE_GATE_DUMP_MAX_ADX":                   ("safety", "dump_max_adx",                 "float",  0.0,   80.0),
+    "FORGE_GATE_DUMP_SELL_LATE_RSI_BLOCK":       ("safety", "dump_sell_late_rsi_block",     "float",  0.0,   100.0),
+    "FORGE_GATE_DUMP_BUY_LATE_RSI_BLOCK":        ("safety", "dump_buy_late_rsi_block",      "float",  0.0,   100.0),
     # 2.7.32 — Option B (default OFF) direction-confirmation gate
     "FORGE_DUMP_REQUIRE_BAR_CONFIRM": ("safety", "dump_require_bar_confirm", "bool01", None, None),
     # 2.7.31 — BB_PULLBACK_SCALP additive setup (Run 19 Issue 4 / Task #53)
