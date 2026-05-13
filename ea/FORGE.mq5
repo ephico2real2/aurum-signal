@@ -1654,6 +1654,16 @@ void EnsureIndicators() {
    g_h_bb   = iBands(_Symbol, PERIOD_H1, 20, 0, 2.0, PRICE_CLOSE);
    g_h_macd       = iMACD(_Symbol, PERIOD_H1, 12, 26, 9, PRICE_CLOSE);
    g_h_osma_scalp = iOsMA(_Symbol, PERIOD_M5, g_sc.breakout_macd_fast, g_sc.breakout_macd_slow, g_sc.breakout_macd_signal, PRICE_CLOSE);
+   // v2.7.63 — visibility on OsMA init success/failure (Run 27→v2.7.62 macd-zero
+   //   incident root cause was here without diagnostic).
+   if(g_h_osma_scalp == INVALID_HANDLE)
+      PrintFormat("FORGE 2.7.63 INIT ERROR: g_h_osma_scalp = INVALID_HANDLE (fast=%d slow=%d sig=%d). "
+                  "macd_histogram column will fall back to iMACD path.",
+                  g_sc.breakout_macd_fast, g_sc.breakout_macd_slow, g_sc.breakout_macd_signal);
+   else
+      PrintFormat("FORGE 2.7.63: g_h_osma_scalp initialized (handle=%d, M5 OsMA %d/%d/%d)",
+                  g_h_osma_scalp,
+                  g_sc.breakout_macd_fast, g_sc.breakout_macd_slow, g_sc.breakout_macd_signal);
    g_h_adx        = iADX(_Symbol, PERIOD_H1, 14);
    g_h4_ma20 = iMA(_Symbol, PERIOD_H4, 20, 0, MODE_EMA, PRICE_CLOSE);
    g_h4_ma50 = iMA(_Symbol, PERIOD_H4, 50, 0, MODE_EMA, PRICE_CLOSE);
@@ -7597,11 +7607,37 @@ void JournalRecordSignal(string outcome, string gate_reason,
    // v2.7.63 — Self-populate macd_hist if caller didn't pass it (most call sites use default 0.0).
    //   Run 27 v2.7.57 had macd correctly logged at G5001 (-0.79); v2.7.62 logged 0.0 for ALL 18,804
    //   signals because v2.7.58-v2.7.62 added new call sites that don't pass macd_hist explicitly.
-   //   This fix populates the column at the write site so the column is always meaningful.
-   if(macd_hist == 0.0 && g_h_osma_scalp != INVALID_HANDLE) {
-      double _macd_self_buf[1];
-      if(CopyBuffer(g_h_osma_scalp, 0, 0, 1, _macd_self_buf) == 1)
+   //   Hardened with iMACD fallback (g_mtf[0].h_macd is broker-provided and proven working in
+   //   WriteMTFBlock at line ~1697). On-tick handle re-init if OsMA still INVALID_HANDLE.
+   if(macd_hist == 0.0) {
+      // Retry init if OsMA never came up (broker data may now be available)
+      if(g_h_osma_scalp == INVALID_HANDLE)
+         g_h_osma_scalp = iOsMA(_Symbol, PERIOD_M5,
+                                g_sc.breakout_macd_fast,
+                                g_sc.breakout_macd_slow,
+                                g_sc.breakout_macd_signal, PRICE_CLOSE);
+      double _macd_self_buf[1], _macd_sig_buf[1];
+      bool _macd_ok = false;
+      // Primary: OsMA M5 buffer 0 = MACD−Signal directly (single buffer read)
+      if(g_h_osma_scalp != INVALID_HANDLE
+         && CopyBuffer(g_h_osma_scalp, 0, 0, 1, _macd_self_buf) == 1) {
          macd_hist = _macd_self_buf[0];
+         _macd_ok = true;
+      }
+      // Fallback: iMACD M5 main − signal (two buffer reads). Same math, different broker handle.
+      else if(g_mtf[0].h_macd != INVALID_HANDLE
+              && CopyBuffer(g_mtf[0].h_macd, 0, 0, 1, _macd_self_buf) == 1
+              && CopyBuffer(g_mtf[0].h_macd, 1, 0, 1, _macd_sig_buf) == 1) {
+         macd_hist = _macd_self_buf[0] - _macd_sig_buf[0];
+         _macd_ok = true;
+      }
+      // Diagnostic: if both handles failed, log once per N seconds to surface the issue
+      static datetime _last_macd_warn = 0;
+      if(!_macd_ok && (TimeCurrent() - _last_macd_warn) > 300) {
+         _last_macd_warn = TimeCurrent();
+         PrintFormat("FORGE 2.7.63 WARN: macd self-populate failed (osma_handle=%d, mtf0_macd_handle=%d) — column will log 0.0",
+                     g_h_osma_scalp, g_mtf[0].h_macd);
+      }
    }
 
    string session  = ComputeCurrentSessionLabel();
