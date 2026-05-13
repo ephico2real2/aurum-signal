@@ -561,3 +561,39 @@ def test_orb_setup_wired_end_to_end(ea_src, cfg):
     # 7. SKIP codes
     for gate in ("orb_adx_below_min", "orb_cooldown"):
         assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"
+
+
+def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg):
+    """v2.7.42 GAP_AND_GO — C-extended Tier 2 — bar-time-skip + price-jump."""
+    # 1. setup_type literal emitted
+    assert 'setup_type = "GAP_AND_GO"' in ea_src, \
+        "GAP_AND_GO setup_type literal missing"
+    # 2. Detector helper exists
+    assert "DetectGapAndGoEvent" in ea_src, \
+        "DetectGapAndGoEvent helper missing"
+    # 3. Detector uses iTime for skip + iOpen/iClose for gap
+    assert "iTime(_Symbol, PERIOD_M5, 0)" in ea_src, \
+        "GAP_AND_GO detector should read M5 bar times"
+    # 4. All 9 config knobs present
+    for key in (
+        ("setup", "gap_and_go_enabled"),
+        ("atom", "gap_and_go_min_time_skip_seconds"),
+        ("atom", "gap_and_go_min_gap_atr"),
+        ("atom", "gap_and_go_max_gap_atr"),
+        ("geometry", "gap_and_go_lot_factor"),
+        ("geometry", "gap_and_go_sl_atr_mult"),
+        ("geometry", "gap_and_go_tp1_atr_mult"),
+        ("geometry", "gap_and_go_tp2_atr_mult"),
+        ("timing", "gap_and_go_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}' section"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 5. Default-OFF + sensible bounds
+    assert cfg["setup"]["gap_and_go_enabled"] == 0, "gap_and_go_enabled should default to 0"
+    assert cfg["atom"]["gap_and_go_min_gap_atr"] < cfg["atom"]["gap_and_go_max_gap_atr"], \
+        "gap_and_go min < max"
+    # 6. Lot factor wired
+    assert "gap_and_go_factor" in ea_src, "gap_and_go_factor not in combined_lot_factor"
+    # 7. SKIP code
+    assert '"gap_and_go_cooldown"' in ea_src, "EA does not emit gap_and_go_cooldown SKIP"

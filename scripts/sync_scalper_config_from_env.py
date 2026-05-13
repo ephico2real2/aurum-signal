@@ -400,6 +400,20 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_ORB_TP1_ATR_MULT":                ("geometry", "orb_tp1_atr_mult",                   "float",  0.1, 5.0),
     "FORGE_GEOMETRY_ORB_TP2_ATR_MULT":                ("geometry", "orb_tp2_atr_mult",                   "float",  0.1, 10.0),
     "FORGE_TIMING_ORB_COOLDOWN_SECONDS":              ("timing",   "orb_cooldown_seconds",               "int",    0.0, 7200.0),
+
+    # ── Gap-and-Go (Tier 2 — bar-time-skip + price-jump detection) ──
+    # Stateless: a gap is a bar whose start time skips ≥ min_time_skip_seconds from the
+    # previous bar's close AND whose open price differs from prior close by ≥ min_gap_atr × ATR.
+    # On forex/XAUUSD, this fires at the Sunday/Monday week open after a news-impacting weekend.
+    "FORGE_SETUP_GAP_AND_GO_ENABLED":                 ("setup",    "gap_and_go_enabled",                 "bool01", None, None),
+    "FORGE_ATOM_GAP_AND_GO_MIN_TIME_SKIP_SECONDS":    ("atom",     "gap_and_go_min_time_skip_seconds",   "int",    300.0, 172800.0),
+    "FORGE_ATOM_GAP_AND_GO_MIN_GAP_ATR":              ("atom",     "gap_and_go_min_gap_atr",             "float",  0.1, 10.0),
+    "FORGE_ATOM_GAP_AND_GO_MAX_GAP_ATR":              ("atom",     "gap_and_go_max_gap_atr",             "float",  0.5, 20.0),
+    "FORGE_GEOMETRY_GAP_AND_GO_LOT_FACTOR":           ("geometry", "gap_and_go_lot_factor",              "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_GAP_AND_GO_SL_ATR_MULT":          ("geometry", "gap_and_go_sl_atr_mult",             "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_GAP_AND_GO_TP1_ATR_MULT":         ("geometry", "gap_and_go_tp1_atr_mult",            "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_GAP_AND_GO_TP2_ATR_MULT":         ("geometry", "gap_and_go_tp2_atr_mult",            "float",  0.1, 10.0),
+    "FORGE_TIMING_GAP_AND_GO_COOLDOWN_SECONDS":       ("timing",   "gap_and_go_cooldown_seconds",        "int",    0.0, 86400.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.

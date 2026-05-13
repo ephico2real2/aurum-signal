@@ -341,7 +341,8 @@
     "fib_confluence_enabled": 0,
     "inside_bar_enabled": 0,
     "bb_squeeze_enabled": 0,
-    "orb_enabled": 0
+    "orb_enabled": 0,
+    "gap_and_go_enabled": 0
   },
 
   "atom": {
@@ -369,7 +370,11 @@
     "orb_window_end_min": 150,
     "orb_min_range_atr": 1.0,
     "orb_min_breakout_atr": 0.3,
-    "orb_adx_min": 15.0
+    "orb_adx_min": 15.0,
+
+    "gap_and_go_min_time_skip_seconds": 3600,
+    "gap_and_go_min_gap_atr": 0.5,
+    "gap_and_go_max_gap_atr": 3.0
   },
 
   "geometry": {
@@ -403,7 +408,12 @@
     "orb_lot_factor": 0.5,
     "orb_sl_atr_mult": 1.5,
     "orb_tp1_atr_mult": 0.5,
-    "orb_tp2_atr_mult": 2.0
+    "orb_tp2_atr_mult": 2.0,
+
+    "gap_and_go_lot_factor": 0.5,
+    "gap_and_go_sl_atr_mult": 1.5,
+    "gap_and_go_tp1_atr_mult": 0.5,
+    "gap_and_go_tp2_atr_mult": 1.5
   },
 
   "timing": {
@@ -414,6 +424,7 @@
     "fib_confluence_cooldown_seconds": 600,
     "inside_bar_cooldown_seconds": 600,
     "bb_squeeze_cooldown_seconds": 900,
-    "orb_cooldown_seconds": 1800
+    "orb_cooldown_seconds": 1800,
+    "gap_and_go_cooldown_seconds": 14400
   }
 }

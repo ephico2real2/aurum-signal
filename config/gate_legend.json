@@ -400,5 +400,10 @@
     "label": "ORB — cooldown active",
     "explanation": "v2.7.42 ORB breakout fired within timing.orb_cooldown_seconds (default 1800) of a prior ORB entry in the same direction. Default 1800s allows at most ~2 ORB entries per day per direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
+  },
+  "gap_and_go_cooldown": {
+    "label": "Gap-and-Go — cooldown active",
+    "explanation": "v2.7.42 GAP_AND_GO trigger fired (bar-time-skip ≥ min_time_skip_seconds + price gap in [min_gap_atr, max_gap_atr]) within timing.gap_and_go_cooldown_seconds (default 14400 = 4h) of a prior GAP_AND_GO entry. Long cooldown enforces single-fire per gap event.",
+    "category": "Cooldowns"
   }
 }

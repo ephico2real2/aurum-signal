@@ -346,6 +346,9 @@ bool     g_orb_window_locked = false;    // true once minute-of-day passes windo
 int      g_orb_window_day_stamp = 0;     // YYYYMMDD of the current day's window (for daily reset)
 datetime g_orb_last_buy_time  = 0;       // wall time of last ORB BUY entry
 datetime g_orb_last_sell_time = 0;       // wall time of last ORB SELL entry
+// 2.7.42 — GAP_AND_GO cooldown trackers (C-extended Tier 2 — weekend gap continuation)
+datetime g_gap_and_go_last_buy_time  = 0; // wall time of last GAP_AND_GO BUY entry
+datetime g_gap_and_go_last_sell_time = 0; // wall time of last GAP_AND_GO SELL entry
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -595,6 +598,18 @@ struct ScalperConfig {
    double orb_tp1_atr_mult;                   // TP1 = ATR × this (default 0.5)
    double orb_tp2_atr_mult;                   // TP2 = ATR × this (default 2.0)
    int    orb_cooldown_seconds;               // min gap per direction (default 1800)
+   // 2.7.42 — GAP_AND_GO setup (C-extended Tier 2). Detect a bar-time-skip ≥
+   //   min_time_skip_seconds with |open − prior_close| ≥ min_gap_atr × ATR.
+   //   Fires once per gap event (long cooldown enforces single-fire).
+   bool   gap_and_go_enabled;                 // master toggle (default off)
+   int    gap_and_go_min_time_skip_seconds;   // min bar-to-bar time skip to count as a gap (default 3600 = 1h)
+   double gap_and_go_min_gap_atr;             // min |open − prior_close| / ATR (default 0.5)
+   double gap_and_go_max_gap_atr;             // max gap to chase; bigger gaps skipped (default 3.0)
+   double gap_and_go_lot_factor;              // lot multiplier (default 0.5)
+   double gap_and_go_sl_atr_mult;             // SL = ATR × this (default 1.5)
+   double gap_and_go_tp1_atr_mult;            // TP1 = ATR × this (default 0.5)
+   double gap_and_go_tp2_atr_mult;            // TP2 = ATR × this (default 1.5)
+   int    gap_and_go_cooldown_seconds;        // min gap per direction (default 14400 = 4h)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3147,6 +3162,16 @@ void InitScalperConfig() {
    g_sc.orb_tp1_atr_mult                = 0.5;
    g_sc.orb_tp2_atr_mult                = 2.0;
    g_sc.orb_cooldown_seconds            = 1800;
+   // 2.7.42 — GAP_AND_GO setup (C-extended Tier 2; default OFF)
+   g_sc.gap_and_go_enabled                  = false;
+   g_sc.gap_and_go_min_time_skip_seconds    = 3600;  // 1h skip threshold (weekend = 48h typical)
+   g_sc.gap_and_go_min_gap_atr              = 0.5;
+   g_sc.gap_and_go_max_gap_atr              = 3.0;
+   g_sc.gap_and_go_lot_factor               = 0.5;
+   g_sc.gap_and_go_sl_atr_mult              = 1.5;
+   g_sc.gap_and_go_tp1_atr_mult             = 0.5;
+   g_sc.gap_and_go_tp2_atr_mult             = 1.5;
+   g_sc.gap_and_go_cooldown_seconds         = 14400; // 4h — one entry per gap event
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3961,6 +3986,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "orb_tp1_atr_mult"))                    { v=JsonGetDouble(content,"orb_tp1_atr_mult");                    if(v>=0.1&&v<=5.0) g_sc.orb_tp1_atr_mult=v; }
    if(JsonHasKey(content, "orb_tp2_atr_mult"))                    { v=JsonGetDouble(content,"orb_tp2_atr_mult");                    if(v>=0.1&&v<=10.0) g_sc.orb_tp2_atr_mult=v; }
    if(JsonHasKey(content, "orb_cooldown_seconds"))                { v=JsonGetDouble(content,"orb_cooldown_seconds");                if(v>=0&&v<=7200) g_sc.orb_cooldown_seconds=(int)v; }
+   // 2.7.42 — GAP_AND_GO setup (C-extended Tier 2)
+   if(JsonHasKey(content, "gap_and_go_enabled"))                  { v=JsonGetDouble(content,"gap_and_go_enabled");                  g_sc.gap_and_go_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "gap_and_go_min_time_skip_seconds"))    { v=JsonGetDouble(content,"gap_and_go_min_time_skip_seconds");    if(v>=300&&v<=172800) g_sc.gap_and_go_min_time_skip_seconds=(int)v; }
+   if(JsonHasKey(content, "gap_and_go_min_gap_atr"))              { v=JsonGetDouble(content,"gap_and_go_min_gap_atr");              if(v>=0.1&&v<=10.0) g_sc.gap_and_go_min_gap_atr=v; }
+   if(JsonHasKey(content, "gap_and_go_max_gap_atr"))              { v=JsonGetDouble(content,"gap_and_go_max_gap_atr");              if(v>=0.5&&v<=20.0) g_sc.gap_and_go_max_gap_atr=v; }
+   if(JsonHasKey(content, "gap_and_go_lot_factor"))               { v=JsonGetDouble(content,"gap_and_go_lot_factor");               if(v>=0.1&&v<=2.0) g_sc.gap_and_go_lot_factor=v; }
+   if(JsonHasKey(content, "gap_and_go_sl_atr_mult"))              { v=JsonGetDouble(content,"gap_and_go_sl_atr_mult");              if(v>=0.5&&v<=5.0) g_sc.gap_and_go_sl_atr_mult=v; }
+   if(JsonHasKey(content, "gap_and_go_tp1_atr_mult"))             { v=JsonGetDouble(content,"gap_and_go_tp1_atr_mult");             if(v>=0.1&&v<=5.0) g_sc.gap_and_go_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "gap_and_go_tp2_atr_mult"))             { v=JsonGetDouble(content,"gap_and_go_tp2_atr_mult");             if(v>=0.1&&v<=10.0) g_sc.gap_and_go_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "gap_and_go_cooldown_seconds"))         { v=JsonGetDouble(content,"gap_and_go_cooldown_seconds");         if(v>=0&&v<=86400) g_sc.gap_and_go_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -5122,6 +5157,33 @@ int DetectOrbBreakoutEvent(const double m5_atr) {
    if(ask > g_orb_window_high + min_break) return 1;
    if(bid < g_orb_window_low  - min_break) return -1;
    return 0;
+}
+
+// 2.7.42 — GAP_AND_GO event detector (C-extended Tier 2). Returns 1 = BUY
+// gap up, -1 = SELL gap down, 0 = no event. Stateless: a "gap" is a bar
+// whose start time skips ≥ min_time_skip_seconds from the previous bar's
+// time AND whose open price differs from prior close by ≥ min_gap_atr × ATR
+// (and ≤ max_gap_atr × ATR — runaway gaps not chased).
+//
+// Single-fire is enforced by the cooldown (default 4h); after bar[0]
+// becomes bar[1] on the next bar, the time skip is normal (300s) so the
+// detector won't re-fire on subsequent ticks.
+int DetectGapAndGoEvent(const double m5_atr) {
+   if(!g_sc.gap_and_go_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   datetime t0 = iTime(_Symbol, PERIOD_M5, 0);
+   datetime t1 = iTime(_Symbol, PERIOD_M5, 1);
+   if(t0 <= 0 || t1 <= 0) return 0;
+   long skip_sec = (long)(t0 - t1);
+   if(skip_sec < (long)g_sc.gap_and_go_min_time_skip_seconds) return 0;
+   double open0  = iOpen (_Symbol, PERIOD_M5, 0);
+   double close1 = iClose(_Symbol, PERIOD_M5, 1);
+   if(open0 <= 0.0 || close1 <= 0.0) return 0;
+   double gap = open0 - close1;
+   double gap_atr = MathAbs(gap) / m5_atr;
+   if(gap_atr < g_sc.gap_and_go_min_gap_atr) return 0;
+   if(gap_atr > g_sc.gap_and_go_max_gap_atr) return 0;
+   return (gap > 0.0) ? 1 : -1;
 }
 
 // #4 BULL_DAY_DIP_BUY_V3 — 16-atom dip-buy on choppy bull days
@@ -8753,6 +8815,45 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — GAP_AND_GO trigger (C-extended Tier 2). Bar-time-skip + price-jump
+   //   detection. Single-fire enforced by cooldown (default 4h).
+   if(direction == "" && g_sc.gap_and_go_enabled && m5_atr > 0.0) {
+      int gap_event = DetectGapAndGoEvent(m5_atr);
+      if(gap_event != 0) {
+         string gap_dir = (gap_event > 0) ? "BUY" : "SELL";
+         datetime gap_last = (gap_event > 0) ? g_gap_and_go_last_buy_time : g_gap_and_go_last_sell_time;
+         datetime gap_now  = TimeCurrent();
+         bool gap_cool_ok = (g_sc.gap_and_go_cooldown_seconds <= 0
+                             || gap_last == 0
+                             || (gap_now - gap_last) >= g_sc.gap_and_go_cooldown_seconds
+                             || CooldownBypassActive(gap_dir, "GAP_AND_GO", m5_adx));
+         if(!gap_cool_ok) {
+            JournalRecordSignal("SKIP","gap_and_go_cooldown","GAP_AND_GO",gap_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = gap_dir;
+            setup_type = "GAP_AND_GO";
+            double gap_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double gap_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(gap_event > 0) {
+               sl  = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(gap_ask + m5_atr * g_sc.gap_and_go_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(gap_ask + m5_atr * g_sc.gap_and_go_tp2_atr_mult, _Digits);
+               g_gap_and_go_last_buy_time = gap_now;
+            } else {
+               sl  = NormalizeDouble(gap_ask + m5_atr * g_sc.gap_and_go_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_tp2_atr_mult, _Digits);
+               g_gap_and_go_last_sell_time = gap_now;
+            }
+            PrintFormat("FORGE 2.7.42: GAP_AND_GO %s fired @ %.2f (skip=%ds, gap_atr=%.2f)",
+                        gap_dir, (gap_event > 0 ? gap_ask : gap_bid),
+                        (int)(iTime(_Symbol, PERIOD_M5, 0) - iTime(_Symbol, PERIOD_M5, 1)),
+                        MathAbs(iOpen(_Symbol, PERIOD_M5, 0) - iClose(_Symbol, PERIOD_M5, 1)) / m5_atr);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -9127,6 +9228,11 @@ void CheckNativeScalperSetups() {
                         && g_sc.orb_lot_factor > 0.0
                         && g_sc.orb_lot_factor < 1.0)
                         ? g_sc.orb_lot_factor : 1.0;
+   // 2.7.42 — GAP_AND_GO lot factor (C-extended Tier 2). Default 0.5.
+   double gap_and_go_factor = (setup_type == "GAP_AND_GO"
+                               && g_sc.gap_and_go_lot_factor > 0.0
+                               && g_sc.gap_and_go_lot_factor < 1.0)
+                               ? g_sc.gap_and_go_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -9136,7 +9242,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
