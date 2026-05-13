@@ -1,5 +1,5 @@
 {
-  "version": "2.7.62",
+  "version": "2.7.63",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -74,7 +74,7 @@
     "require_h1_di_sell": 1,
     "require_h1_macd_sell": 0,
     "require_h1_macd_buy": 0,
-    "same_dir_cooldown_seconds": 900,
+    "same_dir_cooldown_seconds": 0,
     "failed_gate_enabled": 1,
     "failed_lookback_bars": 4,
     "failed_min_peak_rsi": 68,
@@ -358,7 +358,7 @@
     "pullback_scalp_sl_atr_mult": 2.5,
     "pullback_scalp_tp1_atr_mult": 0.3,
     "pullback_scalp_tp2_atr_mult": 0.7,
-    "pullback_scalp_cooldown_seconds": 600,
+    "pullback_scalp_cooldown_seconds": 0,
     "pullback_scalp_max_adx": 30
   },
   "journal": {
@@ -383,7 +383,7 @@
     "min_num_trades": 2,
     "max_num_trades": 30,
     "staged_entry_enabled": 1,
-    "staged_initial_legs": 1,
+    "staged_initial_legs": 3,
     "staged_add_interval_sec": 25,
     "staged_add_min_favorable_points": 500,
     "staged_favorable_from_entry_only": 0,
@@ -414,10 +414,12 @@
     "bull_day_dip_buy_lot_mult": 1.0,
     "bull_day_dip_buy_sl_atr_mult": 1.0,
     "bull_day_dip_buy_tp1_atr_mult": 0.65,
-    "bull_day_dip_buy_reentry_cooldown_sec": 300,
+    "bull_day_dip_buy_reentry_cooldown_sec": 0,
     "bull_day_dip_buy_prime_amplifier": 1.0,
     "dump_judas_window_block": 0,
     "momentum_dump_composite_test_enabled": 1,
+    "momentum_dump_composite_test_cooldown_seconds": 0,
+    "bb_lower_reversion_buy_cooldown_seconds": 0,
     "bb_lower_reversion_buy_max_hold_seconds": 0,
     "trend_continuation_buy_sl_atr_mult": 1.5,
     "trend_continuation_buy_cooldown_seconds": 0,
@@ -535,17 +537,17 @@
   },
   "timing": {
     "_comment": "Per-setup cooldown timers per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Defaults 600s = 10min per direction (matches BB_PULLBACK_SCALP / MOMENTUM_DUMP cadence).",
-    "ma_crossover_cooldown_seconds": 600,
-    "vwap_reversion_cooldown_seconds": 600,
-    "fib_confluence_cooldown_seconds": 600,
-    "inside_bar_cooldown_seconds": 600,
-    "bb_squeeze_cooldown_seconds": 900,
-    "orb_cooldown_seconds": 1800,
-    "gap_and_go_cooldown_seconds": 14400,
-    "double_pattern_cooldown_seconds": 1200,
-    "hs_cooldown_seconds": 1200,
-    "flag_pennant_cooldown_seconds": 1200,
-    "trendline_bounce_cooldown_seconds": 1200,
-    "sr_flip_cooldown_seconds": 1200
+    "ma_crossover_cooldown_seconds": 0,
+    "vwap_reversion_cooldown_seconds": 0,
+    "fib_confluence_cooldown_seconds": 0,
+    "inside_bar_cooldown_seconds": 0,
+    "bb_squeeze_cooldown_seconds": 0,
+    "orb_cooldown_seconds": 0,
+    "gap_and_go_cooldown_seconds": 0,
+    "double_pattern_cooldown_seconds": 0,
+    "hs_cooldown_seconds": 0,
+    "flag_pennant_cooldown_seconds": 0,
+    "trendline_bounce_cooldown_seconds": 0,
+    "sr_flip_cooldown_seconds": 0
   }
 }

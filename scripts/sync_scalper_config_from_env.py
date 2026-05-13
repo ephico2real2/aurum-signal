@@ -383,6 +383,18 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_FACTOR":               ("safety", "dump_dist_amplifier_factor",               "float", 0.1, 10.0),
     "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_STRONG_THRESHOLD_ATR": ("safety", "dump_dist_amplifier_strong_threshold_atr", "float", 0.0, 20.0),
     "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_STRONG_FACTOR":        ("safety", "dump_dist_amplifier_strong_factor",        "float", 0.1, 10.0),
+    # v2.7.63 — Killzone-tier amplifier (operator: "kills move fast within secs")
+    "FORGE_GATE_DUMP_KZ_AMPLIFIER_ENABLED":      ("safety", "dump_kz_amplifier_enabled", "bool01", None, None),
+    "FORGE_TIMING_DUMP_KZ_TIER1_MAX_MIN":        ("safety", "dump_kz_tier1_max_min",     "float", 0.0, 720.0),
+    "FORGE_GEOMETRY_DUMP_KZ_TIER1_FACTOR":       ("safety", "dump_kz_tier1_factor",      "float", 0.0, 10.0),
+    "FORGE_TIMING_DUMP_KZ_TIER2_MAX_MIN":        ("safety", "dump_kz_tier2_max_min",     "float", 0.0, 720.0),
+    "FORGE_GEOMETRY_DUMP_KZ_TIER2_FACTOR":       ("safety", "dump_kz_tier2_factor",      "float", 0.0, 10.0),
+    "FORGE_TIMING_DUMP_KZ_TIER3_MAX_MIN":        ("safety", "dump_kz_tier3_max_min",     "float", 0.0, 720.0),
+    "FORGE_GEOMETRY_DUMP_KZ_TIER3_FACTOR":       ("safety", "dump_kz_tier3_factor",      "float", 0.0, 10.0),
+    "FORGE_TIMING_DUMP_KZ_TIER4_MAX_MIN":        ("safety", "dump_kz_tier4_max_min",     "float", 0.0, 720.0),
+    "FORGE_GEOMETRY_DUMP_KZ_TIER4_FACTOR":       ("safety", "dump_kz_tier4_factor",      "float", 0.0, 10.0),
+    "FORGE_GEOMETRY_DUMP_KZ_TIER5_FACTOR":       ("safety", "dump_kz_tier5_factor",      "float", 0.0, 10.0),
+    "FORGE_GEOMETRY_DUMP_KZ_NO_ZONE_FACTOR":     ("safety", "dump_kz_no_zone_factor",    "float", 0.0, 10.0),
     # 2.7.32 — Option B (default OFF) direction-confirmation gate
     "FORGE_DUMP_REQUIRE_BAR_CONFIRM": ("safety", "dump_require_bar_confirm", "bool01", None, None),
     # 2.7.31 — BB_PULLBACK_SCALP additive setup (Run 19 Issue 4 / Task #53)
