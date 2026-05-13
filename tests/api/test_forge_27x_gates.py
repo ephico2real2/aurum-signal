@@ -783,3 +783,39 @@ def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg, gate_legend):
     assert 'Filter_Cooldown("TRENDLINE_BOUNCE"' in ea_src, "TRENDLINE_BOUNCE not migrated to Filter_Cooldown helper"
     assert 'Filter_AdxFloor("SR_FLIP"' in ea_src, "SR_FLIP not migrated to Filter_AdxFloor helper"
     assert 'Filter_Cooldown("SR_FLIP"' in ea_src, "SR_FLIP not migrated to Filter_Cooldown helper"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v2.7.44 — RegimeState struct (FORGE_REGIME_TAXONOMY.md §3 + §5 Phase 2)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_regime_state_struct_declared(ea_src):
+    """v2.7.44 Phase 2: RegimeState struct + g_regime global exist (FORGE_REGIME_TAXONOMY.md §3)."""
+    assert "struct RegimeState" in ea_src, \
+        "RegimeState struct missing — Phase 2 of FORGE_REGIME_TAXONOMY.md"
+    assert "RegimeState g_regime" in ea_src, \
+        "g_regime global instance missing"
+    # 16 fields per §3 + §11.3 — verify each is declared inside the struct
+    for field in (
+        "htf_label",  "htf_confidence",  "htf_h1_strong",
+        "intraday_label", "intraday_confidence", "intraday_counter_htf",
+        "daily_slope_atr", "daily_bear_bias", "daily_bull_bias", "daily_flip_now",
+        "high_vol", "m5_adx",
+        "session", "killzone", "minutes_into_kz", "news_active",
+    ):
+        # Field declaration always appears as " <field>;" inside the struct (no g_regime. prefix yet)
+        assert f"{field};" in ea_src, f"RegimeState.{field} field declaration missing"
+
+
+def test_regime_update_function_called(ea_src):
+    """v2.7.44 Phase 2: RegimeUpdate() is defined and invoked from CheckNativeScalperSetups."""
+    assert "void RegimeUpdate(" in ea_src, \
+        "RegimeUpdate() function definition missing"
+    # The call site lives inside CheckNativeScalperSetups, after the regime classification block
+    assert "RegimeUpdate(m5_adx, m5_rsi," in ea_src, \
+        "RegimeUpdate call site missing — Phase 2 needs the populator wired into the per-tick eval loop"
+    # Phase 2 is ADDITIVE: legacy globals must STILL be assigned (no Phase 3 removal yet)
+    assert 'g_regime_label = "RANGE"' in ea_src, \
+        "Phase 2 must keep g_regime_label assignment intact (additive only — Phase 3 migrates callers)"
+    assert "g_daily_bear_bias" in ea_src and "g_daily_bull_bias" in ea_src, \
+        "Phase 2 must keep g_daily_*_bias globals (additive only — Phase 4 removes them)"
