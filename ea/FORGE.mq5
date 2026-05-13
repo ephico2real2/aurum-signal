@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.122"
+#property version "2.128"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.52";
+const string FORGE_VERSION = "2.7.58";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -376,6 +376,23 @@ datetime g_trendline_bounce_last_sell_time = 0;
 // 2.7.42 — SR_FLIP cooldown trackers (C-extended Tier 3)
 datetime g_sr_flip_last_buy_time  = 0;
 datetime g_sr_flip_last_sell_time = 0;
+// 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST anchor (parallel composite that replicates
+// legacy MOMENTUM_DUMP using the new boolean-composite framework; default-OFF).
+datetime g_momentum_dump_composite_test_last_buy_time  = 0;
+datetime g_momentum_dump_composite_test_last_sell_time = 0;
+// 2.7.55 — BB_LOWER_REVERSION_BUY anchor (mean-reversion BUY when price < BB lower band).
+// Pairs with dump_below_bbl_block_sell (Run 26 G5003 was a textbook SELL-block case;
+// this setup turns the same condition into a BUY entry signal).
+datetime g_bb_lower_reversion_buy_last_time = 0;
+// 2.7.57 — TREND_CONTINUATION_BUY/SELL anchors (atlas §5.2 canonical, finally shipped).
+// BUY = bullish breakout above BB upper; SELL = bearish breakdown below BB lower.
+// Validated against Apr 9 13:51 BUY +$12.48 in 8s and Apr 8 17:31 SELL +$22+ in 1min.
+datetime g_trend_continuation_buy_last_time  = 0;
+datetime g_trend_continuation_sell_last_time = 0;
+// 2.7.56 — MOMENTUM_DUMP pyramid counter (escalating lot per consecutive same-direction fire).
+// Resets to 0 when direction flips OR all same-direction MOMENTUM_DUMP groups close.
+int g_dump_pyramid_consec_buy_count  = 0;
+int g_dump_pyramid_consec_sell_count = 0;
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -517,6 +534,46 @@ struct ScalperConfig {
    // 2.7.35 — h1_trend ceiling for MOMENTUM_DUMP SELL. Block SELL when h1_trend ≥ this (counter-trend in strong bull).
    // Run 23 G5004 (h1=2.06 -$19), G5008 (h1=2.27 -$47) — both lost selling into strong bull rallies.
    double dump_sell_h1_max;                 // 2.7.35: SELL blocked when h1_trend ≥ this (default 0 = disabled).
+   // 2.7.54 — Surface hardcoded MOMENTUM_DUMP geometry as direction-asymmetric config knobs.
+   //   Operator mandates ("gold is not stocks — no mercy in forex"):
+   //     (a) Tight SL — current 4.0×ATR was stock-hold geometry; gold scalps need 2.0×ATR
+   //         so losers cap fast and chop-day disasters (Apr 13 −$239) don't recur.
+   //     (b) Asymmetric TP1 — gold DUMPS travel further than BOUNCES. SELL TP1 stays
+   //         at 0.6×ATR (proven on Apr 8 PM cascade). BUY TP1 drops to 0.4×ATR (gold
+   //         bounces are short — bank fast, re-enter on next dip).
+   //     (c) Time stop — close at market if position open > N seconds and TP1 unfilled.
+   //         Caps Apr 13-style held-against-the-market losses (40-min holds → −$175).
+   //   All four knobs default to the safe new geometry; operator can override per direction.
+   double dump_sl_atr_mult_buy;             // 2.7.54: BUY MOMENTUM_DUMP SL multiplier (default 2.0)
+   double dump_sl_atr_mult_sell;            // 2.7.54: SELL MOMENTUM_DUMP SL multiplier (default 2.0)
+   double dump_tp1_atr_mult_buy;            // 2.7.54: BUY TP1 multiplier (default 0.4 — bounces short)
+   double dump_tp1_atr_mult_sell;           // 2.7.54: SELL TP1 multiplier (default 0.6 — dumps run further)
+   int    dump_max_hold_seconds;            // 2.7.54: time stop — close at market if open > N sec and TP1 unfilled (default 600 = 10min; 0=disabled)
+   // 2.7.55 — SELL oversold protection (Run 26 G5003 fix: SELL at RSI=32.4 + price below bbl = mean-reversion zone)
+   double dump_sell_min_rsi;                // 2.7.55: block SELL when m5_rsi ≤ this (default 30; 0=disabled)
+   bool   dump_sell_block_below_bb_l;       // 2.7.55: block SELL when price < m5_bb_l (default 1=on)
+   // 2.7.55.1 — Conjoint RSI gate for below-bbl block. Without this, the bbl block
+   //   would have killed G5001 + G5002 (Mar 31 Run 25) which were proven TP-banking
+   //   continuation-dump entries. Now bbl-block only fires when BOTH price < bbl
+   //   AND RSI ≤ this threshold (default 35 — catches G5003's exhaustion RSI 32.4
+   //   while letting G5001 RSI 40.7 / G5002 RSI 38.0 fire through).
+   double dump_below_bbl_block_max_rsi;     // 2.7.55.1: bbl block fires only when RSI ≤ this (default 35; 0=disabled)
+   // 2.7.56 — Multi-leg pyramid + continuous-fire (operator: "fire 6 legs per entry, no cooldown,
+   //   enter while setup valid until it doesn't, this is where we become millionaires").
+   //   Default config: 6 legs per MOMENTUM_DUMP trigger, no cooldown anti-flicker, cap 30
+   //   concurrent open positions per direction. Apr 8 cascade ($57 down-move 12:00-17:36) is the
+   //   target use case — pyramid SELLs into the run, bank TP1 reliably, runner halves seek TP2.
+   int    dump_legs_per_group;              // 2.7.56: legs per MOMENTUM_DUMP group entry (default 5; 0=use global lot_num_trades)
+   int    dump_max_open_same_direction;     // 2.7.56: cap on concurrent open MOMENTUM_DUMP positions per direction (default 30)
+   // 2.7.56 — Escalating-conviction pyramid (operator: "this is how each leg should fire if the setup holds — 1x,2x,3x,4x,5x").
+   //   As each subsequent MOMENTUM_DUMP fire in the SAME direction (since last all-closed),
+   //   multiply lot by an escalating factor. 1st fire = base_factor, 2nd = base + step,
+   //   ..., capped at max_factor. Resets to base when direction flips OR all same-dir
+   //   positions close (group reset event).
+   bool   dump_pyramid_enabled;             // 2.7.56: enable escalating lot pyramid (default true)
+   double dump_pyramid_base_factor;         // 2.7.56: first group's multiplier (default 1.0)
+   double dump_pyramid_step;                // 2.7.56: increment per consecutive group (default 1.0)
+   double dump_pyramid_max_factor;          // 2.7.56: cap (default 5.0)
    // 2.7.32 — Option B (default OFF, documented for validation): direction-confirmation gate.
    //   Run 20 Mar 31 had 16 of 24 BUY losses as IMMEDIATE-SL (avg 30min, 1.52×ATR — exact SL setting,
    //   no TPs offset). These are direction failures, not SL-too-tight. Widening SL (Option A 3.0→4.0×ATR)
@@ -778,6 +835,118 @@ struct ScalperConfig {
    double cooldown_bypass_min_adx;        // M5 ADX floor for bypass
    int    cooldown_bypass_min_refire_sec; // anti-flicker — min gap between same-direction fires
    string cooldown_bypass_setups;         // comma-list — these setups bypass UNCONDITIONALLY
+   // 2.7.53 — Operator principle: "no cooldown when running with the market — this is forex".
+   //   Unconditional bypass of cooldown (no TP1 requirement) whenever:
+   //     (a) direction is aligned with HTF (h1_trend) OR MTF (m15 trend) per `with_trend_m15_or_h1`,
+   //     (b) regime is trending (TREND_BULL for BUY, TREND_BEAR for SELL),
+   //     (c) M5 ADX clears `cooldown_bypass_min_adx` (sanity gate — chop has high h1 but no momentum).
+   //   When `_m15_or_h1=1` (default), EITHER H1 or M15 alignment triggers bypass — catches both
+   //   Apr 1 NY rally (H1=+2.3 lead) AND Apr 8 PM bear cascade (M15 flipped while H1 lagged bull).
+   //   When `_m15_or_h1=0`, only H1 alignment triggers bypass (more conservative).
+   bool   cooldown_bypass_with_trend_enabled;
+   double cooldown_bypass_with_trend_h1_min;   // |h1_trend_strength| floor for "with-trend" bypass
+   bool   cooldown_bypass_with_trend_m15_or_h1; // true=either TF; false=H1 only
+   // 2.7.53 — Universal fast-trend lot amplifier. Higher lot size when direction matches HTF/MTF
+   //   trend AND M5 ADX confirms "fast" momentum (acceleration). Same alignment heuristic as
+   //   the cooldown bypass, just with a higher ADX threshold. Default 1.5× — operator can tune
+   //   to 2.0× for more aggressive sizing, or 1.0 to disable while keeping the flag on.
+   bool   fast_trend_lot_amplifier_enabled;
+   double fast_trend_lot_amplifier_factor;   // multiplier applied when "fast with-trend" confirmed
+   double fast_trend_lot_amplifier_adx_min;  // M5 ADX floor (default 35 — "fast" means accelerating)
+   // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST. Parallel composite that replicates legacy
+   //   MOMENTUM_DUMP atoms using the new layered-helper framework. Used to validate
+   //   that the boolean-composite pattern can produce identical TAKEN behavior to the
+   //   legacy filter-chain pattern. Default OFF — enable for a tester run with legacy
+   //   MOMENTUM_DUMP also enabled; compare TAKEN counts/timestamps; should be ~1:1.
+   bool   momentum_dump_composite_test_enabled;
+   int    momentum_dump_composite_test_lookback_bars;     // M5 close-to-close lookback (default 3)
+   double momentum_dump_composite_test_atr_mult;          // move threshold = atr_mult × ATR (default 1.5)
+   double momentum_dump_composite_test_max_rsi;           // SELL: RSI < max; BUY: RSI > 100-max (default 50)
+   double momentum_dump_composite_test_max_rsi_buy;       // BUY overbought ceiling (default 70, 0=disable)
+   double momentum_dump_composite_test_min_adx;           // ADX floor (default 25)
+   double momentum_dump_composite_test_sl_atr_mult;       // SL = atr × this (default 4.0)
+   double momentum_dump_composite_test_tp1_atr_mult;      // TP1 = atr × this (default 0.6)
+   double momentum_dump_composite_test_tp2_atr_mult;      // TP2 = atr × this (default 1.0)
+   int    momentum_dump_composite_test_cooldown_seconds;  // anti-flicker (default 60 — bypass handles trend)
+   bool   momentum_dump_composite_test_chop_block;        // block when regime is RANGE (default 1)
+   bool   momentum_dump_composite_test_require_psar;      // require PSAR alignment (default 1)
+   bool   momentum_dump_composite_test_require_d1_bias;   // require daily slope alignment (default 1)
+   double momentum_dump_composite_test_sell_h1_max;       // block SELL when h1 ≥ this (default 1.0; 0=off)
+   double momentum_dump_composite_test_lot_factor;        // per-leg lot multiplier (default 0.7)
+   // 2.7.55 — BB_LOWER_REVERSION_BUY: mean-reversion BUY at gold's BB-lower oversold zone.
+   //   Trigger atoms: m5_close ≤ m5_bb_l AND m5_rsi ≤ max_rsi AND m5_atr > 0.
+   //   Filter chain: !g_daily_bear_bias (don't catch falling knives on confirmed bear days),
+   //                 m5_adx ≥ min_adx (some momentum present for the bounce),
+   //                 session ∈ {LONDON, NY} (institutional liquidity),
+   //                 cooldown anti-flicker (anchor via MarkSetupCooldownAnchorOnTaken).
+   //   Entry geometry (mean-reversion scalp): SL = bb_l − sl_atr_mult×ATR (default 0.5;
+   //   tight, below the oversold band); TP1 = bb_m (middle-band mean-reversion target);
+   //   TP2 = bb_u (full-band reversion). Lot factor 0.5 default (counter-momentum probe).
+   bool   bb_lower_reversion_buy_enabled;
+   double bb_lower_reversion_buy_max_rsi;             // RSI ceiling for entry (default 35 — confirms oversold)
+   double bb_lower_reversion_buy_min_adx;             // ADX floor (default 18 — some bounce momentum)
+   double bb_lower_reversion_buy_sl_atr_mult;         // SL distance below bb_l (default 0.5×ATR)
+   double bb_lower_reversion_buy_tp1_offset_atr_mult; // if >0, TP1 = bb_m − this×ATR (else use bb_m directly)
+   double bb_lower_reversion_buy_tp2_offset_atr_mult; // if >0, TP2 = bb_u − this×ATR (else use bb_u directly)
+   int    bb_lower_reversion_buy_cooldown_seconds;    // anti-flicker (default 180s = 3 bars)
+   double bb_lower_reversion_buy_lot_factor;          // per-leg lot multiplier (default 1.0 — aggressive; multi-indicator alignment is high-conviction)
+   double bb_lower_reversion_buy_h1_max;              // block when h1 ≥ this (default 0 = disabled; tune to block extreme bear)
+   // 2.7.55 — Extreme-oversold amplifier. When RSI is very low (≤ extreme_rsi), the
+   //   mean-reversion bounce probability spikes (gold rarely sustains RSI < 25 on M5).
+   //   Multiplies lot_factor by extreme_amplifier in those rare windows.
+   double bb_lower_reversion_buy_extreme_rsi;         // RSI threshold for "extreme oversold" (default 25; 0=disabled)
+   double bb_lower_reversion_buy_extreme_amplifier;   // lot multiplier when RSI ≤ extreme_rsi (default 1.5)
+   // 2.7.55 — Anti-SL-hit protection (operator: "we need to make sure we don't get hit by our s/l").
+   //   Mean-reversion BUYs in oversold zone risk getting wicked out before the bounce.
+   //   max_hold_seconds: close at market if no TP1 in window (default 1800 = 30min).
+   int    bb_lower_reversion_buy_max_hold_seconds;    // time-stop window (default 1800 = 30min; 0=disabled)
+   // 2.7.57 — TREND_CONTINUATION_BUY / _SELL (canonical roadmap Tier-2, finally shipping).
+   //   BUY: regime=TREND_BULL + h1≥h1_min + RSI in [rsi_min, rsi_max] + ADX≥adx_min +
+   //        M15 ADX≥m15_adx_min + PSAR=BELOW + price within bb_proximity_atr×ATR of bb_u +
+   //        !g_daily_bear_bias → market BUY, tight SL/TP1 = instant scalp banker
+   //        (Apr 9 13:51 banked +$12.48 in 8 seconds).
+   //   SELL mirror with TREND_BEAR + h1≤-h1_min + RSI in [25-40] + PSAR=ABOVE + near bb_l +
+   //        !g_daily_bull_bias (Apr 8 17:31 banked +$22 + TP2 +$11 in 1 minute).
+   bool   trend_continuation_buy_enabled;
+   double trend_continuation_buy_h1_min;          // h1_trend ≥ this for BUY (default 0.10)
+   double trend_continuation_buy_rsi_min;         // RSI floor (default 60 — strong momentum)
+   double trend_continuation_buy_rsi_max;         // RSI ceiling (default 75 — not yet exhausted)
+   double trend_continuation_buy_adx_min;         // M5 ADX floor (default 20)
+   double trend_continuation_buy_m15_adx_min;     // M15 ADX floor (default 18)
+   double trend_continuation_buy_bb_proximity_atr; // price must be ≥ bb_u − this×ATR (default 0.3)
+   double trend_continuation_buy_sl_atr_mult;     // SL = entry − this×ATR (default 0.5 — tight)
+   double trend_continuation_buy_tp1_atr_mult;    // TP1 = entry + this×ATR (default 0.3 — instant scalp)
+   double trend_continuation_buy_tp2_atr_mult;    // TP2 = entry + this×ATR (default 0.7 — runner)
+   int    trend_continuation_buy_cooldown_seconds; // anti-flicker (default 60)
+   double trend_continuation_buy_lot_factor;      // per-leg lot multiplier (default 2.0 — aggressive)
+   // v2.7.58 — TC_BUY missing-atom gates (G5017 −$44 fix: late-cycle peak entry needed more confirmation)
+   bool   trend_continuation_buy_require_macd_positive;  // require M5 macd_histogram > macd_min for BUY (default 1)
+   double trend_continuation_buy_macd_min;               // MACD floor (default 0.0 — any positive value)
+   bool   trend_continuation_buy_require_above_vwap;     // block if price < vwap_price (default 1)
+   double trend_continuation_buy_max_poc_distance_atr;   // block if |price - poc_price| > this×ATR (default 1.5; 0=disabled)
+   bool   trend_continuation_buy_block_bearish_div;      // block if g_rsi_div_type == "BEARISH" (default 1)
+   bool   trend_continuation_buy_require_h4_alignment;   // block if h4_trend_strength < h4_min (default 1)
+   double trend_continuation_buy_h4_min;                 // H4 trend floor (default 0.0 — non-negative)
+   bool   trend_continuation_sell_enabled;
+   double trend_continuation_sell_h1_max;         // h1_trend ≤ -this for SELL (default 0.10 means h1≤-0.10)
+   double trend_continuation_sell_rsi_min;        // RSI floor (default 25)
+   double trend_continuation_sell_rsi_max;        // RSI ceiling (default 40)
+   double trend_continuation_sell_adx_min;        // M5 ADX floor (default 20)
+   double trend_continuation_sell_m15_adx_min;    // M15 ADX floor (default 18)
+   double trend_continuation_sell_bb_proximity_atr; // price must be ≤ bb_l + this×ATR (default 0.3)
+   double trend_continuation_sell_sl_atr_mult;
+   double trend_continuation_sell_tp1_atr_mult;
+   double trend_continuation_sell_tp2_atr_mult;
+   int    trend_continuation_sell_cooldown_seconds;
+   double trend_continuation_sell_lot_factor;
+   // v2.7.58 — TC_SELL missing-atom gates (mirror of BUY)
+   bool   trend_continuation_sell_require_macd_negative; // require M5 macd_histogram < macd_max for SELL (default 1)
+   double trend_continuation_sell_macd_max;              // MACD ceiling (default 0.0 — any negative value)
+   bool   trend_continuation_sell_require_below_vwap;    // block if price > vwap_price (default 1)
+   double trend_continuation_sell_max_poc_distance_atr;  // block if |price - poc_price| > this×ATR (default 1.5; 0=disabled)
+   bool   trend_continuation_sell_block_bullish_div;     // block if g_rsi_div_type == "BULLISH" (default 1)
+   bool   trend_continuation_sell_require_h4_alignment;  // block if h4_trend_strength > h4_max (default 1)
+   double trend_continuation_sell_h4_max;                // H4 trend ceiling (default 0.0 — non-positive)
    int    post_sl_cooldown_sec;         // extended cooldown per-direction after SL hit (default 3600s = 60min)
    double breakout_near_floor_lot_factor;  // Cardwell RSI 20-25 zone: lot factor when crash bypass + RSI near floor (default 0.25)
    double same_direction_stack_lot_factor; // lot factor for 2nd concurrent group in same direction (default 0.25)
@@ -1181,6 +1350,9 @@ bool Filter_Cooldown(const string setup_type, const string setup_lower, const st
 int Score_SetupConfidence(const int direction_sign, const double m5_adx, const double adx_floor,
                          const double h1_trend_strength, const double h1_strong_threshold);
 double Risk_ApproveLot(const double base_lot, const double combined_lot_factor_product);
+// 2.7.53 — Path A: TAKEN-time cooldown anchor write (replaces per-setup writes that
+// were set on dry-run filter passes before downstream rr_too_low blocked the entry).
+void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direction);
 // Generalized TF-parameterized atoms (HTF/MTF/LTF aware per §4.6)
 bool Tf_IsHtf(const ENUM_TIMEFRAMES tf);
 bool Tf_IsMtf(const ENUM_TIMEFRAMES tf);
@@ -2038,6 +2210,23 @@ void RemoveGroupAt(int index) {
 //| Manage open groups: TP1 partial close + BE move                   |
 //+------------------------------------------------------------------+
 void ManageOpenGroups() {
+   // 2.7.56 — Reset MOMENTUM_DUMP pyramid counter when ALL same-direction groups close.
+   //   Counter increments in MarkSetupCooldownAnchorOnTaken at entry time; reset here at
+   //   the start of each tick when no MOMENTUM_DUMP groups remain open in a direction.
+   {
+      bool any_buy = false, any_sell = false;
+      for(int _pg = 0; _pg < ArraySize(g_groups); _pg++) {
+         if(g_groups[_pg].scalper_setup != "MOMENTUM_DUMP"
+            && g_groups[_pg].scalper_setup != "MOMENTUM_DUMP_COMPOSITE_TEST") continue;
+         int _pg_pos[];
+         GetGroupPositions(g_groups[_pg].magic_offset, _pg_pos);
+         if(ArraySize(_pg_pos) == 0) continue;
+         if(g_groups[_pg].direction == "BUY")  any_buy  = true;
+         if(g_groups[_pg].direction == "SELL") any_sell = true;
+      }
+      if(!any_buy  && g_dump_pyramid_consec_buy_count  > 0) g_dump_pyramid_consec_buy_count  = 0;
+      if(!any_sell && g_dump_pyramid_consec_sell_count > 0) g_dump_pyramid_consec_sell_count = 0;
+   }
    for(int gi = 0; gi < ArraySize(g_groups); gi++) {
       // Native scalper fast-lock ratchet:
       // once price moves enough in favor, tighten SL progressively (not too tight) to keep momentum gains
@@ -2064,6 +2253,44 @@ void ManageOpenGroups() {
             gi--;
             continue;
          }
+      }
+      // 2.7.54 — Time-stop for MOMENTUM_DUMP positions (operator: "gold is not stocks").
+      // 2.7.55 — Extended to BB_LOWER_REVERSION_BUY (operator: "don't get hit by our s/l").
+      //   Close at market if position open > <setup>_max_hold_seconds AND no TP1 banked yet
+      //   (current profit ≤ 0 means partial-close-at-TP1 hasn't moved SL to BE+ yet).
+      //   Caps Apr 13-style 40-min holds against the market (G5024 → −$55.53 after 40min).
+      //   For BB_LOWER_REVERSION_BUY: a bounce should happen FAST from extreme oversold;
+      //   if no TP1 in 30min, mean-reversion thesis failed → close before wider SL hits.
+      int _ts_max_sec = 0;
+      if(g_groups[gi].scalper_setup == "MOMENTUM_DUMP")
+         _ts_max_sec = g_sc.dump_max_hold_seconds;
+      else if(g_groups[gi].scalper_setup == "BB_LOWER_REVERSION_BUY")
+         _ts_max_sec = g_sc.bb_lower_reversion_buy_max_hold_seconds;
+      // 2.7.56 — Skip time-stop entirely on groups that already partially banked at TP1.
+      //   Run 26 Apr 8 evidence: 8 time-stop events fired on runner-halves AFTER TP1 banked,
+      //   bleeding $215 from a winning cascade day. Rule: if current open positions < legs
+      //   the group was planned with, then some legs already closed (= TP1 banked) — preserve
+      //   the runner(s) for TP2 or trail-close, don't time-stop on small per-position floats.
+      bool _ts_tp1_already_banked = (g_groups[gi].legs_planned > 0
+                                     && ArraySize(pos_lock) < g_groups[gi].legs_planned);
+      if(_ts_max_sec > 0 && ArraySize(pos_lock) > 0 && !_ts_tp1_already_banked) {
+         datetime _ts_now = TimeCurrent();
+         for(int _ts_i = 0; _ts_i < ArraySize(pos_lock); _ts_i++) {
+            ulong _ts_tk = pos_lock[_ts_i];
+            if(!g_pos.SelectByTicket(_ts_tk)) continue;
+            datetime _ts_open = (datetime)g_pos.Time();
+            if(_ts_open == 0) continue;
+            long _ts_held = (long)(_ts_now - _ts_open);
+            if(_ts_held < _ts_max_sec) continue;
+            double _ts_profit = g_pos.Profit() + g_pos.Swap() + g_pos.Commission();
+            if(_ts_profit > 0) continue;  // already in profit — let trail/TP handle it
+            if(g_trade.PositionClose(_ts_tk)) {
+               PrintFormat("FORGE 2.7.56: %s time-stop — closed ticket %llu G%d held %llds, profit=%.2f, max=%ds",
+                           g_groups[gi].scalper_setup, _ts_tk, g_groups[gi].id, _ts_held, _ts_profit, _ts_max_sec);
+            }
+         }
+         // Re-fetch positions since some may have been closed by the time-stop above.
+         GetGroupPositions(gm_lock, pos_lock);
       }
       int ratchet_updates = 0;
       if(ArraySize(pos_lock) > 0) {
@@ -3244,12 +3471,30 @@ void InitScalperConfig() {
    g_sc.dump_min_adx                  = 25.0;     // require ADX>25 to confirm sustained move
    g_sc.dump_require_psar             = true;     // PSAR must agree with dump direction
    g_sc.dump_require_d1_bias          = true;     // require v2.7.27 Filter 1 bias agreement
-   g_sc.dump_cooldown_seconds         = 600;      // 10-min cooldown per direction
+   g_sc.dump_cooldown_seconds         = 60;       // 2.7.53 — 60s anti-flicker only; with-trend bypass handles rally re-fires
    g_sc.dump_require_bar_confirm      = false;    // 2.7.32 Option B — default OFF, documented for later validation
    g_sc.dump_lot_factor               = 0.7;      // 0.7× fixed_lot per leg
    g_sc.dump_buy_lot_factor           = 0.0;      // 2.7.35: 0 = use dump_lot_factor; set in .env to override
    g_sc.dump_sell_lot_factor          = 0.0;      // 2.7.35: 0 = use dump_lot_factor; set in .env to override
-   g_sc.dump_sell_h1_max              = 0.0;      // 2.7.35: 0 = disabled; set in .env (e.g. 2.0) to block strong-bull SELLs
+   g_sc.dump_sell_h1_max              = 1.0;      // 2.7.53 — block MOMENTUM_DUMP SELL when h1_trend ≥ 1.0 (Apr 8 G5024 fix; was 0=disabled)
+   // 2.7.54 — Exit discipline (operator's "gold is not stocks" mandate)
+   g_sc.dump_sl_atr_mult_buy          = 2.0;      // was 4.0 inline — tight gold-scalp geometry caps chop losses
+   g_sc.dump_sl_atr_mult_sell         = 2.0;      // same
+   g_sc.dump_tp1_atr_mult_buy         = 0.4;      // bounces short — bank fast
+   g_sc.dump_tp1_atr_mult_sell        = 0.6;      // dumps run further — let it travel
+   g_sc.dump_max_hold_seconds         = 600;      // 10-min time stop on losers (Apr 13 G5024 40-min held against → SL fix)
+   // 2.7.55 — SELL oversold protection (Run 26 G5003 fix)
+   g_sc.dump_sell_min_rsi             = 30.0;     // block SELL at RSI ≤ 30 (mean-reversion zone)
+   g_sc.dump_sell_block_below_bb_l    = true;     // block SELL when price already below bb_l
+   g_sc.dump_below_bbl_block_max_rsi  = 35.0;     // 2.7.55.1 — bbl block only when RSI ≤ 35 (preserves G5001/G5002 winners)
+   // 2.7.56 — Multi-leg pyramid + continuous-fire defaults
+   g_sc.dump_legs_per_group           = 5;        // 5 legs per MOMENTUM_DUMP trigger (operator: "we need 1x,2x,3x,4x,5x sizing")
+   g_sc.dump_max_open_same_direction  = 30;       // cap concurrent MOMENTUM_DUMP positions per direction
+   g_sc.dump_cooldown_seconds         = 0;        // 2.7.56 — no cooldown (operator: "enter if setup valid until it doesn't")
+   g_sc.dump_pyramid_enabled          = true;     // 2.7.56 — escalating lot factor per consecutive same-dir fire
+   g_sc.dump_pyramid_base_factor      = 1.0;
+   g_sc.dump_pyramid_step             = 1.0;
+   g_sc.dump_pyramid_max_factor       = 5.0;
    // 2.7.29 — Regime H1-strong override defaults (Run 18 Issue 1 fix).
    g_sc.regime_h1_override_factor     = 0.0;      // 0 = disabled (legacy unanimous AND-gating). 2.0 typical when enabled.
    g_sc.regime_h1_override_adx_min    = 30.0;     // Minimum M5 ADX for override to fire.
@@ -3398,6 +3643,84 @@ void InitScalperConfig() {
    g_sc.cooldown_bypass_min_adx          = 25.0;  // same floor as cascade arming
    g_sc.cooldown_bypass_min_refire_sec   = 5;     // anti-flicker floor
    g_sc.cooldown_bypass_setups           = "";    // empty = no unconditional bypass
+   // 2.7.53 — H1-OR-M15 unconditional bypass (operator's "no mercy in forex" principle).
+   g_sc.cooldown_bypass_with_trend_enabled    = true;
+   g_sc.cooldown_bypass_with_trend_h1_min     = 1.0;
+   g_sc.cooldown_bypass_with_trend_m15_or_h1  = true;
+   // 2.7.53 — Universal fast-trend lot amplifier (operator: "size up when fast bull/bear confirmed").
+   g_sc.fast_trend_lot_amplifier_enabled      = true;
+   g_sc.fast_trend_lot_amplifier_factor       = 1.5;
+   g_sc.fast_trend_lot_amplifier_adx_min      = 35.0;
+   // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST (parallel composite, default OFF; mirrors legacy MOMENTUM_DUMP atoms)
+   g_sc.momentum_dump_composite_test_enabled           = false;
+   g_sc.momentum_dump_composite_test_lookback_bars     = 3;
+   g_sc.momentum_dump_composite_test_atr_mult          = 1.5;
+   g_sc.momentum_dump_composite_test_max_rsi           = 50.0;
+   g_sc.momentum_dump_composite_test_max_rsi_buy       = 70.0;
+   g_sc.momentum_dump_composite_test_min_adx           = 25.0;
+   g_sc.momentum_dump_composite_test_sl_atr_mult       = 4.0;
+   g_sc.momentum_dump_composite_test_tp1_atr_mult      = 0.6;
+   g_sc.momentum_dump_composite_test_tp2_atr_mult      = 1.0;
+   g_sc.momentum_dump_composite_test_cooldown_seconds  = 60;
+   g_sc.momentum_dump_composite_test_chop_block        = true;
+   g_sc.momentum_dump_composite_test_require_psar      = true;
+   g_sc.momentum_dump_composite_test_require_d1_bias   = true;
+   g_sc.momentum_dump_composite_test_sell_h1_max       = 1.0;
+   g_sc.momentum_dump_composite_test_lot_factor        = 0.7;
+   // 2.7.55 — BB_LOWER_REVERSION_BUY init (AGGRESSIVE defaults — operator: "good catch due to indicator alignment")
+   g_sc.bb_lower_reversion_buy_enabled                 = true;   // ON by default — multi-indicator high-conviction
+   g_sc.bb_lower_reversion_buy_max_rsi                 = 35.0;
+   g_sc.bb_lower_reversion_buy_min_adx                 = 18.0;
+   g_sc.bb_lower_reversion_buy_sl_atr_mult             = 1.5;   // 2.7.55 — widened from 0.5 to survive wicks (operator anti-SL-hit)
+   g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult     = 0.0;   // 0=use bb_m directly
+   g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult     = 0.0;   // 0=use bb_u directly
+   g_sc.bb_lower_reversion_buy_cooldown_seconds        = 180;
+   g_sc.bb_lower_reversion_buy_lot_factor              = 1.0;   // full size — high-conviction setup
+   g_sc.bb_lower_reversion_buy_h1_max                  = 0.0;   // 0=disabled (no bearish-h1 block)
+   g_sc.bb_lower_reversion_buy_extreme_rsi             = 25.0;  // RSI ≤ 25 = extreme oversold
+   g_sc.bb_lower_reversion_buy_extreme_amplifier       = 1.5;   // 1.5× lot when RSI ≤ 25
+   g_sc.bb_lower_reversion_buy_max_hold_seconds        = 1800;  // 30-min time-stop; bounce should happen fast or thesis failed
+   // 2.7.57 — TREND_CONTINUATION init defaults (atlas §5.2)
+   g_sc.trend_continuation_buy_enabled              = true;
+   g_sc.trend_continuation_buy_h1_min               = 0.10;
+   g_sc.trend_continuation_buy_rsi_min              = 60.0;
+   g_sc.trend_continuation_buy_rsi_max              = 75.0;
+   g_sc.trend_continuation_buy_adx_min              = 20.0;
+   g_sc.trend_continuation_buy_m15_adx_min          = 18.0;
+   g_sc.trend_continuation_buy_bb_proximity_atr     = 0.3;
+   g_sc.trend_continuation_buy_sl_atr_mult          = 0.5;
+   g_sc.trend_continuation_buy_tp1_atr_mult         = 0.3;
+   g_sc.trend_continuation_buy_tp2_atr_mult         = 0.7;
+   g_sc.trend_continuation_buy_cooldown_seconds     = 60;
+   g_sc.trend_continuation_buy_lot_factor           = 2.0;
+   // v2.7.58 — TC_BUY missing-atom gates (G5017 −$44 fix)
+   g_sc.trend_continuation_buy_require_macd_positive = true;
+   g_sc.trend_continuation_buy_macd_min              = 0.0;
+   g_sc.trend_continuation_buy_require_above_vwap    = true;
+   g_sc.trend_continuation_buy_max_poc_distance_atr  = 1.5;   // 0=disabled
+   g_sc.trend_continuation_buy_block_bearish_div     = true;
+   g_sc.trend_continuation_buy_require_h4_alignment  = true;
+   g_sc.trend_continuation_buy_h4_min                = 0.0;
+   g_sc.trend_continuation_sell_enabled             = true;
+   g_sc.trend_continuation_sell_h1_max              = 0.10;
+   g_sc.trend_continuation_sell_rsi_min             = 25.0;
+   g_sc.trend_continuation_sell_rsi_max             = 40.0;
+   g_sc.trend_continuation_sell_adx_min             = 20.0;
+   g_sc.trend_continuation_sell_m15_adx_min         = 18.0;
+   g_sc.trend_continuation_sell_bb_proximity_atr    = 0.3;
+   g_sc.trend_continuation_sell_sl_atr_mult         = 0.5;
+   g_sc.trend_continuation_sell_tp1_atr_mult        = 0.3;
+   g_sc.trend_continuation_sell_tp2_atr_mult        = 0.7;
+   g_sc.trend_continuation_sell_cooldown_seconds    = 60;
+   g_sc.trend_continuation_sell_lot_factor          = 2.0;
+   // v2.7.58 — TC_SELL missing-atom gates (mirror of BUY)
+   g_sc.trend_continuation_sell_require_macd_negative = true;
+   g_sc.trend_continuation_sell_macd_max              = 0.0;
+   g_sc.trend_continuation_sell_require_below_vwap    = true;
+   g_sc.trend_continuation_sell_max_poc_distance_atr  = 1.5;  // 0=disabled
+   g_sc.trend_continuation_sell_block_bullish_div     = true;
+   g_sc.trend_continuation_sell_require_h4_alignment  = true;
+   g_sc.trend_continuation_sell_h4_max                = 0.0;
    // 2.7.7 defaults
    g_sc.session_ny_sell_cutoff_utc      = 17;
    g_sc.session_london_sell_cutoff_utc  = 0;
@@ -3486,7 +3809,7 @@ void InitScalperConfig() {
    g_sc.kz_london_close_end_min  = 12*60;
    // 2.7.38 Tier 1 Boolean Composites — all default-OFF
    g_sc.block_sell_in_chop_enabled            = false;
-   g_sc.intraday_reversal_sell_enabled        = false;
+   g_sc.intraday_reversal_sell_enabled        = true;       // 2.7.53 — on by default; Apr 8 G5028 fix
    g_sc.intraday_reversal_sell_lot_mult       = 2.0;
    // 2.7.51 §11.4 — killzone-aware composite refinements (all default no-change)
    g_sc.bull_day_dip_buy_prime_amplifier      = 1.0;    // 1.0=disabled; 1.5 typical per §11.4
@@ -4018,6 +4341,103 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "cooldown_bypass_setups")) {
       g_sc.cooldown_bypass_setups = JsonGetString(content, "cooldown_bypass_setups");
    }
+   // 2.7.53 — H1-OR-M15 unconditional bypass
+   if(JsonHasKey(content, "cooldown_bypass_with_trend_enabled")) {
+      v = JsonGetDouble(content, "cooldown_bypass_with_trend_enabled");
+      g_sc.cooldown_bypass_with_trend_enabled = (v >= 0.5);
+   }
+   if(JsonHasKey(content, "cooldown_bypass_with_trend_h1_min")) {
+      v = JsonGetDouble(content, "cooldown_bypass_with_trend_h1_min");
+      if(v >= 0.0 && v <= 10.0) g_sc.cooldown_bypass_with_trend_h1_min = v;
+   }
+   if(JsonHasKey(content, "cooldown_bypass_with_trend_m15_or_h1")) {
+      v = JsonGetDouble(content, "cooldown_bypass_with_trend_m15_or_h1");
+      g_sc.cooldown_bypass_with_trend_m15_or_h1 = (v >= 0.5);
+   }
+   // 2.7.53 — Fast-trend lot amplifier
+   if(JsonHasKey(content, "fast_trend_lot_amplifier_enabled")) {
+      v = JsonGetDouble(content, "fast_trend_lot_amplifier_enabled");
+      g_sc.fast_trend_lot_amplifier_enabled = (v >= 0.5);
+   }
+   if(JsonHasKey(content, "fast_trend_lot_amplifier_factor")) {
+      v = JsonGetDouble(content, "fast_trend_lot_amplifier_factor");
+      if(v >= 0.5 && v <= 10.0) g_sc.fast_trend_lot_amplifier_factor = v;
+   }
+   if(JsonHasKey(content, "fast_trend_lot_amplifier_adx_min")) {
+      v = JsonGetDouble(content, "fast_trend_lot_amplifier_adx_min");
+      if(v >= 0.0 && v <= 80.0) g_sc.fast_trend_lot_amplifier_adx_min = v;
+   }
+   // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST loaders
+   if(JsonHasKey(content,"momentum_dump_composite_test_enabled"))          { v=JsonGetDouble(content,"momentum_dump_composite_test_enabled");          g_sc.momentum_dump_composite_test_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_test_lookback_bars"))    { v=JsonGetDouble(content,"momentum_dump_composite_test_lookback_bars");    if(v>=1 && v<=20)  g_sc.momentum_dump_composite_test_lookback_bars=(int)v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_atr_mult"))         { v=JsonGetDouble(content,"momentum_dump_composite_test_atr_mult");         if(v>=0.1 && v<=10.0) g_sc.momentum_dump_composite_test_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_max_rsi"))          { v=JsonGetDouble(content,"momentum_dump_composite_test_max_rsi");          if(v>=0 && v<=100) g_sc.momentum_dump_composite_test_max_rsi=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_max_rsi_buy"))      { v=JsonGetDouble(content,"momentum_dump_composite_test_max_rsi_buy");      if(v>=0 && v<=100) g_sc.momentum_dump_composite_test_max_rsi_buy=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_min_adx"))          { v=JsonGetDouble(content,"momentum_dump_composite_test_min_adx");          if(v>=0 && v<=80)  g_sc.momentum_dump_composite_test_min_adx=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_sl_atr_mult"))      { v=JsonGetDouble(content,"momentum_dump_composite_test_sl_atr_mult");      if(v>=0.3 && v<=10.0) g_sc.momentum_dump_composite_test_sl_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_tp1_atr_mult"))     { v=JsonGetDouble(content,"momentum_dump_composite_test_tp1_atr_mult");     if(v>=0.1 && v<=5.0)  g_sc.momentum_dump_composite_test_tp1_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_tp2_atr_mult"))     { v=JsonGetDouble(content,"momentum_dump_composite_test_tp2_atr_mult");     if(v>=0.1 && v<=5.0)  g_sc.momentum_dump_composite_test_tp2_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_cooldown_seconds")) { v=JsonGetDouble(content,"momentum_dump_composite_test_cooldown_seconds"); if(v>=0 && v<=7200) g_sc.momentum_dump_composite_test_cooldown_seconds=(int)v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_chop_block"))       { v=JsonGetDouble(content,"momentum_dump_composite_test_chop_block");       g_sc.momentum_dump_composite_test_chop_block=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_test_require_psar"))     { v=JsonGetDouble(content,"momentum_dump_composite_test_require_psar");     g_sc.momentum_dump_composite_test_require_psar=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_test_require_d1_bias")) { v=JsonGetDouble(content,"momentum_dump_composite_test_require_d1_bias"); g_sc.momentum_dump_composite_test_require_d1_bias=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_test_sell_h1_max"))      { v=JsonGetDouble(content,"momentum_dump_composite_test_sell_h1_max");      if(v>=0 && v<=10.0) g_sc.momentum_dump_composite_test_sell_h1_max=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_test_lot_factor"))       { v=JsonGetDouble(content,"momentum_dump_composite_test_lot_factor");       if(v>=0.1 && v<=2.0) g_sc.momentum_dump_composite_test_lot_factor=v; }
+   // 2.7.55 — BB_LOWER_REVERSION_BUY loaders
+   if(JsonHasKey(content,"bb_lower_reversion_buy_enabled"))             { v=JsonGetDouble(content,"bb_lower_reversion_buy_enabled");             g_sc.bb_lower_reversion_buy_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_max_rsi"))             { v=JsonGetDouble(content,"bb_lower_reversion_buy_max_rsi");             if(v>=0 && v<=100)   g_sc.bb_lower_reversion_buy_max_rsi=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_min_adx"))             { v=JsonGetDouble(content,"bb_lower_reversion_buy_min_adx");             if(v>=0 && v<=80)    g_sc.bb_lower_reversion_buy_min_adx=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_sl_atr_mult"))         { v=JsonGetDouble(content,"bb_lower_reversion_buy_sl_atr_mult");         if(v>=0.1 && v<=5.0) g_sc.bb_lower_reversion_buy_sl_atr_mult=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_tp1_offset_atr_mult")) { v=JsonGetDouble(content,"bb_lower_reversion_buy_tp1_offset_atr_mult"); if(v>=0 && v<=5.0)   g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_tp2_offset_atr_mult")) { v=JsonGetDouble(content,"bb_lower_reversion_buy_tp2_offset_atr_mult"); if(v>=0 && v<=5.0)   g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_cooldown_seconds"))    { v=JsonGetDouble(content,"bb_lower_reversion_buy_cooldown_seconds");    if(v>=0 && v<=7200)  g_sc.bb_lower_reversion_buy_cooldown_seconds=(int)v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_lot_factor"))          { v=JsonGetDouble(content,"bb_lower_reversion_buy_lot_factor");          if(v>=0.1 && v<=2.0) g_sc.bb_lower_reversion_buy_lot_factor=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_h1_max"))              { v=JsonGetDouble(content,"bb_lower_reversion_buy_h1_max");              if(v>=0 && v<=10.0)  g_sc.bb_lower_reversion_buy_h1_max=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_extreme_rsi"))         { v=JsonGetDouble(content,"bb_lower_reversion_buy_extreme_rsi");         if(v>=0 && v<=100)   g_sc.bb_lower_reversion_buy_extreme_rsi=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_extreme_amplifier"))   { v=JsonGetDouble(content,"bb_lower_reversion_buy_extreme_amplifier");   if(v>=1.0 && v<=10.0) g_sc.bb_lower_reversion_buy_extreme_amplifier=v; }
+   if(JsonHasKey(content,"bb_lower_reversion_buy_max_hold_seconds"))    { v=JsonGetDouble(content,"bb_lower_reversion_buy_max_hold_seconds");    if(v>=0 && v<=7200)   g_sc.bb_lower_reversion_buy_max_hold_seconds=(int)v; }
+   // 2.7.57 — TREND_CONTINUATION_BUY loaders
+   if(JsonHasKey(content,"trend_continuation_buy_enabled"))          { v=JsonGetDouble(content,"trend_continuation_buy_enabled");          g_sc.trend_continuation_buy_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_buy_h1_min"))           { v=JsonGetDouble(content,"trend_continuation_buy_h1_min");           if(v>=0 && v<=10.0) g_sc.trend_continuation_buy_h1_min=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_rsi_min"))          { v=JsonGetDouble(content,"trend_continuation_buy_rsi_min");          if(v>=0 && v<=100) g_sc.trend_continuation_buy_rsi_min=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_rsi_max"))          { v=JsonGetDouble(content,"trend_continuation_buy_rsi_max");          if(v>=0 && v<=100) g_sc.trend_continuation_buy_rsi_max=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_adx_min"))          { v=JsonGetDouble(content,"trend_continuation_buy_adx_min");          if(v>=0 && v<=80)  g_sc.trend_continuation_buy_adx_min=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_m15_adx_min"))      { v=JsonGetDouble(content,"trend_continuation_buy_m15_adx_min");      if(v>=0 && v<=80)  g_sc.trend_continuation_buy_m15_adx_min=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_bb_proximity_atr")) { v=JsonGetDouble(content,"trend_continuation_buy_bb_proximity_atr"); if(v>=0 && v<=5.0) g_sc.trend_continuation_buy_bb_proximity_atr=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_sl_atr_mult"))      { v=JsonGetDouble(content,"trend_continuation_buy_sl_atr_mult");      if(v>=0.1 && v<=5.0) g_sc.trend_continuation_buy_sl_atr_mult=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_tp1_atr_mult"))     { v=JsonGetDouble(content,"trend_continuation_buy_tp1_atr_mult");     if(v>=0.1 && v<=5.0) g_sc.trend_continuation_buy_tp1_atr_mult=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_tp2_atr_mult"))     { v=JsonGetDouble(content,"trend_continuation_buy_tp2_atr_mult");     if(v>=0.1 && v<=5.0) g_sc.trend_continuation_buy_tp2_atr_mult=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_cooldown_seconds")) { v=JsonGetDouble(content,"trend_continuation_buy_cooldown_seconds"); if(v>=0 && v<=7200) g_sc.trend_continuation_buy_cooldown_seconds=(int)v; }
+   if(JsonHasKey(content,"trend_continuation_buy_lot_factor"))       { v=JsonGetDouble(content,"trend_continuation_buy_lot_factor");       if(v>=0.1 && v<=10.0) g_sc.trend_continuation_buy_lot_factor=v; }
+   // v2.7.58 — TC_BUY missing-atom gate loaders
+   if(JsonHasKey(content,"trend_continuation_buy_require_macd_positive")) { v=JsonGetDouble(content,"trend_continuation_buy_require_macd_positive"); g_sc.trend_continuation_buy_require_macd_positive=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_buy_macd_min"))              { v=JsonGetDouble(content,"trend_continuation_buy_macd_min");              if(v>=-10.0 && v<=10.0) g_sc.trend_continuation_buy_macd_min=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_require_above_vwap"))    { v=JsonGetDouble(content,"trend_continuation_buy_require_above_vwap");    g_sc.trend_continuation_buy_require_above_vwap=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_buy_max_poc_distance_atr"))  { v=JsonGetDouble(content,"trend_continuation_buy_max_poc_distance_atr");  if(v>=0 && v<=10.0) g_sc.trend_continuation_buy_max_poc_distance_atr=v; }
+   if(JsonHasKey(content,"trend_continuation_buy_block_bearish_div"))     { v=JsonGetDouble(content,"trend_continuation_buy_block_bearish_div");     g_sc.trend_continuation_buy_block_bearish_div=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_buy_require_h4_alignment"))  { v=JsonGetDouble(content,"trend_continuation_buy_require_h4_alignment");  g_sc.trend_continuation_buy_require_h4_alignment=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_buy_h4_min"))                { v=JsonGetDouble(content,"trend_continuation_buy_h4_min");                if(v>=-10.0 && v<=10.0) g_sc.trend_continuation_buy_h4_min=v; }
+   // 2.7.57 — TREND_CONTINUATION_SELL loaders (mirror)
+   if(JsonHasKey(content,"trend_continuation_sell_enabled"))          { v=JsonGetDouble(content,"trend_continuation_sell_enabled");          g_sc.trend_continuation_sell_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_sell_h1_max"))           { v=JsonGetDouble(content,"trend_continuation_sell_h1_max");           if(v>=0 && v<=10.0) g_sc.trend_continuation_sell_h1_max=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_rsi_min"))          { v=JsonGetDouble(content,"trend_continuation_sell_rsi_min");          if(v>=0 && v<=100) g_sc.trend_continuation_sell_rsi_min=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_rsi_max"))          { v=JsonGetDouble(content,"trend_continuation_sell_rsi_max");          if(v>=0 && v<=100) g_sc.trend_continuation_sell_rsi_max=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_adx_min"))          { v=JsonGetDouble(content,"trend_continuation_sell_adx_min");          if(v>=0 && v<=80)  g_sc.trend_continuation_sell_adx_min=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_m15_adx_min"))      { v=JsonGetDouble(content,"trend_continuation_sell_m15_adx_min");      if(v>=0 && v<=80)  g_sc.trend_continuation_sell_m15_adx_min=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_bb_proximity_atr")) { v=JsonGetDouble(content,"trend_continuation_sell_bb_proximity_atr"); if(v>=0 && v<=5.0) g_sc.trend_continuation_sell_bb_proximity_atr=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_sl_atr_mult"))      { v=JsonGetDouble(content,"trend_continuation_sell_sl_atr_mult");      if(v>=0.1 && v<=5.0) g_sc.trend_continuation_sell_sl_atr_mult=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_tp1_atr_mult"))     { v=JsonGetDouble(content,"trend_continuation_sell_tp1_atr_mult");     if(v>=0.1 && v<=5.0) g_sc.trend_continuation_sell_tp1_atr_mult=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_tp2_atr_mult"))     { v=JsonGetDouble(content,"trend_continuation_sell_tp2_atr_mult");     if(v>=0.1 && v<=5.0) g_sc.trend_continuation_sell_tp2_atr_mult=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_cooldown_seconds")) { v=JsonGetDouble(content,"trend_continuation_sell_cooldown_seconds"); if(v>=0 && v<=7200) g_sc.trend_continuation_sell_cooldown_seconds=(int)v; }
+   if(JsonHasKey(content,"trend_continuation_sell_lot_factor"))       { v=JsonGetDouble(content,"trend_continuation_sell_lot_factor");       if(v>=0.1 && v<=10.0) g_sc.trend_continuation_sell_lot_factor=v; }
+   // v2.7.58 — TC_SELL missing-atom gate loaders (mirror)
+   if(JsonHasKey(content,"trend_continuation_sell_require_macd_negative")) { v=JsonGetDouble(content,"trend_continuation_sell_require_macd_negative"); g_sc.trend_continuation_sell_require_macd_negative=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_sell_macd_max"))              { v=JsonGetDouble(content,"trend_continuation_sell_macd_max");              if(v>=-10.0 && v<=10.0) g_sc.trend_continuation_sell_macd_max=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_require_below_vwap"))    { v=JsonGetDouble(content,"trend_continuation_sell_require_below_vwap");    g_sc.trend_continuation_sell_require_below_vwap=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_sell_max_poc_distance_atr"))  { v=JsonGetDouble(content,"trend_continuation_sell_max_poc_distance_atr");  if(v>=0 && v<=10.0) g_sc.trend_continuation_sell_max_poc_distance_atr=v; }
+   if(JsonHasKey(content,"trend_continuation_sell_block_bullish_div"))     { v=JsonGetDouble(content,"trend_continuation_sell_block_bullish_div");     g_sc.trend_continuation_sell_block_bullish_div=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_sell_require_h4_alignment"))  { v=JsonGetDouble(content,"trend_continuation_sell_require_h4_alignment");  g_sc.trend_continuation_sell_require_h4_alignment=(v>=0.5); }
+   if(JsonHasKey(content,"trend_continuation_sell_h4_max"))                { v=JsonGetDouble(content,"trend_continuation_sell_h4_max");                if(v>=-10.0 && v<=10.0) g_sc.trend_continuation_sell_h4_max=v; }
    if(JsonHasKey(content,"session_ny_sell_cutoff_utc")) { v = JsonGetDouble(content,"session_ny_sell_cutoff_utc"); if(v >= 0 && v <= 23) g_sc.session_ny_sell_cutoff_utc = (int)v; }
    // 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 fix.
    // Filter 1 blocks BUY when D1 SMA slope < −threshold (multi-day rollover);
@@ -4047,6 +4467,23 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"dump_buy_lot_factor"))      { v = JsonGetDouble(content,"dump_buy_lot_factor");      if(v >= 0 && v <= 2.0)   g_sc.dump_buy_lot_factor   = v; }
    if(JsonHasKey(content,"dump_sell_lot_factor"))     { v = JsonGetDouble(content,"dump_sell_lot_factor");     if(v >= 0 && v <= 2.0)   g_sc.dump_sell_lot_factor  = v; }
    if(JsonHasKey(content,"dump_sell_h1_max"))         { v = JsonGetDouble(content,"dump_sell_h1_max");         if(v >= 0 && v <= 10.0)  g_sc.dump_sell_h1_max      = v; }
+   // 2.7.54 — Exit-discipline loaders
+   if(JsonHasKey(content,"dump_sl_atr_mult_buy"))     { v = JsonGetDouble(content,"dump_sl_atr_mult_buy");     if(v >= 0.3 && v <= 10.0) g_sc.dump_sl_atr_mult_buy   = v; }
+   if(JsonHasKey(content,"dump_sl_atr_mult_sell"))    { v = JsonGetDouble(content,"dump_sl_atr_mult_sell");    if(v >= 0.3 && v <= 10.0) g_sc.dump_sl_atr_mult_sell  = v; }
+   if(JsonHasKey(content,"dump_tp1_atr_mult_buy"))    { v = JsonGetDouble(content,"dump_tp1_atr_mult_buy");    if(v >= 0.1 && v <= 5.0)  g_sc.dump_tp1_atr_mult_buy  = v; }
+   if(JsonHasKey(content,"dump_tp1_atr_mult_sell"))   { v = JsonGetDouble(content,"dump_tp1_atr_mult_sell");   if(v >= 0.1 && v <= 5.0)  g_sc.dump_tp1_atr_mult_sell = v; }
+   if(JsonHasKey(content,"dump_max_hold_seconds"))    { v = JsonGetDouble(content,"dump_max_hold_seconds");    if(v >= 0 && v <= 7200)   g_sc.dump_max_hold_seconds  = (int)v; }
+   // 2.7.55 — SELL oversold protection loaders
+   if(JsonHasKey(content,"dump_sell_min_rsi"))          { v = JsonGetDouble(content,"dump_sell_min_rsi");          if(v >= 0 && v <= 100) g_sc.dump_sell_min_rsi        = v; }
+   if(JsonHasKey(content,"dump_sell_block_below_bb_l")) { v = JsonGetDouble(content,"dump_sell_block_below_bb_l"); g_sc.dump_sell_block_below_bb_l = (v >= 0.5); }
+   if(JsonHasKey(content,"dump_below_bbl_block_max_rsi")) { v = JsonGetDouble(content,"dump_below_bbl_block_max_rsi"); if(v >= 0 && v <= 100) g_sc.dump_below_bbl_block_max_rsi = v; }
+   // 2.7.56 — multi-leg + pyramid loaders
+   if(JsonHasKey(content,"dump_legs_per_group"))           { v = JsonGetDouble(content,"dump_legs_per_group");           if(v >= 0 && v <= 30)   g_sc.dump_legs_per_group           = (int)v; }
+   if(JsonHasKey(content,"dump_max_open_same_direction"))  { v = JsonGetDouble(content,"dump_max_open_same_direction");  if(v >= 0 && v <= 100)  g_sc.dump_max_open_same_direction  = (int)v; }
+   if(JsonHasKey(content,"dump_pyramid_enabled"))          { v = JsonGetDouble(content,"dump_pyramid_enabled");          g_sc.dump_pyramid_enabled = (v >= 0.5); }
+   if(JsonHasKey(content,"dump_pyramid_base_factor"))      { v = JsonGetDouble(content,"dump_pyramid_base_factor");      if(v >= 0.1 && v <= 10.0) g_sc.dump_pyramid_base_factor = v; }
+   if(JsonHasKey(content,"dump_pyramid_step"))             { v = JsonGetDouble(content,"dump_pyramid_step");             if(v >= 0.0 && v <= 10.0) g_sc.dump_pyramid_step        = v; }
+   if(JsonHasKey(content,"dump_pyramid_max_factor"))       { v = JsonGetDouble(content,"dump_pyramid_max_factor");       if(v >= 0.1 && v <= 20.0) g_sc.dump_pyramid_max_factor  = v; }
    // 2.7.29 — Regime H1-strong override (Run 18 Issue 1 fix).
    if(JsonHasKey(content,"regime_h1_override_factor"))  { v = JsonGetDouble(content,"regime_h1_override_factor");  if(v >= 0.0 && v <= 10.0) g_sc.regime_h1_override_factor  = v; }
    if(JsonHasKey(content,"regime_h1_override_adx_min")) { v = JsonGetDouble(content,"regime_h1_override_adx_min"); if(v >= 0.0 && v <= 100.0) g_sc.regime_h1_override_adx_min = v; }
@@ -5838,7 +6275,126 @@ bool IsBullDayDipBuyActive(const double h1_trend_strength) {
    // Re-entry cooldown — 2.7.41 honors regime-aware bypass (m5_adx already computed above)
    if(g_last_chop_buy_exit_time > 0
       && (TimeCurrent() - g_last_chop_buy_exit_time) < g_sc.bull_day_dip_buy_reentry_cooldown_sec
-      && !CooldownBypassActive("BUY", "BULL_DAY_DIP_BUY", m5_adx))
+      && !CooldownBypassActive("BUY", "BULL_DAY_DIP_BUY", m5_adx, h1_trend_strength))
+      return false;
+   return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOMENTUM_DUMP_COMPOSITE_TEST — boolean-composite replication of legacy MOMENTUM_DUMP
+//
+// PURPOSE: Validate the new layered-composite framework (used by §11.4 setups SR_FLIP,
+// TRENDLINE_BOUNCE, INSIDE_BAR, etc.) by replicating the proven legacy MOMENTUM_DUMP
+// behavior using the new pattern. Same atoms, same geometry, same gate semantics —
+// just structured as Detect+IsActive helpers instead of inline if/else-if chain.
+// When enabled alongside legacy MOMENTUM_DUMP, TAKEN counts/timestamps should match
+// ~1:1; deltas reveal framework bugs.
+//
+// EVALUATION ORDER (mirror of legacy MOMENTUM_DUMP filter chain):
+//   1. Trigger atom — M5 move > atr_mult × ATR over lookback_bars
+//   2. SELL branch:
+//      a. h1_trend_strength < sell_h1_max (else dump_h1_trend_block_sell)
+//      b. m5_rsi < max_rsi (else dump_rsi_block)
+//      c. m5_adx >= min_adx (else dump_adx_block)
+//      d. require_psar → g_psar_state == "ABOVE" (else dump_psar_block)
+//      e. require_d1_bias → g_daily_bear_bias (else dump_d1_bias_block)
+//      f. cooldown gate honors CooldownBypassActive (no-mercy bypass)
+//      g. !chop_block || g_regime_label != "RANGE" (else dump_chop_block)
+//   3. BUY branch: mirror with INTRADAY_REVERSAL_SELL BUY-block at slot 0
+//
+// CHANGELOG:
+//   2026-05-13  Initial v2.7.53 implementation (parallel to legacy MOMENTUM_DUMP).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DetectMomentumDumpCompositeTestEvent — trigger atom layer.
+// Returns +1 = BUY trigger, -1 = SELL trigger, 0 = no trigger.
+int DetectMomentumDumpCompositeTestEvent(const double m5_atr) {
+   if(!g_sc.momentum_dump_composite_test_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   int lb = MathMax(1, g_sc.momentum_dump_composite_test_lookback_bars);
+   double c0 = iClose(_Symbol, PERIOD_M5, 0);
+   double cN = iClose(_Symbol, PERIOD_M5, lb);
+   if(c0 <= 0.0 || cN <= 0.0) return 0;
+   double move = c0 - cN;
+   double thresh = g_sc.momentum_dump_composite_test_atr_mult * m5_atr;
+   if(move < -thresh) return -1;  // SELL trigger
+   if(move >  thresh) return +1;  // BUY trigger
+   return 0;
+}
+
+// IsMomentumDumpCompositeTestActive — composite filter layer.
+// Returns true when the trigger should fire a real entry; false when any
+// filter blocks. Caller passes the trigger direction sign + per-tick atoms.
+// SKIP-logging is intentionally delegated to the caller (so the composite
+// stays pure-boolean — caller logs whichever rung it sees fail first).
+bool IsMomentumDumpCompositeTestActive(const int dir_sign,
+                                       const double m5_rsi, const double m5_adx,
+                                       const double h1_trend_strength) {
+   if(!g_sc.momentum_dump_composite_test_enabled) return false;
+   if(dir_sign == 0) return false;
+   if(dir_sign < 0) {
+      // SELL branch
+      if(g_sc.momentum_dump_composite_test_sell_h1_max > 0.0
+         && h1_trend_strength >= g_sc.momentum_dump_composite_test_sell_h1_max)
+         return false;
+      if(m5_rsi >= g_sc.momentum_dump_composite_test_max_rsi) return false;
+      if(m5_adx < g_sc.momentum_dump_composite_test_min_adx)  return false;
+      if(g_sc.momentum_dump_composite_test_require_psar && g_sc.psar_enabled
+         && g_psar_state != "ABOVE") return false;
+      if(g_sc.momentum_dump_composite_test_require_d1_bias
+         && g_sc.daily_direction_gate_enabled && !g_daily_bear_bias) return false;
+      // 2.7.56.1 — G5003-style SELL protections — INDEPENDENT FUNCTION, SHARED MD VARIABLES.
+      //   Per operator: "use variables from MD" — function is its own (composite pattern),
+      //   but config knobs are shared with legacy MOMENTUM_DUMP so behaviors stay in lockstep
+      //   when both are enabled. Single env var tunes both.
+      //   (a) g_sc.dump_sell_min_rsi — RSI floor (don't SELL into deep oversold).
+      //   (b) g_sc.dump_sell_block_below_bb_l + dump_below_bbl_block_max_rsi — BB-lower-band
+      //       conjoint gate (block SELL when price<bb_l AND RSI ≤ 35).
+      if(g_sc.dump_sell_min_rsi > 0.0 && m5_rsi <= g_sc.dump_sell_min_rsi) return false;
+      if(g_sc.dump_sell_block_below_bb_l) {
+         double _mdct_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         double _mdct_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double _mdct_mid = (_mdct_bid + _mdct_ask) / 2.0;
+         double _mdct_bbl_buf[1];
+         double _mdct_bbl = (CopyBuffer(g_mtf[0].h_bb, 2, 0, 1, _mdct_bbl_buf) == 1) ? _mdct_bbl_buf[0] : 0.0;
+         if(_mdct_bbl > 0.0 && _mdct_mid < _mdct_bbl
+            && (g_sc.dump_below_bbl_block_max_rsi <= 0
+                || m5_rsi <= g_sc.dump_below_bbl_block_max_rsi)) {
+            return false;
+         }
+      }
+   } else {
+      // BUY branch
+      // INTRADAY_REVERSAL_SELL composite blocks all BUYs (parity with legacy line 9204)
+      double mid_buy   = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+      double buf_bbm[1];
+      double bb_mid    = (CopyBuffer(g_mtf[0].h_bb, 0, 0, 1, buf_bbm) == 1) ? buf_bbm[0] : 0.0;
+      if(IsIntradayReversalSellActive(h1_trend_strength, m5_rsi, mid_buy, bb_mid)) return false;
+      // BUY overbought ceiling (G5009 fix — parity with dump_rsi_buy_ceil)
+      if(g_sc.momentum_dump_composite_test_max_rsi_buy > 0.0
+         && m5_rsi >= g_sc.momentum_dump_composite_test_max_rsi_buy) return false;
+      // Lower bound: mirror of SELL's max_rsi → BUY needs RSI > (100 - max_rsi)
+      double buy_rsi_min = 100.0 - g_sc.momentum_dump_composite_test_max_rsi;
+      if(m5_rsi <= buy_rsi_min) return false;
+      // Daily bear bias blocks BUY (parity with entry_quality_daily_bear_block_buy)
+      if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) return false;
+      if(m5_adx < g_sc.momentum_dump_composite_test_min_adx)  return false;
+      if(g_sc.momentum_dump_composite_test_require_psar && g_sc.psar_enabled
+         && g_psar_state != "BELOW") return false;
+      if(g_sc.momentum_dump_composite_test_require_d1_bias
+         && g_sc.daily_direction_gate_enabled && !g_daily_bull_bias) return false;
+   }
+   // Chop block (both directions)
+   if(g_sc.momentum_dump_composite_test_chop_block && g_regime_label == "RANGE") return false;
+   // Cooldown — honors CooldownBypassActive (no-mercy with-trend bypass + setup whitelist)
+   datetime now = TimeCurrent();
+   datetime last = (dir_sign > 0) ? g_momentum_dump_composite_test_last_buy_time
+                                  : g_momentum_dump_composite_test_last_sell_time;
+   if(g_sc.momentum_dump_composite_test_cooldown_seconds > 0
+      && last > 0
+      && (now - last) < g_sc.momentum_dump_composite_test_cooldown_seconds
+      && !CooldownBypassActive(dir_sign > 0 ? "BUY" : "SELL",
+                               "MOMENTUM_DUMP_COMPOSITE_TEST", m5_adx, h1_trend_strength))
       return false;
    return true;
 }
@@ -7389,12 +7945,33 @@ bool SetupBypassesDirectionCap(const string setup_type) {
 // Use case (Apr 1 2024 NY rally): BB_BREAKOUT BUY G5001 → TP1 → cooldown active →
 //   regime=TREND_BULL, ADX=38, 13s since TP1 → bypass returns TRUE → G5002 fires.
 //   Without bypass, the 30-min cooldown would block 4-5 continuation entries.
-bool CooldownBypassActive(const string direction, const string setup_type, const double m5_adx) {
+bool CooldownBypassActive(const string direction, const string setup_type, const double m5_adx,
+                          const double h1_trend_strength = 0.0) {
    // Unconditional bypass list (checked first — applies regardless of master switch)
    if(StringLen(g_sc.cooldown_bypass_setups) > 0 && StringLen(setup_type) > 0) {
       string padded_list = "," + g_sc.cooldown_bypass_setups + ",";
       string padded_setup = "," + setup_type + ",";
       if(StringFind(padded_list, padded_setup) >= 0) return true;
+   }
+   // 2.7.53 — Operator's "no mercy in forex" with-trend bypass. Bypasses cooldown
+   // UNCONDITIONALLY (no TP1 requirement) when direction is aligned with H1 trend
+   // strength OR M15 EMA20/50 trend, regime is trending, and M5 has minimum ADX.
+   // Catches: Apr 1 NY rally (H1=+2.3 leads); Apr 8 PM bear cascade (M15 flips
+   // bear while H1 lags bull); any sustained directional move where the legacy
+   // TP1-required bypass would miss the FIRST entry's cooldown window.
+   if(g_sc.cooldown_bypass_with_trend_enabled) {
+      int dir_sign = (direction == "BUY") ? +1 : ((direction == "SELL") ? -1 : 0);
+      if(dir_sign != 0) {
+         bool with_h1  = (MathAbs(h1_trend_strength) >= g_sc.cooldown_bypass_with_trend_h1_min)
+                     && ((dir_sign > 0) ? (h1_trend_strength > 0.0) : (h1_trend_strength < 0.0));
+         bool with_m15 = g_sc.cooldown_bypass_with_trend_m15_or_h1
+                     && Atom_M15TrendAligned(dir_sign, true);
+         bool with_trend_tf = with_h1 || with_m15;
+         bool regime_aligned = (dir_sign > 0 && g_regime_label == "TREND_BULL")
+                            || (dir_sign < 0 && g_regime_label == "TREND_BEAR");
+         bool adx_ok = (m5_adx <= 0.0 || m5_adx >= g_sc.cooldown_bypass_min_adx);
+         if(with_trend_tf && regime_aligned && adx_ok) return true;
+      }
    }
    if(!g_sc.cooldown_bypass_on_tp_with_trend) return false;
    datetime last_tp = (direction == "BUY") ? g_scalper_last_tp1_buy_time
@@ -7667,7 +8244,15 @@ bool CheckEntryQuality(const string direction, const double atr,
    //    is already open, letting high-confidence signals stack past the default cap.
    if(g_sc.max_open_same_direction > 0 && !SetupBypassesDirectionCap(setup_type)) {
       int dir_open = ScalperOpenGroupCountByDirection(direction);
-      if(dir_open >= g_sc.max_open_same_direction) {
+      // 2.7.56 — MOMENTUM_DUMP gets a setup-specific cap (default 30) instead of the
+      //   global (default 1) so pyramid into confirmed cascade isn't capped early.
+      // 2.7.56.1 — MDCT shares this cap with MD (per operator: "use variables from MD").
+      int dir_cap_eff = g_sc.max_open_same_direction;
+      if((setup_type == "MOMENTUM_DUMP" || setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST")
+         && g_sc.dump_max_open_same_direction > 0) {
+         dir_cap_eff = g_sc.dump_max_open_same_direction;
+      }
+      if(dir_open >= dir_cap_eff) {
          JournalRecordSignal("SKIP","entry_quality_direction_cap",setup_type,direction,
             SymbolInfoDouble(_Symbol,SYMBOL_BID),0,atr,rsi,adx,bb_upper_now,bb_lower_now,0,0,0,0);
          return false;
@@ -8324,7 +8909,7 @@ void CheckNativeScalperSetups() {
                && (g_sc.pullback_scalp_cooldown_seconds <= 0
                    || g_pullback_scalp_last_buy_time == 0
                    || (_now_psb - g_pullback_scalp_last_buy_time) >= g_sc.pullback_scalp_cooldown_seconds
-                   || CooldownBypassActive("BUY", "BB_PULLBACK_SCALP", m5_adx));  // 2.7.41 — bypass when last TP1 + TREND_BULL + ADX ok
+                   || CooldownBypassActive("BUY", "BB_PULLBACK_SCALP", m5_adx, h1_trend_strength));  // 2.7.41 — bypass when last TP1 + TREND_BULL + ADX ok; 2.7.53 — H1-OR-M15 with-trend bypass
             if(pullback_buy_ok) {
          direction = "BUY";
                double pb_sl  = NormalizeDouble(bid - m5_atr * g_sc.pullback_scalp_sl_atr_mult, _Digits);
@@ -8409,7 +8994,7 @@ void CheckNativeScalperSetups() {
                && (g_sc.pullback_scalp_cooldown_seconds <= 0
                    || g_pullback_scalp_last_sell_time == 0
                    || (_now_pss - g_pullback_scalp_last_sell_time) >= g_sc.pullback_scalp_cooldown_seconds
-                   || CooldownBypassActive("SELL", "BB_PULLBACK_SCALP", m5_adx));  // 2.7.41 — bypass when last TP1 + TREND_BEAR + ADX ok
+                   || CooldownBypassActive("SELL", "BB_PULLBACK_SCALP", m5_adx, h1_trend_strength));  // 2.7.41 — bypass when last TP1 + TREND_BEAR + ADX ok; 2.7.53 — H1-OR-M15 with-trend bypass
             if(pullback_sell_ok) {
          direction = "SELL";
                double pb_sl_s  = NormalizeDouble(ask + m5_atr * g_sc.pullback_scalp_sl_atr_mult, _Digits);
@@ -8603,7 +9188,7 @@ void CheckNativeScalperSetups() {
                && g_sc.breakout_same_dir_cooldown_seconds > 0
                && g_scalper_last_bb_breakout_buy > 0
                && (TimeCurrent() - g_scalper_last_bb_breakout_buy) < g_sc.breakout_same_dir_cooldown_seconds
-               && !CooldownBypassActive("BUY", "BB_BREAKOUT", m5_adx)) {  // 2.7.41 — bypass on TP+TREND_BULL+ADX
+               && !CooldownBypassActive("BUY", "BB_BREAKOUT", m5_adx, h1_trend_strength)) {  // 2.7.41 — bypass on TP+TREND_BULL+ADX; 2.7.53 — H1-OR-M15 with-trend bypass
                datetime _boc_bar = iTime(_Symbol, PERIOD_M5, 0);
                if(_boc_bar != g_scalper_last_bocooldown_log_bar) {
                   g_scalper_last_bocooldown_log_bar = _boc_bar;
@@ -8983,7 +9568,7 @@ void CheckNativeScalperSetups() {
                && g_sc.breakout_same_dir_cooldown_seconds > 0
                && g_scalper_last_bb_breakout_sell > 0
                && (TimeCurrent() - g_scalper_last_bb_breakout_sell) < g_sc.breakout_same_dir_cooldown_seconds
-               && !CooldownBypassActive("SELL", "BB_BREAKOUT", m5_adx)) {  // 2.7.41 — bypass on TP+TREND_BEAR+ADX
+               && !CooldownBypassActive("SELL", "BB_BREAKOUT", m5_adx, h1_trend_strength)) {  // 2.7.41 — bypass on TP+TREND_BEAR+ADX; 2.7.53 — H1-OR-M15 with-trend bypass
                datetime _bocs_bar = iTime(_Symbol, PERIOD_M5, 0);
                if(_bocs_bar != g_scalper_last_bocooldown_log_bar) {
                   g_scalper_last_bocooldown_log_bar = _bocs_bar;
@@ -9165,6 +9750,31 @@ void CheckNativeScalperSetups() {
                JournalRecordSignal("SKIP","dump_chop_block","MOMENTUM_DUMP","SELL",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
+         } else if(g_sc.dump_sell_min_rsi > 0.0 && m5_rsi <= g_sc.dump_sell_min_rsi) {
+            // 2.7.55 — RSI floor for SELL trigger. Don't sell into deep oversold (mean-reversion zone).
+            //   Pairs with dump_max_rsi (sell only when RSI is "dumping" but not exhausted).
+            //   Run 26 G5003 (Mar 31 12:40, RSI=32.4, price=4551 < bbl=4554) was a textbook
+            //   "selling at the bottom of the dip" — RSI 32 is approaching mean-reversion territory
+            //   where gold typically bounces UP. Default 30 — blocks SELL at RSI ≤ 30.
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_rsi_floor_sell","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.dump_sell_block_below_bb_l && m5_bb_l > 0.0 && mid < m5_bb_l
+                && (g_sc.dump_below_bbl_block_max_rsi <= 0
+                    || m5_rsi <= g_sc.dump_below_bbl_block_max_rsi)) {
+            // 2.7.55 — BB lower-band protection for SELL. Don't sell when price is ALREADY
+            //   below the BB lower band — gold's standard-deviation oversold zone, where
+            //   mean-reversion BUYers wait. Pairs with the new BB_LOWER_REVERSION_BUY setup.
+            // 2.7.55.1 — Gated additionally on RSI ≤ dump_below_bbl_block_max_rsi (default 35)
+            //   so G5001/G5002-style continuation-dump SELLs (RSI 38-40, still trending down)
+            //   are NOT blocked. Only blocks when RSI confirms exhaustion (e.g. G5003 RSI 32.4).
+            if(!_logged) {
+               g_scalper_last_dump_log_bar = _dump_bar;
+               JournalRecordSignal("SKIP","dump_below_bbl_block_sell","MOMENTUM_DUMP","SELL",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
          } else if(g_sc.dump_judas_window_block
                 && g_regime.killzone == "LONDON_OPEN_KZ"
                 && g_regime.minutes_into_kz < 60) {
@@ -9187,12 +9797,16 @@ void CheckNativeScalperSetups() {
             //   With 3.0×ATR (~12pts) the SL survives chop wicks. ATR trail ratchets down as profit develops.
             // 2.7.33 — TP1 0.4→0.6×ATR (operator directive 2026-05-12). Run 22 G5003/G5004 reached
             //   3-4×ATR favorable but exited at +2 pts — wider TP1 captures more on the first scalp leg.
-            sl  = NormalizeDouble(ask + m5_atr * 4.0, _Digits);
-            tp1 = NormalizeDouble(bid - m5_atr * 0.6, _Digits);
+            // 2.7.54 — Hardcoded geometry surfaced as config knobs (operator: "gold is not stocks
+            //   — you have to run, no mercy in forex"). Default SL 4.0→2.0×ATR (tight scalp).
+            //   BEAR TP1 stays 0.6×ATR (gold dumps travel further than bounces).
+            sl  = NormalizeDouble(ask + m5_atr * g_sc.dump_sl_atr_mult_sell, _Digits);
+            tp1 = NormalizeDouble(bid - m5_atr * g_sc.dump_tp1_atr_mult_sell, _Digits);
             tp2 = NormalizeDouble(bid - m5_atr * 1.0, _Digits);
             g_scalper_last_dump_sell_time = _now_t;
-            PrintFormat("FORGE 2.7.33: MOMENTUM_DUMP SELL fired @ %.2f (move=%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f, regime=%s)",
-                        bid, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx, g_regime_label);
+            PrintFormat("FORGE 2.7.54: MOMENTUM_DUMP SELL fired @ %.2f (move=%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f, regime=%s, SL=%.1f×ATR, TP1=%.1f×ATR)",
+                        bid, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx, g_regime_label,
+                        g_sc.dump_sl_atr_mult_sell, g_sc.dump_tp1_atr_mult_sell);
          }
       } else if(dump_buy_trig) {
          // BUY mirror — same filter chain with sign flips.
@@ -9271,15 +9885,213 @@ void CheckNativeScalperSetups() {
             // All filters pass — fire market BUY entry
             direction = "BUY";
             setup_type = "MOMENTUM_DUMP";
-            // 2.7.32 — SL widened 1.5→3.0×ATR (chop survival, mirror of SELL side).
-            // 2.7.33 — TP1 0.4→0.6×ATR (operator directive 2026-05-12, mirror of SELL).
-            sl  = NormalizeDouble(bid - m5_atr * 4.0, _Digits);
-            tp1 = NormalizeDouble(ask + m5_atr * 0.6, _Digits);
+            // 2.7.54 — Surfaced SL/TP1 as config (mirror of SELL). Operator-asymmetric:
+            //   BULL TP1 = 0.4×ATR (bounces are short — bank fast), SELL TP1 = 0.6×ATR (dumps run further).
+            sl  = NormalizeDouble(bid - m5_atr * g_sc.dump_sl_atr_mult_buy, _Digits);
+            tp1 = NormalizeDouble(ask + m5_atr * g_sc.dump_tp1_atr_mult_buy, _Digits);
             tp2 = NormalizeDouble(ask + m5_atr * 1.0, _Digits);
             g_scalper_last_dump_buy_time = _now_t;
-            PrintFormat("FORGE 2.7.33: MOMENTUM_DUMP BUY fired @ %.2f (move=+%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f)",
-                        ask, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx);
+            PrintFormat("FORGE 2.7.54: MOMENTUM_DUMP BUY fired @ %.2f (move=+%.2fpts over %d bars, ATR=%.2f, RSI=%.1f, ADX=%.1f, SL=%.1f×ATR, TP1=%.1f×ATR)",
+                        ask, move_pts, dump_lb, m5_atr, m5_rsi, m5_adx,
+                        g_sc.dump_sl_atr_mult_buy, g_sc.dump_tp1_atr_mult_buy);
          }
+      }
+   }
+
+   // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST trigger (parallel composite, default OFF).
+   //   Replicates legacy MOMENTUM_DUMP atoms using the layered-helper framework:
+   //     Detect → Filter (composite boolean) → set direction/SL/TP.
+   //   When operator enables alongside legacy MOMENTUM_DUMP, TAKEN counts should
+   //   match ~1:1 — validates the new framework before retiring legacy code.
+   //   Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
+   //   (Path A pattern — avoids dry-run cooldown bug that hit §11.4 setups).
+   if(direction == "" && g_sc.momentum_dump_composite_test_enabled && m5_atr > 0.0) {
+      int mdct_event = DetectMomentumDumpCompositeTestEvent(m5_atr);
+      if(mdct_event != 0
+         && IsMomentumDumpCompositeTestActive(mdct_event, m5_rsi, m5_adx, h1_trend_strength)) {
+         direction  = (mdct_event > 0) ? "BUY" : "SELL";
+         setup_type = "MOMENTUM_DUMP_COMPOSITE_TEST";
+         double mdct_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double mdct_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         if(mdct_event > 0) {
+            sl  = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_test_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_test_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_test_tp2_atr_mult, _Digits);
+         } else {
+            sl  = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_test_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_test_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_test_tp2_atr_mult, _Digits);
+         }
+         PrintFormat("FORGE 2.7.53: MOMENTUM_DUMP_COMPOSITE_TEST %s fired @ %.2f (ATR=%.2f, RSI=%.1f, ADX=%.1f, h1=%.2f, regime=%s)",
+                     direction, (mdct_event > 0 ? mdct_ask : mdct_bid),
+                     m5_atr, m5_rsi, m5_adx, h1_trend_strength, g_regime_label);
+      }
+   }
+
+   // 2.7.55 — BB_LOWER_REVERSION_BUY trigger. Mean-reversion BUY when price drops
+   //   below BB lower band on M5. Pairs with dump_below_bbl_block_sell (Run 26
+   //   G5003 was a textbook SELL-block case — turns same condition into BUY signal).
+   //
+   //   Trigger atoms (ALL must be true):
+   //     m5_atr > 0
+   //     m5_bb_l > 0 AND mid < m5_bb_l                 (price below BB lower band)
+   //     m5_rsi ≤ bb_lower_reversion_buy_max_rsi        (oversold RSI confirmation)
+   //     m5_adx ≥ bb_lower_reversion_buy_min_adx        (some momentum for the bounce)
+   //     !g_daily_bear_bias (when daily gate enabled)   (don't catch falling knives)
+   //     session ∈ {LONDON, NY}                         (institutional liquidity)
+   //     h1_trend_strength ≥ −bb_lower_reversion_buy_h1_max (optional extreme-bear block)
+   //     cooldown elapsed (anchor: g_bb_lower_reversion_buy_last_time)
+   //
+   //   Geometry: market BUY at mid; SL = bb_l − sl_atr_mult×ATR; TP1 = bb_m;
+   //   TP2 = bb_u (full mean-reversion). Lot factor 0.5 (counter-momentum probe).
+   //   Anchor set via MarkSetupCooldownAnchorOnTaken (Path A pattern).
+   if(direction == "" && g_sc.bb_lower_reversion_buy_enabled && m5_atr > 0.0
+      && m5_bb_l > 0.0 && m5_bb_m > 0.0 && m5_bb_u > 0.0) {
+      double _bbr_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+      bool   _bbr_below_band = (_bbr_mid < m5_bb_l);
+      bool   _bbr_rsi_ok     = (g_sc.bb_lower_reversion_buy_max_rsi <= 0
+                              || m5_rsi <= g_sc.bb_lower_reversion_buy_max_rsi);
+      bool   _bbr_adx_ok     = (m5_adx >= g_sc.bb_lower_reversion_buy_min_adx);
+      bool   _bbr_daily_ok   = (!g_sc.daily_direction_gate_enabled || !g_daily_bear_bias);
+      string _bbr_sess       = ComputeCurrentSessionLabel();
+      bool   _bbr_sess_ok    = (_bbr_sess == "LONDON" || _bbr_sess == "NY");
+      bool   _bbr_h1_ok      = (g_sc.bb_lower_reversion_buy_h1_max <= 0.0
+                              || h1_trend_strength >= -g_sc.bb_lower_reversion_buy_h1_max);
+      datetime _bbr_now      = TimeCurrent();
+      bool   _bbr_cool_ok    = (g_sc.bb_lower_reversion_buy_cooldown_seconds <= 0
+                              || g_bb_lower_reversion_buy_last_time == 0
+                              || (_bbr_now - g_bb_lower_reversion_buy_last_time)
+                                   >= g_sc.bb_lower_reversion_buy_cooldown_seconds
+                              || CooldownBypassActive("BUY", "BB_LOWER_REVERSION_BUY",
+                                                       m5_adx, h1_trend_strength));
+      if(_bbr_below_band && _bbr_rsi_ok && _bbr_adx_ok && _bbr_daily_ok
+         && _bbr_sess_ok && _bbr_h1_ok && _bbr_cool_ok) {
+         direction  = "BUY";
+         setup_type = "BB_LOWER_REVERSION_BUY";
+         double _bbr_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double _bbr_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         sl  = NormalizeDouble(m5_bb_l - m5_atr * g_sc.bb_lower_reversion_buy_sl_atr_mult, _Digits);
+         tp1 = (g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult > 0.0)
+               ? NormalizeDouble(m5_bb_m - m5_atr * g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult, _Digits)
+               : NormalizeDouble(m5_bb_m, _Digits);
+         tp2 = (g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult > 0.0)
+               ? NormalizeDouble(m5_bb_u - m5_atr * g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult, _Digits)
+               : NormalizeDouble(m5_bb_u, _Digits);
+         PrintFormat("FORGE 2.7.55: BB_LOWER_REVERSION_BUY fired @ %.2f (bbl=%.2f bbm=%.2f bbu=%.2f, ATR=%.2f, RSI=%.1f, ADX=%.1f, h1=%.2f, regime=%s)",
+                     _bbr_ask, m5_bb_l, m5_bb_m, m5_bb_u, m5_atr, m5_rsi, m5_adx,
+                     h1_trend_strength, g_regime_label);
+      }
+   }
+
+   // 2.7.57 — TREND_CONTINUATION_BUY trigger (atlas §5.2, canonical roadmap setup finally shipping).
+   //   Apr 9 13:51 banked +$12.48 in 8 seconds — the canonical instant-scalp pattern.
+   //   Fires when bullish trend established + RSI strong + M5+M15 ADX confirm + price near bb_u.
+   if(direction == "" && g_sc.trend_continuation_buy_enabled && m5_atr > 0.0
+      && m5_bb_u > 0.0) {
+      double _tcb_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+      double _tcb_m15adx_buf[1];
+      double _tcb_m15adx = (CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _tcb_m15adx_buf) == 1) ? _tcb_m15adx_buf[0] : 0.0;
+      bool _tcb_regime    = (g_regime_label == "TREND_BULL");
+      bool _tcb_daily     = (!g_sc.daily_direction_gate_enabled || !g_daily_bear_bias);
+      bool _tcb_h1        = (h1_trend_strength >= g_sc.trend_continuation_buy_h1_min);
+      bool _tcb_rsi       = (m5_rsi >= g_sc.trend_continuation_buy_rsi_min
+                          && m5_rsi <= g_sc.trend_continuation_buy_rsi_max);
+      bool _tcb_adx       = (m5_adx >= g_sc.trend_continuation_buy_adx_min);
+      bool _tcb_m15adx_ok = (_tcb_m15adx >= g_sc.trend_continuation_buy_m15_adx_min);
+      bool _tcb_psar      = (g_psar_state == "BELOW");
+      bool _tcb_proximity = (_tcb_mid >= m5_bb_u - g_sc.trend_continuation_buy_bb_proximity_atr * m5_atr);
+      // v2.7.58 — missing-atom gates (G5017 −$44 fix). Default-ON; can be disabled per knob.
+      double _tcb_macd_buf[1];
+      double _tcb_macd_val = (g_h_osma_scalp != INVALID_HANDLE
+                              && CopyBuffer(g_h_osma_scalp, 0, 0, 1, _tcb_macd_buf) == 1)
+                              ? _tcb_macd_buf[0] : 0.0;
+      bool _tcb_macd_ok = (!g_sc.trend_continuation_buy_require_macd_positive
+                          || _tcb_macd_val > g_sc.trend_continuation_buy_macd_min);
+      bool _tcb_vwap_ok = (!g_sc.trend_continuation_buy_require_above_vwap
+                          || g_vwap_price <= 0.0
+                          || _tcb_mid >= g_vwap_price);
+      bool _tcb_poc_ok  = (g_sc.trend_continuation_buy_max_poc_distance_atr <= 0.0
+                          || g_poc_price <= 0.0
+                          || MathAbs(_tcb_mid - g_poc_price) <= g_sc.trend_continuation_buy_max_poc_distance_atr * m5_atr);
+      bool _tcb_div_ok  = (!g_sc.trend_continuation_buy_block_bearish_div
+                          || (g_rsi_div_type != "REG_BEAR" && g_rsi_div_type != "HID_BEAR"));
+      bool _tcb_h4_ok   = (!g_sc.trend_continuation_buy_require_h4_alignment
+                          || h4_trend_strength >= g_sc.trend_continuation_buy_h4_min);
+      datetime _tcb_now   = TimeCurrent();
+      bool _tcb_cool      = (g_sc.trend_continuation_buy_cooldown_seconds <= 0
+                          || g_trend_continuation_buy_last_time == 0
+                          || (_tcb_now - g_trend_continuation_buy_last_time)
+                               >= g_sc.trend_continuation_buy_cooldown_seconds
+                          || CooldownBypassActive("BUY", "TREND_CONTINUATION_BUY",
+                                                   m5_adx, h1_trend_strength));
+      if(_tcb_regime && _tcb_daily && _tcb_h1 && _tcb_rsi && _tcb_adx
+         && _tcb_m15adx_ok && _tcb_psar && _tcb_proximity && _tcb_cool
+         && _tcb_macd_ok && _tcb_vwap_ok && _tcb_poc_ok && _tcb_div_ok && _tcb_h4_ok) {
+         direction  = "BUY";
+         setup_type = "TREND_CONTINUATION_BUY";
+         double _tcb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double _tcb_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         sl  = NormalizeDouble(_tcb_bid - m5_atr * g_sc.trend_continuation_buy_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(_tcb_ask + m5_atr * g_sc.trend_continuation_buy_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(_tcb_ask + m5_atr * g_sc.trend_continuation_buy_tp2_atr_mult, _Digits);
+         PrintFormat("FORGE 2.7.57: TREND_CONTINUATION_BUY fired @ %.2f (RSI=%.1f ADX=%.1f m15adx=%.1f h1=%.2f bbu=%.2f near=%.2f)",
+                     _tcb_ask, m5_rsi, m5_adx, _tcb_m15adx, h1_trend_strength, m5_bb_u, _tcb_ask);
+      }
+   }
+
+   // 2.7.57 — TREND_CONTINUATION_SELL trigger (atlas §5.2 mirror).
+   //   Apr 8 17:31 banked +$22+ TP2 +$11 in 1 minute — bear cascade continuation.
+   //   Fires when bearish trend established + RSI weak + M5+M15 ADX confirm + price near bb_l.
+   if(direction == "" && g_sc.trend_continuation_sell_enabled && m5_atr > 0.0
+      && m5_bb_l > 0.0) {
+      double _tcs_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+      double _tcs_m15adx_buf[1];
+      double _tcs_m15adx = (CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _tcs_m15adx_buf) == 1) ? _tcs_m15adx_buf[0] : 0.0;
+      bool _tcs_regime    = (g_regime_label == "TREND_BEAR");
+      bool _tcs_daily     = (!g_sc.daily_direction_gate_enabled || !g_daily_bull_bias);
+      bool _tcs_h1        = (h1_trend_strength <= -g_sc.trend_continuation_sell_h1_max);
+      bool _tcs_rsi       = (m5_rsi >= g_sc.trend_continuation_sell_rsi_min
+                          && m5_rsi <= g_sc.trend_continuation_sell_rsi_max);
+      bool _tcs_adx       = (m5_adx >= g_sc.trend_continuation_sell_adx_min);
+      bool _tcs_m15adx_ok = (_tcs_m15adx >= g_sc.trend_continuation_sell_m15_adx_min);
+      bool _tcs_psar      = (g_psar_state == "ABOVE");
+      bool _tcs_proximity = (_tcs_mid <= m5_bb_l + g_sc.trend_continuation_sell_bb_proximity_atr * m5_atr);
+      // v2.7.58 — missing-atom gates (mirror of BUY)
+      double _tcs_macd_buf[1];
+      double _tcs_macd_val = (g_h_osma_scalp != INVALID_HANDLE
+                              && CopyBuffer(g_h_osma_scalp, 0, 0, 1, _tcs_macd_buf) == 1)
+                              ? _tcs_macd_buf[0] : 0.0;
+      bool _tcs_macd_ok = (!g_sc.trend_continuation_sell_require_macd_negative
+                          || _tcs_macd_val < g_sc.trend_continuation_sell_macd_max);
+      bool _tcs_vwap_ok = (!g_sc.trend_continuation_sell_require_below_vwap
+                          || g_vwap_price <= 0.0
+                          || _tcs_mid <= g_vwap_price);
+      bool _tcs_poc_ok  = (g_sc.trend_continuation_sell_max_poc_distance_atr <= 0.0
+                          || g_poc_price <= 0.0
+                          || MathAbs(_tcs_mid - g_poc_price) <= g_sc.trend_continuation_sell_max_poc_distance_atr * m5_atr);
+      bool _tcs_div_ok  = (!g_sc.trend_continuation_sell_block_bullish_div
+                          || (g_rsi_div_type != "REG_BULL" && g_rsi_div_type != "HID_BULL"));
+      bool _tcs_h4_ok   = (!g_sc.trend_continuation_sell_require_h4_alignment
+                          || h4_trend_strength <= g_sc.trend_continuation_sell_h4_max);
+      datetime _tcs_now   = TimeCurrent();
+      bool _tcs_cool      = (g_sc.trend_continuation_sell_cooldown_seconds <= 0
+                          || g_trend_continuation_sell_last_time == 0
+                          || (_tcs_now - g_trend_continuation_sell_last_time)
+                               >= g_sc.trend_continuation_sell_cooldown_seconds
+                          || CooldownBypassActive("SELL", "TREND_CONTINUATION_SELL",
+                                                   m5_adx, h1_trend_strength));
+      if(_tcs_regime && _tcs_daily && _tcs_h1 && _tcs_rsi && _tcs_adx
+         && _tcs_m15adx_ok && _tcs_psar && _tcs_proximity && _tcs_cool
+         && _tcs_macd_ok && _tcs_vwap_ok && _tcs_poc_ok && _tcs_div_ok && _tcs_h4_ok) {
+         direction  = "SELL";
+         setup_type = "TREND_CONTINUATION_SELL";
+         double _tcs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double _tcs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         sl  = NormalizeDouble(_tcs_ask + m5_atr * g_sc.trend_continuation_sell_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(_tcs_bid - m5_atr * g_sc.trend_continuation_sell_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(_tcs_bid - m5_atr * g_sc.trend_continuation_sell_tp2_atr_mult, _Digits);
+         PrintFormat("FORGE 2.7.57: TREND_CONTINUATION_SELL fired @ %.2f (RSI=%.1f ADX=%.1f m15adx=%.1f h1=%.2f bbl=%.2f)",
+                     _tcs_bid, m5_rsi, m5_adx, _tcs_m15adx, h1_trend_strength, m5_bb_l);
       }
    }
 
@@ -9355,17 +10167,15 @@ void CheckNativeScalperSetups() {
                                                   h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double mac_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double mac_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime mac_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(mac_event > 0) {
                sl  = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(mac_ask + m5_atr * g_sc.ma_crossover_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(mac_ask + m5_atr * g_sc.ma_crossover_tp2_atr_mult, _Digits);
-               g_ma_crossover_last_buy_time = mac_now;
             } else {
                sl  = NormalizeDouble(mac_ask + m5_atr * g_sc.ma_crossover_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_tp2_atr_mult, _Digits);
-               g_ma_crossover_last_sell_time = mac_now;
             }
             PrintFormat("FORGE 2.7.43: MA_CROSSOVER %s fired @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         mac_dir, (mac_event > 0 ? mac_ask : mac_bid), m5_adx, h1_trend_strength, mac_score);
@@ -9390,17 +10200,15 @@ void CheckNativeScalperSetups() {
             int vwr_score = Score_SetupConfidence(vwr_event, m5_adx, 15.0, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double vwr_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double vwr_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime vwr_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(vwr_event > 0) {
                sl  = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(vwr_ask + m5_atr * g_sc.vwap_reversion_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(vwr_ask + m5_atr * g_sc.vwap_reversion_tp2_atr_mult, _Digits);
-               g_vwap_reversion_last_buy_time = vwr_now;
             } else {
                sl  = NormalizeDouble(vwr_ask + m5_atr * g_sc.vwap_reversion_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(vwr_bid - m5_atr * g_sc.vwap_reversion_tp2_atr_mult, _Digits);
-               g_vwap_reversion_last_sell_time = vwr_now;
             }
             PrintFormat("FORGE 2.7.43: VWAP_REVERSION %s @ %.2f (vwap=%.2f h1=%.2f ADX=%.1f score=%d/100)",
                         vwr_dir, (vwr_event > 0 ? vwr_ask : vwr_bid), g_vwap_price, h1_trend_strength, m5_adx, vwr_score);
@@ -9424,17 +10232,15 @@ void CheckNativeScalperSetups() {
             int fc_score = Score_SetupConfidence(fc_event, m5_adx, 15.0, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double fc_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double fc_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime fc_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(fc_event > 0) {
                sl  = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(fc_ask + m5_atr * g_sc.fib_confluence_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(fc_ask + m5_atr * g_sc.fib_confluence_tp2_atr_mult, _Digits);
-               g_fib_confluence_last_buy_time = fc_now;
             } else {
                sl  = NormalizeDouble(fc_ask + m5_atr * g_sc.fib_confluence_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(fc_bid - m5_atr * g_sc.fib_confluence_tp2_atr_mult, _Digits);
-               g_fib_confluence_last_sell_time = fc_now;
             }
             PrintFormat("FORGE 2.7.43: FIB_CONFLUENCE %s @ %.2f (fib382=%.2f fib50=%.2f fib618=%.2f h1=%.2f score=%d/100)",
                         fc_dir, (fc_event > 0 ? fc_ask : fc_bid), g_fib_382, g_fib_50, g_fib_618, h1_trend_strength, fc_score);
@@ -9463,17 +10269,15 @@ void CheckNativeScalperSetups() {
                                                  h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double ib_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double ib_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime ib_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(ib_event > 0) {
                sl  = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(ib_ask + m5_atr * g_sc.inside_bar_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(ib_ask + m5_atr * g_sc.inside_bar_tp2_atr_mult, _Digits);
-               g_inside_bar_last_buy_time = ib_now;
             } else {
                sl  = NormalizeDouble(ib_ask + m5_atr * g_sc.inside_bar_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(ib_bid - m5_atr * g_sc.inside_bar_tp2_atr_mult, _Digits);
-               g_inside_bar_last_sell_time = ib_now;
             }
             PrintFormat("FORGE 2.7.43: INSIDE_BAR %s fired @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         ib_dir, (ib_event > 0 ? ib_ask : ib_bid), m5_adx, h1_trend_strength, ib_score);
@@ -9500,17 +10304,15 @@ void CheckNativeScalperSetups() {
             int sq_score = Score_SetupConfidence(sq_event, m5_adx, g_sc.bb_squeeze_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double sq_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double sq_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime sq_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(sq_event > 0) {
                sl  = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(sq_ask + m5_atr * g_sc.bb_squeeze_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(sq_ask + m5_atr * g_sc.bb_squeeze_tp2_atr_mult, _Digits);
-               g_bb_squeeze_last_buy_time = sq_now;
             } else {
                sl  = NormalizeDouble(sq_ask + m5_atr * g_sc.bb_squeeze_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(sq_bid - m5_atr * g_sc.bb_squeeze_tp2_atr_mult, _Digits);
-               g_bb_squeeze_last_sell_time = sq_now;
             }
             PrintFormat("FORGE 2.7.43: BB_SQUEEZE %s @ %.2f (bb_u=%.2f bb_l=%.2f ADX=%.1f score=%d/100)",
                         sq_dir, (sq_event > 0 ? sq_ask : sq_bid), m5_bb_u, m5_bb_l, m5_adx, sq_score);
@@ -9538,17 +10340,15 @@ void CheckNativeScalperSetups() {
             int orb_score = Score_SetupConfidence(orb_event, m5_adx, g_sc.orb_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double orb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double orb_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime orb_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(orb_event > 0) {
                sl  = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(orb_ask + m5_atr * g_sc.orb_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(orb_ask + m5_atr * g_sc.orb_tp2_atr_mult, _Digits);
-               g_orb_last_buy_time = orb_now;
             } else {
                sl  = NormalizeDouble(orb_ask + m5_atr * g_sc.orb_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(orb_bid - m5_atr * g_sc.orb_tp2_atr_mult, _Digits);
-               g_orb_last_sell_time = orb_now;
             }
             PrintFormat("FORGE 2.7.43: ORB %s @ %.2f (range=[%.2f,%.2f] ADX=%.1f score=%d/100)",
                         orb_dir, (orb_event > 0 ? orb_ask : orb_bid),
@@ -9573,17 +10373,15 @@ void CheckNativeScalperSetups() {
             int gap_score = Score_SetupConfidence(gap_event, m5_adx, 15.0, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double gap_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double gap_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime gap_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(gap_event > 0) {
                sl  = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(gap_ask + m5_atr * g_sc.gap_and_go_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(gap_ask + m5_atr * g_sc.gap_and_go_tp2_atr_mult, _Digits);
-               g_gap_and_go_last_buy_time = gap_now;
             } else {
                sl  = NormalizeDouble(gap_ask + m5_atr * g_sc.gap_and_go_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(gap_bid - m5_atr * g_sc.gap_and_go_tp2_atr_mult, _Digits);
-               g_gap_and_go_last_sell_time = gap_now;
             }
             PrintFormat("FORGE 2.7.43: GAP_AND_GO %s @ %.2f (skip=%ds gap_atr=%.2f score=%d/100)",
                         gap_dir, (gap_event > 0 ? gap_ask : gap_bid),
@@ -9623,7 +10421,7 @@ void CheckNativeScalperSetups() {
             sl  = NormalizeDouble(dt_ask + m5_atr * g_sc.double_pattern_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(dt_bid - m5_atr * g_sc.double_pattern_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(dt_bid - m5_atr * g_sc.double_pattern_tp2_atr_mult, _Digits);
-            g_double_top_last_time = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             PrintFormat("FORGE 2.7.43: DOUBLE_TOP SELL @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         dt_bid, m5_adx, h1_trend_strength, dt_score);
          }
@@ -9650,7 +10448,7 @@ void CheckNativeScalperSetups() {
             sl  = NormalizeDouble(db_bid - m5_atr * g_sc.double_pattern_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(db_ask + m5_atr * g_sc.double_pattern_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(db_ask + m5_atr * g_sc.double_pattern_tp2_atr_mult, _Digits);
-            g_double_bottom_last_time = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             PrintFormat("FORGE 2.7.43: DOUBLE_BOTTOM BUY @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         db_ask, m5_adx, h1_trend_strength, db_score);
          }
@@ -9676,7 +10474,7 @@ void CheckNativeScalperSetups() {
             sl  = NormalizeDouble(hs_ask + m5_atr * g_sc.hs_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(hs_bid - m5_atr * g_sc.hs_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(hs_bid - m5_atr * g_sc.hs_tp2_atr_mult, _Digits);
-            g_head_and_shoulders_last_time = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             PrintFormat("FORGE 2.7.43: HEAD_AND_SHOULDERS SELL @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         hs_bid, m5_adx, h1_trend_strength, hs_score);
          }
@@ -9702,7 +10500,7 @@ void CheckNativeScalperSetups() {
             sl  = NormalizeDouble(ihs_bid - m5_atr * g_sc.hs_sl_atr_mult, _Digits);
             tp1 = NormalizeDouble(ihs_ask + m5_atr * g_sc.hs_tp1_atr_mult, _Digits);
             tp2 = NormalizeDouble(ihs_ask + m5_atr * g_sc.hs_tp2_atr_mult, _Digits);
-            g_inverse_head_and_shoulders_last_time = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             PrintFormat("FORGE 2.7.43: INVERSE_HEAD_AND_SHOULDERS BUY @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         ihs_ask, m5_adx, h1_trend_strength, ihs_score);
          }
@@ -9763,17 +10561,15 @@ void CheckNativeScalperSetups() {
             int tb_score = Score_SetupConfidence(tb_event, m5_adx, g_sc.trendline_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double tb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double tb_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime tb_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(tb_event > 0) {
                sl  = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(tb_ask + m5_atr * g_sc.trendline_bounce_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(tb_ask + m5_atr * g_sc.trendline_bounce_tp2_atr_mult, _Digits);
-               g_trendline_bounce_last_buy_time = tb_now;
             } else {
                sl  = NormalizeDouble(tb_ask + m5_atr * g_sc.trendline_bounce_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(tb_bid - m5_atr * g_sc.trendline_bounce_tp2_atr_mult, _Digits);
-               g_trendline_bounce_last_sell_time = tb_now;
             }
             PrintFormat("FORGE 2.7.43: TRENDLINE_BOUNCE %s @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         tb_dir, (tb_event > 0 ? tb_ask : tb_bid), m5_adx, h1_trend_strength, tb_score);
@@ -9799,17 +10595,15 @@ void CheckNativeScalperSetups() {
             int sf_score = Score_SetupConfidence(sf_event, m5_adx, g_sc.sr_flip_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double sf_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double sf_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            datetime sf_now = TimeCurrent();
+            // 2.7.53 — Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
             if(sf_event > 0) {
                sl  = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(sf_ask + m5_atr * g_sc.sr_flip_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(sf_ask + m5_atr * g_sc.sr_flip_tp2_atr_mult, _Digits);
-               g_sr_flip_last_buy_time = sf_now;
             } else {
                sl  = NormalizeDouble(sf_ask + m5_atr * g_sc.sr_flip_sl_atr_mult, _Digits);
                tp1 = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_tp1_atr_mult, _Digits);
                tp2 = NormalizeDouble(sf_bid - m5_atr * g_sc.sr_flip_tp2_atr_mult, _Digits);
-               g_sr_flip_last_sell_time = sf_now;
             }
             PrintFormat("FORGE 2.7.43: SR_FLIP %s @ %.2f (ADX=%.1f h1=%.2f score=%d/100)",
                         sf_dir, (sf_event > 0 ? sf_ask : sf_bid), m5_adx, h1_trend_strength, sf_score);
@@ -9961,7 +10755,11 @@ void CheckNativeScalperSetups() {
    bool _rr_bypass = (setup_type == "MOMENTUM_DUMP"
                    || setup_type == "BB_PULLBACK_SCALP"
                    || setup_type == "FRACTIONAL_SELL_IN_BULL"
-                   || setup_type == "BULL_DAY_DIP_BUY");
+                   || setup_type == "BULL_DAY_DIP_BUY"
+                   || setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST"   // 2.7.53 — parity with legacy MOMENTUM_DUMP
+                   || setup_type == "BB_LOWER_REVERSION_BUY"          // 2.7.55 — tight-SL mean-reversion scalp; geometry-anchored
+                   || setup_type == "TREND_CONTINUATION_BUY"          // 2.7.57 — tight scalp 0.3×ATR TP1; geometry-anchored
+                   || setup_type == "TREND_CONTINUATION_SELL");       // 2.7.57 — mirror
    if(!_rr_bypass && (risk <= 0 || reward / risk < rr_min_eff)) {
       double rr_calc = (risk > 0.0) ? (reward / risk) : 0.0;
       Print("FORGE SCALPER: ", setup_type, " ", direction, " skipped — R:R ",
@@ -9988,6 +10786,10 @@ void CheckNativeScalperSetups() {
    else lot_inputs_override_eff = NativeScalperInputsOverrideLotSizing ? true : g_sc.lot_inputs_override;
    int base_n = lot_inputs_override_eff ? MathMax(1, ScalperTrades) : MathMax(1, g_sc.lot_num_trades);
    base_n = MathMax(1, MathMin(30, base_n));
+   // 2.7.56 — MOMENTUM_DUMP-specific leg count override. Operator: "fire 5+ legs per entry".
+   if(setup_type == "MOMENTUM_DUMP" && g_sc.dump_legs_per_group > 0) {
+      base_n = MathMax(1, MathMin(30, g_sc.dump_legs_per_group));
+   }
 
    double lot_mult = 1.0;
    double dir_trend = 0.0;
@@ -10133,6 +10935,54 @@ void CheckNativeScalperSetups() {
    }
    double dump_factor = (setup_type == "MOMENTUM_DUMP" && _dump_eff_factor > 0.0 && _dump_eff_factor <= 2.0)
                         ? _dump_eff_factor : 1.0;
+   // 2.7.56 — Escalating MOMENTUM_DUMP pyramid factor (operator: "1x,2x,3x,4x,5x per consecutive fire").
+   //   counter (g_dump_pyramid_consec_*) increments on each MOMENTUM_DUMP TAKEN in same direction
+   //   and resets when direction flips OR all same-dir MOMENTUM_DUMP positions close.
+   //   The factor applied to THIS entry uses (counter + 1) since counter increments AFTER fire.
+   double dump_pyramid_factor = 1.0;
+   if(setup_type == "MOMENTUM_DUMP" && g_sc.dump_pyramid_enabled) {
+      int consec_n = (direction == "BUY") ? g_dump_pyramid_consec_buy_count
+                                          : g_dump_pyramid_consec_sell_count;
+      double pf = g_sc.dump_pyramid_base_factor + consec_n * g_sc.dump_pyramid_step;
+      if(pf > g_sc.dump_pyramid_max_factor) pf = g_sc.dump_pyramid_max_factor;
+      if(pf < g_sc.dump_pyramid_base_factor) pf = g_sc.dump_pyramid_base_factor;
+      dump_pyramid_factor = pf;
+   }
+   // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST lot factor (parity with legacy dump_factor).
+   double mdct_factor = (setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST"
+                         && g_sc.momentum_dump_composite_test_lot_factor > 0.0
+                         && g_sc.momentum_dump_composite_test_lot_factor <= 2.0)
+                        ? g_sc.momentum_dump_composite_test_lot_factor : 1.0;
+   // 2.7.55 — BB_LOWER_REVERSION_BUY lot factor + extreme-oversold amplifier.
+   //   Aggressive default (1.0 base, 1.5× when RSI ≤ 25) per operator: "be aggressive
+   //   here because this is a good catch due to indicator alignment".
+   // 2.7.57 — TREND_CONTINUATION lot factors (aggressive default 2.0×)
+   double tcb_factor = 1.0;
+   if(setup_type == "TREND_CONTINUATION_BUY" && direction == "BUY"
+      && g_sc.trend_continuation_buy_lot_factor > 0.0
+      && g_sc.trend_continuation_buy_lot_factor <= 10.0) {
+      tcb_factor = g_sc.trend_continuation_buy_lot_factor;
+   }
+   double tcs_factor = 1.0;
+   if(setup_type == "TREND_CONTINUATION_SELL" && direction == "SELL"
+      && g_sc.trend_continuation_sell_lot_factor > 0.0
+      && g_sc.trend_continuation_sell_lot_factor <= 10.0) {
+      tcs_factor = g_sc.trend_continuation_sell_lot_factor;
+   }
+   double bbr_factor = 1.0;
+   if(setup_type == "BB_LOWER_REVERSION_BUY" && direction == "BUY") {
+      bbr_factor = (g_sc.bb_lower_reversion_buy_lot_factor > 0.0
+                    && g_sc.bb_lower_reversion_buy_lot_factor <= 10.0)
+                    ? g_sc.bb_lower_reversion_buy_lot_factor : 1.0;
+      if(g_sc.bb_lower_reversion_buy_extreme_rsi > 0.0
+         && m5_rsi <= g_sc.bb_lower_reversion_buy_extreme_rsi
+         && g_sc.bb_lower_reversion_buy_extreme_amplifier >= 1.0) {
+         bbr_factor *= g_sc.bb_lower_reversion_buy_extreme_amplifier;
+         PrintFormat("FORGE 2.7.55: BB_LOWER_REVERSION_BUY extreme-oversold amplifier ×%.2f (RSI=%.1f ≤ %.1f)",
+                     g_sc.bb_lower_reversion_buy_extreme_amplifier, m5_rsi,
+                     g_sc.bb_lower_reversion_buy_extreme_rsi);
+      }
+   }
    // 2.7.31 — BB_PULLBACK_SCALP fractional lot. Same scalp profile as MOMENTUM_DUMP.
    double pullback_factor = (setup_type == "BB_PULLBACK_SCALP" && g_sc.pullback_scalp_lot_factor > 0.0 && g_sc.pullback_scalp_lot_factor < 1.0)
                             ? g_sc.pullback_scalp_lot_factor : 1.0;
@@ -10238,10 +11088,36 @@ void CheckNativeScalperSetups() {
    //   touching fixed_lot. Lot pipeline is now ONE absolute base × N multipliers.
    double scalper_lot_factor_eff = (ScalperLotFactor != 1.0) ? ScalperLotFactor : g_sc.scalper_lot_factor;
    if(scalper_lot_factor_eff <= 0.0) scalper_lot_factor_eff = 1.0;
+   // 2.7.53 — Universal fast-trend lot amplifier (operator principle: "size up when fast bull/bear is confirmed").
+   //   Multiplies combined_lot_factor by `fast_trend_lot_amplifier_factor` (default 1.5×)
+   //   when ALL of:
+   //     (a) direction matches HTF (h1) or MTF (m15) trend per cooldown_bypass_with_trend_m15_or_h1,
+   //     (b) regime is TREND_BULL/TREND_BEAR matching direction,
+   //     (c) M5 ADX clears `fast_trend_lot_amplifier_adx_min` (default 35) — "fast" means accelerating.
+   //   Same alignment heuristic as the no-mercy cooldown bypass, just with a higher ADX bar.
+   //   Catches: Apr 1 NY rally (h1=+2.3, ADX peaks 35-50), Apr 8 PM bear cascade (M15 flips, ADX climbs).
+   double fast_trend_factor = 1.0;
+   if(g_sc.fast_trend_lot_amplifier_enabled && setup_type != "") {
+      int _ft_dir = (direction == "BUY") ? +1 : ((direction == "SELL") ? -1 : 0);
+      if(_ft_dir != 0 && m5_adx >= g_sc.fast_trend_lot_amplifier_adx_min) {
+         bool _ft_with_h1  = (MathAbs(h1_trend_strength) >= g_sc.cooldown_bypass_with_trend_h1_min)
+                          && ((_ft_dir > 0) ? (h1_trend_strength > 0.0) : (h1_trend_strength < 0.0));
+         bool _ft_with_m15 = g_sc.cooldown_bypass_with_trend_m15_or_h1
+                          && Atom_M15TrendAligned(_ft_dir, true);
+         bool _ft_regime   = (_ft_dir > 0 && g_regime_label == "TREND_BULL")
+                          || (_ft_dir < 0 && g_regime_label == "TREND_BEAR");
+         if((_ft_with_h1 || _ft_with_m15) && _ft_regime) {
+            fast_trend_factor = g_sc.fast_trend_lot_amplifier_factor;
+            PrintFormat("FORGE 2.7.53: FAST_TREND amplifier ×%.2f → %s %s (h1=%.2f m15ok=%d ADX=%.1f regime=%s)",
+                        fast_trend_factor, setup_type, direction,
+                        h1_trend_strength, (int)_ft_with_m15, m5_adx, g_regime_label);
+         }
+      }
+   }
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * dump_pyramid_factor * mdct_factor * bbr_factor * tcb_factor * tcs_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor * fast_trend_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
@@ -10576,6 +11452,12 @@ void CheckNativeScalperSetups() {
       if(direction == "BUY")  g_scalper_last_bb_breakout_buy  = TimeCurrent();
       if(direction == "SELL") g_scalper_last_bb_breakout_sell = TimeCurrent();
    }
+   // 2.7.53 — TAKEN-time cooldown anchor for §11.4 setups (Path A fix).
+   //   Anchors are NOT set inside the trigger detection blocks (which would have
+   //   set them on dry-run filter-passes that downstream `rr_too_low` etc. then
+   //   blocked, creating a forever-cooldown). Single helper sets the right
+   //   anchor only when an entry is actually journaled as TAKEN.
+   MarkSetupCooldownAnchorOnTaken(setup_type, direction);
    double entry_price = (direction == "BUY") ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID);
    if(direction == "BUY" && g_first_buy_entry_price <= 0.0)
       g_first_buy_entry_price = entry_price;
@@ -11451,12 +12333,110 @@ bool Filter_Cooldown(const string setup_type, const string setup_lower, const st
    bool cool_ok = (cooldown_seconds <= 0
                    || last_time == 0
                    || (now - last_time) >= cooldown_seconds
-                   || CooldownBypassActive(direction, setup_type, m5_adx));
+                   || CooldownBypassActive(direction, setup_type, m5_adx, h1_trend_strength));
    if(cool_ok) return true;
    JournalRecordSignal("SKIP", setup_lower + "_cooldown", setup_type, direction,
                        mid, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m,
                        0, h1_trend_strength, 0);
    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MarkSetupCooldownAnchorOnTaken — Path A (v2.7.53) cooldown-anchor management.
+//
+// PURPOSE: Set the per-setup cooldown anchor ONLY when an entry was actually
+// journaled as TAKEN. Replaces the previous pattern where §11.4 setups set their
+// anchor inside the trigger detection block (after `Filter_AdxFloor && Filter_Cooldown`
+// passed) but BEFORE downstream entry filters (rr_too_low, entry_quality_atr_ext,
+// open_groups, etc.) had a chance to block. Result: the anchor got set on dry-run
+// filter passes that never produced a TAKEN, and every subsequent detection within
+// the cooldown window emitted spurious `*_cooldown` SKIPs (200k+ on SR_FLIP alone).
+//
+// EVALUATION ORDER: called once from the TAKEN journal site in TickScalper, after
+// `JournalRecordSignal("TAKEN", ...)` confirms the entry will actually be placed.
+//
+// PARAMETERS:
+//   setup_type — the canonical setup name (e.g. "SR_FLIP", "FIB_CONFLUENCE")
+//   direction  — "BUY" or "SELL"
+//
+// RETURNS: void. Side effect: writes TimeCurrent() to the matching g_*_last_*_time
+// anchor for the (setup_type, direction) pair.
+//
+// CHANGELOG:
+//   2026-05-13  Initial implementation (v2.7.53 Path A anchor fix).
+// ─────────────────────────────────────────────────────────────────────────────
+void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direction) {
+   datetime now = TimeCurrent();
+   bool buy  = (direction == "BUY");
+   bool sell = (direction == "SELL");
+   // Direction-split anchors (§11.4 setups with separate BUY/SELL cooldown state)
+   if(setup_type == "SR_FLIP") {
+      if(buy)  g_sr_flip_last_buy_time  = now;
+      if(sell) g_sr_flip_last_sell_time = now;
+   } else if(setup_type == "TRENDLINE_BOUNCE") {
+      if(buy)  g_trendline_bounce_last_buy_time  = now;
+      if(sell) g_trendline_bounce_last_sell_time = now;
+   } else if(setup_type == "INSIDE_BAR") {
+      if(buy)  g_inside_bar_last_buy_time  = now;
+      if(sell) g_inside_bar_last_sell_time = now;
+   } else if(setup_type == "FIB_CONFLUENCE") {
+      if(buy)  g_fib_confluence_last_buy_time  = now;
+      if(sell) g_fib_confluence_last_sell_time = now;
+   } else if(setup_type == "MA_CROSSOVER") {
+      if(buy)  g_ma_crossover_last_buy_time  = now;
+      if(sell) g_ma_crossover_last_sell_time = now;
+   } else if(setup_type == "VWAP_REVERSION") {
+      if(buy)  g_vwap_reversion_last_buy_time  = now;
+      if(sell) g_vwap_reversion_last_sell_time = now;
+   } else if(setup_type == "BB_SQUEEZE") {
+      if(buy)  g_bb_squeeze_last_buy_time  = now;
+      if(sell) g_bb_squeeze_last_sell_time = now;
+   } else if(setup_type == "ORB") {
+      if(buy)  g_orb_last_buy_time  = now;
+      if(sell) g_orb_last_sell_time = now;
+   } else if(setup_type == "GAP_AND_GO") {
+      if(buy)  g_gap_and_go_last_buy_time  = now;
+      if(sell) g_gap_and_go_last_sell_time = now;
+   } else if(setup_type == "FLAG_PENNANT") {
+      if(buy)  g_flag_pennant_last_buy_time  = now;
+      if(sell) g_flag_pennant_last_sell_time = now;
+   } else if(setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST") {
+      // 2.7.53 — parallel composite (parity with legacy MOMENTUM_DUMP).
+      if(buy)  g_momentum_dump_composite_test_last_buy_time  = now;
+      if(sell) g_momentum_dump_composite_test_last_sell_time = now;
+   } else if(setup_type == "BB_LOWER_REVERSION_BUY") {
+      // 2.7.55 — single-direction BUY (BB lower-band mean-reversion); always buy direction.
+      if(buy)  g_bb_lower_reversion_buy_last_time = now;
+   } else if(setup_type == "TREND_CONTINUATION_BUY") {
+      // 2.7.57 — direction-locked BUY (canonical roadmap composite).
+      if(buy)  g_trend_continuation_buy_last_time = now;
+   } else if(setup_type == "TREND_CONTINUATION_SELL") {
+      // 2.7.57 — direction-locked SELL (mirror).
+      if(sell) g_trend_continuation_sell_last_time = now;
+   }
+   // 2.7.56 — Pyramid counter increment for MOMENTUM_DUMP (also covers MOMENTUM_DUMP_COMPOSITE_TEST).
+   //   Direction flip resets opposite-direction counter; same-direction increments.
+   if(setup_type == "MOMENTUM_DUMP" || setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST") {
+      if(buy) {
+         g_dump_pyramid_consec_buy_count++;
+         g_dump_pyramid_consec_sell_count = 0;   // direction flip resets opposite
+      }
+      if(sell) {
+         g_dump_pyramid_consec_sell_count++;
+         g_dump_pyramid_consec_buy_count = 0;
+      }
+   }
+   // Direction-locked anchors (single time anchor — these setups fire only one direction)
+   else if(setup_type == "DOUBLE_TOP")              g_double_top_last_time              = now;
+   else if(setup_type == "DOUBLE_BOTTOM")           g_double_bottom_last_time           = now;
+   else if(setup_type == "HEAD_AND_SHOULDERS")      g_head_and_shoulders_last_time      = now;
+   else if(setup_type == "INVERSE_HEAD_AND_SHOULDERS") g_inverse_head_and_shoulders_last_time = now;
+   // Legacy setups (MOMENTUM_DUMP, BB_BREAKOUT, BB_BOUNCE, BB_PULLBACK_SCALP,
+   // BULL_DAY_DIP_BUY, FRACTIONAL_SELL_IN_BULL) manage their own anchors
+   // inline at their trigger sites; they don't suffer the dry-run-anchor bug
+   // because either (a) they have RR-bypass (MOMENTUM_DUMP, BB_PULLBACK_SCALP)
+   // or (b) their cooldown is gated by g_scalper_last_tp1_*_time which is only
+   // set on real TP1 fills. Listed here as a comment to document the contract.
 }
 
 // ───────────────────────────────────────────────────────────────────────────
