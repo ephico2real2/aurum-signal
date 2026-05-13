@@ -342,3 +342,35 @@ def test_every_forge_env_var_has_sync_mapping(env_text, sync_src):
         f"or add the var to FORGE_ENV_VARS_NOT_IN_SYNC in this test file "
         f"if it is consumed directly by Python services / MT5 inputs."
     )
+
+
+def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg):
+    """v2.7.42 MA_CROSSOVER Phase 2 — ensure EA + config + gate legend are aligned."""
+    # 1. setup_type literal emitted in EA
+    assert 'setup_type = "MA_CROSSOVER"' in ea_src, \
+        "MA_CROSSOVER setup_type literal missing from ea/FORGE.mq5 dispatch"
+    # 2. Detector helper exists
+    assert "DetectMaCrossoverEvent" in ea_src, \
+        "DetectMaCrossoverEvent helper missing from ea/FORGE.mq5"
+    # 3. All 7 config knobs present in active config (matching defaults JSON shape)
+    for key in (
+        ("setup", "ma_crossover_enabled"),
+        ("atom", "ma_crossover_adx_min"),
+        ("geometry", "ma_crossover_lot_factor"),
+        ("geometry", "ma_crossover_sl_atr_mult"),
+        ("geometry", "ma_crossover_tp1_atr_mult"),
+        ("geometry", "ma_crossover_tp2_atr_mult"),
+        ("timing", "ma_crossover_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}' section"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 4. Default-OFF by default — EA dispatch is gated by enabled flag
+    assert cfg["setup"]["ma_crossover_enabled"] == 0, \
+        "ma_crossover_enabled should default to 0 (Phase 2 ships OFF)"
+    # 5. Lot factor present in combined_lot_factor product (don't quietly drop)
+    assert "ma_crossover_factor" in ea_src, \
+        "ma_crossover_factor not multiplied into combined_lot_factor"
+    # 6. All 3 SKIP gate codes emitted by EA exist in gate_legend.json
+    for gate in ("ma_crossover_adx_below_min", "ma_crossover_m15_misalign", "ma_crossover_cooldown"):
+        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"

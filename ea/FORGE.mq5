@@ -324,6 +324,9 @@ datetime g_eval_last_tick        = 0;   // guard — avoid recomputing within sa
 // 2.7.31 — BB_PULLBACK_SCALP cooldown trackers (Run 19 Issue 4)
 datetime g_pullback_scalp_last_sell_time = 0; // wall time of last pullback-scalp SELL entry
 datetime g_pullback_scalp_last_buy_time  = 0; // wall time of last pullback-scalp BUY entry
+// 2.7.42 — MA_CROSSOVER cooldown trackers (Phase 2 — EMA20×EMA50 event-triggered entry)
+datetime g_ma_crossover_last_buy_time  = 0; // wall time of last MA_CROSSOVER BUY entry
+datetime g_ma_crossover_last_sell_time = 0; // wall time of last MA_CROSSOVER SELL entry
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -501,6 +504,15 @@ struct ScalperConfig {
    double pullback_scalp_tp2_atr_mult;      // 2.7.31: TP2 in ATR (default 0.7).
    int    pullback_scalp_cooldown_seconds;  // 2.7.31: min gap between pullback-scalps per direction (default 600 = 10min).
    double pullback_scalp_max_adx;           // 2.7.31: M5 ADX must be BELOW this (default 30) — pullback is exhausting, not accelerating.
+   // 2.7.42 — MA_CROSSOVER setup (Phase 2). EMA20 × EMA50 event-triggered entry on M5 close.
+   // Config lives under setup.* / atom.* / geometry.* / timing.* per FORGE_NAMING_CONVENTIONS §4.
+   bool   ma_crossover_enabled;             // master toggle (default off — operator opts in via env)
+   double ma_crossover_adx_min;             // M5 ADX floor for entry (default 20)
+   double ma_crossover_lot_factor;          // lot multiplier vs fixed_lot (default 0.5 — crossovers lag)
+   double ma_crossover_sl_atr_mult;         // SL = ATR × this (default 1.5)
+   double ma_crossover_tp1_atr_mult;        // TP1 = ATR × this (default 0.5)
+   double ma_crossover_tp2_atr_mult;        // TP2 = ATR × this (default 1.5)
+   int    ma_crossover_cooldown_seconds;    // min gap per direction (default 600 = 10min)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -2993,6 +3005,14 @@ void InitScalperConfig() {
    g_sc.pullback_scalp_tp2_atr_mult   = 0.7;      // runner TP2
    g_sc.pullback_scalp_cooldown_seconds = 600;    // 10-min cooldown per direction
    g_sc.pullback_scalp_max_adx        = 30.0;     // require ADX < 30 (pullback should be exhausting)
+   // 2.7.42 — MA_CROSSOVER setup (Phase 2; default OFF, operator opts in via env)
+   g_sc.ma_crossover_enabled          = false;
+   g_sc.ma_crossover_adx_min          = 20.0;
+   g_sc.ma_crossover_lot_factor       = 0.5;
+   g_sc.ma_crossover_sl_atr_mult      = 1.5;
+   g_sc.ma_crossover_tp1_atr_mult     = 0.5;
+   g_sc.ma_crossover_tp2_atr_mult     = 1.5;
+   g_sc.ma_crossover_cooldown_seconds = 600;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3745,6 +3765,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "bull_day_dip_buy_sl_atr_mult"))          { v=JsonGetDouble(content,"bull_day_dip_buy_sl_atr_mult");          if(v>=0.3&&v<=5.0) g_sc.bull_day_dip_buy_sl_atr_mult=v; }
    if(JsonHasKey(content, "bull_day_dip_buy_tp1_atr_mult"))         { v=JsonGetDouble(content,"bull_day_dip_buy_tp1_atr_mult");         if(v>=0.1&&v<=3.0) g_sc.bull_day_dip_buy_tp1_atr_mult=v; }
    if(JsonHasKey(content, "bull_day_dip_buy_reentry_cooldown_sec")) { v=JsonGetDouble(content,"bull_day_dip_buy_reentry_cooldown_sec"); if(v>=0&&v<=3600) g_sc.bull_day_dip_buy_reentry_cooldown_sec=(int)v; }
+   // 2.7.42 — MA_CROSSOVER setup (Phase 2). JSON keys live under setup.* / atom.* / geometry.* /
+   //   timing.* in defaults.json; JsonHasKey/JsonGetDouble use flat substring search so we read
+   //   them as top-level here per the v2.7.38 composites convention.
+   if(JsonHasKey(content, "ma_crossover_enabled"))           { v=JsonGetDouble(content,"ma_crossover_enabled");           g_sc.ma_crossover_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "ma_crossover_adx_min"))           { v=JsonGetDouble(content,"ma_crossover_adx_min");           if(v>=5.0&&v<=80.0) g_sc.ma_crossover_adx_min=v; }
+   if(JsonHasKey(content, "ma_crossover_lot_factor"))        { v=JsonGetDouble(content,"ma_crossover_lot_factor");        if(v>=0.1&&v<=2.0) g_sc.ma_crossover_lot_factor=v; }
+   if(JsonHasKey(content, "ma_crossover_sl_atr_mult"))       { v=JsonGetDouble(content,"ma_crossover_sl_atr_mult");       if(v>=0.5&&v<=5.0) g_sc.ma_crossover_sl_atr_mult=v; }
+   if(JsonHasKey(content, "ma_crossover_tp1_atr_mult"))      { v=JsonGetDouble(content,"ma_crossover_tp1_atr_mult");      if(v>=0.1&&v<=5.0) g_sc.ma_crossover_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "ma_crossover_tp2_atr_mult"))      { v=JsonGetDouble(content,"ma_crossover_tp2_atr_mult");      if(v>=0.1&&v<=10.0) g_sc.ma_crossover_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "ma_crossover_cooldown_seconds"))  { v=JsonGetDouble(content,"ma_crossover_cooldown_seconds");  if(v>=0&&v<=7200) g_sc.ma_crossover_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -4681,6 +4711,28 @@ bool IsFractionalSellInBullActive(const double h1_trend_strength) {
    double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    if(price < bb_u - 0.2 * m5_atr) return false;
    return true;
+}
+
+// 2.7.42 — MA_CROSSOVER event detector (Phase 2). Returns 1 = BUY cross-up
+// confirmed on bar[1]'s close, -1 = SELL cross-down confirmed, 0 = no fresh
+// event. Uses M5 EMA(20) and EMA(50) buffers via g_mtf[0] handles.
+//
+// Crossover = sign flip of (ema20 - ema50) between bar[2] and bar[1]:
+//   BUY  cross: prev_diff <= 0  AND  now_diff > 0
+//   SELL cross: prev_diff >= 0  AND  now_diff < 0
+//
+// CopyBuffer(handle, 0, start=1, count=2) → buf[0]=bar1 (most recent closed),
+// buf[1]=bar2 (one before). Reading shift 1 skips the still-forming bar 0.
+int DetectMaCrossoverEvent() {
+   if(!g_sc.ma_crossover_enabled) return 0;
+   double ema20_buf[2], ema50_buf[2];
+   if(CopyBuffer(g_mtf[0].h_ma20, 0, 1, 2, ema20_buf) != 2) return 0;
+   if(CopyBuffer(g_mtf[0].h_ma50, 0, 1, 2, ema50_buf) != 2) return 0;
+   double diff_now  = ema20_buf[0] - ema50_buf[0];  // bar 1 (most recent closed)
+   double diff_prev = ema20_buf[1] - ema50_buf[1];  // bar 2 (one before)
+   if(diff_prev <= 0.0 && diff_now > 0.0) return 1;   // BUY cross
+   if(diff_prev >= 0.0 && diff_now < 0.0) return -1;  // SELL cross
+   return 0;
 }
 
 // #4 BULL_DAY_DIP_BUY_V3 — 16-atom dip-buy on choppy bull days
@@ -8055,6 +8107,62 @@ void CheckNativeScalperSetups() {
                   m5_atr > 0 ? (g_eval_day_high - ask_px2) / m5_atr : 0.0, g_regime_label);
    }
 
+   // 2.7.42 — MA_CROSSOVER trigger (Phase 2). EMA(20) × EMA(50) event-triggered entry.
+   //   Fires on the M5 close where the EMA20 crosses EMA50 (sign-flip detected by
+   //   DetectMaCrossoverEvent). BUY on up-cross, SELL on down-cross. Gates: ADX ≥
+   //   ma_crossover_adx_min, M15 trend agreement (existing m15_ok_buy/sell), per-
+   //   direction cooldown with v2.7.41 bypass-on-TP-win. Lot factor 0.5 (lagging).
+   if(direction == "" && g_sc.ma_crossover_enabled && m5_atr > 0.0) {
+      int mac_event = DetectMaCrossoverEvent();
+      if(mac_event != 0) {
+         string mac_dir = (mac_event > 0) ? "BUY" : "SELL";
+         bool mac_adx_ok = (m5_adx >= g_sc.ma_crossover_adx_min);
+         // Local recompute of M15 trend agreement (m15_ok_buy/sell locals are out
+         // of scope at this point in CheckNativeScalperSetups). g_mtf[1] is M15.
+         bool mac_m15_ok = true;
+         double mac_m15_e20[1], mac_m15_e50[1];
+         if(CopyBuffer(g_mtf[1].h_ma20, 0, 1, 1, mac_m15_e20) == 1
+            && CopyBuffer(g_mtf[1].h_ma50, 0, 1, 1, mac_m15_e50) == 1) {
+            double mac_m15_diff = mac_m15_e20[0] - mac_m15_e50[0];
+            mac_m15_ok = (mac_event > 0) ? (mac_m15_diff >= 0.0) : (mac_m15_diff <= 0.0);
+         }
+         datetime mac_last = (mac_event > 0) ? g_ma_crossover_last_buy_time : g_ma_crossover_last_sell_time;
+         datetime mac_now  = TimeCurrent();
+         bool mac_cool_ok = (g_sc.ma_crossover_cooldown_seconds <= 0
+                             || mac_last == 0
+                             || (mac_now - mac_last) >= g_sc.ma_crossover_cooldown_seconds
+                             || CooldownBypassActive(mac_dir, "MA_CROSSOVER", m5_adx));
+         if(!mac_adx_ok) {
+            JournalRecordSignal("SKIP","ma_crossover_adx_below_min","MA_CROSSOVER",mac_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!mac_m15_ok) {
+            JournalRecordSignal("SKIP","ma_crossover_m15_misalign","MA_CROSSOVER",mac_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!mac_cool_ok) {
+            JournalRecordSignal("SKIP","ma_crossover_cooldown","MA_CROSSOVER",mac_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = mac_dir;
+            setup_type = "MA_CROSSOVER";
+            double mac_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double mac_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(mac_event > 0) {
+               sl  = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(mac_ask + m5_atr * g_sc.ma_crossover_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(mac_ask + m5_atr * g_sc.ma_crossover_tp2_atr_mult, _Digits);
+               g_ma_crossover_last_buy_time = mac_now;
+            } else {
+               sl  = NormalizeDouble(mac_ask + m5_atr * g_sc.ma_crossover_sl_atr_mult, _Digits);
+               tp1 = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_tp1_atr_mult, _Digits);
+               tp2 = NormalizeDouble(mac_bid - m5_atr * g_sc.ma_crossover_tp2_atr_mult, _Digits);
+               g_ma_crossover_last_sell_time = mac_now;
+            }
+            PrintFormat("FORGE 2.7.42: MA_CROSSOVER %s fired @ %.2f (M5 EMA20×EMA50, ADX=%.1f, h1_trend=%.2f)",
+                        mac_dir, (mac_event > 0 ? mac_ask : mac_bid), m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -8396,6 +8504,13 @@ void CheckNativeScalperSetups() {
    double bull_day_dip_factor = (setup_type == "BULL_DAY_DIP_BUY" && direction == "BUY"
                                  && g_sc.bull_day_dip_buy_lot_mult > 0.0)
                                  ? g_sc.bull_day_dip_buy_lot_mult : 1.0;
+   // 2.7.42 — MA_CROSSOVER lot factor (Phase 2). Default 0.5 — crossovers lag,
+   //   so per-leg lot is halved by default. Operator can override via
+   //   FORGE_GEOMETRY_MA_CROSSOVER_LOT_FACTOR.
+   double ma_crossover_factor = (setup_type == "MA_CROSSOVER"
+                                 && g_sc.ma_crossover_lot_factor > 0.0
+                                 && g_sc.ma_crossover_lot_factor < 1.0)
+                                 ? g_sc.ma_crossover_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -8405,7 +8520,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the

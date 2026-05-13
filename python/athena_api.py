@@ -1991,6 +1991,28 @@ def api_gate_legend():
     return jsonify(_gate_legend_cache)
 
 
+@app.route("/api/scalper_config")
+def api_scalper_config():
+    """Return the active scalper_config.json — operator-tunable EA state.
+
+    Surfaces all sections (bb_bounce/bb_breakout/safety/lot_sizing/composites/setup/
+    atom/geometry/timing/...) so the dashboard + CLI can verify what the EA is
+    currently running with. Re-reads scalper_config.json on every call (no cache;
+    the file is small and changes when make scalper-env-sync runs).
+    """
+    cfg = _read_json(SCALPER_CONFIG_FILE)
+    if not isinstance(cfg, dict):
+        return jsonify({"error": "scalper_config.json not readable or invalid"}), 500
+    sections = {k: v for k, v in cfg.items()
+                if not k.startswith("_") and isinstance(v, dict)}
+    return jsonify({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": cfg.get("version", "unknown"),
+        "section_names": sorted(sections.keys()),
+        "sections": sections,
+    })
+
+
 # ── Serve React dashboard ──────────────────────────────────────────
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")

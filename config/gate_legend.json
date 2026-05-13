@@ -345,5 +345,20 @@
     "label": "Dump-catch — prior bar direction confirmation missing (Option B, default OFF)",
     "explanation": "v2.7.32 Option B: MOMENTUM_DUMP trigger fired but the immediately prior closed bar (bar 1) did NOT move in trade direction vs bar 2. Filters single-wick triggers in chop. Default OFF via FORGE_DUMP_REQUIRE_BAR_CONFIRM=0. Run 20 analysis showed 16 of 24 BUY losses were IMMEDIATE-SL direction failures that this gate would filter.",
     "category": "Setup gates"
+  },
+  "ma_crossover_adx_below_min": {
+    "label": "MA crossover — M5 ADX below floor",
+    "explanation": "v2.7.42 MA_CROSSOVER trigger fired (EMA20×EMA50 sign-flip on M5) but m5_adx is below atom.ma_crossover_adx_min (default 20). Crossovers in low-ADX chop produce false signals; gate blocks until trend strength qualifies.",
+    "category": "Setup gates"
+  },
+  "ma_crossover_m15_misalign": {
+    "label": "MA crossover — M15 trend disagreement",
+    "explanation": "v2.7.42 MA_CROSSOVER trigger fired but the M15 trend direction (m15_ok_buy/m15_ok_sell) disagrees with the crossover direction. Multi-timeframe confluence guard — blocks counter-trend crossovers.",
+    "category": "Setup gates"
+  },
+  "ma_crossover_cooldown": {
+    "label": "MA crossover — cooldown active",
+    "explanation": "v2.7.42 MA_CROSSOVER trigger fired within timing.ma_crossover_cooldown_seconds (default 600) of a prior MA_CROSSOVER entry in the same direction. Bypassed when last group won TP1 in regime-aligned direction with M5 ADX confirmation (v2.7.41 bypass mechanism).",
+    "category": "Cooldowns"
   }
 }
