@@ -597,3 +597,48 @@ def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg):
     assert "gap_and_go_factor" in ea_src, "gap_and_go_factor not in combined_lot_factor"
     # 7. SKIP code
     assert '"gap_and_go_cooldown"' in ea_src, "EA does not emit gap_and_go_cooldown SKIP"
+
+
+def test_swing_infra_and_double_patterns_wired(ea_src, cfg):
+    """v2.7.42 C-extended Tier 3 — swing-point ring buffer + DOUBLE_TOP/BOTTOM."""
+    # 1. Swing-point infra: struct + globals + helper functions
+    assert "struct SwingPoint" in ea_src, "SwingPoint struct missing"
+    for sym in ("g_swings[64]", "g_swings_count", "g_swings_next_idx", "g_swings_last_update_bar"):
+        assert sym in ea_src, f"swing global {sym} missing"
+    assert "UpdateSwingsOnNewBar" in ea_src, "UpdateSwingsOnNewBar helper missing"
+    assert "GetRecentSwings" in ea_src, "GetRecentSwings helper missing"
+    # 2. Both detectors + setup_type literals
+    assert "DetectDoubleTopEvent" in ea_src, "DetectDoubleTopEvent missing"
+    assert "DetectDoubleBottomEvent" in ea_src, "DetectDoubleBottomEvent missing"
+    assert 'setup_type = "DOUBLE_TOP"' in ea_src, "DOUBLE_TOP setup_type literal missing"
+    assert 'setup_type = "DOUBLE_BOTTOM"' in ea_src, "DOUBLE_BOTTOM setup_type literal missing"
+    # 3. Shared swing infra config knobs
+    for key in (("atom", "swing_lookback_bars"), ("atom", "swing_min_size_atr")):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}'"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 4. Double-pattern config knobs (shared + per-direction enables)
+    for key in (
+        ("setup", "double_top_enabled"),
+        ("setup", "double_bottom_enabled"),
+        ("atom", "double_pattern_peak_tolerance_atr"),
+        ("atom", "double_pattern_min_neckline_drop_atr"),
+        ("atom", "double_pattern_adx_min"),
+        ("geometry", "double_pattern_lot_factor"),
+        ("geometry", "double_pattern_sl_atr_mult"),
+        ("geometry", "double_pattern_tp1_atr_mult"),
+        ("geometry", "double_pattern_tp2_atr_mult"),
+        ("timing", "double_pattern_cooldown_seconds"),
+    ):
+        section, name = key
+        assert section in cfg, f"active config missing '{section}'"
+        assert name in cfg[section], f"active config missing '{section}.{name}'"
+    # 5. Default-OFF for both directions
+    assert cfg["setup"]["double_top_enabled"] == 0
+    assert cfg["setup"]["double_bottom_enabled"] == 0
+    # 6. Shared lot factor in combined_lot_factor
+    assert "double_pattern_factor" in ea_src, "double_pattern_factor not in combined_lot_factor"
+    # 7. All 4 SKIP codes
+    for gate in ("double_top_adx_below_min", "double_top_cooldown",
+                 "double_bottom_adx_below_min", "double_bottom_cooldown"):
+        assert f'"{gate}"' in ea_src, f"EA does not emit SKIP code {gate}"

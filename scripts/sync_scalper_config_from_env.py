@@ -414,6 +414,22 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_GAP_AND_GO_TP1_ATR_MULT":         ("geometry", "gap_and_go_tp1_atr_mult",            "float",  0.1, 5.0),
     "FORGE_GEOMETRY_GAP_AND_GO_TP2_ATR_MULT":         ("geometry", "gap_and_go_tp2_atr_mult",            "float",  0.1, 10.0),
     "FORGE_TIMING_GAP_AND_GO_COOLDOWN_SECONDS":       ("timing",   "gap_and_go_cooldown_seconds",        "int",    0.0, 86400.0),
+
+    # ── Swing-point shared infrastructure (Tier 3 reversal/pattern setups consume this) ──
+    "FORGE_ATOM_SWING_LOOKBACK_BARS":                 ("atom",     "swing_lookback_bars",                "int",    2.0, 10.0),
+    "FORGE_ATOM_SWING_MIN_SIZE_ATR":                  ("atom",     "swing_min_size_atr",                 "float",  0.1, 10.0),
+
+    # ── Double Top / Bottom (Tier 3 — first consumers of swing infra) ──
+    "FORGE_SETUP_DOUBLE_TOP_ENABLED":                 ("setup",    "double_top_enabled",                 "bool01", None, None),
+    "FORGE_SETUP_DOUBLE_BOTTOM_ENABLED":              ("setup",    "double_bottom_enabled",              "bool01", None, None),
+    "FORGE_ATOM_DOUBLE_PATTERN_PEAK_TOLERANCE_ATR":   ("atom",     "double_pattern_peak_tolerance_atr",  "float",  0.05, 2.0),
+    "FORGE_ATOM_DOUBLE_PATTERN_MIN_NECKLINE_DROP_ATR":("atom",     "double_pattern_min_neckline_drop_atr","float",  0.1, 10.0),
+    "FORGE_ATOM_DOUBLE_PATTERN_ADX_MIN":              ("atom",     "double_pattern_adx_min",             "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_DOUBLE_PATTERN_LOT_FACTOR":       ("geometry", "double_pattern_lot_factor",          "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_DOUBLE_PATTERN_SL_ATR_MULT":      ("geometry", "double_pattern_sl_atr_mult",         "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_DOUBLE_PATTERN_TP1_ATR_MULT":     ("geometry", "double_pattern_tp1_atr_mult",        "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_DOUBLE_PATTERN_TP2_ATR_MULT":     ("geometry", "double_pattern_tp2_atr_mult",        "float",  0.1, 10.0),
+    "FORGE_TIMING_DOUBLE_PATTERN_COOLDOWN_SECONDS":   ("timing",   "double_pattern_cooldown_seconds",    "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.

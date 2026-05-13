@@ -349,6 +349,21 @@ datetime g_orb_last_sell_time = 0;       // wall time of last ORB SELL entry
 // 2.7.42 — GAP_AND_GO cooldown trackers (C-extended Tier 2 — weekend gap continuation)
 datetime g_gap_and_go_last_buy_time  = 0; // wall time of last GAP_AND_GO BUY entry
 datetime g_gap_and_go_last_sell_time = 0; // wall time of last GAP_AND_GO SELL entry
+// 2.7.42 — Tier 3 swing-point ring buffer (shared by Double Top/Bottom, H&S, Flag,
+//   Trendline Bounce, S/R Flip). Each confirmed swing = a bar at shift lookback_bars+1
+//   that's a local max (swing high) or min (swing low) over a 2*lookback+1-bar window.
+struct SwingPoint {
+   datetime time;       // M5 bar time of the swing
+   double   price;      // high (if direction=+1) or low (if direction=-1)
+   int      direction;  // +1 = swing high, -1 = swing low
+};
+SwingPoint g_swings[64];
+int        g_swings_count    = 0;   // valid entries (capped at 64)
+int        g_swings_next_idx = 0;   // ring buffer write index
+datetime   g_swings_last_update_bar = 0;
+// 2.7.42 — DOUBLE_TOP / DOUBLE_BOTTOM cooldown trackers (C-extended Tier 3)
+datetime g_double_top_last_time     = 0;  // wall time of last DOUBLE_TOP entry (SELL-only)
+datetime g_double_bottom_last_time  = 0;  // wall time of last DOUBLE_BOTTOM entry (BUY-only)
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
@@ -610,6 +625,22 @@ struct ScalperConfig {
    double gap_and_go_tp1_atr_mult;            // TP1 = ATR × this (default 0.5)
    double gap_and_go_tp2_atr_mult;            // TP2 = ATR × this (default 1.5)
    int    gap_and_go_cooldown_seconds;        // min gap per direction (default 14400 = 4h)
+   // 2.7.42 — Tier 3 swing-point infrastructure (shared atoms)
+   int    swing_lookback_bars;                // N bars on each side for swing confirmation (default 3)
+   double swing_min_size_atr;                 // min swing size (high − last opposite low / vice versa) in ATR (default 0.5)
+   // 2.7.42 — DOUBLE_TOP / DOUBLE_BOTTOM setup (C-extended Tier 3). Reversal patterns
+   //   using the swing-point ring buffer. Separate enables so operator can run BUY-only
+   //   or SELL-only per current regime; shared atoms/geometry/timing.
+   bool   double_top_enabled;                 // DOUBLE_TOP master toggle (SELL-only pattern, default off)
+   bool   double_bottom_enabled;              // DOUBLE_BOTTOM master toggle (BUY-only pattern, default off)
+   double double_pattern_peak_tolerance_atr;  // two peaks/troughs must be within this × ATR (default 0.3)
+   double double_pattern_min_neckline_drop_atr; // neckline drop (peak to trough) ≥ this × ATR (default 1.0)
+   double double_pattern_adx_min;             // M5 ADX floor (default 15)
+   double double_pattern_lot_factor;          // lot multiplier (default 0.5)
+   double double_pattern_sl_atr_mult;         // SL = ATR × this (default 1.5)
+   double double_pattern_tp1_atr_mult;        // TP1 = ATR × this (default 0.5)
+   double double_pattern_tp2_atr_mult;        // TP2 = ATR × this (default 1.5)
+   int    double_pattern_cooldown_seconds;    // min gap per pattern (default 1200)
    int    fast_lock_min_hold_sec_bounce;
    int    fast_lock_min_hold_sec_breakout;
    // Session SELL cutoff (2.7.7) — block new SELL entries after configured UTC hour
@@ -3172,6 +3203,19 @@ void InitScalperConfig() {
    g_sc.gap_and_go_tp1_atr_mult             = 0.5;
    g_sc.gap_and_go_tp2_atr_mult             = 1.5;
    g_sc.gap_and_go_cooldown_seconds         = 14400; // 4h — one entry per gap event
+   // 2.7.42 — Swing-point infrastructure + DOUBLE_TOP/BOTTOM (C-extended Tier 3; default OFF)
+   g_sc.swing_lookback_bars                 = 3;
+   g_sc.swing_min_size_atr                  = 0.5;
+   g_sc.double_top_enabled                  = false;
+   g_sc.double_bottom_enabled               = false;
+   g_sc.double_pattern_peak_tolerance_atr   = 0.3;
+   g_sc.double_pattern_min_neckline_drop_atr = 1.0;
+   g_sc.double_pattern_adx_min              = 15.0;
+   g_sc.double_pattern_lot_factor           = 0.5;
+   g_sc.double_pattern_sl_atr_mult          = 1.5;
+   g_sc.double_pattern_tp1_atr_mult         = 0.5;
+   g_sc.double_pattern_tp2_atr_mult         = 1.5;
+   g_sc.double_pattern_cooldown_seconds     = 1200;
    g_sc.fast_lock_min_hold_sec_bounce = 45;
    g_sc.fast_lock_min_hold_sec_breakout = 50;
    g_sc.max_spread_points = 25;
@@ -3996,6 +4040,20 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "gap_and_go_tp1_atr_mult"))             { v=JsonGetDouble(content,"gap_and_go_tp1_atr_mult");             if(v>=0.1&&v<=5.0) g_sc.gap_and_go_tp1_atr_mult=v; }
    if(JsonHasKey(content, "gap_and_go_tp2_atr_mult"))             { v=JsonGetDouble(content,"gap_and_go_tp2_atr_mult");             if(v>=0.1&&v<=10.0) g_sc.gap_and_go_tp2_atr_mult=v; }
    if(JsonHasKey(content, "gap_and_go_cooldown_seconds"))         { v=JsonGetDouble(content,"gap_and_go_cooldown_seconds");         if(v>=0&&v<=86400) g_sc.gap_and_go_cooldown_seconds=(int)v; }
+   // 2.7.42 — Swing-point infrastructure (C-extended Tier 3)
+   if(JsonHasKey(content, "swing_lookback_bars"))                 { v=JsonGetDouble(content,"swing_lookback_bars");                 if(v>=2&&v<=10) g_sc.swing_lookback_bars=(int)v; }
+   if(JsonHasKey(content, "swing_min_size_atr"))                  { v=JsonGetDouble(content,"swing_min_size_atr");                  if(v>=0.1&&v<=10.0) g_sc.swing_min_size_atr=v; }
+   // 2.7.42 — DOUBLE_TOP / DOUBLE_BOTTOM (C-extended Tier 3)
+   if(JsonHasKey(content, "double_top_enabled"))                  { v=JsonGetDouble(content,"double_top_enabled");                  g_sc.double_top_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "double_bottom_enabled"))               { v=JsonGetDouble(content,"double_bottom_enabled");               g_sc.double_bottom_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "double_pattern_peak_tolerance_atr"))   { v=JsonGetDouble(content,"double_pattern_peak_tolerance_atr");   if(v>=0.05&&v<=2.0) g_sc.double_pattern_peak_tolerance_atr=v; }
+   if(JsonHasKey(content, "double_pattern_min_neckline_drop_atr")){ v=JsonGetDouble(content,"double_pattern_min_neckline_drop_atr");if(v>=0.1&&v<=10.0) g_sc.double_pattern_min_neckline_drop_atr=v; }
+   if(JsonHasKey(content, "double_pattern_adx_min"))              { v=JsonGetDouble(content,"double_pattern_adx_min");              if(v>=5.0&&v<=80.0) g_sc.double_pattern_adx_min=v; }
+   if(JsonHasKey(content, "double_pattern_lot_factor"))           { v=JsonGetDouble(content,"double_pattern_lot_factor");           if(v>=0.1&&v<=2.0) g_sc.double_pattern_lot_factor=v; }
+   if(JsonHasKey(content, "double_pattern_sl_atr_mult"))          { v=JsonGetDouble(content,"double_pattern_sl_atr_mult");          if(v>=0.5&&v<=5.0) g_sc.double_pattern_sl_atr_mult=v; }
+   if(JsonHasKey(content, "double_pattern_tp1_atr_mult"))         { v=JsonGetDouble(content,"double_pattern_tp1_atr_mult");         if(v>=0.1&&v<=5.0) g_sc.double_pattern_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "double_pattern_tp2_atr_mult"))         { v=JsonGetDouble(content,"double_pattern_tp2_atr_mult");         if(v>=0.1&&v<=10.0) g_sc.double_pattern_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "double_pattern_cooldown_seconds"))     { v=JsonGetDouble(content,"double_pattern_cooldown_seconds");     if(v>=0&&v<=7200) g_sc.double_pattern_cooldown_seconds=(int)v; }
    if(JsonHasKey(content, "tester_cooldown_enabled")) {
       v = JsonGetDouble(content, "tester_cooldown_enabled");
       g_sc.tester_cooldown_enabled = (v >= 0.5);
@@ -5184,6 +5242,139 @@ int DetectGapAndGoEvent(const double m5_atr) {
    if(gap_atr < g_sc.gap_and_go_min_gap_atr) return 0;
    if(gap_atr > g_sc.gap_and_go_max_gap_atr) return 0;
    return (gap > 0.0) ? 1 : -1;
+}
+
+// ─── 2.7.42 Tier 3 — Swing-point ring buffer infrastructure ───────────────
+//
+// On each new M5 bar, check whether the bar at shift = lookback_bars+1 is a
+// confirmed swing high or swing low (local max/min over 2*lookback+1 bars).
+// New confirmed swings are appended to g_swings[] ring buffer (capacity 64).
+// Tiny zigzag swings (size < min_size_atr × ATR vs last opposite swing) are
+// filtered out.
+//
+// Returns: 1 if a new swing was added, 0 otherwise.
+int UpdateSwingsOnNewBar() {
+   datetime cur_m5 = iTime(_Symbol, PERIOD_M5, 0);
+   if(cur_m5 == 0) return 0;
+   if(cur_m5 == g_swings_last_update_bar) return 0;
+   g_swings_last_update_bar = cur_m5;
+   int N = g_sc.swing_lookback_bars;
+   if(N < 2) N = 2;
+   if(N > 10) N = 10;
+   int center = N + 1;
+   double c_h = iHigh(_Symbol, PERIOD_M5, center);
+   double c_l = iLow (_Symbol, PERIOD_M5, center);
+   datetime c_t = iTime(_Symbol, PERIOD_M5, center);
+   if(c_h <= 0.0 || c_l <= 0.0 || c_t == 0) return 0;
+   bool is_high = true;
+   bool is_low  = true;
+   for(int i = 1; i <= N; i++) {
+      double h_left  = iHigh(_Symbol, PERIOD_M5, center + i);
+      double h_right = iHigh(_Symbol, PERIOD_M5, center - i);
+      double l_left  = iLow (_Symbol, PERIOD_M5, center + i);
+      double l_right = iLow (_Symbol, PERIOD_M5, center - i);
+      if(h_left  >= c_h || h_right >= c_h) is_high = false;
+      if(l_left  <= c_l || l_right <= c_l) is_low  = false;
+      if(!is_high && !is_low) return 0;
+   }
+   if(!is_high && !is_low) return 0;
+   // min_size filter — compare against last opposite-direction swing
+   double m5_atr_buf[1];
+   double m5_atr = (CopyBuffer(g_mtf[0].h_atr, 0, 0, 1, m5_atr_buf) == 1) ? m5_atr_buf[0] : 0.0;
+   if(m5_atr <= 0.0) return 0;
+   double min_size = g_sc.swing_min_size_atr * m5_atr;
+   int new_dir = is_high ? 1 : -1;
+   double new_price = is_high ? c_h : c_l;
+   // Find last opposite swing in the buffer
+   for(int j = 0; j < g_swings_count; j++) {
+      int idx = (g_swings_next_idx - 1 - j + 64) % 64;
+      if(g_swings[idx].direction != new_dir) {
+         double diff = MathAbs(new_price - g_swings[idx].price);
+         if(diff < min_size) return 0;  // too small, skip
+         break;
+      }
+   }
+   // Register the swing
+   g_swings[g_swings_next_idx].time = c_t;
+   g_swings[g_swings_next_idx].price = new_price;
+   g_swings[g_swings_next_idx].direction = new_dir;
+   g_swings_next_idx = (g_swings_next_idx + 1) % 64;
+   if(g_swings_count < 64) g_swings_count++;
+   return 1;
+}
+
+// Get up to `n` most-recent swing points of a given direction (1 = highs, -1 = lows).
+// out[0] is the MOST recent. Returns actual count found.
+int GetRecentSwings(const int direction, const int n, SwingPoint &out[]) {
+   int found = 0;
+   for(int i = 0; i < g_swings_count && found < n; i++) {
+      int idx = (g_swings_next_idx - 1 - i + 64) % 64;
+      if(g_swings[idx].direction == direction) {
+         out[found] = g_swings[idx];
+         found++;
+      }
+   }
+   return found;
+}
+
+// 2.7.42 — DOUBLE_TOP event detector (Tier 3). Returns -1 = SELL signal on
+// neckline break, 0 = no event. Pattern: two recent swing highs within
+// peak_tolerance_atr × ATR + intermediate swing low (neckline) whose drop
+// from the peaks is ≥ min_neckline_drop_atr × ATR + current price below neckline.
+int DetectDoubleTopEvent(const double m5_atr) {
+   if(!g_sc.double_top_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   SwingPoint highs[3];
+   int hc = GetRecentSwings(1, 2, highs);
+   if(hc < 2) return 0;
+   double peak_diff = MathAbs(highs[0].price - highs[1].price);
+   if(peak_diff > g_sc.double_pattern_peak_tolerance_atr * m5_atr) return 0;
+   // Find the swing LOW between highs[1] (older) and highs[0] (newer)
+   SwingPoint lows[8];
+   int lc = GetRecentSwings(-1, 8, lows);
+   double neckline = 0.0;
+   for(int i = 0; i < lc; i++) {
+      if(lows[i].time > highs[1].time && lows[i].time < highs[0].time) {
+         neckline = lows[i].price;
+         break;
+      }
+   }
+   if(neckline <= 0.0) return 0;
+   double avg_peak = (highs[0].price + highs[1].price) * 0.5;
+   double drop = avg_peak - neckline;
+   if(drop < g_sc.double_pattern_min_neckline_drop_atr * m5_atr) return 0;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(bid >= neckline) return 0;
+   return -1;  // SELL
+}
+
+// 2.7.42 — DOUBLE_BOTTOM event detector (Tier 3). Returns 1 = BUY signal on
+// neckline break, 0 = no event. Mirror of DOUBLE_TOP: two recent swing lows
+// near each other + intermediate high (ridge/neckline) + current price above ridge.
+int DetectDoubleBottomEvent(const double m5_atr) {
+   if(!g_sc.double_bottom_enabled) return 0;
+   if(m5_atr <= 0.0) return 0;
+   SwingPoint lows[3];
+   int lc = GetRecentSwings(-1, 2, lows);
+   if(lc < 2) return 0;
+   double trough_diff = MathAbs(lows[0].price - lows[1].price);
+   if(trough_diff > g_sc.double_pattern_peak_tolerance_atr * m5_atr) return 0;
+   SwingPoint highs[8];
+   int hc = GetRecentSwings(1, 8, highs);
+   double ridge = 0.0;
+   for(int i = 0; i < hc; i++) {
+      if(highs[i].time > lows[1].time && highs[i].time < lows[0].time) {
+         ridge = highs[i].price;
+         break;
+      }
+   }
+   if(ridge <= 0.0) return 0;
+   double avg_trough = (lows[0].price + lows[1].price) * 0.5;
+   double rise = ridge - avg_trough;
+   if(rise < g_sc.double_pattern_min_neckline_drop_atr * m5_atr) return 0;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(ask <= ridge) return 0;
+   return 1;  // BUY
 }
 
 // #4 BULL_DAY_DIP_BUY_V3 — 16-atom dip-buy on choppy bull days
@@ -8854,6 +9045,78 @@ void CheckNativeScalperSetups() {
       }
    }
 
+   // 2.7.42 — Tier 3 swing-point maintenance. Update the ring buffer on each new M5 bar.
+   //   Runs unconditionally (whether any Tier 3 setup is enabled) so the buffer is
+   //   warm whenever an operator flips one ON. Cheap — ~10 iHigh/iLow reads per new bar.
+   if(g_sc.double_top_enabled || g_sc.double_bottom_enabled) {
+      UpdateSwingsOnNewBar();
+   }
+
+   // 2.7.42 — DOUBLE_TOP trigger (Tier 3). SELL on neckline break after two recent
+   //   swing highs within peak_tolerance_atr × ATR + intermediate swing low.
+   if(direction == "" && g_sc.double_top_enabled && m5_atr > 0.0) {
+      int dt_event = DetectDoubleTopEvent(m5_atr);
+      if(dt_event != 0) {
+         string dt_dir = "SELL";
+         bool dt_adx_ok = (m5_adx >= g_sc.double_pattern_adx_min);
+         datetime dt_now = TimeCurrent();
+         bool dt_cool_ok = (g_sc.double_pattern_cooldown_seconds <= 0
+                            || g_double_top_last_time == 0
+                            || (dt_now - g_double_top_last_time) >= g_sc.double_pattern_cooldown_seconds
+                            || CooldownBypassActive(dt_dir, "DOUBLE_TOP", m5_adx));
+         if(!dt_adx_ok) {
+            JournalRecordSignal("SKIP","double_top_adx_below_min","DOUBLE_TOP",dt_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!dt_cool_ok) {
+            JournalRecordSignal("SKIP","double_top_cooldown","DOUBLE_TOP",dt_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = dt_dir;
+            setup_type = "DOUBLE_TOP";
+            double dt_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double dt_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            sl  = NormalizeDouble(dt_ask + m5_atr * g_sc.double_pattern_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(dt_bid - m5_atr * g_sc.double_pattern_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(dt_bid - m5_atr * g_sc.double_pattern_tp2_atr_mult, _Digits);
+            g_double_top_last_time = dt_now;
+            PrintFormat("FORGE 2.7.42: DOUBLE_TOP SELL fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
+                        dt_bid, m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
+   // 2.7.42 — DOUBLE_BOTTOM trigger (Tier 3). BUY mirror of DOUBLE_TOP.
+   if(direction == "" && g_sc.double_bottom_enabled && m5_atr > 0.0) {
+      int db_event = DetectDoubleBottomEvent(m5_atr);
+      if(db_event != 0) {
+         string db_dir = "BUY";
+         bool db_adx_ok = (m5_adx >= g_sc.double_pattern_adx_min);
+         datetime db_now = TimeCurrent();
+         bool db_cool_ok = (g_sc.double_pattern_cooldown_seconds <= 0
+                            || g_double_bottom_last_time == 0
+                            || (db_now - g_double_bottom_last_time) >= g_sc.double_pattern_cooldown_seconds
+                            || CooldownBypassActive(db_dir, "DOUBLE_BOTTOM", m5_adx));
+         if(!db_adx_ok) {
+            JournalRecordSignal("SKIP","double_bottom_adx_below_min","DOUBLE_BOTTOM",db_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else if(!db_cool_ok) {
+            JournalRecordSignal("SKIP","double_bottom_cooldown","DOUBLE_BOTTOM",db_dir,
+               mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+         } else {
+            direction  = db_dir;
+            setup_type = "DOUBLE_BOTTOM";
+            double db_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double db_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            sl  = NormalizeDouble(db_bid - m5_atr * g_sc.double_pattern_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(db_ask + m5_atr * g_sc.double_pattern_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(db_ask + m5_atr * g_sc.double_pattern_tp2_atr_mult, _Digits);
+            g_double_bottom_last_time = db_now;
+            PrintFormat("FORGE 2.7.42: DOUBLE_BOTTOM BUY fired @ %.2f (ADX=%.1f h1_trend=%.2f)",
+                        db_ask, m5_adx, h1_trend_strength);
+         }
+      }
+   }
+
    if(direction != "" && !ScalperDirectionCooldownOK(direction)) {
       JournalRecordSignal("SKIP","direction_cooldown",setup_type,direction,SymbolInfoDouble(_Symbol,SYMBOL_BID),spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
       return;
@@ -9233,6 +9496,11 @@ void CheckNativeScalperSetups() {
                                && g_sc.gap_and_go_lot_factor > 0.0
                                && g_sc.gap_and_go_lot_factor < 1.0)
                                ? g_sc.gap_and_go_lot_factor : 1.0;
+   // 2.7.42 — DOUBLE_TOP / DOUBLE_BOTTOM lot factor (C-extended Tier 3). Shared.
+   double double_pattern_factor = ((setup_type == "DOUBLE_TOP" || setup_type == "DOUBLE_BOTTOM")
+                                   && g_sc.double_pattern_lot_factor > 0.0
+                                   && g_sc.double_pattern_lot_factor < 1.0)
+                                   ? g_sc.double_pattern_lot_factor : 1.0;
    // 2.7.40 — ScalperLotFactor at top of combined_lot_factor chain. MT5 input (non-default 1.0)
    //   wins; otherwise env-side scalper_lot_factor (from FORGE_GLOBAL_SCALPER_LOT_FACTOR) takes over.
    //   Default for both = 1.0 (no-op). This is the unifying scaler — half/double-sizing without
@@ -9242,7 +9510,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the

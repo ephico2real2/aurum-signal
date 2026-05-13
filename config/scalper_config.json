@@ -350,7 +350,9 @@
     "inside_bar_enabled": 0,
     "bb_squeeze_enabled": 0,
     "orb_enabled": 0,
-    "gap_and_go_enabled": 0
+    "gap_and_go_enabled": 0,
+    "double_top_enabled": 0,
+    "double_bottom_enabled": 0
   },
   "atom": {
     "_comment": "Atom thresholds (filter-chain predicates) per FORGE_NAMING_CONVENTIONS.md \u00a74.5.",
@@ -374,7 +376,12 @@
     "orb_adx_min": 15.0,
     "gap_and_go_min_time_skip_seconds": 3600,
     "gap_and_go_min_gap_atr": 0.5,
-    "gap_and_go_max_gap_atr": 3.0
+    "gap_and_go_max_gap_atr": 3.0,
+    "swing_lookback_bars": 3,
+    "swing_min_size_atr": 0.5,
+    "double_pattern_peak_tolerance_atr": 0.3,
+    "double_pattern_min_neckline_drop_atr": 1.0,
+    "double_pattern_adx_min": 15.0
   },
   "geometry": {
     "_comment": "Entry geometry (lot factor, SL/TP ATR multipliers) per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Lot factors default to 0.5 (conservative).",
@@ -405,7 +412,11 @@
     "gap_and_go_lot_factor": 0.5,
     "gap_and_go_sl_atr_mult": 1.5,
     "gap_and_go_tp1_atr_mult": 0.5,
-    "gap_and_go_tp2_atr_mult": 1.5
+    "gap_and_go_tp2_atr_mult": 1.5,
+    "double_pattern_lot_factor": 0.5,
+    "double_pattern_sl_atr_mult": 1.5,
+    "double_pattern_tp1_atr_mult": 0.5,
+    "double_pattern_tp2_atr_mult": 1.5
   },
   "timing": {
     "_comment": "Per-setup cooldown timers per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Defaults 600s = 10min per direction (matches BB_PULLBACK_SCALP / MOMENTUM_DUMP cadence).",
@@ -415,6 +426,7 @@
     "inside_bar_cooldown_seconds": 600,
     "bb_squeeze_cooldown_seconds": 900,
     "orb_cooldown_seconds": 1800,
-    "gap_and_go_cooldown_seconds": 14400
+    "gap_and_go_cooldown_seconds": 14400,
+    "double_pattern_cooldown_seconds": 1200
   }
 }
