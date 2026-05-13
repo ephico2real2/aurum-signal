@@ -344,7 +344,7 @@ def test_every_forge_env_var_has_sync_mapping(env_text, sync_src):
     )
 
 
-def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg):
+def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg, defaults):
     """v2.7.42 MA_CROSSOVER Phase 2 — ensure EA + config + gate legend are aligned."""
     # 1. setup_type literal emitted in EA
     assert 'setup_type = "MA_CROSSOVER"' in ea_src, \
@@ -366,7 +366,7 @@ def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg):
         assert section in cfg, f"active config missing '{section}' section"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 4. Default-OFF by default — EA dispatch is gated by enabled flag
-    assert cfg["setup"]["ma_crossover_enabled"] == 0, \
+    assert defaults["setup"]["ma_crossover_enabled"] == 0, \
         "ma_crossover_enabled should default to 0 (Phase 2 ships OFF)"
     # 5. Lot factor present in combined_lot_factor product (don't quietly drop)
     assert "ma_crossover_factor" in ea_src, \
@@ -384,7 +384,7 @@ def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg):
     assert 'Filter_Cooldown("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_Cooldown helper"
 
 
-def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg, gate_legend):
+def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 VWAP_REVERSION Phase 2 — EA + config + gate legend aligned."""
     # 1. setup_type literal emitted in EA
     assert 'setup_type = "VWAP_REVERSION"' in ea_src, \
@@ -408,7 +408,7 @@ def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         assert section in cfg, f"active config missing '{section}' section"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 4. Default-OFF
-    assert cfg["setup"]["vwap_reversion_enabled"] == 0, \
+    assert defaults["setup"]["vwap_reversion_enabled"] == 0, \
         "vwap_reversion_enabled should default to 0 (Phase 2 ships OFF)"
     # 5. Lot factor present in combined_lot_factor product
     assert "vwap_reversion_factor" in ea_src, \
@@ -420,7 +420,7 @@ def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         "VWAP_REVERSION not migrated to Filter_Cooldown helper"
 
 
-def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg, gate_legend):
+def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 FIB_CONFLUENCE Phase 2 — EA + config + gate legend aligned."""
     # 1. setup_type literal emitted in EA
     assert 'setup_type = "FIB_CONFLUENCE"' in ea_src, \
@@ -447,7 +447,7 @@ def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         assert section in cfg, f"active config missing '{section}' section"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 5. Default-OFF
-    assert cfg["setup"]["fib_confluence_enabled"] == 0, \
+    assert defaults["setup"]["fib_confluence_enabled"] == 0, \
         "fib_confluence_enabled should default to 0 (Phase 2 ships OFF)"
     # 6. Lot factor present in combined_lot_factor product
     assert "fib_confluence_factor" in ea_src, \
@@ -459,7 +459,7 @@ def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         "FIB_CONFLUENCE not migrated to Filter_Cooldown helper"
 
 
-def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
+def test_inside_bar_setup_wired_end_to_end(ea_src, cfg, defaults):
     """v2.7.42 INSIDE_BAR — C-extended Tier 1 — trivial 2-bar pattern, no new state."""
     # 1. setup_type literal emitted in EA
     assert 'setup_type = "INSIDE_BAR"' in ea_src, \
@@ -482,7 +482,7 @@ def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
         assert section in cfg, f"active config missing '{section}' section"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 4. Default-OFF
-    assert cfg["setup"]["inside_bar_enabled"] == 0, \
+    assert defaults["setup"]["inside_bar_enabled"] == 0, \
         "inside_bar_enabled should default to 0 (C-extended Tier 1 ships OFF)"
     # 5. Lot factor present in combined_lot_factor product
     assert "inside_bar_factor" in ea_src, \
@@ -499,7 +499,7 @@ def test_inside_bar_setup_wired_end_to_end(ea_src, cfg):
     assert 'Filter_Cooldown("INSIDE_BAR"' in ea_src, "INSIDE_BAR not migrated to Filter_Cooldown helper"
 
 
-def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg, gate_legend):
+def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 BB_SQUEEZE — C-extended Tier 1 — stateless percentile-rank detector."""
     # 1. setup_type literal emitted
     assert 'setup_type = "BB_SQUEEZE"' in ea_src, \
@@ -529,7 +529,7 @@ def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         assert section in cfg, f"active config missing '{section}' section"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 5. Default-OFF
-    assert cfg["setup"]["bb_squeeze_enabled"] == 0, \
+    assert defaults["setup"]["bb_squeeze_enabled"] == 0, \
         "bb_squeeze_enabled should default to 0 (C-extended Tier 1 ships OFF)"
     # 6. Lot factor in combined_lot_factor product
     assert "bb_squeeze_factor" in ea_src, \
@@ -541,7 +541,7 @@ def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg, gate_legend):
     assert 'Filter_Cooldown("BB_SQUEEZE"' in ea_src, "BB_SQUEEZE not migrated to Filter_Cooldown helper"
 
 
-def test_orb_setup_wired_end_to_end(ea_src, cfg, gate_legend):
+def test_orb_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 ORB — C-extended Tier 2 — Opening Range Breakout with daily reset."""
     # 1. setup_type literal emitted
     assert 'setup_type = "ORB"' in ea_src, \
@@ -574,7 +574,7 @@ def test_orb_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         assert section in cfg, f"active config missing '{section}' section"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 5. Default-OFF + sensible default window (London Open NY-local)
-    assert cfg["setup"]["orb_enabled"] == 0, "orb_enabled should default to 0"
+    assert defaults["setup"]["orb_enabled"] == 0, "orb_enabled should default to 0"
     assert cfg["atom"]["orb_window_start_min"] < cfg["atom"]["orb_window_end_min"], \
         "ORB window start must precede end (within-day window)"
     # 6. Lot factor wired
@@ -586,7 +586,7 @@ def test_orb_setup_wired_end_to_end(ea_src, cfg, gate_legend):
     assert 'Filter_Cooldown("ORB"' in ea_src, "ORB not migrated to Filter_Cooldown helper"
 
 
-def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg, gate_legend):
+def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 GAP_AND_GO — C-extended Tier 2 — bar-time-skip + price-jump."""
     # 1. setup_type literal emitted
     assert 'setup_type = "GAP_AND_GO"' in ea_src, \
@@ -613,7 +613,7 @@ def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         assert section in cfg, f"active config missing '{section}' section"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 5. Default-OFF + sensible bounds
-    assert cfg["setup"]["gap_and_go_enabled"] == 0, "gap_and_go_enabled should default to 0"
+    assert defaults["setup"]["gap_and_go_enabled"] == 0, "gap_and_go_enabled should default to 0"
     assert cfg["atom"]["gap_and_go_min_gap_atr"] < cfg["atom"]["gap_and_go_max_gap_atr"], \
         "gap_and_go min < max"
     # 6. Lot factor wired
@@ -624,7 +624,7 @@ def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg, gate_legend):
         "GAP_AND_GO not migrated to Filter_Cooldown helper"
 
 
-def test_swing_infra_and_double_patterns_wired(ea_src, cfg, gate_legend):
+def test_swing_infra_and_double_patterns_wired(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 C-extended Tier 3 — swing-point ring buffer + DOUBLE_TOP/BOTTOM."""
     # 1. Swing-point infra: struct + globals + helper functions
     assert "struct SwingPoint" in ea_src, "SwingPoint struct missing"
@@ -659,8 +659,8 @@ def test_swing_infra_and_double_patterns_wired(ea_src, cfg, gate_legend):
         assert section in cfg, f"active config missing '{section}'"
         assert name in cfg[section], f"active config missing '{section}.{name}'"
     # 5. Default-OFF for both directions
-    assert cfg["setup"]["double_top_enabled"] == 0
-    assert cfg["setup"]["double_bottom_enabled"] == 0
+    assert defaults["setup"]["double_top_enabled"] == 0
+    assert defaults["setup"]["double_bottom_enabled"] == 0
     # 6. Shared lot factor in combined_lot_factor
     assert "double_pattern_factor" in ea_src, "double_pattern_factor not in combined_lot_factor"
     # 7. All 4 SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
@@ -673,7 +673,7 @@ def test_swing_infra_and_double_patterns_wired(ea_src, cfg, gate_legend):
     assert 'Filter_Cooldown("DOUBLE_BOTTOM"' in ea_src, "DOUBLE_BOTTOM not migrated to Filter_Cooldown helper"
 
 
-def test_head_and_shoulders_setups_wired(ea_src, cfg, gate_legend):
+def test_head_and_shoulders_setups_wired(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 C-extended Tier 3 — HEAD_AND_SHOULDERS + INVERSE_HEAD_AND_SHOULDERS."""
     # Detectors + setup_type literals
     for sym in ("DetectHeadAndShouldersEvent", "DetectInverseHeadAndShouldersEvent"):
@@ -697,8 +697,8 @@ def test_head_and_shoulders_setups_wired(ea_src, cfg, gate_legend):
         assert section in cfg, f"missing section {section}"
         assert name in cfg[section], f"missing {section}.{name}"
     # Default-OFF
-    assert cfg["setup"]["head_and_shoulders_enabled"] == 0
-    assert cfg["setup"]["inverse_head_and_shoulders_enabled"] == 0
+    assert defaults["setup"]["head_and_shoulders_enabled"] == 0
+    assert defaults["setup"]["inverse_head_and_shoulders_enabled"] == 0
     # Shared lot factor wired
     assert "hs_factor" in ea_src, "hs_factor not in combined_lot_factor"
     # 4 SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
@@ -715,7 +715,7 @@ def test_head_and_shoulders_setups_wired(ea_src, cfg, gate_legend):
         "INVERSE_HEAD_AND_SHOULDERS not migrated to Filter_Cooldown helper"
 
 
-def test_flag_pennant_setup_wired(ea_src, cfg, gate_legend):
+def test_flag_pennant_setup_wired(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 C-extended Tier 3 — FLAG_PENNANT (impulse + consolidation + breakout)."""
     assert 'setup_type = "FLAG_PENNANT"' in ea_src
     assert "DetectFlagPennantEvent" in ea_src
@@ -735,7 +735,7 @@ def test_flag_pennant_setup_wired(ea_src, cfg, gate_legend):
         section, name = key
         assert section in cfg
         assert name in cfg[section]
-    assert cfg["setup"]["flag_pennant_enabled"] == 0
+    assert defaults["setup"]["flag_pennant_enabled"] == 0
     assert "flag_pennant_factor" in ea_src
     # SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
     for gate in ("flag_pennant_adx_below_min", "flag_pennant_cooldown"):
@@ -744,7 +744,7 @@ def test_flag_pennant_setup_wired(ea_src, cfg, gate_legend):
     assert 'Filter_Cooldown("FLAG_PENNANT"' in ea_src, "FLAG_PENNANT not migrated to Filter_Cooldown helper"
 
 
-def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg, gate_legend):
+def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 C-extended Tier 3 FINAL — TRENDLINE_BOUNCE + SR_FLIP."""
     for sym in ("DetectTrendlineBounceEvent", "DetectSrFlipEvent"):
         assert sym in ea_src, f"{sym} missing"
@@ -771,8 +771,8 @@ def test_trendline_bounce_and_sr_flip_setups_wired(ea_src, cfg, gate_legend):
         section, name = key
         assert section in cfg
         assert name in cfg[section]
-    assert cfg["setup"]["trendline_bounce_enabled"] == 0
-    assert cfg["setup"]["sr_flip_enabled"] == 0
+    assert defaults["setup"]["trendline_bounce_enabled"] == 0
+    assert defaults["setup"]["sr_flip_enabled"] == 0
     assert "trendline_bounce_factor" in ea_src
     assert "sr_flip_factor" in ea_src
     # SKIP codes registered (Filter_* helpers construct codes at runtime in v2.7.43)
