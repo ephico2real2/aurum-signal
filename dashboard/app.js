@@ -699,7 +699,7 @@ function ATHENA(){
 
   const D=data||{
     mode:'DISCONNECTED',effective_mode:'DISCONNECTED',
-    session:'UNKNOWN',session_utc:'',killzone:'',killzone_utc:'',cycle:0,
+    session:'UNKNOWN',session_utc:'',killzone:'',killzone_local_check:'',cycle:0,
     account_type:'UNKNOWN',broker:'',server:'',
     mt5_connected:false,circuit_breaker:false,
     sentinel_active:false,mt5_fresh:false,mt5_quote_stale:true,chart_symbol:null,
@@ -822,15 +822,33 @@ function ATHENA(){
         <span style={{display:'flex',alignItems:'center',gap:6,fontSize:9,color:T.text,fontFamily:T.mono}}>
           <span title="session_utc = UTC kill-zone clock; session = last BRIDGE write">
             {D.session_utc||D.session}</span>
-          {(D.killzone_utc||D.killzone) && (
-            <span style={{padding:'1px 5px',borderRadius:2,
-              background:'rgba(245,158,11,0.12)',
-              border:`1px solid ${T.amber}`,
-              color:T.amber}}
-              title="ICT killzone (NY-anchored). killzone_utc = freshly computed; killzone = last BRIDGE write">
-              {D.killzone_utc||D.killzone}
-            </span>
-          )}
+          {/* v2.7.49 — killzone is EA-anchored (broker clock, matches forge_signals.killzone).
+              killzone_local_check is bridge's own UTC-clock compute, used only for divergence
+              detection: render in red when it disagrees with the authoritative EA value
+              (DST cutover days or broken EA visibility). */}
+          {(D.killzone||D.killzone_local_check) && (() => {
+            const ea = D.killzone || '';
+            const local = D.killzone_local_check || '';
+            const diverged = ea && local && ea !== local;
+            const shown = ea || local;
+            const isFallback = !ea && local;  // EA unavailable, falling back to local
+            const color = diverged ? T.red : (isFallback ? T.amber : T.amber);
+            const bg    = diverged ? 'rgba(239,68,68,0.16)'
+                         : isFallback ? 'rgba(245,158,11,0.20)'
+                         : 'rgba(245,158,11,0.12)';
+            const title = diverged
+              ? `ICT killzone — EA says ${ea}, bridge UTC-clock says ${local}. Divergence likely from DST cutover or broker clock skew.`
+              : isFallback
+                ? `ICT killzone — EA market_data.json unavailable; bridge UTC-clock fallback showing ${local}.`
+                : `ICT killzone — EA-anchored (${ea}). Bridge UTC-clock check: ${local || 'matching'}.`;
+            return (
+              <span style={{padding:'1px 5px',borderRadius:2,
+                background:bg, border:`1px solid ${color}`, color}}
+                title={title}>
+                {shown}{diverged ? ` ≠ ${local}` : isFallback ? '?' : ''}
+              </span>
+            );
+          })()}
         </span>
       </div>
       <div style={{display:'flex',alignItems:'center',gap:10}}>

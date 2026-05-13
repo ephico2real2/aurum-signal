@@ -13,9 +13,13 @@ Order: LONDON, LONDON_NY, NEW_YORK (simple ranges), then ASIAN (may wrap).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 _log = logging.getLogger("trading_session")
@@ -25,12 +29,53 @@ _NY_TZ = ZoneInfo(os.environ.get("SESSION_NY_TZ", "America/New_York"))
 
 # ICT killzones — minute-of-day in NY local time. Cross-confirmed standard windows.
 # See docs/research/ICT_KILLZONES.md for source citations.
+#
+# v2.7.49 — EA is the authoritative source for killzone (MT5 is where orders fire,
+# so the EA's broker-anchored clock is what causally drives trade decisions). Python
+# reads these defaults only as a stale-fallback when market_data.json is missing/old.
+# The window MINUTES themselves are read from config/scalper_config.json (the EA's
+# canonical config) when available — see _kz_window() below — so window changes flow
+# from EA config to bridge in one direction.
 _KZ_DEFAULTS = {
     "ASIAN":        (19 * 60,  3 * 60),   # 19:00 – 03:00 NY (wraps)
     "LONDON_OPEN":  ( 2 * 60,  5 * 60),   # 02:00 – 05:00 NY
     "NY_OPEN":      ( 7 * 60, 10 * 60),   # 07:00 – 10:00 NY (forex)
     "LONDON_CLOSE": (10 * 60, 12 * 60),   # 10:00 – 12:00 NY
 }
+
+# Map ICT killzone names to scalper_config.session_filter.kz_<name>_start_min/end_min keys.
+_SCALPER_CONFIG_KZ_KEYS = {
+    "ASIAN":        ("kz_asia_start_min",         "kz_asia_end_min"),
+    "LONDON_OPEN":  ("kz_london_open_start_min",  "kz_london_open_end_min"),
+    "NY_OPEN":      ("kz_ny_open_start_min",      "kz_ny_open_end_min"),
+    "LONDON_CLOSE": ("kz_london_close_start_min", "kz_london_close_end_min"),
+}
+
+# Cache for scalper_config.json reads (avoid touching disk on every _kz_window call)
+_SCALPER_CONFIG_CACHE: dict = {"mtime": 0.0, "data": None, "path": None}
+
+
+def _scalper_config() -> dict:
+    """Load scalper_config.json window definitions; cache by mtime so we pick up
+    operator edits without restarting bridge. Returns {} if file missing/unreadable."""
+    path = os.environ.get(
+        "FORGE_SCALPER_CONFIG_PATH",
+        str(Path(__file__).resolve().parent.parent / "config" / "scalper_config.json"),
+    )
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}
+    if _SCALPER_CONFIG_CACHE["path"] == path and _SCALPER_CONFIG_CACHE["mtime"] == mtime:
+        return _SCALPER_CONFIG_CACHE["data"] or {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as e:
+        _log.debug("scalper_config.json unreadable (%s) — falling back to env defaults", e)
+        return {}
+    _SCALPER_CONFIG_CACHE.update({"path": path, "mtime": mtime, "data": data})
+    return data
 
 
 def _hour_in_range(h: int, start: int, end: int) -> bool:
@@ -85,10 +130,69 @@ def _minute_in_window(now_min: int, start_min: int, end_min: int) -> bool:
 
 
 def _kz_window(name: str) -> tuple[int, int]:
+    """Resolve killzone window minutes for `name`.
+
+    Priority (v2.7.49 — single source of truth for the windows):
+      1. config/scalper_config.json → session_filter.kz_<name>_start_min/end_min
+         (the EA's canonical config; bridge mirrors it so window changes are one-way)
+      2. env SESSION_KZ_<NAME>_START_MIN / _END_MIN (kept as a test/operator override)
+      3. _KZ_DEFAULTS hard-coded fallback (only if both above are absent)
+    """
     s_def, e_def = _KZ_DEFAULTS[name]
+
+    # Step 1: scalper_config.json (EA's authoritative window definitions)
+    cfg = _scalper_config()
+    sf = cfg.get("session_filter", {}) if isinstance(cfg, dict) else {}
+    cfg_s_key, cfg_e_key = _SCALPER_CONFIG_KZ_KEYS[name]
+    if cfg_s_key in sf and cfg_e_key in sf:
+        try:
+            return int(sf[cfg_s_key]), int(sf[cfg_e_key])
+        except (TypeError, ValueError):
+            pass  # malformed — fall through
+
+    # Step 2: env override (legacy + tests)
     s = int(os.environ.get(f"SESSION_KZ_{name}_START_MIN", str(s_def)))
     e = int(os.environ.get(f"SESSION_KZ_{name}_END_MIN",   str(e_def)))
     return s, e
+
+
+def get_ea_killzone(market_data_path: str | os.PathLike,
+                    max_age_sec: int = 60) -> Tuple[Optional[str], Optional[float]]:
+    """Read the EA's authoritative killzone label from market_data.json.
+
+    The EA writes this file every tick (see FORGE.mq5 WriteMarketData). It contains
+    the `killzone` field computed by ComputeCurrentKillzoneLabel() — broker-clock-anchored
+    so it matches exactly what gets stored in forge_signals.killzone for every TAKEN/SKIP.
+
+    Returns:
+        (label, age_seconds) — `label` may be "" (no killzone active) or an ICT KZ
+                                string. `age_seconds` is the file's mtime delta vs now.
+        (None,  None)        — file missing, unreadable, stale beyond `max_age_sec`,
+                                or doesn't contain a session.killzone field. Caller
+                                should fall back to get_current_killzone_utc().
+    """
+    try:
+        mtime = os.path.getmtime(market_data_path)
+    except OSError:
+        return None, None
+    age = max(0.0, time.time() - mtime)
+    if age > max_age_sec:
+        return None, age
+    try:
+        with open(market_data_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None, age
+    # The EA writes killzone under `forge_session_state` (named that way per
+    # FORGE.mq5:2916 to avoid collision with the top-level "session" key used by
+    # other producers). See ea/FORGE.mq5 WriteMarketData() for the canonical schema.
+    fss = data.get("forge_session_state") if isinstance(data, dict) else None
+    if not isinstance(fss, dict):
+        return None, age
+    label = fss.get("killzone")
+    if label is None:
+        return None, age
+    return str(label), age
 
 
 def get_current_killzone_utc(now: datetime | None = None) -> str:

@@ -25,6 +25,7 @@ from aurum       import get_aurum
 from reconciler  import get_reconciler
 from status_report import report_component_status
 from trading_session import (
+    get_ea_killzone,
     get_trading_session_utc,
     sydney_open_alert_info,
     get_current_killzone_utc,
@@ -584,8 +585,41 @@ def _session() -> str:
     return get_trading_session_utc()
 
 
+_KILLZONE_STALE_WARN_GAP_SEC = 300  # log at most once every 5 minutes per fallback episode
+_killzone_last_stale_warn_ts: float = 0.0
+
+
 def _killzone() -> str:
-    """Return current ICT killzone label or '' (none)."""
+    """Return current ICT killzone label or '' (none).
+
+    v2.7.49 — EA is the authoritative source. We read killzone from market_data.json
+    (broker-clock-anchored — same value the EA logs into forge_signals.killzone for
+    every TAKEN/SKIP). Fallback to bridge's own UTC-clock computation only when
+    market_data.json is missing or stale (>60s), and emit a throttled WARN so a
+    silently-broken EA path doesn't go unnoticed.
+
+    Why this matters: orders fire from MT5. The EA's broker clock is what causally
+    drives the trade decision; bridge's UTC-clock compute is observability of a
+    different clock. When they disagree, the EA's view is the one we want — because
+    that's what already determined which killzone the trade was attributed to in
+    forge_signals.
+    """
+    global _killzone_last_stale_warn_ts
+    label, _age = get_ea_killzone(MARKET_FILE, max_age_sec=MT5_STALE_SEC)
+    if label is not None:
+        return label
+    # Fallback path: EA file missing or stale. Use bridge's own clock so live status
+    # still has SOMETHING — but warn (throttled) so the operator knows EA visibility
+    # is degraded right now.
+    now_ts = time.time()
+    if now_ts - _killzone_last_stale_warn_ts >= _KILLZONE_STALE_WARN_GAP_SEC:
+        _killzone_last_stale_warn_ts = now_ts
+        age_str = f"{_age:.0f}s" if _age is not None else "n/a"
+        log.warning(
+            "BRIDGE: killzone fallback to UTC-clock compute — market_data.json "
+            "unreadable or stale (age=%s). EA-anchored killzone unavailable.",
+            age_str,
+        )
     return get_current_killzone_utc()
 
 
