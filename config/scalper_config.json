@@ -341,5 +341,42 @@
     "bull_day_dip_buy_sl_atr_mult": 1.0,
     "bull_day_dip_buy_tp1_atr_mult": 0.65,
     "bull_day_dip_buy_reentry_cooldown_sec": 300
+  },
+  "setup": {
+    "_comment": "Phase 1 \u2014 setup ENABLE toggles per FORGE_NAMING_CONVENTIONS.md \u00a74.9. All default-OFF; EA dispatch (Phase 2) is a follow-up. v2.7.38 composites that emit their own setup_type (BULL_DAY_DIP_BUY, FRACTIONAL_SELL_IN_BULL) will move here per \u00a710.5.1c rename plan.",
+    "ma_crossover_enabled": 0,
+    "vwap_reversion_enabled": 0,
+    "fib_confluence_enabled": 0
+  },
+  "atom": {
+    "_comment": "Phase 1 \u2014 atom thresholds (filter-chain predicates) per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Values consumed by setup-specific filter atoms once EA dispatch ships.",
+    "ma_crossover_adx_min": 20.0,
+    "vwap_reversion_min_deviation_atr": 1.0,
+    "vwap_reversion_max_deviation_atr": 3.0,
+    "vwap_reversion_min_extension_bars": 5,
+    "fib_confluence_min_confluences": 1,
+    "fib_confluence_tolerance_atr": 0.3,
+    "fib_confluence_min_swing_atr": 2.0
+  },
+  "geometry": {
+    "_comment": "Phase 1 \u2014 entry geometry (lot factor, SL/TP ATR multipliers) per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Lot factors default to 0.5 (conservative \u2014 lagging signals or counter-extension entries).",
+    "ma_crossover_lot_factor": 0.5,
+    "ma_crossover_sl_atr_mult": 1.5,
+    "ma_crossover_tp1_atr_mult": 0.5,
+    "ma_crossover_tp2_atr_mult": 1.5,
+    "vwap_reversion_lot_factor": 0.5,
+    "vwap_reversion_sl_atr_mult": 1.2,
+    "vwap_reversion_tp1_atr_mult": 0.4,
+    "vwap_reversion_tp2_atr_mult": 1.0,
+    "fib_confluence_lot_factor": 0.5,
+    "fib_confluence_sl_atr_mult": 1.5,
+    "fib_confluence_tp1_atr_mult": 0.5,
+    "fib_confluence_tp2_atr_mult": 1.3
+  },
+  "timing": {
+    "_comment": "Phase 1 \u2014 per-setup cooldown timers per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Defaults match BB_PULLBACK_SCALP / MOMENTUM_DUMP cadence (600s = 10min per direction).",
+    "ma_crossover_cooldown_seconds": 600,
+    "vwap_reversion_cooldown_seconds": 600,
+    "fib_confluence_cooldown_seconds": 600
   }
 }

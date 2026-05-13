@@ -324,6 +324,44 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_JOURNAL_IMPORT_TRADES": ("journal", "journal_import_trades", "bool01", None, None),
     "FORGE_JOURNAL_IMPORT_DEPTH_DAYS": ("journal", "journal_import_depth_days", "int", 1.0, 365.0),
     "FORGE_JOURNAL_STATS_INTERVAL_SEC": ("journal", "journal_stats_interval_sec", "int", 60.0, 3600.0),
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Phase 1 — new setups (MA_CROSSOVER, VWAP_REVERSION, FIB_CONFLUENCE)
+    # ══════════════════════════════════════════════════════════════════════
+    # Config skeleton only — EA dispatch ships in Phase 2. All default-OFF.
+    # Env prefixes follow FORGE_NAMING_CONVENTIONS.md §4 (SETUP / ATOM /
+    # GEOMETRY / TIMING). JSON sections mirror scope per §10.5.1c.
+
+    # ── MA Crossover (EMA20 × EMA50 event-triggered entry) ──
+    "FORGE_SETUP_MA_CROSSOVER_ENABLED":              ("setup",    "ma_crossover_enabled",              "bool01", None, None),
+    "FORGE_ATOM_MA_CROSSOVER_ADX_MIN":               ("atom",     "ma_crossover_adx_min",              "float",  5.0, 80.0),
+    "FORGE_GEOMETRY_MA_CROSSOVER_LOT_FACTOR":        ("geometry", "ma_crossover_lot_factor",           "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_MA_CROSSOVER_SL_ATR_MULT":       ("geometry", "ma_crossover_sl_atr_mult",          "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_MA_CROSSOVER_TP1_ATR_MULT":      ("geometry", "ma_crossover_tp1_atr_mult",         "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_MA_CROSSOVER_TP2_ATR_MULT":      ("geometry", "ma_crossover_tp2_atr_mult",         "float",  0.1, 10.0),
+    "FORGE_TIMING_MA_CROSSOVER_COOLDOWN_SECONDS":    ("timing",   "ma_crossover_cooldown_seconds",     "int",    0.0, 7200.0),
+
+    # ── VWAP Reversion (pullback-to-VWAP in trend direction) ──
+    "FORGE_SETUP_VWAP_REVERSION_ENABLED":             ("setup",    "vwap_reversion_enabled",             "bool01", None, None),
+    "FORGE_ATOM_VWAP_REVERSION_MIN_DEVIATION_ATR":    ("atom",     "vwap_reversion_min_deviation_atr",   "float",  0.1, 10.0),
+    "FORGE_ATOM_VWAP_REVERSION_MAX_DEVIATION_ATR":    ("atom",     "vwap_reversion_max_deviation_atr",   "float",  0.5, 20.0),
+    "FORGE_ATOM_VWAP_REVERSION_MIN_EXTENSION_BARS":   ("atom",     "vwap_reversion_min_extension_bars",  "int",    1.0, 50.0),
+    "FORGE_GEOMETRY_VWAP_REVERSION_LOT_FACTOR":       ("geometry", "vwap_reversion_lot_factor",          "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_VWAP_REVERSION_SL_ATR_MULT":      ("geometry", "vwap_reversion_sl_atr_mult",         "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_VWAP_REVERSION_TP1_ATR_MULT":     ("geometry", "vwap_reversion_tp1_atr_mult",        "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_VWAP_REVERSION_TP2_ATR_MULT":     ("geometry", "vwap_reversion_tp2_atr_mult",        "float",  0.1, 10.0),
+    "FORGE_TIMING_VWAP_REVERSION_COOLDOWN_SECONDS":   ("timing",   "vwap_reversion_cooldown_seconds",    "int",    0.0, 7200.0),
+
+    # ── Fib Confluence (retrace to fib level + reference overlap) ──
+    "FORGE_SETUP_FIB_CONFLUENCE_ENABLED":             ("setup",    "fib_confluence_enabled",             "bool01", None, None),
+    "FORGE_ATOM_FIB_CONFLUENCE_MIN_CONFLUENCES":      ("atom",     "fib_confluence_min_confluences",     "int",    1.0, 5.0),
+    "FORGE_ATOM_FIB_CONFLUENCE_TOLERANCE_ATR":        ("atom",     "fib_confluence_tolerance_atr",       "float",  0.05, 2.0),
+    "FORGE_ATOM_FIB_CONFLUENCE_MIN_SWING_ATR":        ("atom",     "fib_confluence_min_swing_atr",       "float",  0.5, 20.0),
+    "FORGE_GEOMETRY_FIB_CONFLUENCE_LOT_FACTOR":       ("geometry", "fib_confluence_lot_factor",          "float",  0.1, 2.0),
+    "FORGE_GEOMETRY_FIB_CONFLUENCE_SL_ATR_MULT":      ("geometry", "fib_confluence_sl_atr_mult",         "float",  0.5, 5.0),
+    "FORGE_GEOMETRY_FIB_CONFLUENCE_TP1_ATR_MULT":     ("geometry", "fib_confluence_tp1_atr_mult",        "float",  0.1, 5.0),
+    "FORGE_GEOMETRY_FIB_CONFLUENCE_TP2_ATR_MULT":     ("geometry", "fib_confluence_tp2_atr_mult",        "float",  0.1, 10.0),
+    "FORGE_TIMING_FIB_CONFLUENCE_COOLDOWN_SECONDS":   ("timing",   "fib_confluence_cooldown_seconds",    "int",    0.0, 7200.0),
 }
 
 # Screaming-SNAKE env key -> alternate names (camelCase) accepted from .env; first non-empty wins in order listed.
