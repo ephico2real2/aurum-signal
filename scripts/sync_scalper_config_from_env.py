@@ -377,6 +377,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # v2.7.61 — Day-extreme distance gate
     "FORGE_GATE_DUMP_BUY_MAX_DIST_FROM_DAY_HIGH_ATR":  ("safety", "dump_buy_max_dist_from_day_high_atr",  "float", 0.0, 10.0),
     "FORGE_GATE_DUMP_SELL_MAX_DIST_FROM_DAY_LOW_ATR":  ("safety", "dump_sell_max_dist_from_day_low_atr",  "float", 0.0, 10.0),
+    # v2.7.62 — Distance amplifier (reward deep-room entries)
+    "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_ENABLED":              ("safety", "dump_dist_amplifier_enabled",              "bool01", None, None),
+    "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_THRESHOLD_ATR":        ("safety", "dump_dist_amplifier_threshold_atr",        "float", 0.0, 20.0),
+    "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_FACTOR":               ("safety", "dump_dist_amplifier_factor",               "float", 0.1, 10.0),
+    "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_STRONG_THRESHOLD_ATR": ("safety", "dump_dist_amplifier_strong_threshold_atr", "float", 0.0, 20.0),
+    "FORGE_GEOMETRY_DUMP_DIST_AMPLIFIER_STRONG_FACTOR":        ("safety", "dump_dist_amplifier_strong_factor",        "float", 0.1, 10.0),
     # 2.7.32 — Option B (default OFF) direction-confirmation gate
     "FORGE_DUMP_REQUIRE_BAR_CONFIRM": ("safety", "dump_require_bar_confirm", "bool01", None, None),
     # 2.7.31 — BB_PULLBACK_SCALP additive setup (Run 19 Issue 4 / Task #53)
