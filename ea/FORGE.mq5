@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.131"
+#property version "2.132"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.61";
+const string FORGE_VERSION = "2.7.62";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -603,6 +603,16 @@ struct ScalperConfig {
    //   Apr 13 winners (G5086/G5094/G5096) fired ≥3pt below (>0.5×ATR) → allowed.
    double dump_buy_max_dist_from_day_high_atr;   // BUY block: 0 disables gate (default 0.5)
    double dump_sell_max_dist_from_day_low_atr;   // SELL block: 0 disables gate (default 0.5)
+   // v2.7.62 — Tiered lot amplifier based on distance from day's extreme (G5092 reward).
+   //   BUY: distance = (day_high - mid) / atr. SELL: distance = (mid - day_low) / atr.
+   //   Tier 1 (mid-range, ≥ threshold_atr): lot × factor.
+   //   Tier 2 (deep-room, ≥ strong_threshold_atr): lot × strong_factor.
+   //   Apr 13 G5092 dist=3.0×ATR → strong_factor=2.0× = +$10 → +$20 projected.
+   bool   dump_dist_amplifier_enabled;
+   double dump_dist_amplifier_threshold_atr;        // default 1.5
+   double dump_dist_amplifier_factor;               // default 1.5×
+   double dump_dist_amplifier_strong_threshold_atr; // default 3.0
+   double dump_dist_amplifier_strong_factor;        // default 2.0×
    // 2.7.32 — Option B (default OFF, documented for validation): direction-confirmation gate.
    //   Run 20 Mar 31 had 16 of 24 BUY losses as IMMEDIATE-SL (avg 30min, 1.52×ATR — exact SL setting,
    //   no TPs offset). These are direction failures, not SL-too-tight. Widening SL (Option A 3.0→4.0×ATR)
@@ -3549,6 +3559,12 @@ void InitScalperConfig() {
    // v2.7.61 — Day-extreme distance gate defaults
    g_sc.dump_buy_max_dist_from_day_high_atr  = 0.5;
    g_sc.dump_sell_max_dist_from_day_low_atr  = 0.5;
+   // v2.7.62 — Distance amplifier defaults
+   g_sc.dump_dist_amplifier_enabled              = true;
+   g_sc.dump_dist_amplifier_threshold_atr        = 1.5;
+   g_sc.dump_dist_amplifier_factor               = 1.5;
+   g_sc.dump_dist_amplifier_strong_threshold_atr = 3.0;
+   g_sc.dump_dist_amplifier_strong_factor        = 2.0;
    // 2.7.29 — Regime H1-strong override defaults (Run 18 Issue 1 fix).
    g_sc.regime_h1_override_factor     = 0.0;      // 0 = disabled (legacy unanimous AND-gating). 2.0 typical when enabled.
    g_sc.regime_h1_override_adx_min    = 30.0;     // Minimum M5 ADX for override to fire.
@@ -4479,6 +4495,12 @@ void ReadScalperConfig() {
    // v2.7.61 — Day-extreme distance gate loaders
    if(JsonHasKey(content,"dump_buy_max_dist_from_day_high_atr"))  { v=JsonGetDouble(content,"dump_buy_max_dist_from_day_high_atr");  if(v>=0 && v<=10.0) g_sc.dump_buy_max_dist_from_day_high_atr=v; }
    if(JsonHasKey(content,"dump_sell_max_dist_from_day_low_atr"))  { v=JsonGetDouble(content,"dump_sell_max_dist_from_day_low_atr"); if(v>=0 && v<=10.0) g_sc.dump_sell_max_dist_from_day_low_atr=v; }
+   // v2.7.62 — Distance amplifier loaders
+   if(JsonHasKey(content,"dump_dist_amplifier_enabled"))              { v=JsonGetDouble(content,"dump_dist_amplifier_enabled");              g_sc.dump_dist_amplifier_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"dump_dist_amplifier_threshold_atr"))        { v=JsonGetDouble(content,"dump_dist_amplifier_threshold_atr");        if(v>=0 && v<=20.0) g_sc.dump_dist_amplifier_threshold_atr=v; }
+   if(JsonHasKey(content,"dump_dist_amplifier_factor"))               { v=JsonGetDouble(content,"dump_dist_amplifier_factor");               if(v>=0.1 && v<=10.0) g_sc.dump_dist_amplifier_factor=v; }
+   if(JsonHasKey(content,"dump_dist_amplifier_strong_threshold_atr")) { v=JsonGetDouble(content,"dump_dist_amplifier_strong_threshold_atr"); if(v>=0 && v<=20.0) g_sc.dump_dist_amplifier_strong_threshold_atr=v; }
+   if(JsonHasKey(content,"dump_dist_amplifier_strong_factor"))        { v=JsonGetDouble(content,"dump_dist_amplifier_strong_factor");        if(v>=0.1 && v<=10.0) g_sc.dump_dist_amplifier_strong_factor=v; }
    // 2.7.57 — TREND_CONTINUATION_BUY loaders
    if(JsonHasKey(content,"trend_continuation_buy_enabled"))          { v=JsonGetDouble(content,"trend_continuation_buy_enabled");          g_sc.trend_continuation_buy_enabled=(v>=0.5); }
    if(JsonHasKey(content,"trend_continuation_buy_h1_min"))           { v=JsonGetDouble(content,"trend_continuation_buy_h1_min");           if(v>=0 && v<=10.0) g_sc.trend_continuation_buy_h1_min=v; }
@@ -11124,6 +11146,23 @@ void CheckNativeScalperSetups() {
       if(pf < g_sc.dump_pyramid_base_factor) pf = g_sc.dump_pyramid_base_factor;
       dump_pyramid_factor = pf;
    }
+   // v2.7.62 — Day-extreme distance amplifier (G5092 reward; mirror of v2.7.61 block).
+   //   BUY far from day_high = lots of room above = high-conviction zone → 1.5× / 2.0× lot.
+   //   SELL far from day_low = mirror.
+   double dump_dist_amplifier = 1.0;
+   if(setup_type == "MOMENTUM_DUMP" && g_sc.dump_dist_amplifier_enabled && m5_atr > 0.0) {
+      double _amp_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK)
+                       + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+      double _amp_dist_atr = 0.0;
+      if(direction == "BUY" && g_eval_day_high > 0)
+         _amp_dist_atr = (g_eval_day_high - _amp_mid) / m5_atr;
+      else if(direction == "SELL" && g_eval_day_low > 0)
+         _amp_dist_atr = (_amp_mid - g_eval_day_low) / m5_atr;
+      if(_amp_dist_atr >= g_sc.dump_dist_amplifier_strong_threshold_atr)
+         dump_dist_amplifier = g_sc.dump_dist_amplifier_strong_factor;
+      else if(_amp_dist_atr >= g_sc.dump_dist_amplifier_threshold_atr)
+         dump_dist_amplifier = g_sc.dump_dist_amplifier_factor;
+   }
    // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST lot factor (parity with legacy dump_factor).
    double mdct_factor = (setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST"
                          && g_sc.momentum_dump_composite_test_lot_factor > 0.0
@@ -11293,7 +11332,7 @@ void CheckNativeScalperSetups() {
    // Compound factor floor: 0.125 = broker minimum lot (0.01) at base lot 0.08.
    // ADX >= 55 entries are now BLOCKED (not taken at 1/16th which rounded to same as 1/8th).
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
-   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * dump_pyramid_factor * mdct_factor * bbr_factor * tcb_factor * tcs_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor * fast_trend_factor);
+   double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * dump_pyramid_factor * dump_dist_amplifier * mdct_factor * bbr_factor * tcb_factor * tcs_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor * fast_trend_factor);
    g_last_combined_lot_factor = combined_lot_factor;
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
