@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.173"
+#property version "2.181"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.110";
+const string FORGE_VERSION = "2.7.111";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1697,6 +1697,12 @@ struct ScalperConfig {
    bool   journal_import_trades;
    int    journal_import_depth_days;
    int    journal_stats_interval_sec;
+   // v2.7.111 — SQLite I/O performance (per mql5.com/articles/22009: up to 3500× speedup from
+   //   transaction wrapping). Default-OFF preserves v2.7.110 per-INSERT-fsync behaviour;
+   //   flip to 1 to enable tick-scoped batching + WAL journal mode + relaxed fsync.
+   bool   journal_signals_batch_txn;     // tick-scoped queue + BEGIN..COMMIT around JournalRecordSignal hot path
+   bool   journal_wal_mode;              // PRAGMA journal_mode=WAL — allows concurrent reads during writes
+   bool   journal_synchronous_normal;    // PRAGMA synchronous=NORMAL — relaxed fsync (still ACID with WAL)
 };
 ScalperConfig g_sc;
 
@@ -1808,6 +1814,12 @@ int      g_journal_db = INVALID_HANDLE;
 datetime g_journal_last_import = 0;
 datetime g_journal_last_stats = 0;
 int      g_journal_signals_count = 0;
+// v2.7.111 — SQLite I/O perf: tick-scoped INSERT queue for JournalRecordSignal
+//   When g_sc.journal_signals_batch_txn=true, INSERTs accumulate here during OnTick
+//   and are flushed in one BEGIN..COMMIT at OnTick end (and on OnDeinit as safety).
+//   Per mql5.com/articles/22009: up to 3500× speedup vs per-INSERT-fsync.
+string   g_journal_signals_queue[];
+int      g_journal_signals_queue_size = 0;
 
 // V2: Order Block zones from LENS → ob_zones.json
 double g_ob_zones_hi[6];
@@ -2107,6 +2119,9 @@ int OnInit() {
 }
 
 void OnDeinit(const int reason) {
+   // v2.7.111 — Drain any pending SIGNALS INSERTs before shutdown so we don't lose
+   //   rows that were queued in the last tick but never flushed (e.g., tester stop signal).
+   FlushJournalSignals();
    EventKillTimer();
    IndicatorRelease(g_h_rsi);
    IndicatorRelease(g_h_ma20);
@@ -2356,6 +2371,10 @@ void OnTick() {
    // Native scalper: check for setups on each tick
    if(g_scalper_mode != "NONE" && g_mode != "WATCH" && g_mode != "OFF")
       CheckNativeScalperSetups();
+   // v2.7.111 — Flush the SIGNALS INSERT queue once per tick (no-op when batch_txn OFF).
+   //   All JournalRecordSignal calls during this tick accumulated in the queue; one
+   //   BEGIN..COMMIT commits them as a batch (vs N per-INSERT-fsync without batching).
+   FlushJournalSignals();
 }
 
 //+------------------------------------------------------------------+
@@ -5110,6 +5129,10 @@ void InitScalperConfig() {
    g_sc.journal_import_trades = true;
    g_sc.journal_import_depth_days = 30;
    g_sc.journal_stats_interval_sec = 300;
+   // v2.7.111 — SQLite I/O perf defaults — OFF preserves v2.7.110 behaviour
+   g_sc.journal_signals_batch_txn = false;
+   g_sc.journal_wal_mode = false;
+   g_sc.journal_synchronous_normal = false;
    g_retest.active = false;
    ReadScalperConfig();
 }
@@ -6241,6 +6264,19 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "journal_stats_interval_sec")) {
       v = JsonGetDouble(content, "journal_stats_interval_sec");
       if(v >= 60 && v <= 3600) g_sc.journal_stats_interval_sec = (int)v;
+   }
+   // v2.7.111 SQLite I/O perf knobs
+   if(JsonHasKey(content, "journal_signals_batch_txn")) {
+      v = JsonGetDouble(content, "journal_signals_batch_txn");
+      g_sc.journal_signals_batch_txn = (v >= 0.5);
+   }
+   if(JsonHasKey(content, "journal_wal_mode")) {
+      v = JsonGetDouble(content, "journal_wal_mode");
+      g_sc.journal_wal_mode = (v >= 0.5);
+   }
+   if(JsonHasKey(content, "journal_synchronous_normal")) {
+      v = JsonGetDouble(content, "journal_synchronous_normal");
+      g_sc.journal_synchronous_normal = (v >= 0.5);
    }
    if(JsonHasKey(lot_json, "fixed_lot")) {
       v = JsonGetDouble(lot_json, "fixed_lot");
@@ -9146,6 +9182,23 @@ bool JournalInit() {
    }
    PrintFormat("FORGE JOURNAL: opened %s (tester=%s)", db_name, in_tester ? "true" : "false");
 
+   // v2.7.111 — Apply PRAGMA settings BEFORE any DDL/DML for max perf.
+   //   journal_mode=WAL allows concurrent reads during writes (bridge sync no longer
+   //   gets "database is locked"). synchronous=NORMAL relaxes fsync (still ACID with WAL).
+   //   Both default-OFF — flip via FORGE_JOURNAL_WAL_MODE=1 + FORGE_JOURNAL_SYNCHRONOUS_NORMAL=1.
+   if(g_sc.journal_wal_mode) {
+      if(DatabaseExecute(g_journal_db, "PRAGMA journal_mode=WAL;"))
+         PrintFormat("FORGE JOURNAL: PRAGMA journal_mode=WAL applied");
+      else
+         PrintFormat("FORGE JOURNAL: PRAGMA journal_mode=WAL FAILED — error=%d", GetLastError());
+   }
+   if(g_sc.journal_synchronous_normal) {
+      if(DatabaseExecute(g_journal_db, "PRAGMA synchronous=NORMAL;"))
+         PrintFormat("FORGE JOURNAL: PRAGMA synchronous=NORMAL applied");
+      else
+         PrintFormat("FORGE JOURNAL: PRAGMA synchronous=NORMAL FAILED — error=%d", GetLastError());
+   }
+
    string sql_signals =
       "CREATE TABLE IF NOT EXISTS SIGNALS ("
       "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -9723,12 +9776,54 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_ces_component_di)
       + ")";
 
+   // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
+   //   (FlushJournalSignals called at OnTick exit + OnDeinit). One BEGIN..COMMIT per tick
+   //   replaces N per-INSERT-fsync commits. Per mql5.com/articles/22009: up to 3500× speedup.
+   if(g_sc.journal_signals_batch_txn) {
+      int qsz = ArraySize(g_journal_signals_queue);
+      ArrayResize(g_journal_signals_queue, qsz + 1);
+      g_journal_signals_queue[qsz] = sql;
+      g_journal_signals_queue_size++;
+      g_journal_signals_count++;  // count is informational; actual disk write happens at flush
+      return;
+   }
+
    if(!DatabaseExecute(g_journal_db, sql)) {
       if(g_journal_signals_count == 0)
          PrintFormat("FORGE JOURNAL: INSERT failed error=%d", GetLastError());
       return;
    }
    g_journal_signals_count++;
+}
+
+// v2.7.111 — FlushJournalSignals: drain g_journal_signals_queue via one BEGIN..COMMIT.
+//   Called at OnTick end + OnDeinit. No-op when batch_txn knob is OFF (queue stays empty).
+//   Safety: ROLLBACK on COMMIT failure; clear queue regardless to prevent indefinite growth.
+void FlushJournalSignals() {
+   if(!g_sc.journal_signals_batch_txn) return;
+   if(g_journal_db == INVALID_HANDLE) {
+      ArrayResize(g_journal_signals_queue, 0);
+      g_journal_signals_queue_size = 0;
+      return;
+   }
+   int n = ArraySize(g_journal_signals_queue);
+   if(n == 0) return;
+   if(!DatabaseExecute(g_journal_db, "BEGIN TRANSACTION;")) {
+      PrintFormat("FORGE JOURNAL: BEGIN failed at flush — error=%d, queue size=%d (dropping)", GetLastError(), n);
+      ArrayResize(g_journal_signals_queue, 0);
+      g_journal_signals_queue_size = 0;
+      return;
+   }
+   int written = 0;
+   for(int i = 0; i < n; i++) {
+      if(DatabaseExecute(g_journal_db, g_journal_signals_queue[i])) written++;
+   }
+   if(!DatabaseExecute(g_journal_db, "COMMIT;")) {
+      DatabaseExecute(g_journal_db, "ROLLBACK;");
+      PrintFormat("FORGE JOURNAL: COMMIT failed at flush — error=%d, %d/%d rows dropped", GetLastError(), n - written, n);
+   }
+   ArrayResize(g_journal_signals_queue, 0);
+   g_journal_signals_queue_size = 0;
 }
 
 string JournalSqlText(const string t) {
@@ -9810,6 +9905,16 @@ void JournalComputeStats() {
    bool in_tester_stats = (MQLInfoInteger(MQL_TESTER) != 0) && (g_tester_run_id > 0);
    string run_filter = in_tester_stats ? " AND run_id = " + IntegerToString(g_tester_run_id) : "";
 
+   // v2.7.111 — Wrap the entire stats refresh (DELETE+INSERT pairs for hour_* and gate_*)
+   //   in one transaction. Mirrors the v2.7.16 JournalImportTrades pattern at line ~9890.
+   //   Per mql5.com/articles/22009: BEGIN..COMMIT compresses N per-INSERT-fsync writes
+   //   into one transactional commit. Default-OFF — gated by journal_signals_batch_txn
+   //   (same flag controls both hot paths to keep operator ergonomics simple).
+   bool _stats_txn_active = false;
+   if(g_sc.journal_signals_batch_txn) {
+      if(DatabaseExecute(g_journal_db, "BEGIN TRANSACTION;")) _stats_txn_active = true;
+   }
+
    string sql_hr = "SELECT "
       "CAST(strftime('%H', time, 'unixepoch') AS INTEGER) as hour, "
       "COUNT(*) as trades, "
@@ -9877,6 +9982,14 @@ void JournalComputeStats() {
          }
       }
       DatabaseFinalize(stmt);
+   }
+
+   // v2.7.111 — Commit the stats refresh transaction (or rollback if BEGIN never succeeded).
+   if(_stats_txn_active) {
+      if(!DatabaseExecute(g_journal_db, "COMMIT;")) {
+         DatabaseExecute(g_journal_db, "ROLLBACK;");
+         PrintFormat("FORGE JOURNAL: stats COMMIT failed — error=%d (rolled back)", GetLastError());
+      }
    }
 
    PrintFormat("FORGE JOURNAL: stats refreshed — %d signals this session", g_journal_signals_count);

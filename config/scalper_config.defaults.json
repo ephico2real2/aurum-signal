@@ -432,7 +432,10 @@
     "journal_record_skips": 1,
     "journal_import_trades": 1,
     "journal_import_depth_days": 30,
-    "journal_stats_interval_sec": 300
+    "journal_stats_interval_sec": 300,
+    "journal_signals_batch_txn": 0,
+    "journal_wal_mode": 0,
+    "journal_synchronous_normal": 0
   },
   "dd_event_tp": {
     "description": "Tighten TP when SENTINEL detects HIGH-impact event within threshold",
