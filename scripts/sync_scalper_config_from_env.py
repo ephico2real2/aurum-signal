@@ -497,6 +497,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # v2.7.101 Set 4 Option 4B — structural pending cancel (operator pick: "Cool Period NOT a timer").
     # Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14.
     "FORGE_TIMING_COOL_PERIOD_STRUCTURE_CANCEL_ENABLED": ("bb_breakout", "structure_flip_cancel_enabled", "bool01", None, None),
+    # v2.7.103 Gap 1 — extend cascade-stack sweep to BB_BREAKOUT L1/L2 (slots 0+1).
+    # Default-OFF because some BB_BREAKOUT retraces are intentional. Decision: FORGE_TRADE_FLOW_BUY_SELL.md §8 v2.7.103 entry.
+    "FORGE_TIMING_STRUCTURE_CANCEL_INCLUDES_BREAKOUT_L1L2": ("bb_breakout", "structure_cancel_includes_breakout_l1l2", "bool01", None, None),
+    # v2.7.103 Gap 2 — walker for per-trigger setup pendings (magic == group_magic, no +20000 offset).
+    # Mirrors CancelPendingOnDailyFlip pattern (ea/FORGE.mq5:3449). Default-OFF.
+    "FORGE_TIMING_PENDING_PRE_TRIGGER_STRUCT_CANCEL_ENABLED": ("bb_breakout", "pending_pre_trigger_struct_cancel_enabled", "bool01", None, None),
     # v2.7.102 — TP pip-floor hybrid (operator spec TP1=40 pips, TP2=60 pips with ATR adaptation).
     # Each TP tier: actual distance = max(pip_floor × PipSize, atr_mult × ATR). Default 0 = pure ATR (current).
     # PipSize auto-detected: 2-digit XAUUSD pip=point; 3/5-digit broker pip=10×point.
