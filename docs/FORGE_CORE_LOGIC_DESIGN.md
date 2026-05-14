@@ -691,6 +691,94 @@ SL trail / XAUUSD scalping:
 
 ## §9 Changelog (append-only)
 
+### 2026-05-14 — v2.7.103 SHIPPED — Cool-period cancel sweep gaps closed (Gap 1 + Gap 2)
+
+v2.7.101 shipped `CancelPendingOnStructureFlip` with a slot-loop start at `_s = 2`
+and a stack-based iteration restricted to `g_sell_limit_stack` and `g_buy_stop_stack`.
+Two coverage gaps surfaced when walking the All-Phases-On lifecycle:
+
+**Gap 1 — Slot range excluded BB_BREAKOUT L1/L2.**
+- Slot 0 holds the BB_BREAKOUT L1 SELL_LIMIT (`magic = group_magic + 20000`).
+- Slot 1 holds the BB_BREAKOUT L2 SELL_LIMIT (`magic = group_magic + 20001`).
+- The original `_s = 2` loop start skipped both. On direction-lock invalidation
+  between trigger and L1 fill, the L1/L2 limits could still fill against the new
+  regime.
+
+**Fix**: Added `g_sc.structure_cancel_includes_breakout_l1l2` (default `false`).
+When ON, the slot loop starts at 0; when OFF, the v2.7.101 `2..9` behaviour is
+preserved. Default-OFF because some BB_BREAKOUT retraces to limit price are
+intentional continuation (price wicks L1 on a healthy pullback before resuming).
+
+Knob: `FORGE_TIMING_STRUCTURE_CANCEL_INCLUDES_BREAKOUT_L1L2=1`.
+
+**Gap 2 — Per-trigger setup pendings were invisible to the stack sweep.**
+- `PlaceOpenGroupLeg` can place a leg as a pending (BUY_LIMIT/SELL_LIMIT/BUY_STOP/
+  SELL_STOP) when the setup geometry calls for it. These pendings carry
+  `magic == group_magic` (no `+20000` cascade offset) so they are NOT registered
+  in either cascade stack. The stack-based sweep could not see them.
+
+**Fix**: New `CancelStrayPendingsOnStructureFlip()` walker (default-OFF), modelled
+on the canonical `CancelPendingOnDailyFlip` pattern (`ea/FORGE.mq5:3449`):
+- Walks `OrdersTotal()-1 → 0` per the MQL5 forum 377826 iterate-down convention.
+- Symbol filter (`ChartSymbolMatches`).
+- Magic in CORE range `[MagicNumber..MagicNumber+10000)` (cascade range
+  `[20000..30010)` is skipped — owned by the stack sweep above).
+- Pending order type filter (6 types incl. STOP_LIMIT).
+- Group lookup by `g_groups[g].magic_offset == om`; skip if no matching active
+  group (defensive: pending exists but its group was deregistered).
+- Direction derived from `ENUM_ORDER_TYPE` (BUY_LIMIT/BUY_STOP/BUY_STOP_LIMIT → BUY;
+  SELL_LIMIT/SELL_STOP/SELL_STOP_LIMIT → SELL). This is the per-order-type
+  direction, NOT the group direction — supports mixed-direction recovery legs
+  where a SELL_LIMIT could rest under a BUY group.
+- `EvaluateDirectionLock(pend_dir, gi)` → INVALID or NEUTRAL → `g_trade.OrderDelete`
+  with a PrintFormat log line tagged `pending_pre_trigger_struct_cancel`.
+
+Knob: `FORGE_TIMING_PENDING_PRE_TRIGGER_STRUCT_CANCEL_ENABLED=1`.
+
+**Industry citations** (ICT MSS body-close invalidation pattern):
+- [tradethepool.com — ICT Market Structure Shift (MSS): Essential Smart Money Guide](https://tradethepool.com/technical-skill/ict-market-structure-shift/)
+- [luxalgo.com — Market Structure Shifts (MSS) in ICT Trading](https://www.luxalgo.com/blog/market-structure-shifts-mss-in-ict-trading/)
+- [innercircletrader.net — ICT MSS Complete Guide](https://innercircletrader.net/tutorials/ict-market-structure-shift/)
+- [equiti.com — MSS vs BOS: mastering market structure](https://www.equiti.com/sc-en/news/trading-ideas/mss-vs-bos-the-ultimate-guide-to-mastering-market-structure/)
+
+The shared thesis across all four: MSS is the canonical invalidation event for
+limit-order entries resting at the prior swing level. Both gaps fix the case
+where MSS occurred but FORGE's cancel-sweep failed to catch the corresponding
+pending order, allowing a stale-thesis fill into the new regime.
+
+**Source-code anchors**:
+- Struct: `ea/FORGE.mq5` `structure_cancel_includes_breakout_l1l2` +
+  `pending_pre_trigger_struct_cancel_enabled` (next to existing
+  `structure_flip_cancel_enabled`).
+- Init: `InitScalperConfig` block under the v2.7.101 default line; both default `false`.
+- Walker: `CancelStrayPendingsOnStructureFlip()` directly below the v2.7.101
+  `CancelPendingOnStructureFlip`.
+- Call site: M5-close branch under `g_sc.direction_lock_enabled && _m5_bar != g_dirlock_last_eval_bar`.
+- JSON-load: `breakout_json` keys `structure_cancel_includes_breakout_l1l2` and
+  `pending_pre_trigger_struct_cancel_enabled`.
+
+**End-to-end config parity** (verified):
+- `config/scalper_config.defaults.json` keys present.
+- `scripts/sync_scalper_config_from_env.py` mappings present.
+- `.env.example` entries present.
+- `config/gate_legend.json` entries `pending_pre_trigger_struct_cancel` and
+  `structure_flip_cancel_l1l2` present.
+
+**Compile**: clean. FORGE.ex5 v2.7.103 stamped.
+
+**Status**: SHIPPED (both knobs default-OFF; v2.7.101 behaviour byte-identical
+when knobs stay OFF).
+
+**Validation plan**: enable
+`FORGE_TIMING_PENDING_PRE_TRIGGER_STRUCT_CANCEL_ENABLED=1` +
+`FORGE_TIMING_STRUCTURE_CANCEL_INCLUDES_BREAKOUT_L1L2=1` +
+`FORGE_TIMING_COOL_PERIOD_STRUCTURE_CANCEL_ENABLED=1` +
+`FORGE_SETUP_DIRECTION_LOCK_ENABLED=1` and replay a known MSS-into-stale-fill
+case (the Apr 6 17:35 G5021 cascade is the canonical regression to watch).
+
+**Trade-flow living doc cross-link**: `docs/FORGE_TRADE_FLOW_BUY_SELL.md` §8 has
+the matching entry with the full pseudocode and per-order-type direction rationale.
+
 ### 2026-05-14 — Pip convention reverted to BROKER (operator confirmation)
 
 Initial v2.7.102 PipSize() shipped with INDUSTRY convention (1 pip = $0.01) based on WebSearch sources (defcofx.com, tradersunion.com). Operator confirmed BROKER convention is the authority: "I hope... one whole-number move = 10 pips" → 1 pip = $0.10.

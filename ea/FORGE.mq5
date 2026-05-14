@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.172"
+#property version "2.173"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.102";
+const string FORGE_VERSION = "2.7.103";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -609,6 +609,19 @@ struct ScalperConfig {
    //   EvaluateDirectionLock returns INVALID or NEUTRAL. Pendings keep broker-side expiry
    //   as safety net; this provides faster structure-driven cancellation.
    bool   structure_flip_cancel_enabled;  // master flag (default false; current behavior = timer-only)
+   // v2.7.103 Gap 1 — extend cascade-stack cancel sweep to include BB_BREAKOUT L1/L2
+   //   SELL_LIMIT (slot 0) / BUY_LIMIT recovery slot 0/1. Default-OFF because some BB_BREAKOUT
+   //   retraces are intentional (price returns to limit price before resuming). Flip to 1
+   //   when structural break should cancel L1/L2 too.
+   bool   structure_cancel_includes_breakout_l1l2;  // v2.7.103 default false
+   // v2.7.103 Gap 2 — Per-trigger setup pendings (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP)
+   //   placed via PlaceOpenGroupLeg with pending types. These carry `magic == group_magic`
+   //   (NOT +20000 cascade offset) so they're invisible to the stack-based sweep above.
+   //   Walker mirrors CancelPendingOnDailyFlip's OrdersTotal()→0 + magic-range pattern,
+   //   filters core range [MagicNumber..MagicNumber+10000), looks up gi by magic match,
+   //   evaluates direction lock per pending's direction, cancels INVALID/NEUTRAL.
+   //   Default-OFF.
+   bool   pending_pre_trigger_struct_cancel_enabled;  // v2.7.103 default false
    // v2.7.102 — TP pip-floor hybrid. Each tier's actual distance = max(<tier>_pip_floor × pip_size, atr_mult × ATR).
    //   pip_size auto-detected from SYMBOL_DIGITS via PipSize() helper.
    //   Default 0 = pure ATR (current behavior). 40 = operator spec floor for TP1; 60 for TP2.
@@ -4168,6 +4181,8 @@ void InitScalperConfig() {
    g_sc.tp3_mode                = 0;             // 0=fixed (current behavior), 1=sl_trail (Option 3C). Default-OFF.
    g_sc.tp3_dist_from_sl_atr_mult = 2.0;         // TP3 extends 2×ATR ahead of current SL
    g_sc.structure_flip_cancel_enabled = false;   // v2.7.101 Set 4 Option 4B — default-OFF; flip via FORGE_TIMING_COOL_PERIOD_STRUCTURE_CANCEL_ENABLED=1
+   g_sc.structure_cancel_includes_breakout_l1l2 = false;       // v2.7.103 Gap 1 — extend stack sweep to slot 0/1 (BB_BREAKOUT L1/L2 limits)
+   g_sc.pending_pre_trigger_struct_cancel_enabled = false;     // v2.7.103 Gap 2 — walk OrdersTotal() for per-trigger setup pendings
    // v2.7.102 TP pip-floor defaults (operator spec: TP1=40pips, TP2=60pips). All default 0 = no floor; flip to enable.
    g_sc.tp1_pip_floor = 0.0;
    g_sc.tp2_pip_floor = 0.0;
@@ -5113,6 +5128,16 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "structure_flip_cancel_enabled")) {
          v = JsonGetDouble(breakout_json, "structure_flip_cancel_enabled");
          g_sc.structure_flip_cancel_enabled = (v >= 0.5);
+      }
+      // v2.7.103 Gap 1 — extend cascade-stack sweep to BB_BREAKOUT slot 0/1
+      if(JsonHasKey(breakout_json, "structure_cancel_includes_breakout_l1l2")) {
+         v = JsonGetDouble(breakout_json, "structure_cancel_includes_breakout_l1l2");
+         g_sc.structure_cancel_includes_breakout_l1l2 = (v >= 0.5);
+      }
+      // v2.7.103 Gap 2 — per-trigger pending sweep
+      if(JsonHasKey(breakout_json, "pending_pre_trigger_struct_cancel_enabled")) {
+         v = JsonGetDouble(breakout_json, "pending_pre_trigger_struct_cancel_enabled");
+         g_sc.pending_pre_trigger_struct_cancel_enabled = (v >= 0.5);
       }
       // v2.7.102 TP pip-floor knobs
       if(JsonHasKey(breakout_json, "tp1_pip_floor")) {
@@ -7150,6 +7175,9 @@ void ForgeEvalAtoms() {
             // Runs alongside direction lock evaluation; cancels cascade pendings when their
             // group's direction lock returns INVALID or NEUTRAL.
             CancelPendingOnStructureFlip();
+            // v2.7.103 Gap 2 — sweep per-trigger setup pendings (limit/stop with magic == group_magic).
+            // Complements the stack-based sweep above; default-OFF.
+            CancelStrayPendingsOnStructureFlip();
          }
 
          // v2.7.84 — Pending-order cancellation on UMCG flip (operator-mandated, 2026-05-13).
@@ -14578,10 +14606,16 @@ void CancelPendingOnStructureFlip() {
    if(!g_sc.structure_flip_cancel_enabled) return;
    if(!g_sc.direction_lock_enabled) return;  // requires Set 7 evaluator
 
+   // v2.7.103 Gap 1 — when knob is ON, sweep includes BB_BREAKOUT L1/L2 (slots 0+1).
+   //   slot 0 = L1 SELL_LIMIT (magic = group_magic + 20000) or BUY_STOP recovery
+   //   slot 1 = L2 SELL_LIMIT (magic = group_magic + 20001)
+   //   slots 2..9 = cascade SELL_STOP_CONT / BUY_STOP recovery rungs
+   const int _slot_lo = g_sc.structure_cancel_includes_breakout_l1l2 ? 0 : 2;
+
    for(int gi = 0; gi < ArraySize(g_groups); gi++) {
       // Only groups with active cascade pendings matter
       bool has_active_pending = false;
-      for(int _s = 2; _s <= 9 && !has_active_pending; _s++) {
+      for(int _s = _slot_lo; _s <= 9 && !has_active_pending; _s++) {
          if(g_sell_limit_stack[_s].active && g_sell_limit_stack[_s].group_id == g_groups[gi].id) has_active_pending = true;
          if(g_buy_stop_stack[_s].active   && g_buy_stop_stack[_s].group_id   == g_groups[gi].id) has_active_pending = true;
       }
@@ -14593,7 +14627,7 @@ void CancelPendingOnStructureFlip() {
 
       int cancelled = 0;
       // Iterate SELL_LIMIT/SELL_STOP cascade stack
-      for(int _s = 2; _s <= 9; _s++) {
+      for(int _s = _slot_lo; _s <= 9; _s++) {
          if(g_sell_limit_stack[_s].active && g_sell_limit_stack[_s].group_id == g_groups[gi].id) {
             if(g_trade.OrderDelete(g_sell_limit_stack[_s].ticket)) {
                g_sell_limit_stack[_s].active = false;
@@ -14611,9 +14645,97 @@ void CancelPendingOnStructureFlip() {
       if(cancelled > 0) {
          g_groups[gi].direction_lock_broken = true;  // prevent ArmPostTP1Ladder re-arm
          string verdict_s = (verdict == DLV_INVALID) ? "INVALID" : "NEUTRAL";
-         PrintFormat("FORGE 2.7.101: structure_flip_cancel G%d (%s lock %s) — cancelled %d cascade pendings",
-                     g_groups[gi].id, g_groups[gi].direction, verdict_s, cancelled);
+         // v2.7.103 Gap 1: when slot_lo=0 the sweep also covered BB_BREAKOUT L1/L2; tag with
+         // "structure_flip_cancel_l1l2" so /forge-monitor SKIP-rollup parity holds.
+         const string _slot_gate = (_slot_lo == 0) ? "structure_flip_cancel_l1l2" : "structure_flip_cancel";
+         PrintFormat("FORGE 2.7.101: %s G%d (%s lock %s) — cancelled %d cascade pendings (slot_lo=%d)",
+                     _slot_gate, g_groups[gi].id, g_groups[gi].direction, verdict_s, cancelled, _slot_lo);
       }
+   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.7.103 Gap 2 — CancelStrayPendingsOnStructureFlip
+//
+// PURPOSE: catch per-trigger setup pendings placed via PlaceOpenGroupLeg with
+//   pending order types (BUY_LIMIT / SELL_LIMIT / BUY_STOP / SELL_STOP). These
+//   carry `magic == group_magic` (no +20000 cascade offset), so they are NOT in
+//   g_sell_limit_stack / g_buy_stop_stack and are invisible to the stack-based
+//   CancelPendingOnStructureFlip() sweep above.
+//
+// PATTERN: mirrors CancelPendingOnDailyFlip (ea/FORGE.mq5:3449) — canonical
+//   OrdersTotal()-1 → 0 iteration, symbol filter, magic-range filter, type
+//   filter, OrderDelete. ICT MSS / SMC invalidation: when the structural level
+//   that justified a limit-order entry is breached on body close, the entry
+//   thesis is invalid; resting pendings must be cancelled rather than allowed
+//   to fill at the now-invalid price.
+//
+// FILTERS:
+//   1. Symbol match (ChartSymbolMatches)
+//   2. Magic in core range [MagicNumber .. MagicNumber+10000) — skips cascade
+//      magics (20000..30010), which CancelPendingOnStructureFlip already owns
+//   3. Pending order type only (limits + stops + stop-limits)
+//   4. Group lookup by magic_offset; if no matching active group, skip
+//   5. Direction lock verdict per pending's order-type direction
+//
+// SIDE EFFECTS:
+//   - Cancels stray pendings via g_trade.OrderDelete
+//   - Emits SKIP journal record with gate_code = pending_pre_trigger_struct_cancel
+//
+// SOURCE: docs/FORGE_CORE_LOGIC_DESIGN.md §9 v2.7.103 changelog (Gap 2 spec)
+// ICT MSS invalidation reference: tradethepool.com/technical-skill/ict-market-structure-shift,
+//   luxalgo.com/blog/market-structure-shifts-mss-in-ict-trading
+// ─────────────────────────────────────────────────────────────────────────────
+void CancelStrayPendingsOnStructureFlip() {
+   if(!g_sc.pending_pre_trigger_struct_cancel_enabled) return;
+   if(!g_sc.direction_lock_enabled) return;  // requires Set 7 evaluator
+
+   int cancelled = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--) {
+      ulong ot = OrderGetTicket(i);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(!ChartSymbolMatches(OrderGetString(ORDER_SYMBOL))) continue;
+      int om = (int)OrderGetInteger(ORDER_MAGIC);
+      if(om < MagicNumber) continue;
+      int offset = om - MagicNumber;
+      // Core range only — cascade range (20000..30010) is owned by stack sweep above.
+      if(offset < 0 || offset >= 10000) continue;
+
+      ENUM_ORDER_TYPE ot_type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      bool is_pending = (ot_type == ORDER_TYPE_BUY_LIMIT
+                      || ot_type == ORDER_TYPE_SELL_LIMIT
+                      || ot_type == ORDER_TYPE_BUY_STOP
+                      || ot_type == ORDER_TYPE_SELL_STOP
+                      || ot_type == ORDER_TYPE_BUY_STOP_LIMIT
+                      || ot_type == ORDER_TYPE_SELL_STOP_LIMIT);
+      if(!is_pending) continue;
+
+      // Find owning group by magic match
+      int gi = -1;
+      for(int g = 0; g < ArraySize(g_groups); g++) {
+         if(g_groups[g].magic_offset == om) { gi = g; break; }
+      }
+      if(gi < 0) continue;  // pending exists but its group no longer registered — leave alone
+
+      // Per-order-type direction (independent of group direction; mixed-direction setups exist)
+      string pend_dir = "";
+      if(ot_type == ORDER_TYPE_BUY_LIMIT  || ot_type == ORDER_TYPE_BUY_STOP  || ot_type == ORDER_TYPE_BUY_STOP_LIMIT)  pend_dir = "BUY";
+      if(ot_type == ORDER_TYPE_SELL_LIMIT || ot_type == ORDER_TYPE_SELL_STOP || ot_type == ORDER_TYPE_SELL_STOP_LIMIT) pend_dir = "SELL";
+      if(pend_dir == "") continue;
+
+      int verdict = EvaluateDirectionLock(pend_dir, gi);
+      if(verdict == DLV_VALID || verdict == DLV_PROFIT_TARGET) continue;
+      // DLV_INVALID or DLV_NEUTRAL — cancel stray pending
+      if(g_trade.OrderDelete(ot)) {
+         cancelled++;
+         string verdict_s = (verdict == DLV_INVALID) ? "INVALID" : "NEUTRAL";
+         PrintFormat("FORGE 2.7.103: %s G%d (%s lock %s) — cancelled stray pending ticket=%I64u type=%d",
+                     "pending_pre_trigger_struct_cancel", g_groups[gi].id, pend_dir, verdict_s, ot, (int)ot_type);
+      }
+   }
+   if(cancelled > 0) {
+      PrintFormat("FORGE 2.7.103: %s sweep — cancelled %d stray pending(s)",
+                  "pending_pre_trigger_struct_cancel", cancelled);
    }
 }
 

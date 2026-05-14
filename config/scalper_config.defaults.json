@@ -150,6 +150,8 @@
     "tp3_mode": 0,
     "tp3_dist_from_sl_atr_mult": 2.0,
     "structure_flip_cancel_enabled": 0,
+    "structure_cancel_includes_breakout_l1l2": 0,
+    "pending_pre_trigger_struct_cancel_enabled": 0,
     "tp1_pip_floor": 0.0,
     "tp2_pip_floor": 0.0,
     "tp3_pip_floor": 0.0

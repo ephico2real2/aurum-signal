@@ -1,5 +1,5 @@
 {
-  "version": "2.7.102",
+  "version": "2.7.103",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -150,6 +150,8 @@
     "tp3_mode": 1,
     "tp3_dist_from_sl_atr_mult": 2.0,
     "structure_flip_cancel_enabled": 1,
+    "structure_cancel_includes_breakout_l1l2": 0,
+    "pending_pre_trigger_struct_cancel_enabled": 0,
     "tp1_pip_floor": 40,
     "tp2_pip_floor": 60,
     "tp3_pip_floor": 0.0,

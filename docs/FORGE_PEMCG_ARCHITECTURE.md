@@ -710,7 +710,8 @@ This document MUST be updated when:
 - `ea/FORGE.mq5:12362-12557` — Layer 1/2/3 enforcement (UMCG + CVCSM at chokepoint, plus v2.7.97 DirLock check)
 - `ea/FORGE.mq5:10781-10798` + `:11156-11173` — v2.7.93 anti-retest gates
 - `ea/FORGE.mq5:~14213` — `EvaluateDirectionLock()` (DLV producer, v2.7.97)
-- `ea/FORGE.mq5:~14282` — `CancelPendingOnStructureFlip()` (DLV consumer for pendings, v2.7.101)
+- `ea/FORGE.mq5:~14282` — `CancelPendingOnStructureFlip()` (DLV consumer #1, stack-based, v2.7.101; Gap 1 in v2.7.103 extends slot range to 0+1 behind `structure_cancel_includes_breakout_l1l2`)
+- `ea/FORGE.mq5` (immediately below) — `CancelStrayPendingsOnStructureFlip()` (DLV consumer #2, OrdersTotal walker for core-range pendings, v2.7.103 Gap 2)
 - `ea/FORGE.mq5:~14310` — `UpdateDirLockState()` (DLS transitions, v2.7.97)
 - `config/scalper_config.json` — runtime knob values
 - `.env` — operator overrides
@@ -726,6 +727,8 @@ The new acronyms (DLV / DLS) and the layered re-evaluation pattern were informed
 | Post-SL re-entry rule — "previous closed candle must make a new higher high (BUY) / lower low (SELL) compared to all candles since original signal" → the *fresh signal* requirement after DLS DISCARDED → IDLE | [Triple MA EA Strategy (Dec 30 2025)](https://www.mql5.com/en/blogs/post/766574) |
 | MT5 hedge mode + magic-number convention — "each order can have different magic numbers... hedging system opens new position per deal" → DLS state per-direction independence + DLV per-group | [MQL5 forum 446630](https://www.mql5.com/en/forum/446630), [forum 431285](https://www.mql5.com/en/forum/431285) |
 | Pending order cancel pattern via OnTradeTransaction / per-cycle status check → `CancelPendingOnStructureFlip()` design | [MQL5 docs OnTradeTransaction](https://www.mql5.com/en/docs/event_handlers/ontradetransaction), [forum 388433](https://www.mql5.com/en/forum/388433) |
+| ICT MSS body-close invalidation of resting limit-order entries → both v2.7.103 cancel-sweep extensions (Gap 1 + Gap 2) | [tradethepool ICT MSS Guide](https://tradethepool.com/technical-skill/ict-market-structure-shift/), [LuxAlgo MSS in ICT Trading](https://www.luxalgo.com/blog/market-structure-shifts-mss-in-ict-trading/), [innercircletrader.net ICT MSS Complete Guide](https://innercircletrader.net/tutorials/ict-market-structure-shift/), [equiti MSS vs BOS](https://www.equiti.com/sc-en/news/trading-ideas/mss-vs-bos-the-ultimate-guide-to-mastering-market-structure/) |
+| MT5 magic-range filter pattern (mirror of `CancelPendingOnDailyFlip`) used by v2.7.103 `CancelStrayPendingsOnStructureFlip` | [MQL5 forum 377826 — iterate OrdersTotal()-1 → 0](https://www.mql5.com/en/forum/377826) |
 | Adaptive risk management with context-aware stop placement and zone-flip detection | [MQL5 Article 21759: Adaptive Risk Management for Liquidity Strategies](https://www.mql5.com/en/articles/21759) |
 | Trade-discipline state persistence ("global variables and file operations to persist risk states across restarts") | [MQL5 Article 20587: Automating Trade Discipline with Risk Enforcement EA](https://www.mql5.com/en/articles/20587) |
 | Pyramid spacing — "0.5×ATR, max 4 pyramid positions; each position independent" → `batch_max_legs` cap + spacing knob | [MSX AI SuperTrend v3.90 (May 2026)](https://www.mql5.com/en/blogs/post/769821), [Pyramid MT5 EA](https://www.mql5.com/en/market/product/103169) |
@@ -752,6 +755,7 @@ When `/forge-monitor` runs:
 - 2026-05-14 — v2.7.88 recorded: A1 RSI thresholds 70→65 / 30→35 (§2.1)
 - 2026-05-14 — v2.7.89/90/91/92/94 recorded: Layer 3 enhancements (§3.3)
 - 2026-05-14 — v2.7.93 recorded as independent side gate (§4)
+- 2026-05-14 — v2.7.103 recorded: DLV consumers now plural — stack-based `CancelPendingOnStructureFlip` (slot-range knob added) + new walker-based `CancelStrayPendingsOnStructureFlip` (core-range pendings). Both default-OFF. ICT MSS sources added to §9 references.
 - 2026-05-14 — **§1A added** — acronym dictionary (PEMCG / UMCG / CVCSM + new DLV / DLS introduced in v2.7.97), layer relationship diagram, and explicit grouping of *indicators → thresholds → atoms → counts → layer verdicts*. Operator request after asking "add meaning of PEMCG, UMCG and CVCSM how they all related together how indicators values, thresholds, bool are groups". DLV (Direction Lock Verdict) + DLS (Direction Lock State) are new in v2.7.97 — naming follows the existing 4-5 letter pattern + FORGE_NAMING_CONVENTIONS §4.7.
 - 2026-05-14 — **§9 References expanded** — added 12 industry article citations used during the v2.7.95-2.7.102 redesign (ICT MSS, LuxAlgo validation, Triple MA EA re-entry rule, MQL5 hedge-mode docs, OnTradeTransaction patterns, MQL5 Articles 21759 + 20587, pyramid systems, Triple-Scale TP method, XAUUSD pip convention sources). These informed Sets 1/4/6/7/8 design.
 - 2026-05-14 — Live evidence §7 first populated: Run 9 v2.7.94, sim Apr 1 19:44, 4,234 v2.7.93 blocks confirming G5006 retest trap caught

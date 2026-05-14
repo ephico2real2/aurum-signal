@@ -624,5 +624,15 @@
     "label": "BB_PULLBACK_SCALP BUY blocked \u2014 falling velocity",
     "explanation": "BB_PULLBACK_SCALP BUY was blocked because g_eval_m5_velocity_5bar_signed \u2264 FORGE_GATE_BB_PULLBACK_BUY_MIN_VELOCITY_5BAR_SIGNED (default -1.0). Apr 8 12:50 case study: BUY @ 4786 RSI 34 fired during -38pt descent (knife catch). Gate prevents catching falling knives. v2.7.79.",
     "category": "Setup-specific / Velocity"
+  },
+  "pending_pre_trigger_struct_cancel": {
+    "label": "Per-trigger pending cancelled \u2014 structural invalidation",
+    "explanation": "v2.7.103 Gap 2 CancelStrayPendingsOnStructureFlip walker fired. A pending order (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP) placed by PlaceOpenGroupLeg at signal trigger time, carrying magic == group_magic (core range, NOT cascade +20000), was cancelled because its owning group's direction lock returned INVALID or NEUTRAL on the most recent M5 close. ICT MSS body-close pattern: the structural level that justified the limit-order thesis has been breached. Emitted via PrintFormat (not SIGNALS.gate_reason). Mirrors CancelPendingOnDailyFlip pattern (ea/FORGE.mq5:3449). Requires FORGE_TIMING_PENDING_PRE_TRIGGER_STRUCT_CANCEL_ENABLED=1 + FORGE_SETUP_DIRECTION_LOCK_ENABLED=1.",
+    "category": "Cancellation / Structural"
+  },
+  "structure_flip_cancel_l1l2": {
+    "label": "BB_BREAKOUT L1/L2 cancelled \u2014 cool-period structure flip",
+    "explanation": "v2.7.103 Gap 1: when FORGE_TIMING_STRUCTURE_CANCEL_INCLUDES_BREAKOUT_L1L2=1, CancelPendingOnStructureFlip extends its slot loop to include slot 0 (L1 SELL_LIMIT, magic +20000) and slot 1 (L2 SELL_LIMIT, magic +20001). Logged with slot_lo=0 in the existing FORGE 2.7.101 structure_flip_cancel PrintFormat. Default-OFF because some BB_BREAKOUT retraces to limit price are intentional continuation behaviour.",
+    "category": "Cancellation / Structural"
   }
 }
