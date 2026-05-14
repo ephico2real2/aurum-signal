@@ -1,19 +1,28 @@
 {
   "_meta": {
-    "description": "Human-readable explanations for FORGE gate_reason codes written to SIGNALS.gate_reason in the tester journal DB. Keys MUST match the exact string FORGE writes — verified against ea/FORGE.mq5 JournalRecordSignal calls. Do NOT guess keys; always read the EA source first.",
+    "description": "Human-readable explanations for FORGE gate_reason codes written to SIGNALS.gate_reason in the tester journal DB. Keys MUST match the exact string FORGE writes \u2014 verified against ea/FORGE.mq5 JournalRecordSignal calls. Do NOT guess keys; always read the EA source first.",
     "verified_against": "ea/FORGE.mq5",
     "last_verified": "2026-05-10",
-    "categories": ["Entry Quality", "RSI / ADX Floors", "MACD Gates", "H4 Filters", "Position Limits", "Session / Time", "Risk Management", "Cooldowns", "Regime", "Warmup / System"]
+    "categories": [
+      "Entry Quality",
+      "RSI / ADX Floors",
+      "MACD Gates",
+      "H4 Filters",
+      "Position Limits",
+      "Session / Time",
+      "Risk Management",
+      "Cooldowns",
+      "Regime",
+      "Warmup / System"
+    ]
   },
-
   "_patterns": {
     "warmup_*": "Wildcard: FORGE prepends 'warmup_' to an internal reason string. Any gate_reason starting with warmup_ means the EA's indicator buffers are not yet ready at the start of a backtest or live session.",
     "open_group_*": "Wildcard: FORGE tried to open a group but the broker rejected the order. The suffix indicates the reason: invalid_stops, rr_below_floor, bad_stoplimit_price, etc."
   },
-
   "no_setup": {
     "label": "No valid pattern on this bar",
-    "explanation": "Neither the BB Breakout nor the BB Bounce conditions were met. Price did not reach a Bollinger Band or show a qualifying breakout move — FORGE simply found nothing tradeable.",
+    "explanation": "Neither the BB Breakout nor the BB Bounce conditions were met. Price did not reach a Bollinger Band or show a qualifying breakout move \u2014 FORGE simply found nothing tradeable.",
     "category": "Entry Quality"
   },
   "entry_quality_direction": {
@@ -28,12 +37,12 @@
   },
   "entry_quality_body": {
     "label": "Candle body too small (indecision)",
-    "explanation": "The entry candle's body (distance from open to close) is too small relative to its full range (high to low). A small body means the market is undecided — not a clean directional move FORGE wants to trade.",
+    "explanation": "The entry candle's body (distance from open to close) is too small relative to its full range (high to low). A small body means the market is undecided \u2014 not a clean directional move FORGE wants to trade.",
     "category": "Entry Quality"
   },
   "entry_quality_atr": {
     "label": "ATR (volatility) too low at this bar",
-    "explanation": "The Average True Range — a measure of how much price moves each bar — is below the required minimum. When ATR is too small, the spread takes up too large a share of the potential profit.",
+    "explanation": "The Average True Range \u2014 a measure of how much price moves each bar \u2014 is below the required minimum. When ATR is too small, the spread takes up too large a share of the potential profit.",
     "category": "Entry Quality"
   },
   "entry_quality_atr_ext": {
@@ -42,62 +51,62 @@
     "category": "Entry Quality"
   },
   "entry_quality_bb_contraction": {
-    "label": "Bollinger Bands contracting — no momentum",
+    "label": "Bollinger Bands contracting \u2014 no momentum",
     "explanation": "The Bollinger Bands are narrowing (squeezing together). A breakout setup requires the bands to be expanding, signalling increasing volatility. Contracting bands mean the market is coiling, not breaking out.",
     "category": "Entry Quality"
   },
   "entry_quality_rsi_buy_ceil": {
-    "label": "RSI too high — overbought, do not buy",
+    "label": "RSI too high \u2014 overbought, do not buy",
     "explanation": "The RSI is above the buy ceiling (default 70). Buying when RSI is overbought risks entering right at the top of a move, just as the market is most likely to reverse downward.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_rsi_sell_floor": {
-    "label": "RSI too low — oversold, do not sell",
-    "explanation": "The RSI is below the standard sell floor (default 33). Selling into an already oversold market risks triggering a Cardwell reversal — price snapping back sharply against the sell.",
+    "label": "RSI too low \u2014 oversold, do not sell",
+    "explanation": "The RSI is below the standard sell floor (default 33). Selling into an already oversold market risks triggering a Cardwell reversal \u2014 price snapping back sharply against the sell.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_rsi_sell_adx_floor": {
-    "label": "RSI too low for sell — stricter floor because ADX is weak",
+    "label": "RSI too low for sell \u2014 stricter floor because ADX is weak",
     "explanation": "Same as entry_quality_rsi_sell_floor, but a higher (stricter) RSI floor is applied because ADX is below the threshold that defines a strong trend. In weak-trend conditions, oversold bounces are more likely, so FORGE raises the bar for entering a sell.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_rsi_rising_sell": {
-    "label": "RSI rising into sell — losing bearish momentum",
+    "label": "RSI rising into sell \u2014 losing bearish momentum",
     "explanation": "RSI is increasing on the sell signal bar. This means bearish momentum is fading even as the breakout fires. FORGE blocks the sell because the indicator trend and price direction are diverging.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_adx_min_sell": {
-    "label": "ADX too low — not enough trend for a sell breakout",
+    "label": "ADX too low \u2014 not enough trend for a sell breakout",
     "explanation": "The Average Directional Index (ADX) measures trend strength, not direction. It is below the required minimum (default 20) for a sell breakout. Without enough trend, the breakout is more likely to fail and reverse.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_adx_extreme_sell": {
-    "label": "ADX too high — trend may be overextended",
+    "label": "ADX too high \u2014 trend may be overextended",
     "explanation": "ADX has surpassed the upper threshold. An extremely high ADX often signals the trend is near exhaustion and a reversal or consolidation is near. FORGE blocks new entries when the trend has been running too long.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_adx_spike_sell": {
-    "label": "ADX spike on sell bar — momentum unreliable",
-    "explanation": "ADX jumped sharply on this specific bar. A sudden ADX spike can be caused by a news event, slippage, or a single large candle — not a genuine sustained trend. FORGE skips the entry until ADX stabilises.",
+    "label": "ADX spike on sell bar \u2014 momentum unreliable",
+    "explanation": "ADX jumped sharply on this specific bar. A sudden ADX spike can be caused by a news event, slippage, or a single large candle \u2014 not a genuine sustained trend. FORGE skips the entry until ADX stabilises.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_macd_q0_bull_rising": {
-    "label": "MACD Q0 — bullish and rising (blocks sell)",
-    "explanation": "The MACD histogram is above zero and increasing (Quadrant 0: Bull Strong). This is a bullish signal. FORGE blocks a sell breakout when MACD is pushing upward — the indicator and the trade would be pointing in opposite directions.",
+    "label": "MACD Q0 \u2014 bullish and rising (blocks sell)",
+    "explanation": "The MACD histogram is above zero and increasing (Quadrant 0: Bull Strong). This is a bullish signal. FORGE blocks a sell breakout when MACD is pushing upward \u2014 the indicator and the trade would be pointing in opposite directions.",
     "category": "MACD Gates"
   },
   "entry_quality_macd_q1_bull_fading": {
-    "label": "MACD Q1 — bullish but fading (blocks buy)",
+    "label": "MACD Q1 \u2014 bullish but fading (blocks buy)",
     "explanation": "The MACD histogram is above zero but decreasing (Quadrant 1: Bull Fading). Upward momentum is waning. FORGE uses this to block buys that are chasing a move that may be ending.",
     "category": "MACD Gates"
   },
   "entry_quality_macd_q2_bear_str": {
-    "label": "MACD Q2 — bearish and strengthening (blocks buy)",
-    "explanation": "The MACD histogram is below zero and falling (Quadrant 2: Bear Strong). Bearish momentum is accelerating. FORGE blocks a buy entry — buying into strengthening bearish momentum is high-risk.",
+    "label": "MACD Q2 \u2014 bearish and strengthening (blocks buy)",
+    "explanation": "The MACD histogram is below zero and falling (Quadrant 2: Bear Strong). Bearish momentum is accelerating. FORGE blocks a buy entry \u2014 buying into strengthening bearish momentum is high-risk.",
     "category": "MACD Gates"
   },
   "entry_quality_macd_q3_bear_fading": {
-    "label": "MACD Q3 — bearish but recovering (ambiguous — blocks both)",
+    "label": "MACD Q3 \u2014 bearish but recovering (ambiguous \u2014 blocks both)",
     "explanation": "The MACD histogram is below zero but rising (Quadrant 3: Bear Fading). The market is in a bearish-to-neutral transition. Direction is unclear, so FORGE blocks both aggressive buys and sells until MACD picks a side.",
     "category": "MACD Gates"
   },
@@ -112,62 +121,62 @@
     "category": "H4 Filters"
   },
   "entry_quality_h1_macd_sell": {
-    "label": "H1 MACD histogram still bullish — blocks sell",
+    "label": "H1 MACD histogram still bullish \u2014 blocks sell",
     "explanation": "The 1-hour MACD histogram is >= 0, meaning hourly momentum is not yet bearish. FORGE blocks the SELL until H1 momentum confirms the breakdown. Paired with entry_quality_h1_di_sell as the H1 confirmation pair. Added in 2.7.12.",
     "category": "MACD Gates"
   },
   "entry_quality_h1_macd_buy": {
-    "label": "H1 MACD histogram already bearish — blocks buy",
+    "label": "H1 MACD histogram already bearish \u2014 blocks buy",
     "explanation": "The 1-hour MACD histogram is < 0, meaning hourly momentum is stalling even though DI may say the trend is still up. Classic trend-exhaustion BUY-the-top trap. Added in 2.7.17 after Run 15 G5002 lost -$400 with H1 trend=+2.139 (max bullish DI) but H1 MACD=-2.112 (momentum gone).",
     "category": "MACD Gates"
   },
   "entry_quality_breakout_cooldown": {
-    "label": "BB_BREAKOUT same-direction cooldown — stacking onto fading momentum",
+    "label": "BB_BREAKOUT same-direction cooldown \u2014 stacking onto fading momentum",
     "explanation": "A prior BB_BREAKOUT entry in the same direction fired recently (within `same_dir_cooldown_seconds`, default 900s = 15 min). FORGE blocks consecutive same-direction breakouts to avoid the 'double-tap' failure mode where the second entry stacks onto fading momentum and stops out. Added in 2.7.17 after Run 15 G5002 lost -$400 firing 5 minutes after G5001's same-direction breakout.",
     "category": "Cooldowns"
   },
   "entry_quality_breakout_failed": {
-    "label": "Failed breakout — buying the pullback of an overextended move",
-    "explanation": "Within the last `failed_lookback_bars` (default 4 = 20 min), an `entry_quality_atr_ext` SKIP fired at a HIGHER price than the current entry candidate, AND RSI peaked >= `failed_min_peak_rsi` (default 75) in the lookback window, AND current RSI is at least `failed_min_rsi_drop` (default 3) points below that peak. This is the fake-breakout signature: market refused to sustain the high, then retraced into the band, and the EA would otherwise buy the very first bar of the reversal. Added in 2.7.19 after Run 15 G5013 lost -$1086 (5 min after G5012's win, RSI 78→74.9, atr_ext SKIP at higher price) and G5015 lost -$875 (RSI 78→60.6, two prior atr_ext SKIPs).",
+    "label": "Failed breakout \u2014 buying the pullback of an overextended move",
+    "explanation": "Within the last `failed_lookback_bars` (default 4 = 20 min), an `entry_quality_atr_ext` SKIP fired at a HIGHER price than the current entry candidate, AND RSI peaked >= `failed_min_peak_rsi` (default 75) in the lookback window, AND current RSI is at least `failed_min_rsi_drop` (default 3) points below that peak. This is the fake-breakout signature: market refused to sustain the high, then retraced into the band, and the EA would otherwise buy the very first bar of the reversal. Added in 2.7.19 after Run 15 G5013 lost -$1086 (5 min after G5012's win, RSI 78\u219274.9, atr_ext SKIP at higher price) and G5015 lost -$875 (RSI 78\u219260.6, two prior atr_ext SKIPs).",
     "category": "Structural / Breakout"
   },
   "entry_quality_breakout_failed_samebar": {
-    "label": "Same-bar wick rejection — atr_ext SKIP earlier in current M5 bar",
+    "label": "Same-bar wick rejection \u2014 atr_ext SKIP earlier in current M5 bar",
     "explanation": "An `entry_quality_atr_ext` SKIP fired earlier in the SAME M5 bar as the current entry attempt, AND the current entry price is BELOW the SKIP price. Canonical wick-rejection guard from the MQL5 Liquidity Sweep article: 'h > h1 AND c < o1 = bearish sweep'. The bar already pierced higher and is retracing; the EA would be buying into a developing fake breakout. Added in 2.7.20 after Run 15 G5018 lost -$960 (atr_ext SKIP at 4780.63, TAKEN 36 sec later at 4779.05 in same bar) and G5022 lost -$1035 (atr_ext SKIP at 4793.74, TAKEN 58 sec later at 4789.36 in same bar).",
     "category": "Structural / Breakout"
   },
   "entry_quality_psar_misalign_buy": {
-    "label": "PSAR not aligned for BUY — transitional or bearish regime",
-    "explanation": "Parabolic SAR is not in the stable BELOW state at entry. PSAR=ABOVE means bearish regime (don't BUY); PSAR=FLIP_BEAR means a bear-flip just printed (catastrophic-reversal warning); PSAR=FLIP_BULL means a bull-flip just printed (LiteFinance: 'wait for first or second dot after flip' — transitional state is unstable). Added in 2.7.20 after Run 15 G5035 lost -$1139 entering at FLIP_BEAR with H1 MACD already negative.",
+    "label": "PSAR not aligned for BUY \u2014 transitional or bearish regime",
+    "explanation": "Parabolic SAR is not in the stable BELOW state at entry. PSAR=ABOVE means bearish regime (don't BUY); PSAR=FLIP_BEAR means a bear-flip just printed (catastrophic-reversal warning); PSAR=FLIP_BULL means a bull-flip just printed (LiteFinance: 'wait for first or second dot after flip' \u2014 transitional state is unstable). Added in 2.7.20 after Run 15 G5035 lost -$1139 entering at FLIP_BEAR with H1 MACD already negative.",
     "category": "Structural / Breakout"
   },
   "entry_quality_psar_misalign_sell": {
-    "label": "PSAR not aligned for SELL — transitional or bullish regime",
+    "label": "PSAR not aligned for SELL \u2014 transitional or bullish regime",
     "explanation": "Mirror of BUY gate: PSAR must be in stable ABOVE state for SELL entries. Blocks FLIP_BULL (bull-flip just printed = warning), FLIP_BEAR (transitional), and BELOW (bullish regime).",
     "category": "Structural / Breakout"
   },
   "entry_quality_hid_bull_div_sell": {
-    "label": "Hidden bullish RSI divergence — pullback about to reverse up",
-    "explanation": "HID_BULL = price made a higher low while RSI made a lower low — the classic Cardwell signature for a downtrend pullback about to reverse upward. FORGE blocks SELL when this divergence is active. Added in 2.7.13 after the Run 11 G5008 catastrophe lost -$940 with HID_BULL active at entry.",
+    "label": "Hidden bullish RSI divergence \u2014 pullback about to reverse up",
+    "explanation": "HID_BULL = price made a higher low while RSI made a lower low \u2014 the classic Cardwell signature for a downtrend pullback about to reverse upward. FORGE blocks SELL when this divergence is active. Added in 2.7.13 after the Run 11 G5008 catastrophe lost -$940 with HID_BULL active at entry.",
     "category": "RSI / ADX Floors"
   },
   "entry_quality_h4_rsi_sell_blocked": {
-    "label": "H4 RSI already oversold — avoid new sell",
+    "label": "H4 RSI already oversold \u2014 avoid new sell",
     "explanation": "The 4-hour RSI is below its lower threshold. Selling here would be adding to a position on the 4-hour timeframe that is already deeply oversold. Higher-timeframe exhaustion increases reversal risk.",
     "category": "H4 Filters"
   },
   "entry_quality_h4_adx_sell_blocked": {
-    "label": "H4 ADX too low — no H4 trend to support sell",
+    "label": "H4 ADX too low \u2014 no H4 trend to support sell",
     "explanation": "The 4-hour ADX is below the minimum required to confirm a sell on the higher timeframe. Without H4 trend alignment, an M5 breakout sell may be fighting against a ranging 4-hour market.",
     "category": "H4 Filters"
   },
   "entry_quality_h4_rsi_buy_blocked": {
-    "label": "H4 RSI already overbought — avoid new buy",
-    "explanation": "The 4-hour RSI is above its upper threshold. Buying here risks chasing an extended 4-hour move that is already overbought — a correction or reversal is more likely than continuation.",
+    "label": "H4 RSI already overbought \u2014 avoid new buy",
+    "explanation": "The 4-hour RSI is above its upper threshold. Buying here risks chasing an extended 4-hour move that is already overbought \u2014 a correction or reversal is more likely than continuation.",
     "category": "H4 Filters"
   },
   "entry_quality_h4_adx_buy_blocked": {
-    "label": "H4 ADX too low — no H4 trend to support buy",
+    "label": "H4 ADX too low \u2014 no H4 trend to support buy",
     "explanation": "The 4-hour ADX does not confirm a bullish trend. An M5 buy breakout without H4 trend support is more likely to be a false breakout in a choppy 4-hour range.",
     "category": "H4 Filters"
   },
@@ -177,29 +186,39 @@
     "category": "H4 Filters"
   },
   "entry_quality_session_sell_cutoff": {
-    "label": "Sell cutoff time — no new sells after this hour",
+    "label": "Sell cutoff time \u2014 no new sells after this hour",
     "explanation": "New sell entries are blocked after a configurable hour (default NY 17:00 UTC, London 00:00 UTC). Holds avoid holding new short positions through thin overnight markets with unpredictable gaps.",
     "category": "Session / Time"
   },
   "entry_quality_chop_block_sell": {
-    "label": "Chop block — SELL rejected in RANGE regime (v2.7.38 BLOCK_SELL_IN_CHOP composite)",
-    "explanation": "BLOCK_SELL_IN_CHOP composite fired: g_regime_label='RANGE' AND h1_trend_strength>0.5 (gold retraces UP in chop — chop-SELL has historically high loss-rate). Applies to BB_BREAKOUT/BB_BOUNCE/BB_PULLBACK_SCALP SELL chains. MOMENTUM_DUMP SELL has its own dump_chop_block.",
+    "label": "Chop block \u2014 SELL rejected in RANGE regime (v2.7.38 BLOCK_SELL_IN_CHOP composite)",
+    "explanation": "BLOCK_SELL_IN_CHOP composite fired: g_regime_label='RANGE' AND h1_trend_strength>0.5 (gold retraces UP in chop \u2014 chop-SELL has historically high loss-rate). Applies to BB_BREAKOUT/BB_BOUNCE/BB_PULLBACK_SCALP SELL chains. MOMENTUM_DUMP SELL has its own dump_chop_block.",
     "category": "Composite / Regime"
   },
   "entry_quality_intraday_reversal_buy_block": {
-    "label": "Intraday reversal — ALL BUY setups blocked (v2.7.38 INTRADAY_REVERSAL_TO_SELL_V3 composite)",
-    "explanation": "INTRADAY_REVERSAL_TO_SELL_V3 composite fired: h1_trend_strength≥0.3 (macro WAS bull) AND M5 declining 30min AND 60min cascade AND m5_rsi≤40 AND (HID_BEAR | REG_BEAR | below BB mid) AND price<vwap AND m5_lh_cascade. When TRUE: all BUY entries blocked; MOMENTUM_DUMP SELL lot amplified by intraday_reversal_sell_lot_mult. Validated: Apr 2 09:00 crash, Apr 8 12:00 pivot.",
+    "label": "Intraday reversal \u2014 ALL BUY setups blocked (v2.7.38 INTRADAY_REVERSAL_TO_SELL_V3 composite)",
+    "explanation": "INTRADAY_REVERSAL_TO_SELL_V3 composite fired: h1_trend_strength\u22650.3 (macro WAS bull) AND M5 declining 30min AND 60min cascade AND m5_rsi\u226440 AND (HID_BEAR | REG_BEAR | below BB mid) AND price<vwap AND m5_lh_cascade. When TRUE: all BUY entries blocked; MOMENTUM_DUMP SELL lot amplified by intraday_reversal_sell_lot_mult. Validated: Apr 2 09:00 crash, Apr 8 12:00 pivot.",
     "category": "Composite / Intraday Reversal"
   },
   "entry_quality_news_filter": {
-    "label": "News blackout — high-impact event imminent or recent",
-    "explanation": "A high-impact economic event (e.g. Non-Farm Payrolls, CPI, FOMC) is within the blackout window. FORGE blocks new entries entirely around these events — volatility spikes make entries unpredictable and stops unreliable.",
+    "label": "News blackout \u2014 high-impact event imminent or recent",
+    "explanation": "A high-impact economic event (e.g. Non-Farm Payrolls, CPI, FOMC) is within the blackout window. FORGE blocks new entries entirely around these events \u2014 volatility spikes make entries unpredictable and stops unreliable.",
     "category": "Risk Management"
   },
   "entry_quality_news_rsi_tighten": {
-    "label": "Near news event — entry criteria tightened",
+    "label": "Near news event \u2014 entry criteria tightened",
     "explanation": "A medium-impact news event is approaching. Entries are not fully blocked but FORGE requires a tighter RSI range before allowing the trade. This signal failed the stricter criteria.",
     "category": "Risk Management"
+  },
+  "bb_breakout_buy_below_band": {
+    "label": "BB_BREAKOUT BUY blocked \u2014 price has retraced back below BB upper at entry tick",
+    "explanation": "The prior bar closed above the Bollinger upper band (breakout trigger), but by the entry tick price has fallen back to or below the band. This is the failed-breakout retest pattern (Run 7 G5006: -$1,793 loss). v2.7.93 anti-retest gate requires (mid-bb_upper)/atr >= bb_breakout_min_breakout_atr_mult.",
+    "category": "Breakout Quality"
+  },
+  "bb_breakout_sell_above_band": {
+    "label": "BB_BREAKOUT SELL blocked \u2014 price has retraced back above BB lower at entry tick",
+    "explanation": "Mirror of bb_breakout_buy_below_band. The prior bar closed below the Bollinger lower band, but by the entry tick price has risen back to or above the band. Failed breakdown retest pattern. v2.7.93 anti-retest gate requires (bb_lower-mid)/atr >= bb_breakout_min_breakdown_atr_mult.",
+    "category": "Breakout Quality"
   },
   "open_groups": {
     "label": "Maximum concurrent positions reached",
@@ -213,7 +232,7 @@
   },
   "session_off": {
     "label": "Outside trading session",
-    "explanation": "The current bar is outside the allowed trading hours. By default FORGE trades London and New York sessions only — the Asian session is excluded due to thin liquidity and unpredictable price action.",
+    "explanation": "The current bar is outside the allowed trading hours. By default FORGE trades London and New York sessions only \u2014 the Asian session is excluded due to thin liquidity and unpredictable price action.",
     "category": "Session / Time"
   },
   "killzone_trade_cap": {
@@ -227,42 +246,42 @@
     "category": "Session / Time"
   },
   "kz_warmup": {
-    "label": "Killzone warmup — waiting for opening volatility to settle",
+    "label": "Killzone warmup \u2014 waiting for opening volatility to settle",
     "explanation": "ALL entries blocked because the current killzone is within its first FORGE_GATE_KZ_WARMUP_MIN minutes (default 0=disabled, 15 typical). The opening minutes of a session commonly produce wide spreads and violent wicks that clear liquidity before the real move begins (stop-hunt risk). Once minutes_into_kz reaches the threshold, trading resumes normally.",
     "category": "Session / Time"
   },
   "spread": {
-    "label": "Spread too wide — entry too expensive",
-    "explanation": "The bid-ask spread at this moment exceeds the configured maximum (default 30 points for XAUUSD). A wide spread makes the entry uneconomical — the cost to enter is too large relative to the expected profit.",
+    "label": "Spread too wide \u2014 entry too expensive",
+    "explanation": "The bid-ask spread at this moment exceeds the configured maximum (default 30 points for XAUUSD). A wide spread makes the entry uneconomical \u2014 the cost to enter is too large relative to the expected profit.",
     "category": "Market Conditions"
   },
   "rr_too_low": {
     "label": "Risk:Reward ratio below minimum",
-    "explanation": "The distance from the entry price to TP1 is not large enough compared to the stop-loss distance. FORGE requires a minimum R:R ratio (default 1.5×) to ensure the potential reward justifies the risk on every trade.",
+    "explanation": "The distance from the entry price to TP1 is not large enough compared to the stop-loss distance. FORGE requires a minimum R:R ratio (default 1.5\u00d7) to ensure the potential reward justifies the risk on every trade.",
     "category": "Risk Management"
   },
   "cooldown": {
-    "label": "Post-loss cooldown — waiting before re-entry",
+    "label": "Post-loss cooldown \u2014 waiting before re-entry",
     "explanation": "A trade recently hit its stop-loss. FORGE enforces a cooldown period (default 90 seconds) before allowing any new entry. This prevents immediately re-entering a losing trade in the same adverse conditions.",
     "category": "Cooldowns"
   },
   "post_sl_cooldown": {
-    "label": "Extended cooldown after stop-loss — sell side",
+    "label": "Extended cooldown after stop-loss \u2014 sell side",
     "explanation": "A sell group recently hit its stop-loss. An extended cooldown (default 3600 seconds = 1 hour) blocks new sells. This is a stricter version of the general cooldown applied specifically when a sell trade was stopped out.",
     "category": "Cooldowns"
   },
   "direction_cooldown": {
-    "label": "Same-direction cooldown — too soon after last entry",
+    "label": "Same-direction cooldown \u2014 too soon after last entry",
     "explanation": "A trade in the same direction (SELL or BUY) was opened very recently. A short bar-count cooldown is enforced to prevent stacking entries in rapid succession before the first position has had time to develop.",
     "category": "Cooldowns"
   },
   "m1": {
-    "label": "M1 microstructure gate — short-term noise",
+    "label": "M1 microstructure gate \u2014 short-term noise",
     "explanation": "A 1-minute timeframe filter rejected the entry. Even when the M5 setup looks clean, this gate can detect that price action on the 1-minute chart is too choppy or counter-trend to justify the entry at that exact moment.",
     "category": "Entry Quality"
   },
   "regime_countertrend": {
-    "label": "Regime engine — trading against the macro trend",
+    "label": "Regime engine \u2014 trading against the macro trend",
     "explanation": "The AURUM Regime Engine has classified the current market state (e.g. TREND_BEAR) and the proposed entry would trade against it. FORGE can be configured to block or reduce size on counter-trend signals when regime confidence is high.",
     "category": "Regime"
   },
@@ -272,233 +291,338 @@
     "category": "Warmup / System"
   },
   "warmup_tester_m5_rollovers": {
-    "label": "Backtest warmup — waiting for M5 bars to accumulate",
+    "label": "Backtest warmup \u2014 waiting for M5 bars to accumulate",
     "explanation": "At the very start of a Strategy Tester backtest, the M5 indicator buffers (RSI, Bollinger Bands, ATR, ADX) do not have enough historical bars to produce reliable values. FORGE discards these early signals to avoid trades based on incomplete indicator data.",
     "category": "Warmup / System"
   },
   "warmup_m5_bars": {
-    "label": "Warmup — not enough M5 bar history",
+    "label": "Warmup \u2014 not enough M5 bar history",
     "explanation": "The M5 timeframe does not yet have enough bars loaded for the indicators to calculate. Typically seen at the start of a session or after a terminal restart.",
     "category": "Warmup / System"
   },
   "warmup_m15_bars": {
-    "label": "Warmup — not enough M15 bar history",
+    "label": "Warmup \u2014 not enough M15 bar history",
     "explanation": "The M15 (15-minute) timeframe does not yet have enough bars for the confirmation indicators. FORGE requires history across multiple timeframes before trading.",
     "category": "Warmup / System"
   },
   "warmup_h1_bars": {
-    "label": "Warmup — not enough H1 bar history",
+    "label": "Warmup \u2014 not enough H1 bar history",
     "explanation": "The H1 (1-hour) trend timeframe does not yet have enough bars. H1 trend strength is required for entry decisions, so FORGE waits until enough hourly bars are available.",
     "category": "Warmup / System"
   },
   "warmup_h4_bars": {
-    "label": "Warmup — not enough H4 bar history",
+    "label": "Warmup \u2014 not enough H4 bar history",
     "explanation": "The H4 (4-hour) timeframe does not have enough bars. H4 RSI and ADX gates require H4 history to compute.",
     "category": "Warmup / System"
   },
   "open_group_rr_below_floor": {
-    "label": "Order rejected — R:R below the hard floor",
+    "label": "Order rejected \u2014 R:R below the hard floor",
     "explanation": "After stop calculations, the actual risk:reward ratio of the order fell below the hard floor (a stricter minimum than the pre-check). Broker price or spread moved between the signal and the order placement, making the trade unviable.",
     "category": "Warmup / System"
   },
   "open_group_invalid_stops": {
-    "label": "Order rejected — invalid stop levels",
+    "label": "Order rejected \u2014 invalid stop levels",
     "explanation": "The broker rejected the order because the stop-loss or take-profit price violated the broker's minimum stop distance rule. This can happen during fast markets when prices move between FORGE calculating the stops and sending the order.",
     "category": "Warmup / System"
   },
   "entry_quality_daily_bear_block_buy": {
-    "label": "Daily bias bearish — BUY blocked",
-    "explanation": "FORGE's D1 SMA slope is negative beyond the configured threshold (daily_slope_block_atr × daily_ATR), indicating a multi-day rollover. BUY entries are blocked while this bias holds. Run 17 G5048 BUY @ 4822.65 lost $1,666 because no gate saw the Apr 14 4841 -> Apr 16 4810 rollover; this is the v2.7.27 fix.",
+    "label": "Daily bias bearish \u2014 BUY blocked",
+    "explanation": "FORGE's D1 SMA slope is negative beyond the configured threshold (daily_slope_block_atr \u00d7 daily_ATR), indicating a multi-day rollover. BUY entries are blocked while this bias holds. Run 17 G5048 BUY @ 4822.65 lost $1,666 because no gate saw the Apr 14 4841 -> Apr 16 4810 rollover; this is the v2.7.27 fix.",
     "category": "Regime"
   },
   "entry_quality_daily_bull_block_sell": {
-    "label": "Daily bias bullish — SELL blocked",
-    "explanation": "FORGE's D1 SMA slope is positive beyond the configured threshold (daily_slope_block_atr × daily_ATR), indicating a multi-day rip. SELL entries are blocked while this bias holds. Mirror of the BUY-block; prevents selling into a sustained upward trend.",
+    "label": "Daily bias bullish \u2014 SELL blocked",
+    "explanation": "FORGE's D1 SMA slope is positive beyond the configured threshold (daily_slope_block_atr \u00d7 daily_ATR), indicating a multi-day rip. SELL entries are blocked while this bias holds. Mirror of the BUY-block; prevents selling into a sustained upward trend.",
     "category": "Regime"
   },
   "dump_rsi_block": {
-    "label": "Dump-catch — RSI outside bound",
-    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired (M5 impulse > atr_mult × ATR over lookback bars) but the M5 RSI was outside the dump_max_rsi bound (SELL requires RSI < max; BUY requires RSI > 100−max). Prevents fading exhaustion moves.",
+    "label": "Dump-catch \u2014 RSI outside bound",
+    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired (M5 impulse > atr_mult \u00d7 ATR over lookback bars) but the M5 RSI was outside the dump_max_rsi bound (SELL requires RSI < max; BUY requires RSI > 100\u2212max). Prevents fading exhaustion moves.",
     "category": "Entry Quality"
   },
   "dump_rsi_buy_ceil": {
-    "label": "Dump-catch BUY — RSI overbought ceiling",
-    "explanation": "v2.7.34 MOMENTUM_DUMP BUY trigger fired but M5 RSI is at or above dump_max_rsi_buy (default 70). At RSI ≥ 70 the up-move is wave-exhausted and likely to retrace down — the same chop-retrace principle as the SELL-side dump_max_rsi, inverted. Run 20 G5009 (RSI 72.2 BUY → −$305 in 10-leg cascade) is the canonical case this gate prevents.",
+    "label": "Dump-catch BUY \u2014 RSI overbought ceiling",
+    "explanation": "v2.7.34 MOMENTUM_DUMP BUY trigger fired but M5 RSI is at or above dump_max_rsi_buy (default 70). At RSI \u2265 70 the up-move is wave-exhausted and likely to retrace down \u2014 the same chop-retrace principle as the SELL-side dump_max_rsi, inverted. Run 20 G5009 (RSI 72.2 BUY \u2192 \u2212$305 in 10-leg cascade) is the canonical case this gate prevents.",
     "category": "Entry Quality"
   },
   "dump_h1_trend_block_sell": {
-    "label": "Dump-catch SELL — h1_trend too bullish (counter-trend block)",
-    "explanation": "v2.7.35 MOMENTUM_DUMP SELL trigger fired but H1 trend strength is at or above dump_sell_h1_max (default 2.0 when enabled). At very strong H1 bullish bias, counter-trend SELLs into a bull rally have negative expectancy. Run 23 G5004 (h1=2.06 -$19), G5008 (h1=2.27 -$47), G5020 (h1=1.05 -$21) — equivalent winners at similar h1_trend banked only $3-5 each. Net trade-off strongly positive.",
+    "label": "Dump-catch SELL \u2014 h1_trend too bullish (counter-trend block)",
+    "explanation": "v2.7.35 MOMENTUM_DUMP SELL trigger fired but H1 trend strength is at or above dump_sell_h1_max (default 2.0 when enabled). At very strong H1 bullish bias, counter-trend SELLs into a bull rally have negative expectancy. Run 23 G5004 (h1=2.06 -$19), G5008 (h1=2.27 -$47), G5020 (h1=1.05 -$21) \u2014 equivalent winners at similar h1_trend banked only $3-5 each. Net trade-off strongly positive.",
     "category": "Entry Quality"
   },
   "dump_rsi_floor_sell": {
-    "label": "Dump-catch SELL — RSI floor (deep oversold protection)",
-    "explanation": "v2.7.55 MOMENTUM_DUMP SELL blocked because m5_rsi ≤ dump_sell_min_rsi (default 30). Prevents selling INTO deep oversold where mean-reversion buyers wait — gold's standard-deviation oversold zone. Run 26 G5003 Mar 31 12:40 (RSI 32.4 SELL) was the canonical fail case this gate now blocks.",
+    "label": "Dump-catch SELL \u2014 RSI floor (deep oversold protection)",
+    "explanation": "v2.7.55 MOMENTUM_DUMP SELL blocked because m5_rsi \u2264 dump_sell_min_rsi (default 30). Prevents selling INTO deep oversold where mean-reversion buyers wait \u2014 gold's standard-deviation oversold zone. Run 26 G5003 Mar 31 12:40 (RSI 32.4 SELL) was the canonical fail case this gate now blocks.",
     "category": "Entry Quality"
   },
   "dump_below_bbl_block_sell": {
-    "label": "Dump-catch SELL — price below BB lower band (conjoint with RSI ≤ 35)",
-    "explanation": "v2.7.55 + v2.7.55.1 MOMENTUM_DUMP SELL blocked because price < m5_bb_l AND m5_rsi ≤ dump_below_bbl_block_max_rsi (default 35). Mean-reversion zone protection — gold reverts UP from below BB lower band. Pairs with new BB_LOWER_REVERSION_BUY setup (same condition triggers BUY entry). Conjoint RSI gate (v2.7.55.1) preserves G5001/G5002 continuation-dump winners (RSI 38-40) while blocking G5003-style entries (RSI ≤ 35).",
+    "label": "Dump-catch SELL \u2014 price below BB lower band (conjoint with RSI \u2264 35)",
+    "explanation": "v2.7.55 + v2.7.55.1 MOMENTUM_DUMP SELL blocked because price < m5_bb_l AND m5_rsi \u2264 dump_below_bbl_block_max_rsi (default 35). Mean-reversion zone protection \u2014 gold reverts UP from below BB lower band. Pairs with new BB_LOWER_REVERSION_BUY setup (same condition triggers BUY entry). Conjoint RSI gate (v2.7.55.1) preserves G5001/G5002 continuation-dump winners (RSI 38-40) while blocking G5003-style entries (RSI \u2264 35).",
     "category": "Entry Quality"
   },
   "dump_adx_block": {
-    "label": "Dump-catch — ADX below minimum",
+    "label": "Dump-catch \u2014 ADX below minimum",
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but M5 ADX was below dump_min_adx. Filters whipsaw spikes that lack trend confirmation.",
     "category": "Entry Quality"
   },
   "dump_psar_block": {
-    "label": "Dump-catch — PSAR misaligned",
+    "label": "Dump-catch \u2014 PSAR misaligned",
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but PSAR was on the wrong side of price (SELL requires PSAR ABOVE, BUY requires PSAR BELOW). Structural confirmation gate.",
     "category": "Entry Quality"
   },
   "dump_d1_bias_block": {
-    "label": "Dump-catch — daily bias disagrees",
+    "label": "Dump-catch \u2014 daily bias disagrees",
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but the v2.7.27 daily direction gate did not confirm the same bias (SELL requires d1_bear_bias, BUY requires d1_bull_bias). Prevents counter-daily momentum entries.",
     "category": "Regime"
   },
   "dump_cooldown": {
-    "label": "Dump-catch — cooldown active",
+    "label": "Dump-catch \u2014 cooldown active",
     "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired within dump_cooldown_seconds of a prior dump entry in the same direction. Prevents serial entries on a single multi-bar impulse.",
     "category": "Cooldowns"
   },
   "dump_chop_block": {
-    "label": "Dump-catch — RANGE regime chop filter",
-    "explanation": "v2.7.32 MOMENTUM_DUMP blocked because regime_label='RANGE' — chop/whipsaw zone where dump-catch SLs get wicked out on noise. Run 20 Mar 31 showed 4/7 RANGE-regime dumps lost on this pattern. Allow only TREND_BULL/TREND_BEAR/VOLATILE.",
+    "label": "Dump-catch \u2014 RANGE regime chop filter",
+    "explanation": "v2.7.32 MOMENTUM_DUMP blocked because regime_label='RANGE' \u2014 chop/whipsaw zone where dump-catch SLs get wicked out on noise. Run 20 Mar 31 showed 4/7 RANGE-regime dumps lost on this pattern. Allow only TREND_BULL/TREND_BEAR/VOLATILE.",
     "category": "Setup gates"
   },
   "dump_bar_confirm_missing": {
-    "label": "Dump-catch — prior bar direction confirmation missing (Option B, default OFF)",
+    "label": "Dump-catch \u2014 prior bar direction confirmation missing (Option B, default OFF)",
     "explanation": "v2.7.32 Option B: MOMENTUM_DUMP trigger fired but the immediately prior closed bar (bar 1) did NOT move in trade direction vs bar 2. Filters single-wick triggers in chop. Default OFF via FORGE_DUMP_REQUIRE_BAR_CONFIRM=0. Run 20 analysis showed 16 of 24 BUY losses were IMMEDIATE-SL direction failures that this gate would filter.",
     "category": "Setup gates"
   },
   "ma_crossover_adx_below_min": {
-    "label": "MA crossover — M5 ADX below floor",
-    "explanation": "v2.7.42 MA_CROSSOVER trigger fired (EMA20×EMA50 sign-flip on M5) but m5_adx is below atom.ma_crossover_adx_min (default 20). Crossovers in low-ADX chop produce false signals; gate blocks until trend strength qualifies.",
+    "label": "MA crossover \u2014 M5 ADX below floor",
+    "explanation": "v2.7.42 MA_CROSSOVER trigger fired (EMA20\u00d7EMA50 sign-flip on M5) but m5_adx is below atom.ma_crossover_adx_min (default 20). Crossovers in low-ADX chop produce false signals; gate blocks until trend strength qualifies.",
     "category": "Setup gates"
   },
   "ma_crossover_m15_misalign": {
-    "label": "MA crossover — M15 trend disagreement",
-    "explanation": "v2.7.42 MA_CROSSOVER trigger fired but the M15 trend direction (m15_ok_buy/m15_ok_sell) disagrees with the crossover direction. Multi-timeframe confluence guard — blocks counter-trend crossovers.",
+    "label": "MA crossover \u2014 M15 trend disagreement",
+    "explanation": "v2.7.42 MA_CROSSOVER trigger fired but the M15 trend direction (m15_ok_buy/m15_ok_sell) disagrees with the crossover direction. Multi-timeframe confluence guard \u2014 blocks counter-trend crossovers.",
     "category": "Setup gates"
   },
   "ma_crossover_cooldown": {
-    "label": "MA crossover — cooldown active",
+    "label": "MA crossover \u2014 cooldown active",
     "explanation": "v2.7.42 MA_CROSSOVER trigger fired within timing.ma_crossover_cooldown_seconds (default 600) of a prior MA_CROSSOVER entry in the same direction. Bypassed when last group won TP1 in regime-aligned direction with M5 ADX confirmation (v2.7.41 bypass mechanism).",
     "category": "Cooldowns"
   },
   "vwap_reversion_cooldown": {
-    "label": "VWAP reversion — cooldown active",
-    "explanation": "v2.7.42 VWAP_REVERSION pullback trigger fired (price retraced to VWAP after ≥N M5 bars of extension in the H1-trend direction) within timing.vwap_reversion_cooldown_seconds (default 600) of a prior VWAP_REVERSION entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
+    "label": "VWAP reversion \u2014 cooldown active",
+    "explanation": "v2.7.42 VWAP_REVERSION pullback trigger fired (price retraced to VWAP after \u2265N M5 bars of extension in the H1-trend direction) within timing.vwap_reversion_cooldown_seconds (default 600) of a prior VWAP_REVERSION entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
   },
   "fib_confluence_cooldown": {
-    "label": "Fib confluence — cooldown active",
-    "explanation": "v2.7.42 FIB_CONFLUENCE trigger fired (price retraced to fib 38.2/50/61.8 of recent swing with ≥atom.fib_confluence_min_confluences reference overlaps from EMA20/EMA50/VWAP) within timing.fib_confluence_cooldown_seconds (default 600) of a prior FIB_CONFLUENCE entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
+    "label": "Fib confluence \u2014 cooldown active",
+    "explanation": "v2.7.42 FIB_CONFLUENCE trigger fired (price retraced to fib 38.2/50/61.8 of recent swing with \u2265atom.fib_confluence_min_confluences reference overlaps from EMA20/EMA50/VWAP) within timing.fib_confluence_cooldown_seconds (default 600) of a prior FIB_CONFLUENCE entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
   },
   "inside_bar_adx_below_min": {
-    "label": "Inside bar — M5 ADX below floor",
-    "explanation": "v2.7.42 INSIDE_BAR pattern detected (bar[1] fully inside bar[2], outer ≥ min_outer_atr × ATR) and current price broke beyond bar[1] extremes, but m5_adx is below atom.inside_bar_adx_min (default 20). Inside-bar breakouts in low-ADX chop produce false signals.",
+    "label": "Inside bar \u2014 M5 ADX below floor",
+    "explanation": "v2.7.42 INSIDE_BAR pattern detected (bar[1] fully inside bar[2], outer \u2265 min_outer_atr \u00d7 ATR) and current price broke beyond bar[1] extremes, but m5_adx is below atom.inside_bar_adx_min (default 20). Inside-bar breakouts in low-ADX chop produce false signals.",
     "category": "Setup gates"
   },
   "inside_bar_cooldown": {
-    "label": "Inside bar — cooldown active",
+    "label": "Inside bar \u2014 cooldown active",
     "explanation": "v2.7.42 INSIDE_BAR trigger fired within timing.inside_bar_cooldown_seconds (default 600) of a prior INSIDE_BAR entry in the same direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
   },
   "bb_squeeze_adx_below_min": {
-    "label": "BB squeeze — M5 ADX below floor",
+    "label": "BB squeeze \u2014 M5 ADX below floor",
     "explanation": "v2.7.42 BB_SQUEEZE detected (bandwidth in lowest pctile_threshold % of last lookback_bars) and band breakout fired, but m5_adx is below atom.bb_squeeze_adx_min (default 15). Note this floor is intentionally lower than other setups since the squeeze itself is a pre-condition.",
     "category": "Setup gates"
   },
   "bb_squeeze_cooldown": {
-    "label": "BB squeeze — cooldown active",
+    "label": "BB squeeze \u2014 cooldown active",
     "explanation": "v2.7.42 BB_SQUEEZE trigger fired within timing.bb_squeeze_cooldown_seconds (default 900) of a prior BB_SQUEEZE entry in the same direction. Squeezes are rare, so cooldown is longer than the 600s baseline. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
   },
   "orb_adx_below_min": {
-    "label": "ORB — M5 ADX below floor",
-    "explanation": "v2.7.42 ORB (Opening Range Breakout) trigger fired — price broke beyond the locked NY-local window range — but m5_adx is below atom.orb_adx_min (default 15). Low-ADX ORBs are likely to fail follow-through.",
+    "label": "ORB \u2014 M5 ADX below floor",
+    "explanation": "v2.7.42 ORB (Opening Range Breakout) trigger fired \u2014 price broke beyond the locked NY-local window range \u2014 but m5_adx is below atom.orb_adx_min (default 15). Low-ADX ORBs are likely to fail follow-through.",
     "category": "Setup gates"
   },
   "orb_cooldown": {
-    "label": "ORB — cooldown active",
+    "label": "ORB \u2014 cooldown active",
     "explanation": "v2.7.42 ORB breakout fired within timing.orb_cooldown_seconds (default 1800) of a prior ORB entry in the same direction. Default 1800s allows at most ~2 ORB entries per day per direction. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
   },
   "gap_and_go_cooldown": {
-    "label": "Gap-and-Go — cooldown active",
-    "explanation": "v2.7.42 GAP_AND_GO trigger fired (bar-time-skip ≥ min_time_skip_seconds + price gap in [min_gap_atr, max_gap_atr]) within timing.gap_and_go_cooldown_seconds (default 14400 = 4h) of a prior GAP_AND_GO entry. Long cooldown enforces single-fire per gap event.",
+    "label": "Gap-and-Go \u2014 cooldown active",
+    "explanation": "v2.7.42 GAP_AND_GO trigger fired (bar-time-skip \u2265 min_time_skip_seconds + price gap in [min_gap_atr, max_gap_atr]) within timing.gap_and_go_cooldown_seconds (default 14400 = 4h) of a prior GAP_AND_GO entry. Long cooldown enforces single-fire per gap event.",
     "category": "Cooldowns"
   },
   "double_top_adx_below_min": {
-    "label": "Double Top — M5 ADX below floor",
-    "explanation": "v2.7.42 DOUBLE_TOP pattern matched (two recent swing highs within peak_tolerance_atr × ATR + intermediate swing low with min_neckline_drop_atr × ATR drop + price below neckline) but m5_adx is below atom.double_pattern_adx_min (default 15). Low-ADX reversal entries fail follow-through.",
+    "label": "Double Top \u2014 M5 ADX below floor",
+    "explanation": "v2.7.42 DOUBLE_TOP pattern matched (two recent swing highs within peak_tolerance_atr \u00d7 ATR + intermediate swing low with min_neckline_drop_atr \u00d7 ATR drop + price below neckline) but m5_adx is below atom.double_pattern_adx_min (default 15). Low-ADX reversal entries fail follow-through.",
     "category": "Setup gates"
   },
   "double_top_cooldown": {
-    "label": "Double Top — cooldown active",
+    "label": "Double Top \u2014 cooldown active",
     "explanation": "v2.7.42 DOUBLE_TOP fired within timing.double_pattern_cooldown_seconds (default 1200) of a prior DOUBLE_TOP entry. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
   },
   "double_bottom_adx_below_min": {
-    "label": "Double Bottom — M5 ADX below floor",
+    "label": "Double Bottom \u2014 M5 ADX below floor",
     "explanation": "v2.7.42 DOUBLE_BOTTOM pattern matched (mirror of DOUBLE_TOP: two recent swing lows + intermediate ridge + price above ridge) but m5_adx is below atom.double_pattern_adx_min (default 15).",
     "category": "Setup gates"
   },
   "double_bottom_cooldown": {
-    "label": "Double Bottom — cooldown active",
+    "label": "Double Bottom \u2014 cooldown active",
     "explanation": "v2.7.42 DOUBLE_BOTTOM fired within timing.double_pattern_cooldown_seconds (default 1200) of a prior DOUBLE_BOTTOM entry. Bypassed via v2.7.41 cooldown_bypass_on_tp_with_trend.",
     "category": "Cooldowns"
   },
   "head_and_shoulders_adx_below_min": {
-    "label": "Head & Shoulders — M5 ADX below floor",
+    "label": "Head & Shoulders \u2014 M5 ADX below floor",
     "explanation": "v2.7.42 HEAD_AND_SHOULDERS pattern matched (3 swing highs: shoulder/head/shoulder with head prominence + 2-swing-low neckline + price below neckline) but m5_adx is below atom.hs_adx_min (default 15).",
     "category": "Setup gates"
   },
   "head_and_shoulders_cooldown": {
-    "label": "Head & Shoulders — cooldown active",
+    "label": "Head & Shoulders \u2014 cooldown active",
     "explanation": "v2.7.42 HEAD_AND_SHOULDERS fired within timing.hs_cooldown_seconds (default 1200) of prior entry.",
     "category": "Cooldowns"
   },
   "inverse_head_and_shoulders_adx_below_min": {
-    "label": "Inverse Head & Shoulders — M5 ADX below floor",
+    "label": "Inverse Head & Shoulders \u2014 M5 ADX below floor",
     "explanation": "v2.7.42 INVERSE_HEAD_AND_SHOULDERS matched (mirror of H&S: 3 swing lows with head being lowest + 2-swing-high neckline + price above neckline) but ADX below atom.hs_adx_min.",
     "category": "Setup gates"
   },
   "inverse_head_and_shoulders_cooldown": {
-    "label": "Inverse Head & Shoulders — cooldown active",
+    "label": "Inverse Head & Shoulders \u2014 cooldown active",
     "explanation": "v2.7.42 INVERSE_HEAD_AND_SHOULDERS fired within timing.hs_cooldown_seconds of prior entry.",
     "category": "Cooldowns"
   },
   "flag_pennant_adx_below_min": {
-    "label": "Flag/Pennant — M5 ADX below floor",
+    "label": "Flag/Pennant \u2014 M5 ADX below floor",
     "explanation": "v2.7.42 FLAG_PENNANT pattern matched (impulse + consolidation + breakout) but m5_adx is below atom.flag_pennant_adx_min (default 15).",
     "category": "Setup gates"
   },
   "flag_pennant_cooldown": {
-    "label": "Flag/Pennant — cooldown active",
+    "label": "Flag/Pennant \u2014 cooldown active",
     "explanation": "v2.7.42 FLAG_PENNANT fired within timing.flag_pennant_cooldown_seconds (default 1200) of prior entry.",
     "category": "Cooldowns"
   },
   "trendline_bounce_adx_below_min": {
-    "label": "Trendline bounce — M5 ADX below floor",
+    "label": "Trendline bounce \u2014 M5 ADX below floor",
     "explanation": "v2.7.42 TRENDLINE_BOUNCE matched (line fit through 2 same-direction swings + touch within tolerance + bar rejection) but m5_adx is below atom.trendline_adx_min (default 15).",
     "category": "Setup gates"
   },
   "trendline_bounce_cooldown": {
-    "label": "Trendline bounce — cooldown active",
+    "label": "Trendline bounce \u2014 cooldown active",
     "explanation": "v2.7.42 TRENDLINE_BOUNCE fired within timing.trendline_bounce_cooldown_seconds (default 1200) of prior entry.",
     "category": "Cooldowns"
   },
   "sr_flip_adx_below_min": {
-    "label": "S/R flip — M5 ADX below floor",
+    "label": "S/R flip \u2014 M5 ADX below floor",
     "explanation": "v2.7.42 SR_FLIP matched (broken level retests as opposite role + bar rejection) but m5_adx is below atom.sr_flip_adx_min (default 15).",
     "category": "Setup gates"
   },
   "sr_flip_cooldown": {
-    "label": "S/R flip — cooldown active",
+    "label": "S/R flip \u2014 cooldown active",
     "explanation": "v2.7.42 SR_FLIP fired within timing.sr_flip_cooldown_seconds (default 1200) of prior entry.",
     "category": "Cooldowns"
+  },
+  "blr_buy_bearish_bos_block": {
+    "label": "BB_LOWER_REVERSION_BUY blocked \u2014 bearish BOS",
+    "explanation": "BLR_BUY was blocked because g_eval_bos_direction == -1 (M5 closed below the last swing low within the 30-bar SMC lookback window). Buying into a confirmed break-of-structure downward is catching a falling knife. v2.7.69 ICT-aware gate. Disable via FORGE_GATE_BLR_BUY_BLOCK_ON_BEARISH_BOS=0.",
+    "category": "Setup-specific / ICT structure"
+  },
+  "blr_buy_falling_velocity_block": {
+    "label": "BB_LOWER_REVERSION_BUY blocked \u2014 accelerating fall",
+    "explanation": "BLR_BUY was blocked because signed velocity_5bar ((close[0]-close[5])/ATR) was \u2264 FORGE_GATE_BLR_BUY_MIN_VELOCITY_5BAR_SIGNED (default -1.0). Price has dropped \u22651\u00d7ATR in last 5 M5 bars AND is still moving down. Run 29 G5032 had velocity \u2248 -2.0\u00d7ATR and lost -$2,166 over 52min as the pyramid grew into the fall. v2.7.69. v2.7.80 adds a capitulation override (3-of-5 atoms: RSI\u226428 + BB_l pierce + drop\u22651.5\u00d7ATR + atr_ratio\u22651.3 + wick/doji) that bypasses this gate when the move is a V-flush rather than a grind.",
+    "category": "Setup-specific / Velocity"
+  },
+  "asia_capitulation_buy_atoms_below_min": {
+    "label": "ASIA_CAPITULATION_BUY blocked \u2014 capitulation atom count below threshold",
+    "explanation": "ASIA_CAPITULATION_BUY was below the lower BB band but the 5-atom capitulation composite did not reach FORGE_GATE_ASIA_CAPITULATION_BUY_MIN_ATOMS (default 3). Atoms: A1 m5_rsi\u2264rsi_max, A2 close<bb_l, A3 -velocity_5bar\u2265displacement_min_atr, A4 m5_atr_ratio_5bar\u2265atr_ratio_min, A5 long_lower_wick||doji. v2.7.81.",
+    "category": "Setup-specific / Composite"
+  },
+  "asia_capitulation_buy_cooldown": {
+    "label": "ASIA_CAPITULATION_BUY blocked \u2014 cooldown active",
+    "explanation": "ASIA_CAPITULATION_BUY was blocked because the previous fire was within FORGE_TIMING_ASIA_CAPITULATION_BUY_COOLDOWN_SEC (default 1800s / 30min). Thin Asia liquidity \u2014 a single fire per V-flush, no stacking. v2.7.81.",
+    "category": "Setup-specific / Cooldown"
+  },
+  "pemcg_buy_reversal_block": {
+    "label": "UMCG blocked BUY \u2014 reversal warning composite",
+    "explanation": "Layer 1 of the v2.7.84 entry-gating system. The PEMCG_BUY 7-atom composite hit FORGE_GATE_UMCG_BUY_BLOCK_THRESHOLD (default 3) warnings: RSI overbought / weak candle / no strong-bar / range contracting / no real breakout above BB / ATR contracting / bearish divergence. Catches BUY-into-reversal traps like G5006 (5/7 warnings, -$1,760 loss) and G5015 (5/7, -$564). See docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md.",
+    "category": "Entry Quality / Reversal"
+  },
+  "pemcg_sell_reversal_block": {
+    "label": "UMCG blocked SELL \u2014 reversal warning composite",
+    "explanation": "Mirror of pemcg_buy_reversal_block. PEMCG_SELL 7-atom composite hit FORGE_GATE_UMCG_SELL_BLOCK_THRESHOLD (default 3): RSI oversold / weak candle / no strong-bar / range contracting / no real breakdown below BB / ATR contracting / bullish divergence. Catches SELL-into-reversal traps. v2.7.84.",
+    "category": "Entry Quality / Reversal"
+  },
+  "cvcsm_cooldown_block_buy": {
+    "label": "CVCSM blocked BUY \u2014 state machine in COOLDOWN/RETRYING",
+    "explanation": "Layer 2 of the v2.7.84 entry-gating system. CVCSM_BUY state machine is in COOLDOWN (post-SL on a BUY) or RETRYING (atoms cleared, waiting N consecutive clean bars before release). Independent BUY/SELL state machines. Only SL events trigger COOLDOWN \u2014 TP firing does NOT trigger (operator-mandated 2026-05-13). Release: PEMCG warnings < release_threshold for N bars OR safety timeout (default 30 min).",
+    "category": "Entry Quality / Cooldown"
+  },
+  "cvcsm_cooldown_block_sell": {
+    "label": "CVCSM blocked SELL \u2014 state machine in COOLDOWN/RETRYING",
+    "explanation": "Mirror of cvcsm_cooldown_block_buy. CVCSM_SELL state machine in COOLDOWN/RETRYING after a SELL-position SL event. v2.7.84.",
+    "category": "Entry Quality / Cooldown"
+  },
+  "dirlock_block_buy": {
+    "label": "Direction Lock blocked BUY \u2014 bilateral cooldown or DISCARDED state",
+    "explanation": "v2.7.97 Sets 6+7+8 direction-lock system. BUY blocked because either: (1) the BUY-side state machine is in DISCARDED state (lock broke on structural violation, opposite-direction PEMCG flip, NEUTRAL, or h1_trend disagreement); OR (2) any direction's lock recently broke and bilateral cooldown is active (FORGE_TIMING_DIRLOCK_BREAK_BILATERAL_COOLDOWN_BARS). Operator-mandated no-auto-flip rule: after a direction lock breaks, BOTH directions are suppressed until N M5 bars elapse AND a fresh setup signal fires. Released via UpdateDirLockState bilateral-cooldown elapsing. Independent of CVCSM (which is post-SL only). See docs/FORGE_CORE_LOGIC_DESIGN.md \u00a74 Sets 6/7/8.",
+    "category": "Entry Quality / Direction Lock"
+  },
+  "dirlock_block_sell": {
+    "label": "Direction Lock blocked SELL \u2014 bilateral cooldown or DISCARDED state",
+    "explanation": "Mirror of dirlock_block_buy. SELL blocked by direction-lock state machine. v2.7.97.",
+    "category": "Entry Quality / Direction Lock"
+  },
+  "bb_breakout_buy_exhaustion_no_bos": {
+    "label": "BB_BREAKOUT BUY blocked \u2014 exhaustion without bullish BOS",
+    "explanation": "BB_BREAKOUT BUY was blocked because m5_rsi \u2265 FORGE_GATE_BREAKOUT_BUY_EXHAUSTION_RSI (default 72.0) AND g_eval_bos_direction != +1 (no recent upward break of structure). This catches the 'third leg into exhausted top' pattern \u2014 Run 29 G5005 (RSI 74.5, -$1,694), G5022-G5026 (RSI 68\u219271\u219274 trio, -$1,335 combined). Tighter than rsi_buy_ceil=78 because 72-77 without BOS confirmation is exhaustion territory. v2.7.69.",
+    "category": "Setup-specific / ICT structure"
+  },
+  "ny_session_bearish_low_velocity": {
+    "label": "NY_SESSION_BEARISH_BREAKOUT_SELL \u2014 velocity insufficient",
+    "explanation": "NY_SESSION_BEARISH_SELL did not fire because g_eval_m5_velocity_5bar_signed > -FORGE_GATE_NY_SESSION_BEARISH_SELL_MIN_VELOCITY (default -1.0). Price not falling fast enough relative to ATR. v2.7.71 diagnostic.",
+    "category": "Setup-specific / Diagnostic"
+  },
+  "ny_session_bearish_close_above_bbm": {
+    "label": "NY_SESSION_BEARISH_SELL \u2014 close above BB middle",
+    "explanation": "NY_SESSION_BEARISH_SELL did not fire because m5_close \u2265 m5_bb_m. Structure not yet broken (price above mean). v2.7.71 diagnostic.",
+    "category": "Setup-specific / Diagnostic"
+  },
+  "ny_session_bearish_rsi_too_high": {
+    "label": "NY_SESSION_BEARISH_SELL \u2014 RSI too high",
+    "explanation": "NY_SESSION_BEARISH_SELL did not fire because m5_rsi \u2265 FORGE_GATE_NY_SESSION_BEARISH_SELL_MAX_RSI (default 50). Insufficient room to fall (already mid-range). v2.7.71 diagnostic.",
+    "category": "Setup-specific / Diagnostic"
+  },
+  "ny_session_bearish_macd_positive": {
+    "label": "NY_SESSION_BEARISH_SELL \u2014 MACD slope positive",
+    "explanation": "NY_SESSION_BEARISH_SELL did not fire because g_eval_m5_macd_slope_5bar \u2265 0. Momentum not confirming bearish direction. v2.7.71 diagnostic.",
+    "category": "Setup-specific / Diagnostic"
+  },
+  "ny_session_bearish_no_room": {
+    "label": "NY_SESSION_BEARISH_SELL \u2014 insufficient room to day low",
+    "explanation": "NY_SESSION_BEARISH_SELL did not fire because (m5_close - g_eval_day_low) < FORGE_GATE_NY_SESSION_BEARISH_SELL_ROOM_MIN_ATR \u00d7 ATR. Already too close to day low \u2014 overextended. v2.7.71 diagnostic.",
+    "category": "Setup-specific / Diagnostic"
+  },
+  "ny_session_bearish_cooldown": {
+    "label": "NY_SESSION_BEARISH_SELL \u2014 cooldown active",
+    "explanation": "NY_SESSION_BEARISH_SELL did not fire because last fire was within FORGE_TIMING_NY_SESSION_BEARISH_SELL_COOLDOWN_SEC. v2.7.71 diagnostic.",
+    "category": "Setup-specific / Diagnostic"
+  },
+  "ny_session_bearish_other_block": {
+    "label": "NY_SESSION_BEARISH_SELL \u2014 composite condition unmet",
+    "explanation": "NY_SESSION_BEARISH_SELL did not fire for an unspecified reason (catch-all when killzone window OK but other condition failed). v2.7.71.",
+    "category": "Setup-specific / Diagnostic"
+  },
+  "bb_breakout_buy_vwap_overextended": {
+    "label": "BB_BREAKOUT BUY blocked \u2014 VWAP overextension",
+    "explanation": "BB_BREAKOUT BUY was blocked because (price - g_vwap_price) / m5_atr > FORGE_GATE_BREAKOUT_BUY_MAX_VWAP_DIST_ATR (default 2.5). Price is in mean-reversion zone (overextended above value). Run 30 G5005 \u2212$1,694 had dist 2.76\u00d7ATR. Industry pattern: trend-continuation entries here have <40% WR vs >70% within 2\u00d7ATR (Tradeciety/MQL5 institutional scalping). v2.7.73.",
+    "category": "Setup-specific / VWAP"
+  },
+  "bb_breakout_sell_vwap_overextended": {
+    "label": "BB_BREAKOUT SELL blocked \u2014 VWAP overextension (mirror)",
+    "explanation": "BB_BREAKOUT SELL was blocked because (g_vwap_price - price) / m5_atr > FORGE_GATE_BREAKOUT_SELL_MAX_VWAP_DIST_ATR (default 2.5). Price is in mean-reversion zone (overextended below value). v2.7.73.",
+    "category": "Setup-specific / VWAP"
+  },
+  "bb_pullback_buy_falling_velocity_block": {
+    "label": "BB_PULLBACK_SCALP BUY blocked \u2014 falling velocity",
+    "explanation": "BB_PULLBACK_SCALP BUY was blocked because g_eval_m5_velocity_5bar_signed \u2264 FORGE_GATE_BB_PULLBACK_BUY_MIN_VELOCITY_5BAR_SIGNED (default -1.0). Apr 8 12:50 case study: BUY @ 4786 RSI 34 fired during -38pt descent (knife catch). Gate prevents catching falling knives. v2.7.79.",
+    "category": "Setup-specific / Velocity"
   }
 }

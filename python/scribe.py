@@ -1756,10 +1756,11 @@ class Scribe:
         Returns the number of trade_positions rows updated. Tolerates legacy
         DBs missing optional columns.
         """
+        # Signature returns int — return single int from every path for consistency.
         if tp_stage not in (1, 2, 3):
-            return 0, 0
+            return 0
         if sl is None and tp is None:
-            return 0, 0
+            return 0
         affected = 0
         try:
             with self._conn() as c:

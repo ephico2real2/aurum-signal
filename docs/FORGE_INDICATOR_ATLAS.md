@@ -1327,3 +1327,69 @@ Output:
 **Conclusion**: All MOMENTUM_DUMP + BB_PULLBACK_SCALP BUYs in confirmed bull used
 0.125 fractional factor. Only BB_BREAKOUT correctly used 1.000. Confirms operator's
 "broken logic" finding. v2.7.35 fixes via dump_buy_lot_factor=1.0 / dump_sell_lot_factor=0.5.
+
+### 2026-05-14 05:30 — Missed-opportunity audit Mar 31 → Apr 8 (period docs creation)
+**Doc**: `docs/april/2026-03-31_to_2026-04-02.md` §1 Q1 + §7; `docs/april/2026-04-06_to_2026-04-08.md` §1 + §7
+**Active DB**: `/Users/olasumbo/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/Tester/Agent-127.0.0.1-3000/MQL5/Files/FORGE_journal_XAUUSD_tester.db` (Agent-3000, 9 runs covering v2.7.64 → v2.7.94)
+
+**Command — daily OHLC reconstructed from M5 atoms (run 3, widest coverage)**:
+```bash
+DB="<active source DB>"
+sqlite3 -header -column "$DB" "
+WITH day_data AS (
+  SELECT date(time,'unixepoch') AS day,
+         MIN(m5_low_0) AS dlow, MAX(m5_high_0) AS dhigh,
+         (SELECT m5_open_0 FROM SIGNALS s2 WHERE s2.run_id=s.run_id
+          AND date(s2.time,'unixepoch')=date(s.time,'unixepoch') AND s2.m5_open_0>0
+          ORDER BY s2.time LIMIT 1) AS dopen,
+         (SELECT m5_close_0 FROM SIGNALS s2 WHERE s2.run_id=s.run_id
+          AND date(s2.time,'unixepoch')=date(s.time,'unixepoch') AND s2.m5_close_0>0
+          ORDER BY s2.time DESC LIMIT 1) AS dclose
+  FROM SIGNALS s
+  WHERE s.run_id=3 AND m5_low_0>0 AND m5_high_0>0
+        AND date(time,'unixepoch') BETWEEN '2026-03-31' AND '2026-04-08'
+  GROUP BY day)
+SELECT day, printf('%.2f',dopen), printf('%.2f',dhigh), printf('%.2f',dlow),
+       printf('%.2f',dclose), printf('%.1f',(dhigh-dlow)) AS range_pts FROM day_data;"
+```
+
+Output sample:
+```
+2026-03-31 | 4514.27 | 4683.90 | 4482.65 | 4665.11 | 201.3
+2026-04-01 | 4671.89 | 4790.93 | 4663.10 | 4757.75 | 127.8
+2026-04-02 | 4757.28 | 4797.55 | 4567.99 | 4673.41 | 229.6
+2026-04-06 | 4653.78 | 4703.79 | 4603.23 | 4650.02 | 100.6
+2026-04-07 | 4651.42 | 4712.72 | 4609.94 | 4709.34 | 102.8
+2026-04-08 | 4721.24 | 4845.99 | 4701.89 | 4718.98 | 144.1
+```
+
+**Conclusion**: All 6 trading days had ≥ 100 pt range. Period-doc miss audit identifies 9 windows ≥ 40 pt that FORGE (Run 9 v2.7.94) took 0-1 entries during — composite proposals in period docs §5.
+
+### 2026-05-14 05:35 — Cross-run TAKEN census Mar 31 → Apr 8 (validates "missed across ALL EA versions")
+**Doc**: `docs/april/2026-03-31_to_2026-04-02.md` §2 Miss #3 (Apr 1 Asian)
+
+```bash
+sqlite3 -header -column "$DB" "
+SELECT run_id, datetime(time,'unixepoch') AS t, setup_type, direction
+FROM SIGNALS
+WHERE outcome='TAKEN'
+  AND time BETWEEN strftime('%s','2026-04-01 01:30:00') AND strftime('%s','2026-04-01 05:00:00');"
+```
+
+Output: **0 rows** (zero captures across all 9 runs).
+
+**Conclusion**: Apr 1 02:00-05:00 Asian breakout (price 4682 → 4724, +43 pts) is missed by ALL EA versions v2.7.64 → v2.7.94. Justifies a new `TREND_CONTINUATION_BUY`-style composite (Period 1 doc Composite A) — EA already has `TREND_CONTINUATION_BUY` since v2.7.57 but its proximity-to-BB-upper trigger excludes mid-range trend continuations.
+
+### 2026-05-14 05:42 — Apr 2 London cascade (08:35) — zero SELL captures during −111pt move
+**Doc**: `docs/april/2026-03-31_to_2026-04-02.md` §2 Miss #1 + Q8
+
+```bash
+sqlite3 -header -column "$DB" "
+SELECT run_id, datetime(time,'unixepoch'), setup_type, direction
+FROM SIGNALS WHERE outcome='TAKEN' AND direction='SELL'
+  AND time BETWEEN strftime('%s','2026-04-02 04:00:00') AND strftime('%s','2026-04-02 09:30:00');"
+```
+
+Output: **0 rows** SELL.
+
+**Conclusion**: The Apr 2 04:00 Asian dump (4790→4690 = -100pt) AND 08:00 London cascade (4677→4568 = -111pt) had ZERO SELL captures across all 9 runs. Block gates all-runs: `dump_adx_block` / `dump_rsi_floor_sell` / `pemcg_sell_reversal_block` / `rr_too_low`. Composite B `INTRADAY_REVERSAL_SELL` (Period 1) fires here per truth table §5.

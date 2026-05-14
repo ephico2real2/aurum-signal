@@ -91,7 +91,11 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # boolean-composite framework, replicating legacy MOMENTUM_DUMP atoms. Default OFF.
     # Enable for a tester run alongside legacy MOMENTUM_DUMP; compare TAKEN counts to
     # validate that the composite pattern produces identical behavior.
-    "FORGE_SETUP_MOMENTUM_DUMP_COMPOSITE_TEST_ENABLED":           ("composites", "momentum_dump_composite_test_enabled",           "bool01", None, None),
+    # v2.7.69 — these 13 keys were duplicated in both safety+composites sections of the
+    # generated scalper_config.json; EA's JsonGetDouble returns the FIRST match (safety),
+    # so composites overrides were silently ignored. Section flipped composites→safety
+    # so .env overrides land where the EA actually reads them.
+    "FORGE_SETUP_MOMENTUM_DUMP_COMPOSITE_TEST_ENABLED":           ("safety",     "momentum_dump_composite_test_enabled",           "bool01", None, None),
     "FORGE_SETUP_MOMENTUM_DUMP_COMPOSITE_TEST_LOOKBACK_BARS":     ("composites", "momentum_dump_composite_test_lookback_bars",     "int",    1.0,   20.0),
     "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_ATR_MULT":           ("composites", "momentum_dump_composite_test_atr_mult",          "float",  0.1,   10.0),
     "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_MAX_RSI":            ("composites", "momentum_dump_composite_test_max_rsi",           "float",  0.0,   100.0),
@@ -100,7 +104,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TEST_SL_ATR_MULT":    ("composites", "momentum_dump_composite_test_sl_atr_mult",       "float",  0.3,   10.0),
     "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TEST_TP1_ATR_MULT":   ("composites", "momentum_dump_composite_test_tp1_atr_mult",      "float",  0.1,   5.0),
     "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TEST_TP2_ATR_MULT":   ("composites", "momentum_dump_composite_test_tp2_atr_mult",      "float",  0.1,   5.0),
-    "FORGE_TIMING_MOMENTUM_DUMP_COMPOSITE_TEST_COOLDOWN_SECONDS": ("composites", "momentum_dump_composite_test_cooldown_seconds",  "int",    0.0,   7200.0),
+    "FORGE_TIMING_MOMENTUM_DUMP_COMPOSITE_TEST_COOLDOWN_SECONDS": ("safety",     "momentum_dump_composite_test_cooldown_seconds",  "int",    0.0,   7200.0),
     "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_CHOP_BLOCK":         ("composites", "momentum_dump_composite_test_chop_block",        "bool01", None,  None),
     "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_REQUIRE_PSAR":       ("composites", "momentum_dump_composite_test_require_psar",      "bool01", None,  None),
     "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_REQUIRE_D1_BIAS":    ("composites", "momentum_dump_composite_test_require_d1_bias",   "bool01", None,  None),
@@ -112,33 +116,156 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_SETUP_BB_LOWER_REVERSION_BUY_ENABLED":                ("composites", "bb_lower_reversion_buy_enabled",                "bool01", None,  None),
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_MAX_RSI":                 ("composites", "bb_lower_reversion_buy_max_rsi",                "float",  0,     100),
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_MIN_ADX":                 ("composites", "bb_lower_reversion_buy_min_adx",                "float",  0,     80),
-    "FORGE_GEOMETRY_BB_LOWER_REVERSION_BUY_SL_ATR_MULT":         ("composites", "bb_lower_reversion_buy_sl_atr_mult",            "float",  0.1,   5.0),
+    "FORGE_GEOMETRY_BB_LOWER_REVERSION_BUY_SL_ATR_MULT":         ("safety",     "bb_lower_reversion_buy_sl_atr_mult",            "float",  0.1,   5.0),
     "FORGE_GEOMETRY_BB_LOWER_REVERSION_BUY_TP1_OFFSET_ATR_MULT": ("composites", "bb_lower_reversion_buy_tp1_offset_atr_mult",    "float",  0,     5.0),
     "FORGE_GEOMETRY_BB_LOWER_REVERSION_BUY_TP2_OFFSET_ATR_MULT": ("composites", "bb_lower_reversion_buy_tp2_offset_atr_mult",    "float",  0,     5.0),
-    "FORGE_TIMING_BB_LOWER_REVERSION_BUY_COOLDOWN_SECONDS":      ("composites", "bb_lower_reversion_buy_cooldown_seconds",       "int",    0,     7200),
+    "FORGE_TIMING_BB_LOWER_REVERSION_BUY_COOLDOWN_SECONDS":      ("safety",     "bb_lower_reversion_buy_cooldown_seconds",       "int",    0,     7200),
     "FORGE_GEOMETRY_BB_LOWER_REVERSION_BUY_LOT_FACTOR":          ("composites", "bb_lower_reversion_buy_lot_factor",             "float",  0.1,   10.0),
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_H1_MAX":                  ("composites", "bb_lower_reversion_buy_h1_max",                 "float",  0,     10.0),
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_EXTREME_RSI":             ("composites", "bb_lower_reversion_buy_extreme_rsi",            "float",  0,     100),
     "FORGE_GEOMETRY_BB_LOWER_REVERSION_BUY_EXTREME_AMPLIFIER":   ("composites", "bb_lower_reversion_buy_extreme_amplifier",      "float",  1.0,   10.0),
-    "FORGE_TIMING_BB_LOWER_REVERSION_BUY_MAX_HOLD_SECONDS":      ("composites", "bb_lower_reversion_buy_max_hold_seconds",      "int",    0,     7200),
+    "FORGE_TIMING_BB_LOWER_REVERSION_BUY_MAX_HOLD_SECONDS":      ("safety",     "bb_lower_reversion_buy_max_hold_seconds",      "int",    0,     7200),
     # v2.7.59 — BLR_BUY falling-knife protection (Apr 2 G5021-G5024 fix)
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_REQUIRE_REVERSAL_CANDLE": ("composites", "bb_lower_reversion_buy_require_reversal_candle","bool01", None,  None),
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_CONSEC_LOSS_MAX":         ("composites", "bb_lower_reversion_buy_consec_loss_max",         "int",    0,     10),
     "FORGE_TIMING_BB_LOWER_REVERSION_BUY_CONSEC_LOSS_WINDOW_SEC":("composites", "bb_lower_reversion_buy_consec_loss_window_sec",  "int",    0,     7200),
     "FORGE_TIMING_BB_LOWER_REVERSION_BUY_CONSEC_LOSS_COOLDOWN_SEC":("composites","bb_lower_reversion_buy_consec_loss_cooldown_sec","int",   0,     7200),
     "FORGE_GATE_BB_LOWER_REVERSION_BUY_H4_MIN":                  ("composites", "bb_lower_reversion_buy_h4_min",                  "float",  -10.0, 10.0),
+    # v2.7.69 — ICT market-structure gates (wires v2.7.68 BOS + v2.7.65 velocity into BLR_BUY + BB_BREAKOUT BUY)
+    "FORGE_GATE_BLR_BUY_BLOCK_ON_BEARISH_BOS":                   ("safety",     "blr_buy_block_on_bearish_bos",                 "bool01", None,  None),
+    "FORGE_GATE_BLR_BUY_MIN_VELOCITY_5BAR_SIGNED":               ("safety",     "blr_buy_min_velocity_5bar_signed",             "float",  -10.0, 10.0),
+    # v2.7.80 — BLR capitulation override (Apr 6 03:30 + Apr 14 13:39 V-bottom fix: bypass falling-velocity gate on real flush)
+    "FORGE_GATE_BLR_BUY_CAPITULATION_OVERRIDE_ENABLED":          ("safety",     "blr_buy_capitulation_override_enabled",        "bool01", None,  None),
+    "FORGE_GATE_BLR_BUY_CAPITULATION_MIN_ATOMS":                 ("safety",     "blr_buy_capitulation_min_atoms",               "int",    1,     5),
+    "FORGE_GATE_BLR_BUY_CAPITULATION_RSI_MAX":                   ("safety",     "blr_buy_capitulation_rsi_max",                 "float",  10.0,  40.0),
+    "FORGE_GATE_BLR_BUY_CAPITULATION_DISPLACEMENT_MIN_ATR":      ("safety",     "blr_buy_capitulation_displacement_min_atr",    "float",  0.5,   5.0),
+    "FORGE_GATE_BLR_BUY_CAPITULATION_ATR_RATIO_MIN":             ("safety",     "blr_buy_capitulation_atr_ratio_min",           "float",  1.0,   3.0),
+    "FORGE_GEOMETRY_BLR_BUY_CAPITULATION_LOT":                   ("composites", "blr_buy_capitulation_lot",                     "float",  0.01,  2.0),
+    "FORGE_GEOMETRY_BLR_BUY_CAPITULATION_SL_ATR_MULT":           ("composites", "blr_buy_capitulation_sl_atr_mult",             "float",  0.5,   5.0),
+    "FORGE_GEOMETRY_BLR_BUY_CAPITULATION_TP1_ATR_MULT":          ("composites", "blr_buy_capitulation_tp1_atr_mult",            "float",  0.1,   3.0),
+    "FORGE_GEOMETRY_BLR_BUY_CAPITULATION_TP2_ATR_MULT":          ("composites", "blr_buy_capitulation_tp2_atr_mult",            "float",  0.1,   5.0),
+    "FORGE_GATE_BREAKOUT_BUY_EXHAUSTION_RSI":                    ("safety",     "breakout_buy_exhaustion_rsi",                  "float",  0.0,   100.0),
+    "FORGE_GATE_BREAKOUT_BUY_BLOCK_EXHAUSTION_WITHOUT_BOS":      ("safety",     "breakout_buy_block_exhaustion_without_bos",    "bool01", None,  None),
+    # v2.7.73 — VWAP-distance gates (Run 30 G5005 −$1,694 diagnosis: vwap_dist/atr=2.76 = mean-reversion zone)
+    "FORGE_GATE_BREAKOUT_BUY_MAX_VWAP_DIST_ATR":                 ("safety",     "breakout_buy_max_vwap_dist_atr",               "float",  0.0,   20.0),
+    "FORGE_GATE_BREAKOUT_SELL_MAX_VWAP_DIST_ATR":                ("safety",     "breakout_sell_max_vwap_dist_atr",              "float",  0.0,   20.0),
+    # v2.7.93 — Anti-retest gate: BB_BREAKOUT BUY/SELL must clear band by ≥ this×ATR at entry
+    "FORGE_GATE_BB_BREAKOUT_MIN_BREAKOUT_ATR_MULT":              ("safety",     "bb_breakout_min_breakout_atr_mult",            "float",  0.0,   5.0),
+    "FORGE_GATE_BB_BREAKOUT_MIN_BREAKDOWN_ATR_MULT":             ("safety",     "bb_breakout_min_breakdown_atr_mult",           "float",  0.0,   5.0),
+    # v2.7.74 — BB_BREAKOUT BUY conviction amplifier (fire more legs + lower TP1 close pct when 4+ confirming atoms align)
+    "FORGE_SETUP_BREAKOUT_BUY_CONVICTION_ENABLED":               ("safety",     "breakout_buy_conviction_enabled",              "bool01", None,  None),
+    "FORGE_GATE_BREAKOUT_BUY_CONVICTION_MIN_ATOMS":              ("safety",     "breakout_buy_conviction_min_atoms",            "int",    0,     10),
+    "FORGE_GEOMETRY_BREAKOUT_BUY_CONVICTION_INITIAL_LEGS":       ("safety",     "breakout_buy_conviction_initial_legs",         "int",    1,     30),
+    "FORGE_GEOMETRY_BREAKOUT_BUY_CONVICTION_TP1_CLOSE_PCT":      ("safety",     "breakout_buy_conviction_tp1_close_pct",        "float",  0,     100),
+    # v2.7.76 — Score velocity gate (Run 31 G5005 −$2,934 fix: avg5 76→63 falling, amp deployed 5 legs)
+    "FORGE_GATE_BREAKOUT_BUY_SCORE_VELOCITY_CHECK_ENABLED":      ("safety",     "breakout_buy_score_velocity_check_enabled",    "bool01", None,  None),
+    "FORGE_GATE_BREAKOUT_BUY_SCORE_VELOCITY_THRESHOLD":          ("safety",     "breakout_buy_score_velocity_threshold",        "int",    -100,  100),
+    # v2.7.77 — Conviction-decay partial close (Nyao Scalper reverse-pyramid pattern)
+    "FORGE_SETUP_CONVICTION_DECAY_PARTIAL_CLOSE_ENABLED":        ("safety",     "conviction_decay_partial_close_enabled",       "bool01", None,  None),
+    "FORGE_GATE_CONVICTION_DECAY_L1_RATIO":                      ("safety",     "conviction_decay_l1_ratio",                    "float",  0.0,   1.0),
+    "FORGE_GATE_CONVICTION_DECAY_L2_RATIO":                      ("safety",     "conviction_decay_l2_ratio",                    "float",  0.0,   1.0),
+    "FORGE_GATE_CONVICTION_DECAY_L3_RATIO":                      ("safety",     "conviction_decay_l3_ratio",                    "float",  0.0,   1.0),
+    "FORGE_GEOMETRY_CONVICTION_DECAY_L1_CLOSE_PCT":              ("safety",     "conviction_decay_l1_close_pct",                "float",  0.0,   100.0),
+    "FORGE_GEOMETRY_CONVICTION_DECAY_L2_CLOSE_PCT":              ("safety",     "conviction_decay_l2_close_pct",                "float",  0.0,   100.0),
+    "FORGE_TIMING_CONVICTION_DECAY_GRACE_BARS":                  ("safety",     "conviction_decay_grace_bars",                  "int",    0,     30),
+    # v2.7.78 — REVERSE_SELL_IN_BULL (G5005 direction-flip pattern, full 0.5 lot counter-trend SELL)
+    "FORGE_SETUP_REVERSE_SELL_IN_BULL_ENABLED":                  ("composites","reverse_sell_in_bull_enabled",                  "bool01", None,  None),
+    "FORGE_GEOMETRY_REVERSE_SELL_IN_BULL_LOT_FACTOR":            ("composites","reverse_sell_in_bull_lot_factor",               "float",  0.0,   2.0),
+    "FORGE_GATE_REVERSE_SELL_IN_BULL_MIN_RSI":                   ("composites","reverse_sell_in_bull_min_rsi",                  "float",  0.0,   100.0),
+    "FORGE_GATE_REVERSE_SELL_IN_BULL_MIN_VWAP_DIST_ATR":         ("composites","reverse_sell_in_bull_min_vwap_dist_atr",        "float",  0.0,   20.0),
+    "FORGE_GATE_REVERSE_SELL_IN_BULL_MIN_H1_TREND":              ("composites","reverse_sell_in_bull_min_h1_trend",             "float",  -10.0, 10.0),
+    "FORGE_GATE_REVERSE_SELL_IN_BULL_REQUIRE_DI_PLUS_ABOVE_MINUS": ("composites","reverse_sell_in_bull_require_di_plus_above_minus","bool01", None, None),
+    "FORGE_GEOMETRY_REVERSE_SELL_IN_BULL_SL_ATR_MULT":           ("composites","reverse_sell_in_bull_sl_atr_mult",              "float",  0.1,   10.0),
+    "FORGE_GEOMETRY_REVERSE_SELL_IN_BULL_TP1_ATR_MULT":          ("composites","reverse_sell_in_bull_tp1_atr_mult",             "float",  0.1,   10.0),
+    "FORGE_GEOMETRY_REVERSE_SELL_IN_BULL_TP2_ATR_MULT":          ("composites","reverse_sell_in_bull_tp2_atr_mult",             "float",  0.1,   10.0),
+    "FORGE_TIMING_REVERSE_SELL_IN_BULL_COOLDOWN_SEC":            ("composites","reverse_sell_in_bull_cooldown_sec",             "int",    0,     7200),
+    # v2.7.79 — GRINDING_SELL (Apr 8 between-killzone descent fix)
+    "FORGE_SETUP_GRINDING_SELL_ENABLED":                         ("composites","grinding_sell_enabled",                         "bool01", None,  None),
+    "FORGE_GEOMETRY_GRINDING_SELL_LOT_FACTOR":                   ("composites","grinding_sell_lot_factor",                      "float",  0.0,   2.0),
+    "FORGE_GATE_GRINDING_SELL_MIN_VELOCITY":                     ("composites","grinding_sell_min_velocity",                    "float",  0.0,   10.0),
+    "FORGE_GATE_GRINDING_SELL_MAX_RSI":                          ("composites","grinding_sell_max_rsi",                         "float",  0.0,   100.0),
+    "FORGE_GATE_GRINDING_SELL_MIN_RSI":                          ("composites","grinding_sell_min_rsi",                         "float",  0.0,   100.0),
+    "FORGE_GATE_GRINDING_SELL_ROOM_MIN_ATR":                     ("composites","grinding_sell_room_min_atr",                    "float",  0.0,   10.0),
+    "FORGE_GEOMETRY_GRINDING_SELL_SL_ATR_MULT":                  ("composites","grinding_sell_sl_atr_mult",                     "float",  0.1,   10.0),
+    "FORGE_GEOMETRY_GRINDING_SELL_TP1_ATR_MULT":                 ("composites","grinding_sell_tp1_atr_mult",                    "float",  0.1,   10.0),
+    "FORGE_GEOMETRY_GRINDING_SELL_TP2_ATR_MULT":                 ("composites","grinding_sell_tp2_atr_mult",                    "float",  0.1,   10.0),
+    "FORGE_TIMING_GRINDING_SELL_COOLDOWN_SEC":                   ("composites","grinding_sell_cooldown_sec",                    "int",    0,     7200),
+    # v2.7.81 — ASIA_CAPITULATION_BUY (Apr 6 03:30 @ 4603 RSI 23 pre-London V-flush; session-agnostic)
+    "FORGE_SETUP_ASIA_CAPITULATION_BUY_ENABLED":                 ("composites","asia_capitulation_buy_enabled",                  "bool01", None,  None),
+    "FORGE_GATE_ASIA_CAPITULATION_BUY_MIN_ATOMS":                ("composites","asia_capitulation_buy_min_atoms",                "int",    1,     5),
+    "FORGE_GATE_ASIA_CAPITULATION_BUY_RSI_MAX":                  ("composites","asia_capitulation_buy_rsi_max",                  "float",  10.0,  40.0),
+    "FORGE_GATE_ASIA_CAPITULATION_BUY_DISPLACEMENT_MIN_ATR":     ("composites","asia_capitulation_buy_displacement_min_atr",     "float",  0.5,   5.0),
+    "FORGE_GATE_ASIA_CAPITULATION_BUY_ATR_RATIO_MIN":            ("composites","asia_capitulation_buy_atr_ratio_min",            "float",  1.0,   3.0),
+    "FORGE_TIMING_ASIA_CAPITULATION_BUY_SESSION_START_UTC":      ("composites","asia_capitulation_buy_session_start_utc",        "int",    0,     23),
+    "FORGE_TIMING_ASIA_CAPITULATION_BUY_SESSION_END_UTC":        ("composites","asia_capitulation_buy_session_end_utc",          "int",    0,     23),
+    "FORGE_GEOMETRY_ASIA_CAPITULATION_BUY_LOT":                  ("composites","asia_capitulation_buy_lot",                      "float",  0.01,  2.0),
+    "FORGE_GEOMETRY_ASIA_CAPITULATION_BUY_SL_ATR_MULT":          ("composites","asia_capitulation_buy_sl_atr_mult",              "float",  0.5,   5.0),
+    "FORGE_GEOMETRY_ASIA_CAPITULATION_BUY_TP1_ATR_MULT":         ("composites","asia_capitulation_buy_tp1_atr_mult",             "float",  0.1,   3.0),
+    "FORGE_GEOMETRY_ASIA_CAPITULATION_BUY_TP2_ATR_MULT":         ("composites","asia_capitulation_buy_tp2_atr_mult",             "float",  0.1,   5.0),
+    "FORGE_TIMING_ASIA_CAPITULATION_BUY_COOLDOWN_SEC":           ("composites","asia_capitulation_buy_cooldown_sec",             "int",    0,     7200),
+    # v2.7.84 — 3-layer entry-gating: UMCG + CVCSM + BB_EXHAUSTION_REVERSAL
+    # See docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md for full design rationale.
+    "FORGE_GATE_UMCG_ENABLED":                                   ("safety",    "umcg_enabled",                                  "bool01", None,  None),
+    "FORGE_GATE_UMCG_BUY_BLOCK_THRESHOLD":                       ("safety",    "umcg_buy_block_threshold",                      "int",    1,     7),
+    "FORGE_GATE_UMCG_SELL_BLOCK_THRESHOLD":                      ("safety",    "umcg_sell_block_threshold",                     "int",    1,     7),
+    "FORGE_GATE_UMCG_PEMCG_RSI_OVERBOUGHT":                      ("safety",    "umcg_pemcg_rsi_overbought",                     "float",  50.0,  90.0),
+    "FORGE_GATE_UMCG_PEMCG_RSI_OVERSOLD":                        ("safety",    "umcg_pemcg_rsi_oversold",                       "float",  10.0,  50.0),
+    "FORGE_GATE_UMCG_PEMCG_BODY_PCT_MAX_WEAK":                   ("safety",    "umcg_pemcg_body_pct_max_weak",                  "float",  0.1,   1.0),
+    "FORGE_GATE_UMCG_PEMCG_ATR_RATIO_MAX_CONTRACT":              ("safety",    "umcg_pemcg_atr_ratio_max_contract",             "float",  0.5,   2.0),
+    "FORGE_GATE_UMCG_PEMCG_BB_DIST_ATR_THRESHOLD":               ("safety",    "umcg_pemcg_bb_dist_atr_threshold",              "float",  0.0,   2.0),
+    "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
+    "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
+    "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),
+    "FORGE_TIMING_CVCSM_MAX_COOLDOWN_SEC":                       ("safety",    "cvcsm_max_cooldown_sec",                        "int",    60,    14400),
+    "FORGE_GATE_CVCSM_TRIGGER_ON_SL":                            ("safety",    "cvcsm_trigger_on_sl",                           "bool01", None,  None),
+    "FORGE_GATE_CVCSM_TRIGGER_ON_REGIME_FLIP":                   ("safety",    "cvcsm_trigger_on_regime_flip",                  "bool01", None,  None),
+    "FORGE_SETUP_BB_EXHAUSTION_REVERSAL_ENABLED":                ("composites","bb_exhaustion_reversal_enabled",                "bool01", None,  None),
+    "FORGE_GATE_BB_EXHAUSTION_REVERSAL_MIN_WARNINGS":            ("composites","bb_exhaustion_reversal_min_warnings",            "int",    1,     7),
+    "FORGE_GEOMETRY_BB_EXHAUSTION_REVERSAL_LOT":                 ("composites","bb_exhaustion_reversal_lot",                    "float",  0.01,  2.0),
+    "FORGE_GEOMETRY_BB_EXHAUSTION_REVERSAL_SL_ATR_MULT":         ("composites","bb_exhaustion_reversal_sl_atr_mult",            "float",  0.1,   5.0),
+    "FORGE_GEOMETRY_BB_EXHAUSTION_REVERSAL_TP1_ATR_MULT":        ("composites","bb_exhaustion_reversal_tp1_atr_mult",           "float",  0.0,   5.0),
+    "FORGE_GEOMETRY_BB_EXHAUSTION_REVERSAL_TP2_ATR_MULT":        ("composites","bb_exhaustion_reversal_tp2_atr_mult",           "float",  0.0,   10.0),
+    "FORGE_TIMING_BB_EXHAUSTION_REVERSAL_COOLDOWN_SEC":          ("composites","bb_exhaustion_reversal_cooldown_sec",           "int",    0,     14400),
+    "FORGE_GATE_BB_EXHAUSTION_REVERSAL_PROXIMITY_ATR":           ("composites","bb_exhaustion_reversal_proximity_atr",          "float",  0.1,   5.0),
+    # v2.7.89 — BB_EXHAUSTION_REVERSAL conviction-tier amplifier + legs
+    "FORGE_GEOMETRY_BB_EXHAUSTION_REVERSAL_LOT_AMPLIFIER":           ("composites","bb_exhaustion_reversal_lot_amplifier",            "float",  0.1,   10.0),
+    "FORGE_GATE_BB_EXHAUSTION_REVERSAL_HIGH_CONVICTION_WARNINGS":    ("composites","bb_exhaustion_reversal_high_conviction_warnings", "int",    1,     7),
+    "FORGE_GEOMETRY_BB_EXHAUSTION_REVERSAL_HIGH_CONVICTION_LOT_FACTOR": ("composites","bb_exhaustion_reversal_high_conviction_lot_factor", "float",  0.5,   10.0),
+    "FORGE_GEOMETRY_BB_EXHAUSTION_REVERSAL_LEGS_HIGH_CONVICTION":    ("composites","bb_exhaustion_reversal_legs_high_conviction",    "int",    1,     10),
+    # v2.7.92 — ADX gate (don't counter-trade strong trends)
+    "FORGE_GATE_BB_EXHAUSTION_REVERSAL_MAX_ADX":                     ("composites","bb_exhaustion_reversal_max_adx",                 "float",  0.0,   100.0),
+    # v2.7.94 — Wide-Range Bar gate (don't catch falling knife after capitulation spike)
+    "FORGE_GATE_BB_EXHAUSTION_REVERSAL_MAX_PREV_BAR_RANGE_ATR_MULT": ("composites","bb_exhaustion_reversal_max_prev_bar_range_atr_mult", "float",  0.0,   20.0),
+    # v2.7.79 — BB_PULLBACK_SCALP BUY velocity gate (Apr 8 12:50 knife-catch fix)
+    "FORGE_GATE_BB_PULLBACK_BUY_BLOCK_ON_FALLING_VELOCITY":      ("safety",    "bb_pullback_buy_block_on_falling_velocity",     "bool01", None,  None),
+    "FORGE_GATE_BB_PULLBACK_BUY_MIN_VELOCITY_5BAR_SIGNED":       ("safety",    "bb_pullback_buy_min_velocity_5bar_signed",      "float",  -10.0, 10.0),
+    # v2.7.70 — Pyramid kill on adverse direction (caps G5032-class 8-leg growth)
+    "FORGE_GATE_PYRAMID_KILL_ENABLED":                           ("safety",     "pyramid_kill_enabled",                         "bool01", None,  None),
+    "FORGE_GATE_PYRAMID_KILL_MAX_LOSS_USD":                      ("safety",     "pyramid_kill_max_loss_usd",                    "float",  0.0,   10000.0),
+    "FORGE_GATE_PYRAMID_KILL_VELOCITY_THRESHOLD":                ("safety",     "pyramid_kill_velocity_threshold",              "float",  0.0,   10.0),
+    # v2.7.70 — NY_SESSION_BEARISH_BREAKOUT_SELL (captures 220pt+ session-open descents)
+    "FORGE_SETUP_NY_SESSION_BEARISH_SELL_ENABLED":               ("safety",     "ny_session_bearish_sell_enabled",              "bool01", None,  None),
+    "FORGE_TIMING_NY_SESSION_BEARISH_SELL_KZ_MAX_MIN":           ("safety",     "ny_session_bearish_sell_kz_max_min",           "int",    0,     300),
+    "FORGE_GATE_NY_SESSION_BEARISH_SELL_MIN_VELOCITY":           ("safety",     "ny_session_bearish_sell_min_velocity",         "float",  0.0,   10.0),
+    "FORGE_GATE_NY_SESSION_BEARISH_SELL_MAX_RSI":                ("safety",     "ny_session_bearish_sell_max_rsi",              "float",  0.0,   100.0),
+    "FORGE_GATE_NY_SESSION_BEARISH_SELL_ROOM_MIN_ATR":           ("safety",     "ny_session_bearish_sell_room_min_atr",         "float",  0.0,   10.0),
+    "FORGE_GEOMETRY_NY_SESSION_BEARISH_SELL_SL_ATR_MULT":        ("safety",     "ny_session_bearish_sell_sl_atr_mult",          "float",  0.1,   10.0),
+    "FORGE_GEOMETRY_NY_SESSION_BEARISH_SELL_TP1_ATR_MULT":       ("safety",     "ny_session_bearish_sell_tp1_atr_mult",         "float",  0.1,   10.0),
+    "FORGE_GEOMETRY_NY_SESSION_BEARISH_SELL_TP2_ATR_MULT":       ("safety",     "ny_session_bearish_sell_tp2_atr_mult",         "float",  0.1,   10.0),
+    "FORGE_TIMING_NY_SESSION_BEARISH_SELL_COOLDOWN_SEC":         ("safety",     "ny_session_bearish_sell_cooldown_sec",         "int",    0,     7200),
+    "FORGE_GEOMETRY_NY_SESSION_BEARISH_SELL_LOT_FACTOR":         ("safety",     "ny_session_bearish_sell_lot_factor",           "float",  0.1,   10.0),
     # 2.7.57 — TREND_CONTINUATION_BUY + SELL (atlas §5.2 canonical, finally shipping)
     "FORGE_SETUP_TREND_CONTINUATION_BUY_ENABLED":               ("composites", "trend_continuation_buy_enabled",              "bool01", None,  None),
-    "FORGE_GATE_TREND_CONTINUATION_BUY_H1_MIN":                 ("composites", "trend_continuation_buy_h1_min",               "float",  0,     10.0),
+    "FORGE_GATE_TREND_CONTINUATION_BUY_H1_MIN":                 ("safety",    "trend_continuation_buy_h1_min",               "float",  0,     10.0),  # v2.7.85 — flipped composites→safety (key-shadowing fix)
     "FORGE_GATE_TREND_CONTINUATION_BUY_RSI_MIN":                ("composites", "trend_continuation_buy_rsi_min",              "float",  0,     100),
     "FORGE_GATE_TREND_CONTINUATION_BUY_RSI_MAX":                ("composites", "trend_continuation_buy_rsi_max",              "float",  0,     100),
     "FORGE_GATE_TREND_CONTINUATION_BUY_ADX_MIN":                ("composites", "trend_continuation_buy_adx_min",              "float",  0,     80),
     "FORGE_GATE_TREND_CONTINUATION_BUY_M15_ADX_MIN":            ("composites", "trend_continuation_buy_m15_adx_min",          "float",  0,     80),
     "FORGE_GATE_TREND_CONTINUATION_BUY_BB_PROXIMITY_ATR":       ("composites", "trend_continuation_buy_bb_proximity_atr",     "float",  0,     5.0),
-    "FORGE_GEOMETRY_TREND_CONTINUATION_BUY_SL_ATR_MULT":        ("composites", "trend_continuation_buy_sl_atr_mult",          "float",  0.1,   5.0),
-    "FORGE_GEOMETRY_TREND_CONTINUATION_BUY_TP1_ATR_MULT":       ("composites", "trend_continuation_buy_tp1_atr_mult",         "float",  0.1,   5.0),
-    "FORGE_GEOMETRY_TREND_CONTINUATION_BUY_TP2_ATR_MULT":       ("composites", "trend_continuation_buy_tp2_atr_mult",         "float",  0.1,   5.0),
-    "FORGE_TIMING_TREND_CONTINUATION_BUY_COOLDOWN_SECONDS":     ("composites", "trend_continuation_buy_cooldown_seconds",     "int",    0,     7200),
+    "FORGE_GEOMETRY_TREND_CONTINUATION_BUY_SL_ATR_MULT":        ("safety",     "trend_continuation_buy_sl_atr_mult",          "float",  0.1,   5.0),
+    "FORGE_GEOMETRY_TREND_CONTINUATION_BUY_TP1_ATR_MULT":       ("safety",     "trend_continuation_buy_tp1_atr_mult",         "float",  0.1,   5.0),
+    "FORGE_GEOMETRY_TREND_CONTINUATION_BUY_TP2_ATR_MULT":       ("safety",     "trend_continuation_buy_tp2_atr_mult",         "float",  0.1,   5.0),
+    "FORGE_TIMING_TREND_CONTINUATION_BUY_COOLDOWN_SECONDS":     ("safety",     "trend_continuation_buy_cooldown_seconds",     "int",    0,     7200),
     "FORGE_GEOMETRY_TREND_CONTINUATION_BUY_LOT_FACTOR":         ("composites", "trend_continuation_buy_lot_factor",           "float",  0.1,   10.0),
     # v2.7.58 — TC_BUY missing-atom gates
     "FORGE_GATE_TREND_CONTINUATION_BUY_REQUIRE_MACD_POSITIVE":  ("composites", "trend_continuation_buy_require_macd_positive", "bool01", None,  None),
@@ -149,16 +276,16 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_TREND_CONTINUATION_BUY_REQUIRE_H4_ALIGNMENT":   ("composites", "trend_continuation_buy_require_h4_alignment",  "bool01", None,  None),
     "FORGE_GATE_TREND_CONTINUATION_BUY_H4_MIN":                 ("composites", "trend_continuation_buy_h4_min",                "float",  -10.0, 10.0),
     "FORGE_SETUP_TREND_CONTINUATION_SELL_ENABLED":              ("composites", "trend_continuation_sell_enabled",             "bool01", None,  None),
-    "FORGE_GATE_TREND_CONTINUATION_SELL_H1_MAX":                ("composites", "trend_continuation_sell_h1_max",              "float",  0,     10.0),
+    "FORGE_GATE_TREND_CONTINUATION_SELL_H1_MAX":                ("safety",    "trend_continuation_sell_h1_max",              "float",  0,     10.0),  # v2.7.85 — flipped composites→safety (key-shadowing fix)
     "FORGE_GATE_TREND_CONTINUATION_SELL_RSI_MIN":               ("composites", "trend_continuation_sell_rsi_min",             "float",  0,     100),
     "FORGE_GATE_TREND_CONTINUATION_SELL_RSI_MAX":               ("composites", "trend_continuation_sell_rsi_max",             "float",  0,     100),
     "FORGE_GATE_TREND_CONTINUATION_SELL_ADX_MIN":               ("composites", "trend_continuation_sell_adx_min",             "float",  0,     80),
     "FORGE_GATE_TREND_CONTINUATION_SELL_M15_ADX_MIN":           ("composites", "trend_continuation_sell_m15_adx_min",         "float",  0,     80),
     "FORGE_GATE_TREND_CONTINUATION_SELL_BB_PROXIMITY_ATR":      ("composites", "trend_continuation_sell_bb_proximity_atr",    "float",  0,     5.0),
-    "FORGE_GEOMETRY_TREND_CONTINUATION_SELL_SL_ATR_MULT":       ("composites", "trend_continuation_sell_sl_atr_mult",         "float",  0.1,   5.0),
-    "FORGE_GEOMETRY_TREND_CONTINUATION_SELL_TP1_ATR_MULT":      ("composites", "trend_continuation_sell_tp1_atr_mult",        "float",  0.1,   5.0),
-    "FORGE_GEOMETRY_TREND_CONTINUATION_SELL_TP2_ATR_MULT":      ("composites", "trend_continuation_sell_tp2_atr_mult",        "float",  0.1,   5.0),
-    "FORGE_TIMING_TREND_CONTINUATION_SELL_COOLDOWN_SECONDS":    ("composites", "trend_continuation_sell_cooldown_seconds",    "int",    0,     7200),
+    "FORGE_GEOMETRY_TREND_CONTINUATION_SELL_SL_ATR_MULT":       ("safety",     "trend_continuation_sell_sl_atr_mult",         "float",  0.1,   5.0),
+    "FORGE_GEOMETRY_TREND_CONTINUATION_SELL_TP1_ATR_MULT":      ("safety",     "trend_continuation_sell_tp1_atr_mult",        "float",  0.1,   5.0),
+    "FORGE_GEOMETRY_TREND_CONTINUATION_SELL_TP2_ATR_MULT":      ("safety",     "trend_continuation_sell_tp2_atr_mult",        "float",  0.1,   5.0),
+    "FORGE_TIMING_TREND_CONTINUATION_SELL_COOLDOWN_SECONDS":    ("safety",     "trend_continuation_sell_cooldown_seconds",    "int",    0,     7200),
     "FORGE_GEOMETRY_TREND_CONTINUATION_SELL_LOT_FACTOR":        ("composites", "trend_continuation_sell_lot_factor",          "float",  0.1,   10.0),
     # v2.7.58 — TC_SELL missing-atom gates (mirror)
     "FORGE_GATE_TREND_CONTINUATION_SELL_REQUIRE_MACD_NEGATIVE": ("composites", "trend_continuation_sell_require_macd_negative", "bool01", None,  None),
@@ -176,8 +303,8 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_TREND_CONTINUATION_SELL_MAX_MACD_SLOPE_5BAR":   ("composites", "trend_continuation_sell_max_macd_slope_5bar",   "float", -10.0, 10.0),
     "FORGE_GATE_TREND_CONTINUATION_BUY_MIN_DI_BALANCE":         ("composites", "trend_continuation_buy_min_di_balance",         "float", -100.0, 100.0),
     "FORGE_GATE_TREND_CONTINUATION_SELL_MAX_DI_BALANCE":        ("composites", "trend_continuation_sell_max_di_balance",        "float", -100.0, 100.0),
-    "FORGE_GATE_TREND_CONTINUATION_BUY_MAX_DIST_FROM_DAY_HIGH_ATR": ("composites", "trend_continuation_buy_max_dist_from_day_high_atr", "float", 0.0, 10.0),
-    "FORGE_GATE_TREND_CONTINUATION_SELL_MAX_DIST_FROM_DAY_LOW_ATR": ("composites", "trend_continuation_sell_max_dist_from_day_low_atr", "float", 0.0, 10.0),
+    "FORGE_GATE_TREND_CONTINUATION_BUY_MAX_DIST_FROM_DAY_HIGH_ATR": ("safety",    "trend_continuation_buy_max_dist_from_day_high_atr", "float", 0.0, 10.0),  # v2.7.85 — flipped composites→safety (key-shadowing fix)
+    "FORGE_GATE_TREND_CONTINUATION_SELL_MAX_DIST_FROM_DAY_LOW_ATR": ("safety",    "trend_continuation_sell_max_dist_from_day_low_atr", "float", 0.0, 10.0),  # v2.7.85 — flipped composites→safety (key-shadowing fix)
     "FORGE_MIN_NUM_TRADES": ("lot_sizing", "min_num_trades", "int", 1.0, 30.0),
     "FORGE_MAX_NUM_TRADES": ("lot_sizing", "max_num_trades", "int", 1.0, 30.0),
     "FORGE_GOLD_NATIVE_MAX_SELL_LEGS": ("lot_sizing", "gold_native_max_sell_legs", "int", 0.0, 30.0),
@@ -281,6 +408,29 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BUY_LIMIT_RECOVERY_LOT_FACTOR":   ("bb_breakout", "buy_limit_recovery_lot_factor",   "float", 0.0, 1.0),
     "FORGE_BUY_LIMIT_RECOVERY_EXPIRY_BARS":  ("bb_breakout", "buy_limit_recovery_expiry_bars",  "int",   1.0, 20.0),
     "FORGE_BUY_LIMIT_RECOVERY_SL_ATR_MULT":  ("bb_breakout", "buy_limit_recovery_sl_atr_mult",  "float", 0.1, 5.0),
+    # ─────────────────────────────────────────────────────────────────────────
+    # v2.7.95 — BUY-side cascade mirror (BUY_STOP_CONT). Closes the long-standing
+    # asymmetry where SELL setups had 7 post-TP1 cascade legs + 1 counter-trend
+    # recovery, but BUY setups had nothing. Default-OFF — operator-mandated big-flaw fix.
+    "FORGE_BUY_STOP_CONT_ENABLED":            ("bb_breakout", "buy_stop_cont_enabled",            "bool01", None, None),
+    "FORGE_BUY_STOP_CONT_ATR_MULT":           ("bb_breakout", "buy_stop_cont_atr_mult",           "float", 0.1, 3.0),
+    "FORGE_GEOMETRY_BUY_STOP_CONT_SL_ATR_MULT": ("bb_breakout", "buy_stop_cont_sl_atr_mult",      "float", 0.0, 10.0),
+    "FORGE_BUY_STOP_CONT_LOT_FACTOR":          ("bb_breakout", "buy_stop_cont_lot_factor",        "float", 0.0, 2.0),
+    "FORGE_GEOMETRY_BUY_STOP_CONT_LEGS":       ("bb_breakout", "buy_stop_cont_legs",              "int",   1.0, 7.0),
+    "FORGE_BUY_STOP_CONT_EXPIRY_BARS":         ("bb_breakout", "buy_stop_cont_expiry_bars",       "int",   1.0, 50.0),
+    "FORGE_BUY_STOP_CONT_TP_ATR_MULT":         ("bb_breakout", "buy_stop_cont_tp_atr_mult",       "float", 0.0, 5.0),
+    "FORGE_BUY_STOP_CONT_MAX_RSI":             ("bb_breakout", "buy_stop_cont_max_rsi",           "float", 50.0, 100.0),
+    "FORGE_ATOM_BUY_STOP_CONT_M5_ADX_MIN":     ("bb_breakout", "buy_stop_cont_min_adx",           "float", 0.0, 80.0),
+    "FORGE_GATE_BUY_STOP_CONT_H1_DI_REQUIRE":  ("bb_breakout", "buy_stop_cont_require_h1_di",     "bool01", None, None),
+    "FORGE_BUY_STOP_CONT_REQUIRE_TREND_REGIME": ("bb_breakout", "buy_stop_cont_require_trend_regime", "bool01", None, None),
+    # v2.7.95 — SELL_LIMIT recovery (mirror of buy_limit_recovery). Captures
+    # Cardwell Bear Resistance pullback after BUY TP1 (sells the established rally high).
+    "FORGE_SELL_LIMIT_RECOVERY_ENABLED":      ("bb_breakout", "sell_limit_recovery_enabled",      "bool01", None, None),
+    "FORGE_SELL_LIMIT_RECOVERY_MAX_RSI":      ("bb_breakout", "sell_limit_recovery_max_rsi",      "float", 30.0, 90.0),
+    "FORGE_SELL_LIMIT_RECOVERY_LOT_FACTOR":   ("bb_breakout", "sell_limit_recovery_lot_factor",   "float", 0.0, 1.0),
+    "FORGE_SELL_LIMIT_RECOVERY_EXPIRY_BARS":  ("bb_breakout", "sell_limit_recovery_expiry_bars",  "int",   1.0, 20.0),
+    "FORGE_SELL_LIMIT_RECOVERY_SL_ATR_MULT":  ("bb_breakout", "sell_limit_recovery_sl_atr_mult",  "float", 0.1, 5.0),
+    # ─────────────────────────────────────────────────────────────────────────
     # H4 supplemental gates (2.7.10) — disabled by default in .defaults.json; enable per run for testing
     # H4 RSI gate: block SELL when H4 RSI >= h4_rsi_sell_max (Cardwell Bear Resistance exhaustion on H4)
     #              block BUY  when H4 RSI <= h4_rsi_buy_min  (Cardwell Bull Support exhaustion on H4)
@@ -319,6 +469,41 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_BREAKOUT_BE_CUSHION_ATR_MULT": ("bb_breakout", "be_cushion_atr_mult", "float", 0.0, 3.0),
     # 2.7.24 — TP2 SL ratchet to TP1 (Milestone 2 per FORGE_RATCHET_LOGIC_IDEAS.md).
     "FORGE_BREAKOUT_TP2_SL_RATCHET_ENABLED": ("bb_breakout", "tp2_sl_ratchet_enabled", "bool01", None, None),
+    # v2.7.96 Set 2 — TP2 banking close (operator-spec'd 25% of remaining at TP2 touch).
+    # Master flag default-OFF preserves ratchet-only behavior.
+    # Decision in docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14.
+    "FORGE_GEOMETRY_TP2_CLOSE_ENABLED": ("bb_breakout", "tp2_close_enabled", "bool01", None, None),
+    "FORGE_GEOMETRY_BREAKOUT_TP2_CLOSE_PCT": ("bb_breakout", "tp2_close_pct", "float", 0.0, 100.0),
+    # v2.7.97 Sets 6+7+8 — Direction Lock state machine + break-condition evaluator + no-auto-flip cooldown.
+    # All gated by direction_lock_enabled master flag (default 0 = current behavior preserved).
+    # Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §4 Sets 6/7/8.
+    "FORGE_SETUP_DIRECTION_LOCK_ENABLED": ("bb_breakout", "direction_lock_enabled", "bool01", None, None),
+    "FORGE_GATE_DIRLOCK_STRUCT_BREAK_ATR_MULT": ("bb_breakout", "dirlock_struct_break_atr_mult", "float", 0.0, 5.0),
+    "FORGE_GATE_DIRLOCK_FLIP_THRESHOLD": ("bb_breakout", "dirlock_flip_threshold", "int", 1.0, 7.0),
+    "FORGE_GATE_DIRLOCK_NEUTRAL_THRESHOLD": ("bb_breakout", "dirlock_neutral_threshold", "int", 1.0, 7.0),
+    "FORGE_GATE_DIRLOCK_H1_DISAGREEMENT": ("bb_breakout", "dirlock_h1_disagreement", "float", 0.0, 5.0),
+    "FORGE_TIMING_DIRLOCK_BREAK_BILATERAL_COOLDOWN_BARS": ("bb_breakout", "dirlock_break_bilateral_cooldown_bars", "int", 0.0, 50.0),
+    "FORGE_TIMING_DIRLOCK_SWING_LOOKBACK_BARS": ("bb_breakout", "dirlock_swing_lookback_bars", "int", 1.0, 50.0),
+    # v2.7.98 Set 1 — Multi-leg batch entry infrastructure (helper exists, NOT YET WIRED at setup-trigger sites).
+    # At batch_size=1, behavior identical to current single-position. Operator-decided: batch_size=4, Option 1A (literal).
+    "FORGE_GEOMETRY_BATCH_SIZE": ("bb_breakout", "batch_size", "int", 1.0, 7.0),
+    "FORGE_GEOMETRY_BATCH_MODE": ("bb_breakout", "batch_mode", "int", 0.0, 1.0),
+    "FORGE_GEOMETRY_BATCH_SPACING_ATR_MULT": ("bb_breakout", "batch_spacing_atr_mult", "float", 0.0, 5.0),
+    "FORGE_GEOMETRY_BATCH_MAX_LEGS": ("bb_breakout", "batch_max_legs", "int", 1.0, 7.0),
+    # v2.7.100 Set 3 Option 3C — SL-trail-driven dynamic TP3 (operator pick: literal "using the S/L movement").
+    # Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14.
+    "FORGE_GEOMETRY_TP3_MODE": ("bb_breakout", "tp3_mode", "int", 0.0, 1.0),
+    "FORGE_GEOMETRY_TP3_DIST_FROM_SL_ATR_MULT": ("bb_breakout", "tp3_dist_from_sl_atr_mult", "float", 0.5, 10.0),
+    # v2.7.101 Set 4 Option 4B — structural pending cancel (operator pick: "Cool Period NOT a timer").
+    # Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14.
+    "FORGE_TIMING_COOL_PERIOD_STRUCTURE_CANCEL_ENABLED": ("bb_breakout", "structure_flip_cancel_enabled", "bool01", None, None),
+    # v2.7.102 — TP pip-floor hybrid (operator spec TP1=40 pips, TP2=60 pips with ATR adaptation).
+    # Each TP tier: actual distance = max(pip_floor × PipSize, atr_mult × ATR). Default 0 = pure ATR (current).
+    # PipSize auto-detected: 2-digit XAUUSD pip=point; 3/5-digit broker pip=10×point.
+    # Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14 (TP1 hybrid pick).
+    "FORGE_GEOMETRY_TP1_PIP_FLOOR": ("bb_breakout", "tp1_pip_floor", "float", 0.0, 1000.0),
+    "FORGE_GEOMETRY_TP2_PIP_FLOOR": ("bb_breakout", "tp2_pip_floor", "float", 0.0, 1000.0),
+    "FORGE_GEOMETRY_TP3_PIP_FLOOR": ("bb_breakout", "tp3_pip_floor", "float", 0.0, 2000.0),
     # 2.7.25 — ATR trail (FORGE_RATCHET_LOGIC_IDEAS.md spec). Continuous SL trail at peak∓mult×ATR after TP1.
     "FORGE_BREAKOUT_ATR_TRAIL_ENABLED": ("bb_breakout", "atr_trail_enabled", "bool01", None, None),
     "FORGE_BREAKOUT_ATR_TRAIL_MULT": ("bb_breakout", "atr_trail_mult", "float", 0.3, 5.0),

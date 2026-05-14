@@ -195,6 +195,33 @@ The cheat sheet and analysis docs are writable.
 
 ---
 
+## PEMCG ARCHITECTURE REFERENCE (mandatory — single source of truth)
+
+**`docs/FORGE_PEMCG_ARCHITECTURE.md`** is the canonical reference for the PEMCG composite + its three layer consumers (UMCG / CVCSM / Layer-3 BB_EXHAUSTION_REVERSAL) + the two side gates (v2.7.93/94). Read it FIRST when:
+- Investigating any `pemcg_*_reversal_block`, `cvcsm_cooldown_block_*`, `bb_breakout_*_band`, or `bb_exhaustion_reversal_*` gate
+- Designing a new atom, a new layer consumer, or modifying any of the 7 PEMCG atoms
+- Answering operator questions about how the gates relate to each other (see §6 of that doc for the verbatim canonical Q&A from 2026-05-14)
+- Writing run analysis docs — cite `FORGE_PEMCG_ARCHITECTURE.md` §3/§5 for the gate stack
+
+**MUST update FORGE_PEMCG_ARCHITECTURE.md when**:
+1. A PEMCG atom changes (logic, threshold, added, removed) → update §2.1 + §11 changelog
+2. A new layer/consumer of `g_pemcg_*_warning_count` ships → update §3 + ASCII diagram §5
+3. CVCSM state machine logic changes → update §3.2 + §5b state diagram
+4. Layer 3 (BB_EXHAUSTION_REVERSAL) conditions change → update §3.3 + §5 single-tick flow
+5. A side gate gains/loses PEMCG dependency → move between §3 and §4
+6. Any vN ship touches PEMCG/UMCG/CVCSM/Layer-3 → §11 changelog one-liner
+7. Live evidence (§7) — refresh whenever forge-monitor tick shows counts moving >500
+
+**MUST also report in EVERY forge-monitor tick** the running counts of:
+- `pemcg_buy_reversal_block`, `pemcg_sell_reversal_block` (Layer 1 activity)
+- `cvcsm_cooldown_block_buy`, `cvcsm_cooldown_block_sell` (Layer 2 activity — flag transitions when ≥1 fires)
+- `bb_breakout_buy_below_band`, `bb_breakout_sell_above_band` (v2.7.93 side gate)
+- TAKEN count of `BB_EXHAUSTION_REVERSAL_SELL`, `BB_EXHAUSTION_REVERSAL_BUY` (Layer 3 actual fires)
+
+If any of these counts jumped meaningfully since the prior tick, surface it in the tick summary.
+
+---
+
 ## BOOLEAN COMPOSITE ANALYSIS (mandatory for every setup/signal decision)
 
 **Going-forward rule:** every analytical claim about whether a setup should fire — or
@@ -411,6 +438,335 @@ broker provides H4 MACD data — different brokers/accounts have different feed 
 
 **Always re-verify before relying on this list** — broker changes, account changes,
 or new symbols may shift coverage. Treat this table as "as of date verified", not eternal.
+
+---
+
+### MANDATORY: Inflection-Point Audit for every TAKEN BUY at RSI ≥ 70 (and SELL at RSI ≤ 30)
+
+**Operator mandate** (2026-05-13, post-G5006 -$1,760 loss): every new trade must validate market condition BEFORE the setup fires. No setup is allowed to bypass this universal pre-check. The G5006 case showed three existing atoms (`m5_strong_bar`, `m5_body_pct`, `m5_range_expanding`) **perfectly differentiated winner from loser** — but no gate enforced them.
+
+**When this audit fires**: any TAKEN signal where `direction='BUY' AND rsi ≥ 70` (BUY at exhaustion territory) OR `direction='SELL' AND rsi ≤ 30` (SELL into oversold). These are the inflection-point traps.
+
+**Audit query** (run mid-tick on every TAKEN that matches the trigger):
+
+```python
+import sqlite3
+DB = "<active source DB>"
+conn = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+# Find every BUY at RSI >= 70 (or SELL at RSI <= 30) in this run
+cur = conn.execute("""
+    SELECT id, datetime(time,'unixepoch') as t, setup_type, direction, ROUND(price,2),
+           ROUND(rsi,1), ROUND(adx,1), ROUND(macd_histogram,3),
+           ROUND(bb_upper,2), ROUND(vwap_price,2),
+           m5_strong_bar, m5_range_expanding, ROUND(m5_body_pct,3),
+           long_upper_wick, long_lower_wick, m5_doji
+    FROM SIGNALS WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+    AND outcome='TAKEN'
+    AND ((direction='BUY' AND rsi >= 70) OR (direction='SELL' AND rsi <= 30))
+    ORDER BY time DESC LIMIT 20
+""")
+for r in cur.fetchall():
+    sid, t, setup, dirn, px, rsi, adx, macd, bbu, vwap, strong, range_exp, body, uwick, lwick, doji = r
+    # 7-atom reversal-warning composite (matches v2.7.84 PEMCG design)
+    if dirn == 'BUY':
+        bbu_dist_atr = (px - bbu) / r[6] if r[6] else 0  # would need atr — fetch above
+        warnings = sum([
+            rsi >= 70,
+            (body or 0) < 0.5,
+            (strong or 0) == 0,
+            (range_exp or 0) == 0,
+            bbu_dist_atr < 0.3,
+            macd < 0,  # already negative at the top
+            (uwick or 0) == 1,  # long upper wick = rejection
+        ])
+        verdict = "⚠ REVERSAL TRAP" if warnings >= 3 else "✓ continuation"
+        print(f"  {t}  {setup} {dirn} @{px}  RSI={rsi} ADX={adx} MACD={macd}  warnings={warnings}/7  {verdict}")
+```
+
+**What to report**: for every TAKEN BUY at RSI≥70 (or SELL at RSI≤30), report the 7-atom warning count. If ≥3 → flag as **REVERSAL TRAP** and recommend the PEMCG composite (v2.7.84) to operator.
+
+**Why this matters**: this is the highest-loss pattern in FORGE history (G5005 -$1,694 Run 30, G5005 -$2,934 Run 32, G5006 -$1,760 Run 35). All three were BB_BREAKOUT BUYs at RSI ≥73 with weak m5 candles. The atoms existed to catch them; no gate enforced them.
+
+**Anti-pattern**: writing "G5006 had RSI 73 so it was overbought" — RSI alone is not the differentiator (G5005 also had RSI 73 and WON). Always use the boolean composite (multi-atom) to differentiate winner from loser. RSI is necessary but not sufficient.
+
+**The 3 bar-quality atoms catch reversal traps EVEN WHEN RSI is not overbought**:
+- G5015 (22:37 Apr 1, MOMENTUM_DUMP BUY @4773): RSI 59 (not overbought), but `m5_strong_bar=0`, `m5_body_pct=0.26`, `m5_range_expanding=0` → 5/6 PEMCG warnings → was a trap that lost -$564. RSI-only audit would have MISSED this. Bar-quality audit catches it.
+
+So the audit query trigger expands beyond `rsi >= 70`:
+
+**Audit triggers** (any of these makes a TAKEN BUY suspect — run the 7-atom composite on each):
+1. RSI ≥ 70 (classic overbought)
+2. `m5_strong_bar == 0` AND `m5_body_pct < 0.5` (weak-bar entry — most reliable single condition)
+3. Direction = BUY AND `bb_upper - close < 0.3×ATR` (entering at/below BB upper with no breakout)
+4. Direction = BUY AND `vwap_dist_atr > 2.0` (overextended from mean)
+
+For SELL: mirror conditions (RSI ≤ 30, weak bar with body < 0.5, bb_lower distance, vwap_dist negative).
+
+**Cross-reference**: `docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md` is the canonical analysis. Cite it from every run analysis that surfaces a similar trap.
+
+---
+
+### MANDATORY: Missed-Opportunity Post-Mortem (per-run end-of-monitoring)
+
+**Operator mandate** (2026-05-14): every monitoring session that runs to stop condition must audit for **missed opportunities** — sessions / days where FORGE took ≤ 1 trade despite a 40+ pip range or directional move. The audit is the symmetric complement to the loss-based post-mortem: losses are about what we SHOULDN'T have entered, misses are about what we SHOULD HAVE.
+
+**When this audit fires**: at stop condition, for every calendar day (UTC) in the simulated period. Run it ALONGSIDE the loss post-mortem — both write to the per-run analysis doc.
+
+**Threshold for declaring a "miss"** (anti-pattern guards):
+- Day range ≥ 40 pts (~$4 XAUUSD swing) AND FORGE took ≤ 1 trade that day, OR
+- Any single session window (Asian / London / NY-AM / LC+NY-PM) had ≥ 40 pt move AND FORGE took 0 trades during it.
+- **Sub-40-pt moves are NOT misses** — they don't justify a new composite (`docs/missed_opportunities/INDEX.md` anti-pattern flag #1).
+- Days with zero SIGNALS rows = tester didn't run (broker holiday, weekend). NOT a miss — document the gap and skip.
+
+**Run agnosticism rule**: A "miss" is defined against the LATEST EA version's gates (the run being monitored). Earlier-version captures on the same day are NOT misses *unless* they would have been confirmed winners (positive net P&L after SL/TP) — coincidental survival doesn't justify a regression flag.
+
+**Audit query** (template — adapt run_id to the active run):
+
+```sql
+-- Q-MO1: Day-level summary
+WITH day_data AS (
+  SELECT date(time,'unixepoch') AS day, run_id,
+         MIN(m5_low_0) AS lo, MAX(m5_high_0) AS hi,
+         SUM(CASE WHEN outcome='TAKEN' THEN 1 ELSE 0 END) AS taken
+  FROM SIGNALS WHERE run_id = <ACTIVE> AND m5_high_0 > 0
+  GROUP BY day
+)
+SELECT day, printf('%.1f',(hi-lo)) AS range_pts, taken,
+       CASE WHEN (hi-lo) >= 40 AND taken <= 1 THEN 'MISS_CANDIDATE' ELSE 'ok' END AS verdict
+FROM day_data ORDER BY day;
+
+-- Q-MO2: Per-session breakdown
+WITH base AS (
+  SELECT date(time,'unixepoch') AS day,
+    CASE
+      WHEN CAST(strftime('%H',time,'unixepoch') AS INT) BETWEEN 0 AND 6 THEN 'asian'
+      WHEN CAST(strftime('%H',time,'unixepoch') AS INT) BETWEEN 7 AND 12 THEN 'london'
+      WHEN CAST(strftime('%H',time,'unixepoch') AS INT) BETWEEN 13 AND 15 THEN 'ny_am'
+      WHEN CAST(strftime('%H',time,'unixepoch') AS INT) BETWEEN 16 AND 20 THEN 'lc_ny_pm'
+      ELSE 'after_hours' END AS sess,
+    m5_high_0, m5_low_0, outcome
+  FROM SIGNALS WHERE run_id = <ACTIVE> AND m5_high_0 > 0
+)
+SELECT day, sess,
+       printf('%.1f',(MAX(m5_high_0)-MIN(m5_low_0))) AS pips,
+       SUM(CASE WHEN outcome='TAKEN' THEN 1 ELSE 0 END) AS taken
+FROM base GROUP BY day, sess ORDER BY day, sess;
+```
+
+**Output location**: `docs/<month>/<period>.md` per the schema in `docs/april/2026-03-31_to_2026-04-02.md` (the canonical template). For each period:
+- File path follows `docs/<month-name-lowercase>/YYYY-MM-DD_to_YYYY-MM-DD.md`.
+- Period boundaries chosen for logical date clusters (Mon-Wed, weekend-bracketed, etc.), NOT arbitrary fixed-length windows.
+
+**Index update** (mandatory): every new period doc adds a row to `docs/missed_opportunities/INDEX.md` with:
+- Period doc link
+- Date range
+- Miss count
+- Composites proposed (names + brief)
+- Status (REVIEW / PHASE_1 / PHASE_2 / PHASE_3 / ARCHIVED)
+- Last-updated date
+
+**Per-period doc structure** (8 mandatory sections):
+1. **§1 Day-by-day market action summary** — OHLC table + per-session range matrix + verdict per day
+2. **§2 Per-missed-opportunity reconstruction** — one subsection per miss with indicator snapshot at would-be entry, gate(s) that blocked, inverse-composite candidate
+3. **§3 Day-type classification** — chop / trend / chop-in-bull / reversal / news-impulse matrix
+4. **§4 Industry research findings** — Pattern A/B/C... with verbatim quotes + URLs (per the WebSearch MANDATORY directive)
+5. **§5 Proposed composites** — 1-3 composites per period, PEMCG-style with 6-8 atoms, threshold, truth table replay against misses AND known losers (G5006, G5048, Apr-8-04:10-knife-catch must SKIP)
+6. **§6 Validation plan** — Phase 1 shadow-log → Phase 2 live-capped → Phase 3 full deploy, with refute conditions
+7. **§7 Verification queries** — every numeric claim has a Q# SQL (atlas §13 mirrored)
+8. **§8 References** + **§9 Changelog (append-only)**
+
+**Composite proposal rule** (enforced):
+- Follow `docs/FORGE_PEMCG_ARCHITECTURE.md` 7-atom warning composite pattern (6-8 atoms typical)
+- Threshold ≥ supermajority (≥ 0.7 × atom count) per memory `feedback_supermajority_composite_threshold.md`
+- Truth table MUST include known losers (G5006-class BB_BREAKOUT retest, G5048-class against-market) and verify they SKIP
+- Ship behind default-OFF flag: `FORGE_SETUP_<NAME>_ENABLED=0`
+- Gate code naming per `FORGE_NAMING_CONVENTIONS.md §4.7`: `<composite_name>_<gate_concept>_<direction?>`
+- Operator-rule compliance check: for SELL composites in chop, verify `feedback_xauusd_chop_retraces_up.md` (gold chops bounce UP — extra-narrow SELL filters required)
+
+**Cross-reference (mandatory)**: every per-run analysis doc must end with a `## Missed-Opportunity Hook` subsection citing:
+1. The period doc(s) covering the run's date range
+2. Which proposed composites would have captured trades in this run (if any)
+3. Any new misses identified that should append a new period doc OR extend an existing one
+
+**Anti-patterns**:
+- Classifying a 30-pip move as a "miss" — threshold is 40+ pts.
+- Proposing a composite without a truth-table replay against G5006/G5048 known losers — they MUST SKIP.
+- Skipping WebSearch industry validation — every composite needs ≥ 2 canonical-pattern citations (per the WebSearch MANDATORY directive below).
+- Treating EA-version regressions as misses when they're correct anti-loss tightening (Run 9 v2.7.94 anti-retest BB_BREAKOUT gate correctly blocks G5006-class — that's PROGRESS, not a miss).
+
+**Cross-references**:
+- `docs/missed_opportunities/INDEX.md` — the index
+- `docs/april/2026-03-31_to_2026-04-02.md` — canonical example (Period 1, 5 misses → 3 composites)
+- `docs/april/2026-04-06_to_2026-04-08.md` — Period 2 (4 misses → 2 NEW + 2 reused composites)
+- `docs/FORGE_CASE_STUDY_2026_03_31_to_04_08.md` — precursor case study with V2/V3 atom extensions
+
+---
+
+### MANDATORY: FORGE Core Logic Design Tracker — continuous-update mandate
+
+**Operator mandate** (2026-05-14): "create a document tracking this forge ea discussion that must be kept up to date ... update skill for continuous update". The earlier multi-leg cool-period review (`docs/response-core-logic-design.md`) addressed the wrong architectural paradigm; the corrected design is tracked in `docs/FORGE_CORE_LOGIC_DESIGN.md` as a series of "Sets" (Set 1 through Set N), each documenting one gap between operator-described intent and FORGE code.
+
+**When this mandate fires**: any monitoring session, refactor, or analysis that touches ANY of:
+- Multi-leg entry / cascade / pyramid logic (`ArmPostTP1Ladder` and callers)
+- TP1/TP2/TP3 tier semantics (`ManageOpenGroups` TP-tier paths, `tp1_close_pct`, `tp2_close_pct`)
+- Cool-period / pending-order lifecycle (`sell_stop_cont_*`, `buy_stop_cont_*`, `*_recovery_*`, `CancelPendingOnDailyFlip`)
+- Direction-lock state machine (any new state struct or flag)
+- SL trail across positions (`move_be_on_tp1`, cushion, ratchet)
+
+**Required reads at session start**:
+1. Read `docs/FORGE_CORE_LOGIC_DESIGN.md` §1 (operator verbatim intent) and §3 (mismatch summary) — internalize current alignment status.
+2. Skim §4 Sets relevant to the session's focus.
+3. Check §9 changelog tail — has the doc been updated more recently than the relevant `ea/FORGE.mq5` cite? If not, your code understanding may be stale.
+
+**Required writes at session end**:
+1. **If a Set's behavior was touched in code** — update that Set's Status line in `docs/FORGE_CORE_LOGIC_DESIGN.md` §4 + append a §9 entry (dated, with EA version + file:line cite).
+2. **If operator clarified intent during the session** — update the relevant Set's "Operator intent" subsection + append §9.
+3. **If a new gap was identified** — add as a new Set §4 subsection (do not renumber existing Sets) + append §9.
+4. **If a Set is superseded** by a new approach — mark `Status: superseded by Set N` + cross-link in §9; do not delete the superseded Set.
+
+**Cross-linking rule**: every per-run analysis doc (`docs/FORGE_RUN<N>_ANALYSIS.md`) that surfaces a multi-leg / cool-period / TP-tier / SL-trail anomaly MUST cross-link to the matching Set in this tracker. Format: `(see FORGE_CORE_LOGIC_DESIGN.md Set N)`.
+
+**Anti-patterns to avoid**:
+- Editing `ea/FORGE.mq5` cascade / cool-period code without consulting this tracker first.
+- Writing prose updates in §4 bodies without logging in §9. Always log.
+- Renumbering Sets when one is superseded. Mark `superseded` instead.
+- Treating the v2.7.95 BUY-side cascade ship as the "fix" for the operator's described multi-leg system — it closed one asymmetry but is on the existing pending paradigm; Sets 1-10 are the real multi-leg redesign.
+
+**Document path**: `/Users/olasumbo/signal_system/docs/FORGE_CORE_LOGIC_DESIGN.md`
+
+---
+
+### MANDATORY: WebSearch industry validation BEFORE proposing any composite, atom, or gate
+
+**Operator mandate** (2026-05-13): "I also need you to a google search on any plan you wanna do to make sure that it conforms with Gold and taking advantage."
+
+Before proposing ANY new composite / atom / gate / setup / parameter change, you MUST run WebSearch to validate against canonical XAUUSD scalping / MT5 EA / technical-analysis literature. This is on top of the existing Industry-research requirement in the RECOMMENDATIONS PATTERN section — it now applies to ALL composite work, not just recommendations.
+
+**Search queries to run** (pick the most relevant per proposal):
+
+| Proposal type | Suggested queries |
+|---|---|
+| Reversal/exhaustion gate | "Bollinger Band upper exhaustion reversal MACD divergence weak candle composite filter MQL5 <current year>" |
+| Cooldown logic | "scalping post-trade cooldown re-entry same direction filter prevent overtrading MQL5 EA best practice" |
+| Pre-fill validation | "MT5 pending order pre-fill market condition validation cancel before fill MQL5" |
+| Trend continuation | "MT5 EA trend continuation entry filter ADX RSI BB <current year>" |
+| Killzone/session | "ICT killzone Asian London NY session XAUUSD intraday rules <current year>" |
+| Setup naming | "XAUUSD gold scalping setup catalog breakout pullback reversal momentum" |
+
+**What to capture from each search**:
+1. Quote one canonical pattern (verbatim) with source URL
+2. Note if proposal conforms or deviates — if deviation, justify why
+3. Adapt to FORGE's specifics — do NOT copy-paste code that won't compile
+4. If multiple sources disagree, document the disagreement + pick the more conservative path
+
+**Anti-pattern**: writing "I think we should X" without ANY web search citation. The MT5/MQL5 community has worked on most scalping problems for 15+ years. If you can't find prior art, search harder — don't invent novel approaches when established ones exist.
+
+**Where to log the citations**:
+- Recommendations section of run analysis docs (per RECOMMENDATIONS PATTERN)
+- Case study docs (§4 industry pattern subsection)
+- Atlas §13 Command Log (if the search informed an atlas update)
+
+The search is part of the proposal's evidence, not a separate workstream. A proposal without an industry-research citation is incomplete.
+
+---
+
+### MANDATORY: validate market condition at pending-order FILL time, not just placement
+
+**Operator mandate** (2026-05-13, post-G5006 loss): "Our EA logic must check market price before allow on unfilled order in. Also we were selling and you just went to buy without data."
+
+FORGE places three classes of orders:
+1. **Market-immediate** (e.g. BB_BREAKOUT BUY @ market) — fills instantly; PEMCG check at placement suffices
+2. **Pending SELL_STOP / BUY_LIMIT cascade** (placed N pts below/above market, fills when price hits trigger) — **TIME LAG between placement and fill**
+3. **Pending limit-recovery / continuation orders** (e.g. SELL_STOP_CONTINUATION) — same as #2, larger window
+
+For classes #2 and #3, the EA places the pending and walks away. By the time the broker fills it, the M5 atoms may have COMPLETELY FLIPPED. There is no re-validation at fill time. This is the architectural gap the operator wants closed.
+
+**Industry pattern** (per WebSearch — to be verified):
+> "Smart pending order management": EA monitors active pendings and CANCELS them when entry conditions break (regime flip, opposite-direction signal, time expiry, indicator inversion).
+
+**How to audit** (run mid-monitoring, surface in every analysis doc):
+
+```python
+# Find all CASCADE FILLS (magic in {group_magic + 5001..5009}) that resulted in losses
+# Compare their atom state at FILL time vs at the original PLACEMENT signal time.
+# Atoms that flipped between placement and fill are the smoking gun for "no pre-fill check".
+
+cur.execute("""
+    SELECT t.time as fill_time, t.magic, t.profit, t.comment,
+           (SELECT MIN(s.time) FROM SIGNALS s WHERE s.magic = t.magic AND s.outcome='TAKEN') as placement_time
+    FROM TRADES t WHERE t.run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+    AND t.profit < 0
+    AND t.magic > (SELECT magic_base FROM TESTER_RUNS ORDER BY id DESC LIMIT 1) + 5000
+""")
+# For each loss, query SIGNALS at fill_time to see if atoms had flipped
+```
+
+**Recommendation pattern** when this is found (per RECOMMENDATIONS PATTERN section):
+- Title: "Pending order filled into reversed market — no pre-fill validation"
+- Evidence: cite specific magic, placement time, fill time, atom flip
+- Proposed gate: new `cancel_pending_on_atom_flip` background check that runs every M5 close and cancels any FORGE-owned pending where the PEMCG warning count crosses a threshold
+
+This is queued as a **post-v2.7.84 enhancement** (call it v2.7.85+) — out of scope for the immediate PEMCG/post-TP-cooldown ship.
+
+---
+
+### MANDATORY: Canonical entry-gating design (UMCG + SL-only CVCSM with bidirectional retry)
+
+**Operator mandate** (2026-05-13, final): "I like the state machine — because it would have been useful. It just have to have a logic that evaluate both sell and buy and retry."
+
+The canonical FORGE entry-gating system has **three layers**, in this exact order, evaluated at every setup trigger:
+
+#### Layer 1 — UMCG (Universal Market Condition Gate)
+
+- 7-atom PEMCG_BUY composite + 7-atom PEMCG_SELL composite (mirror)
+- Evaluated stateless at every BUY/SELL setup trigger
+- BUY: SKIP if `pemcg_buy_warnings >= 3` (`gate_reason: pemcg_buy_reversal_block`)
+- SELL: SKIP if `pemcg_sell_warnings >= 3` (`gate_reason: pemcg_sell_reversal_block`)
+- **Bidirectional and independent** — BUY blocked doesn't block SELL
+- Stateless, recomputed at every M5 close
+
+#### Layer 2 — CVCSM (Smart SL-Triggered Cooldown with Bidirectional Retry)
+
+- State per direction: `OPEN | COOLDOWN | RETRYING`
+- Independent BUY/SELL state machines
+- **Trigger entering COOLDOWN**: SL fired in that direction. **TP firing does NOT trigger cooldown.**
+- **Retry logic**: every M5 close, re-evaluates PEMCG for both directions independently
+- Release: PEMCG warnings < threshold for N consecutive M5 bars (default 2 = 10 min)
+- Safety: hard timeout at max_cooldown_sec (default 1800s / 30 min)
+- Opposite direction is NEVER blocked by same-direction cooldown
+
+#### Layer 3 — Opposite-direction reversal capture
+
+When PEMCG_BUY warnings ≥ 4 (high reversal-warning), a `BB_EXHAUSTION_REVERSAL_SELL` setup can fire. Mirror for SELL-side. This converts the very warnings that blocked BUYs into SELL triggers — captures the reversal move rather than just preventing the wrong-side entry.
+
+**Why this specific design**:
+
+| Concern | How the design addresses it |
+|---|---|
+| TP cooldown blocks legitimate continuation entries | TPs don't trigger cooldown — only SLs |
+| Same-direction cooldown blocks legitimate opposite-direction reversal trades | Independent BUY/SELL state machines |
+| Time-based cooldown blind to market state | Retry every M5 close — release when atoms confirm |
+| Cooldown after loss permanently locks entries | Retry mechanism + N-clean-bars release |
+| State machine adds complexity without value | Only triggers on SL, not TP — minimal state changes per session |
+| Wrong-side entries leak through | UMCG gate at trigger time catches them even without cooldown |
+
+**Anti-patterns** (rejected at review):
+- ❌ TP-firing triggers cooldown
+- ❌ Same-direction cooldown blocking opposite-direction entries
+- ❌ Time-only release (must be atom-condition based, with timer as safety only)
+- ❌ Per-setup cooldown timers (Layer 2 is UNIVERSAL across all 14 setups per direction)
+- ❌ Cooldown without a retry mechanism
+
+**Required pattern** when proposing new entry logic:
+1. Specify which **layer** the proposal belongs to (UMCG composite, CVCSM trigger, or new reversal capture)
+2. State all atoms feeding the composite (cite existing globals; mark new ones as **add**)
+3. Provide threshold + N-bar release counts with justification
+4. Replay on at least 2 known winners + 2 known losers — truth-table format
+5. Document the mirror direction (every BUY composite ships with its SELL mirror, and vice versa)
+6. Cite industry pattern + WebSearch source per the WebSearch mandate
+7. State the gate_reason code that will be emitted (per FORGE_NAMING_CONVENTIONS.md §4.7)
+
+**Reference design**: see `docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md` + v2.7.84 ship notes. The 7-atom PEMCG composite is the canonical market-condition signal.
 
 ---
 

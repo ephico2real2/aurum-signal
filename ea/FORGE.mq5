@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.138"
+#property version "2.172"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.68";
+const string FORGE_VERSION = "2.7.102";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -260,6 +260,7 @@ double   g_eval_m5_trend         = 0.0;
 //   Available in market_data.json entry_atoms block AND usable for gating MOMENTUM_DUMP.
 double   g_eval_m5_velocity_1bar  = 0.0; // |close[0] - close[1]| / atr — single M5 bar speed
 double   g_eval_m5_velocity_5bar  = 0.0; // |close[0] - close[5]| / atr — sustained 5-bar displacement
+double   g_eval_m5_velocity_5bar_signed = 0.0; // v2.7.69 — (close[0] - close[5]) / atr — SIGNED 5-bar displacement (<0 = falling fast)
 double   g_eval_m5_adx_delta_5bar = 0.0; // adx[0] - adx[5] — momentum strengthening (>0) or fading (<0)
 double   g_eval_m5_macd_slope_5bar= 0.0; // (macd[0] - macd[5]) / atr — MACD direction change rate
 double   g_eval_m5_atr_ratio_5bar = 0.0; // atr[0] / atr[5] — volatility expansion (>1) or contraction (<1)
@@ -410,6 +411,8 @@ datetime g_momentum_dump_composite_test_last_sell_time = 0;
 // Pairs with dump_below_bbl_block_sell (Run 26 G5003 was a textbook SELL-block case;
 // this setup turns the same condition into a BUY entry signal).
 datetime g_bb_lower_reversion_buy_last_time = 0;
+// v2.7.70 — NY_SESSION_BEARISH_BREAKOUT_SELL cooldown anchor
+datetime g_ny_session_bearish_sell_last_time = 0;
 // v2.7.59 — BLR_BUY consecutive-loss tracking (falling-knife throttle)
 datetime g_blr_buy_recent_sl_times[10];   // ring buffer of recent SL timestamps
 int      g_blr_buy_recent_sl_count  = 0;  // active count within window
@@ -426,6 +429,66 @@ int g_dump_pyramid_consec_sell_count = 0;
 // 2.7.38 Tier 1 Boolean Composites — runtime state
 datetime g_last_chop_buy_exit_time         = 0; // last BULL_DAY_DIP_BUY TP1 exit time (re-entry cooldown anchor)
 datetime g_last_fractional_sell_in_bull_time = 0; // last FRACTIONAL_SELL_IN_BULL entry time
+// v2.7.78 — REVERSE_SELL_IN_BULL: stricter counter-trend SELL than FRACTIONAL, full 0.5 lot.
+// Designed to catch G5005-class direction-flip pattern (RSI≥72 + VWAP overextended in TREND_BULL).
+datetime g_last_reverse_sell_in_bull_time = 0;
+// v2.7.79 — GRINDING_SELL: catches slow-bearish grind moves OUTSIDE killzone windows.
+// Designed to fix Apr 8 12:00-14:00 descent ($4820→$4782 = -38pts) that NY_SESSION_BEARISH missed
+// because that period falls between LONDON_OPEN_KZ (07-09) and NY_OPEN_KZ (13-15) windows.
+datetime g_last_grinding_sell_time = 0;
+// v2.7.81 — ASIA_CAPITULATION_BUY: session-agnostic BUY catcher for pre-London V-flushes.
+// Designed to fix Apr 6 03:30 @ 4603 RSI 23 type bottoms that ALL existing BUY setups miss because
+// the session_off gate blocks them at the door (Asia hours are outside London/NY windows).
+datetime g_last_asia_capitulation_buy_time = 0;
+// v2.7.84 — 3-layer entry-gating system (UMCG + CVCSM + BB_EXHAUSTION_REVERSAL).
+// See docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md §4 for design rationale.
+// Layer 1 — UMCG (Universal Market Condition Gate): 7-atom PEMCG_BUY + 7-atom PEMCG_SELL composites,
+//   computed each tick in ForgeEvalAtoms, evaluated as gate at every BUY/SELL setup trigger.
+// Layer 2 — CVCSM (Smart SL-Triggered State Machine, bidirectional retry): per-direction state
+//   transitions {OPEN, COOLDOWN, RETRYING} driven by SL-fire events + M5-close PEMCG retries.
+// Layer 3 — BB_EXHAUSTION_REVERSAL_SELL + mirror: when one direction's PEMCG hits ≥4/7, the
+//   opposite-direction setup fires (the warnings that BLOCK a BUY become a SELL trigger).
+int      g_pemcg_buy_warning_count   = 0;   // 0-7, counts BUY-reversal-warning atoms (PEMCG_BUY composite)
+int      g_pemcg_sell_warning_count  = 0;   // 0-7, mirror — counts SELL-reversal-warning atoms
+int      g_cvcsm_state_buy           = 0;   // 0=OPEN, 1=COOLDOWN, 2=RETRYING (BUY direction)
+int      g_cvcsm_state_sell          = 0;   // 0=OPEN, 1=COOLDOWN, 2=RETRYING (SELL direction)
+datetime g_cvcsm_cooldown_start_buy  = 0;   // timestamp BUY cooldown began (safety timeout reference)
+datetime g_cvcsm_cooldown_start_sell = 0;
+int      g_cvcsm_clean_bars_buy      = 0;   // consecutive clean-bar count in RETRYING (BUY)
+int      g_cvcsm_clean_bars_sell     = 0;
+datetime g_cvcsm_last_eval_bar       = 0;   // last M5 bar time at which EvalCVCSM ran (prevents per-tick churn)
+datetime g_last_bb_exhaustion_reversal_sell_time = 0;  // cooldown anchor (BB_EXHAUSTION_REVERSAL_SELL)
+datetime g_last_bb_exhaustion_reversal_buy_time  = 0;  // mirror
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.7.97 Sets 6+7+8 — Direction Lock state machine + evaluator + no-auto-flip.
+// Independent from CVCSM (which is SL-triggered post-loss cooldown). This system
+// commits the EA to one direction once a Leg 1 fires; lock breaks only on:
+//   1. Structural level violated (body close beyond entry swing ± atr_mult)
+//   2. Cool-period re-eval returns opposite (PEMCG flip) or NEUTRAL (bilateral high)
+//   3. Profit target hit (entire batch closed via TP3 or manual close)
+// On break: bilateral cooldown (suppress both directions) until N clean M5 bars elapse
+// AND a fresh setup trigger fires (no time-only reset). Decision in
+// docs/FORGE_CORE_LOGIC_DESIGN.md §4 Sets 6/7/8. Default-OFF.
+// ─────────────────────────────────────────────────────────────────────────────
+// State enum mirrors CVCSM pattern (int rather than enum for backward-compat with logs)
+//   0 = IDLE              — no active Leg 1 in this direction
+//   1 = ARMED             — Leg 1 fired; direction committed
+//   2 = COOLDOWN_REEVAL   — at every M5 close, re-evaluate (transient, can return to ARMED)
+//   3 = DISCARDED         — lock broken; bilateral cooldown active
+int      g_dirlock_state_buy        = 0;   // current state (0=IDLE/1=ARMED/2=COOLDOWN_REEVAL/3=DISCARDED)
+int      g_dirlock_state_sell       = 0;   // mirror
+datetime g_dirlock_armed_time_buy   = 0;   // timestamp when this direction entered ARMED
+datetime g_dirlock_armed_time_sell  = 0;
+int      g_dirlock_active_group_buy  = -1; // index of the group that armed BUY (or -1)
+int      g_dirlock_active_group_sell = -1; // mirror
+datetime g_dirlock_last_break_time  = 0;   // timestamp of last lock-break (drives bilateral cooldown gate)
+datetime g_dirlock_last_eval_bar    = 0;   // last M5 bar time at which UpdateDirLockState ran
+// Verdict constants for EvaluateDirectionLock — int returns match style of other gates
+#define DLV_VALID         0
+#define DLV_INVALID       1
+#define DLV_NEUTRAL       2
+#define DLV_PROFIT_TARGET 3
+
 datetime g_last_intraday_reversal_log_bar  = 0; // throttle entry_quality_intraday_reversal_buy_block log
 datetime g_last_chop_block_sell_log_bar    = 0; // throttle entry_quality_chop_block_sell log
 
@@ -512,10 +575,46 @@ struct ScalperConfig {
    double breakout_tp3_atr_mult;
    double breakout_tp4_atr_mult;
    double breakout_tp1_close_pct;
+   double breakout_tp2_close_pct;   // v2.7.96 Set 2 — % of REMAINING positions to close at TP2 touch for BREAKOUT family (default 0 = ratchet-only; 25 = operator's spec). Gated by tp2_close_enabled master flag.
    bool   breakout_require_m15;
    bool   breakout_move_be;
    double breakout_be_cushion_atr_mult;  // 2.7.23: when >0, BE-trail moves SL to entry∓mult×ATR (cushion below/above entry) instead of tight entry±spread+5pts buffer. Run 17 G5002 ATR=7.59 clipped at BE+0.35 then market ran +18pts — wider cushion captures continuation. 0=legacy tight buffer.
    bool   breakout_tp2_sl_ratchet_enabled;  // 2.7.24: Milestone 2 — when TP2 reached, ratchet SL to TP1 level (locks +TP1-distance profit). SL invariant preserved (only ratchets into profit). Per FORGE_RATCHET_LOGIC_IDEAS.md spec section 5/6.
+   bool   tp2_close_enabled;            // v2.7.96 Set 2 — master flag for TP2 banking across all setup families (default false = current ratchet-only behavior). When true, ManageOpenGroups closes <family>_tp2_close_pct of remaining positions at TP2 touch BEFORE the existing SL ratchet. Decision in docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14.
+   // v2.7.97 Sets 6+7+8 — Direction Lock state machine + evaluator + no-auto-flip.
+   bool   direction_lock_enabled;       // master flag (default false). When true, every setup trigger checks IsDirLockBlocked() before firing.
+   double dirlock_struct_break_atr_mult; // body close beyond entry_swing ± this × atr → break (Set 7 trigger 1). Default 0.5.
+   int    dirlock_flip_threshold;       // opposite-direction PEMCG warnings ≥ this → INVALID (Set 7 trigger 2). Default 5.
+   int    dirlock_neutral_threshold;    // bilateral PEMCG warnings ≥ this on BOTH directions → NEUTRAL. Default 3.
+   double dirlock_h1_disagreement;      // |h1_trend| disagreement vs locked direction → INVALID. Default 0.5.
+   int    dirlock_break_bilateral_cooldown_bars;  // Set 8 — M5 bars to block BOTH directions after lock break. Default 0 (off); recommend 2.
+   int    dirlock_swing_lookback_bars;  // bars to scan for entry_swing_high/low (Set 7 break-level reference). Default 5.
+   // v2.7.98 Set 1 — Multi-leg batch entry infrastructure (default-OFF; helper exists but NOT YET WIRED into setup-triggers).
+   //   Operator decision (2026-05-14): Option 1A (literal N positions), batch_size=4 default when enabled.
+   //   Industry consensus (MQL5 Pyramid systems): 3-4 max per pyramid, each leg independent.
+   //   At batch_size=1, behavior is identical to current single-position; flip to 2-7 to enable batching
+   //   AFTER setup-trigger sites are wired (post-v2.7.98).
+   int    batch_size;                 // legs at Leg 1 entry (default 1 = current behavior; 4 = operator spec)
+   int    batch_mode;                 // 0=literal (N separate positions, 1A), 1=virtual (1 position + virtual count, 1B), default 0
+   double batch_spacing_atr_mult;     // staggered entry spacing across N legs (0 = all at market, default 0; industry 0.5×ATR)
+   int    batch_max_legs;             // hard cap (default 7; never spawn more than this regardless of batch_size setting)
+   // v2.7.100 Set 3 Option 3C — SL-trail-driven dynamic TP3 (operator's literal phrasing "using the S/L movement").
+   //   As SL ratchets up (BUY) / down (SELL) per the ATR-trail or M2 ratchet, TP3 extends in lockstep
+   //   so the runner has more room as profit accumulates. Direction-preserving invariant: TP3 never retracts
+   //   toward current price (BUY only raises, SELL only lowers).
+   int    tp3_mode;                   // 0=fixed (current default; tp3 = entry + tp3_atr_mult × ATR), 1=sl_trail (operator pick 3C)
+   double tp3_dist_from_sl_atr_mult;  // when tp3_mode=1: tp3 = current_sl + dist × ATR (BUY) / current_sl - dist × ATR (SELL). Default 2.0.
+   // v2.7.101 Set 4 Option 4B — Structural pending cancel (operator pick: "NOT a timer").
+   //   Every M5 close, iterate active cascade pendings; cancel those whose group's
+   //   EvaluateDirectionLock returns INVALID or NEUTRAL. Pendings keep broker-side expiry
+   //   as safety net; this provides faster structure-driven cancellation.
+   bool   structure_flip_cancel_enabled;  // master flag (default false; current behavior = timer-only)
+   // v2.7.102 — TP pip-floor hybrid. Each tier's actual distance = max(<tier>_pip_floor × pip_size, atr_mult × ATR).
+   //   pip_size auto-detected from SYMBOL_DIGITS via PipSize() helper.
+   //   Default 0 = pure ATR (current behavior). 40 = operator spec floor for TP1; 60 for TP2.
+   double tp1_pip_floor;
+   double tp2_pip_floor;
+   double tp3_pip_floor;
    bool   breakout_atr_trail_enabled;       // 2.7.25: ATR trail per spec — after TP1, track group peak/trough and trail SL at peak ∓ trail_mult×ATR. Runs every tick alongside discrete milestones; SL invariant preserved.
    double breakout_atr_trail_mult;          // 2.7.25: ATR multiplier for trail SL. Default 1.5 per spec.
    // 2.7.27 — Daily Direction Gate (Filters 1+2+3) — Run 17 G5048 fix.
@@ -891,6 +990,37 @@ struct ScalperConfig {
    double buy_limit_recovery_lot_factor; // lot factor (default 0.25)
    int    buy_limit_recovery_expiry_bars;// cancel if not filled within N M5 bars (default 4 = 20 min)
    double buy_limit_recovery_sl_atr_mult;// SL = TP1 - ATR × this below the crash low (default 1.0)
+   // ─────────────────────────────────────────────────────────────────────────────
+   // v2.7.95 — BUY-side cascade (mirror of sell_stop_cont) — post-TP1 continuation
+   // for BUY setups. Closes the long-standing asymmetry: SELL setups had 7 cascade
+   // legs + 1 counter-trend recovery (slots 2-9); BUY setups had NONE. Day-3 BUY
+   // continuation was planned in 2.7.10 but never shipped.
+   // Geometry mirror: SELL_STOP at tp1−atr×mult (below) ↔ BUY_STOP at tp1+atr×mult (above)
+   // Gate mirror: SELL needs RSI > min_rsi (not exhausted oversold) ↔ BUY needs RSI < max_rsi (not exhausted overbought)
+   // Default-OFF: FORGE_GEOMETRY_BUY_STOP_CONT_ENABLED=0 — existing behavior preserved.
+   bool   buy_stop_cont_enabled;       // arm BUY STOP above TP1 after BUY TP1 hit (default false)
+   double buy_stop_cont_atr_mult;      // BUY STOP price: tp1 + ATR × this (default 0.40, mirror)
+   double buy_stop_cont_sl_atr_mult;   // BUY STOP SL: cascade_entry − ATR × this (default 1.5; 0 = legacy fallback)
+   double buy_stop_cont_lot_factor;    // lot factor per continuation leg (default 1.0 = full lot, mirror)
+   double buy_stop_cont_tp_atr_mult;   // TP: cascade_entry + ATR×mult (default 1.5, mirror)
+   int    buy_stop_cont_expiry_bars;   // cancel if not triggered within N M5 bars (default 2 = 10 min, mirror)
+   double buy_stop_cont_max_rsi;       // only arm when M5 RSI < this — blocks exhausted-top entries (default 75.0; mirror of sell_stop_cont_min_rsi=25)
+   double buy_stop_cont_min_adx;       // only arm when M5 ADX >= this — trend confirmed (default 25.0, mirror)
+   bool   buy_stop_cont_require_h1_di; // only arm when H1 DI+ > DI− — H1 must be bullish (default true, mirror)
+   bool   buy_stop_cont_require_trend_regime; // only arm when regime != "RANGE" (cascade SL-hunt protection, mirror)
+   int    buy_stop_cont_legs;          // number of cascade BUY STOP legs to place (default 5, max 7, mirror)
+   // ─────────────────────────────────────────────────────────────────────────────
+   // v2.7.95 — SELL LIMIT recovery (mirror of buy_limit_recovery) — counter-trend
+   // pullback entry after BUY TP1 hits. Captures Cardwell Bear-Resistance-style
+   // pullback at the established swing high. Mirror semantics:
+   //   buy_limit_recovery: SELL → TP1 (crash low) → BUY pullback toward Bull Support
+   //   sell_limit_recovery: BUY → TP1 (rally high) → SELL pullback toward Bear Resistance
+   // Default-OFF.
+   bool   sell_limit_recovery_enabled;  // arm SELL LIMIT at TP1 rally high after BUY TP1 hit (default false)
+   double sell_limit_recovery_max_rsi;  // only arm when M5 RSI < this — Cardwell Bear Resistance zone (default 65.0; mirror of buy_limit_recovery_min_rsi=35)
+   double sell_limit_recovery_lot_factor;// lot factor (default 0.25, mirror)
+   int    sell_limit_recovery_expiry_bars;// cancel if not filled within N M5 bars (default 4 = 20 min, mirror)
+   double sell_limit_recovery_sl_atr_mult;// SL = TP1 + ATR × this above the rally high (default 1.0, mirror)
    // H4 supplemental gates — disabled by default (2.7.10)
    // Enable via .env: FORGE_H4_RSI_GATE_ENABLED=1, FORGE_H4_ADX_GATE_ENABLED=1
    // Rationale: H4 RSI identifies structural HH/LL exhaustion zones (Cardwell Bear Resistance ≥60 / Bull Support ≤40)
@@ -991,6 +1121,68 @@ struct ScalperConfig {
    int    bb_lower_reversion_buy_consec_loss_window_sec;   // default 1800 — counter window
    int    bb_lower_reversion_buy_consec_loss_cooldown_sec; // default 1800 — throttle duration
    double bb_lower_reversion_buy_h4_min;                   // default −1.0 — block if h4_trend ≤ h4_min (very bearish HTF)
+   // v2.7.69 — ICT/SMC market-structure gates (wires v2.7.68 atoms into actual decisions)
+   bool   blr_buy_block_on_bearish_bos;             // default 1 — block BLR_BUY when g_eval_bos_direction == -1
+   double blr_buy_min_velocity_5bar_signed;         // default -1.0 — block BLR_BUY when signed velocity ≤ this (accelerating fall)
+   // v2.7.80 — BLR capitulation override (Apr 6 03:30 + Apr 14 13:39 V-bottom fix)
+   //   Bypasses falling-velocity gate when ≥N of 5 capitulation atoms confirm a flush, not a grind.
+   //   Tracks signed-velocity gate emission and re-checks via separate "is this a real V-flush?" lens.
+   bool   blr_buy_capitulation_override_enabled;    // default 1 — turn override ON (lets RSI<28 + BB_l pierce + sharp drop bypass vel gate)
+   int    blr_buy_capitulation_min_atoms;           // default 3 — atoms needed to bypass (of 5)
+   double blr_buy_capitulation_rsi_max;             // default 28.0 — atom 1: m5_rsi ≤ this
+   double blr_buy_capitulation_displacement_min_atr; // default 1.5 — atom 3: -velocity ≥ this (drop ≥1.5×ATR in 5 bars)
+   double blr_buy_capitulation_atr_ratio_min;       // default 1.3 — atom 4: m5_atr_ratio_5bar ≥ this (volatility expansion)
+   double blr_buy_capitulation_lot;                 // default 0.30 — fixed lot for override fires (smaller than normal BLR)
+   double blr_buy_capitulation_sl_atr_mult;         // default 1.5 — SL = bb_l - sl_atr_mult×ATR
+   double blr_buy_capitulation_tp1_atr_mult;        // default 0.5 — TP1 offset from entry (×ATR)
+   double blr_buy_capitulation_tp2_atr_mult;        // default 1.5 — TP2 offset from entry (×ATR)
+   double breakout_buy_exhaustion_rsi;              // default 72.0 — RSI threshold for "exhausted top" check
+   bool   breakout_buy_block_exhaustion_without_bos; // default 1 — when RSI ≥ exhaustion_rsi AND BOS != +1, block BB_BREAKOUT BUY
+   // v2.7.73 — VWAP-distance gate (Run 30 G5005 −$1,694 diagnosis: 2.76×ATR above VWAP = mean-reversion zone)
+   double breakout_buy_max_vwap_dist_atr;           // default 2.5 — block BB_BREAKOUT BUY when (price-VWAP)/ATR > this
+   double breakout_sell_max_vwap_dist_atr;          // default 2.5 — block BB_BREAKOUT SELL when (VWAP-price)/ATR > this (mirror)
+   // v2.7.93 — Block BB_BREAKOUT entry when current price is no longer above (below) the band at
+   //   entry time. Run 7 evidence: G5006 BUY fired at 4699.76 with BB upper ~4702 → price was
+   //   2.6 pts BELOW the band, i.e. the retest from below — exactly the failed-breakout trap.
+   //   prev_close gated the TRIGGER (bar broke above), but by entry tick the retest is happening.
+   //   Industry pattern: "don't chase the retest" — require min breakout distance at entry.
+   //   G5005 winner (+0.527 ATR above BB) passes; G5006 loser (−0.47 ATR below BB) blocks.
+   double bb_breakout_min_breakout_atr_mult;        // default 0.1 — BUY: require (mid-bb_upper)/atr ≥ this (0 disables)
+   double bb_breakout_min_breakdown_atr_mult;       // default 0.1 — SELL mirror: require (bb_lower-mid)/atr ≥ this (0 disables)
+   // v2.7.74 — BB_BREAKOUT BUY conviction amplifier (Run 30 G5004 +$354 / G5013 +$985 pattern: strong impulse + good structure)
+   bool   breakout_buy_conviction_enabled;          // default 1 — enable conviction-aware leg amplification
+   int    breakout_buy_conviction_min_atoms;        // default 4 of 6 — how many confirming atoms required
+   int    breakout_buy_conviction_initial_legs;     // default 5 — fire this many immediate legs when conviction met (was 3)
+   double breakout_buy_conviction_tp1_close_pct;    // default 50 — close less at TP1 when conviction high (was 70)
+   // v2.7.76 — Score velocity gate (Run 31 G5005 −$2,934 diagnosis: avg5 dropped 76→63 in 6min, amp still deployed 5 legs)
+   bool   breakout_buy_score_velocity_check_enabled; // default 1 — cap tier at EMERGING when score decaying
+   int    breakout_buy_score_velocity_threshold;    // default -5 — velocity ≤ this caps tier (negative = falling)
+   // v2.7.77 — Conviction-decay partial close (Nyao Scalper reverse-pyramid pattern)
+   //   Captures initial score at entry; on subsequent ticks compares current/initial ratio.
+   //   Tiered closure when conviction degrades. Protects against G5005-class trades where
+   //   entry passed all gates but the supporting wave faded BEFORE TP1 hit.
+   bool   conviction_decay_partial_close_enabled;   // default 1 — master toggle
+   double conviction_decay_l1_ratio;                // default 0.75 — close 25% when current/initial ≤ this
+   double conviction_decay_l2_ratio;                // default 0.50 — close 50% more when ≤ this
+   double conviction_decay_l3_ratio;                // default 0.25 — close 100% when ≤ this (full exit)
+   double conviction_decay_l1_close_pct;            // default 25.0 — % of remaining position to close at L1
+   double conviction_decay_l2_close_pct;            // default 50.0 — % at L2
+   int    conviction_decay_grace_bars;              // default 2 — skip decay check for first N M5 bars (Nyao HealthGraceBars)
+   // v2.7.70 — Pyramid kill on adverse direction (caps G5032-class 8-leg pyramid growth into the knife)
+   bool   pyramid_kill_enabled;                     // default 1 — freeze staged-adds when group adverse + price still moving wrong way
+   double pyramid_kill_max_loss_usd;                // default 50.0 — net group P&L threshold (kill when below -this)
+   double pyramid_kill_velocity_threshold;          // default 0.5 — adverse-direction velocity threshold (signed) to confirm kill
+   // v2.7.70 — NY_SESSION_BEARISH_BREAKOUT_SELL (captures the 220pt+ overnight + London/NY open descents)
+   bool   ny_session_bearish_sell_enabled;          // default 1
+   int    ny_session_bearish_sell_kz_max_min;       // default 90 — only fire within first 90min of LONDON_OPEN / NY_OPEN
+   double ny_session_bearish_sell_min_velocity;     // default 1.5 — require signed velocity ≤ -this×ATR (accelerating fall)
+   double ny_session_bearish_sell_max_rsi;          // default 50.0 — RSI must be < this (room to fall)
+   double ny_session_bearish_sell_room_min_atr;     // default 1.0 — require (close - day_low) ≥ this×ATR (room to fall before sweep)
+   double ny_session_bearish_sell_sl_atr_mult;      // default 3.5
+   double ny_session_bearish_sell_tp1_atr_mult;     // default 1.0
+   double ny_session_bearish_sell_tp2_atr_mult;     // default 2.5
+   int    ny_session_bearish_sell_cooldown_sec;     // default 0 — operator's "let conditions decide" rule
+   double ny_session_bearish_sell_lot_factor;       // default 1.0
    // 2.7.57 — TREND_CONTINUATION_BUY / _SELL (canonical roadmap Tier-2, finally shipping).
    //   BUY: regime=TREND_BULL + h1≥h1_min + RSI in [rsi_min, rsi_max] + ADX≥adx_min +
    //        M15 ADX≥m15_adx_min + PSAR=BELOW + price within bb_proximity_atr×ATR of bb_u +
@@ -1105,6 +1297,104 @@ struct ScalperConfig {
    double fractional_sell_in_bull_lot_factor;
    double fractional_sell_in_bull_sl_atr_mult;
    double fractional_sell_in_bull_tp1_atr_mult;
+   // v2.7.78 — REVERSE_SELL_IN_BULL: stricter, full 0.5-lot counter-trend SELL for G5005-class direction-flip pattern
+   bool   reverse_sell_in_bull_enabled;             // default 1
+   double reverse_sell_in_bull_lot_factor;          // default 0.5 (full half-lot)
+   double reverse_sell_in_bull_min_rsi;             // default 72.0 (stricter than FRACTIONAL's 60)
+   double reverse_sell_in_bull_min_vwap_dist_atr;   // default 2.0 (require overextension above value)
+   double reverse_sell_in_bull_min_h1_trend;        // default 1.0 (HTF bullish context)
+   bool   reverse_sell_in_bull_require_di_plus_above_minus; // default 1 (H1 DI+ > DI- = bullish HTF confirmed)
+   double reverse_sell_in_bull_sl_atr_mult;         // default 2.0 (tight stop, counter-trend should fail fast)
+   double reverse_sell_in_bull_tp1_atr_mult;        // default 1.0 (target mean-rev to BB middle)
+   double reverse_sell_in_bull_tp2_atr_mult;        // default 2.0 (deeper retrace if exhaustion full)
+   int    reverse_sell_in_bull_cooldown_sec;        // default 300 (5 min re-entry cooldown)
+   // v2.7.79 — GRINDING_SELL: slow-bearish-grind catcher (Apr 8 12:00 descent fix, OUTSIDE killzone windows)
+   bool   grinding_sell_enabled;                    // default 1
+   double grinding_sell_lot_factor;                 // default 0.5
+   double grinding_sell_min_velocity;               // default 0.5 — signed velocity ≤ -0.5×ATR (slow descent)
+   double grinding_sell_max_rsi;                    // default 55.0 — RSI declining
+   double grinding_sell_min_rsi;                    // default 30.0 — but not yet oversold (room to fall)
+   double grinding_sell_room_min_atr;               // default 0.5 — (price-day_low)/ATR ≥ this
+   double grinding_sell_sl_atr_mult;                // default 2.5
+   double grinding_sell_tp1_atr_mult;               // default 0.7
+   double grinding_sell_tp2_atr_mult;               // default 1.5
+   int    grinding_sell_cooldown_sec;               // default 600 (10 min)
+   // v2.7.81 — ASIA_CAPITULATION_BUY: session-agnostic BUY for pre-London V-flushes (Apr 6 03:30 fix)
+   //   Fires when ≥N of 5 capitulation atoms align during Asia hours (22-07 UTC by default).
+   //   Bypasses session_off return — runs independent of London/NY session windows.
+   //   Atoms (same set as v2.7.80 BLR capitulation override):
+   //     A1 m5_rsi ≤ rsi_max | A2 close < bb_l | A3 -velocity_5bar ≥ displacement_min_atr
+   //     A4 m5_atr_ratio_5bar ≥ atr_ratio_min  | A5 g_eval_long_lower_wick || g_eval_m5_doji
+   bool   asia_capitulation_buy_enabled;            // default 1
+   int    asia_capitulation_buy_min_atoms;          // default 3 — atoms needed to fire (of 5)
+   double asia_capitulation_buy_rsi_max;            // default 28.0 — A1 threshold
+   double asia_capitulation_buy_displacement_min_atr; // default 1.5 — A3 threshold
+   double asia_capitulation_buy_atr_ratio_min;      // default 1.3 — A4 threshold
+   int    asia_capitulation_buy_session_start_utc;  // default 22 — Asia window start hour (UTC)
+   int    asia_capitulation_buy_session_end_utc;    // default 7  — Asia window end hour (UTC, exclusive); window wraps 22→07
+   double asia_capitulation_buy_lot;                // default 0.20 — fixed lot (smaller than BLR capitulation 0.30)
+   double asia_capitulation_buy_sl_atr_mult;        // default 1.5 — SL = bb_l - this×ATR
+   double asia_capitulation_buy_tp1_atr_mult;       // default 0.5 — TP1 = entry + this×ATR
+   double asia_capitulation_buy_tp2_atr_mult;       // default 1.5 — TP2 = entry + this×ATR
+   int    asia_capitulation_buy_cooldown_sec;       // default 1800 — 30 min re-entry cooldown (Asia is thin, avoid stacking)
+   // v2.7.84 — Layer 1: UMCG (Universal Market Condition Gate) — bidirectional PEMCG composites
+   //   7 atoms per direction; ≥block_threshold warnings blocks setup entry in that direction.
+   //   Bidirectional and independent — BUY blocked ≠ SELL blocked.
+   bool   umcg_enabled;                          // default 1 — master enable for Layer 1
+   int    umcg_buy_block_threshold;              // default 3 — block BUY when pemcg_buy_warning_count ≥ this
+   int    umcg_sell_block_threshold;             // default 3 — block SELL when pemcg_sell_warning_count ≥ this
+   double umcg_pemcg_rsi_overbought;             // default 70 — A1: BUY-trap when m5_rsi ≥ this
+   double umcg_pemcg_rsi_oversold;               // default 30 — A1: SELL-trap when m5_rsi ≤ this
+   double umcg_pemcg_body_pct_max_weak;          // default 0.5 — A2: weak candle when m5_body_pct < this
+   double umcg_pemcg_atr_ratio_max_contract;     // default 1.0 — A6: volatility contracting when m5_atr_ratio_5bar < this
+   double umcg_pemcg_bb_dist_atr_threshold;      // default 0.3 — A5: no real breakout/breakdown when |close-bb_band|/atr < this
+   // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
+   //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
+   //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
+   //   TP firing does NOT trigger cooldown (operator-mandated, 2026-05-13).
+   bool   cvcsm_enabled;                         // default 1 — master enable for Layer 2
+   int    cvcsm_release_threshold;               // default 2 — release when warnings < this
+   int    cvcsm_required_clean_bars;             // default 2 — N consecutive clean M5 bars to OPEN
+   int    cvcsm_max_cooldown_sec;                // default 1800 — safety timeout (30 min)
+   bool   cvcsm_trigger_on_sl;                   // default 1 — SL fired = enter COOLDOWN
+   bool   cvcsm_trigger_on_regime_flip;          // default 1 — regime flip = enter COOLDOWN (both dirs)
+   // v2.7.84 — Layer 3: BB_EXHAUSTION_REVERSAL_SELL + mirror BUY
+   //   When PEMCG warnings ≥ reversal_min_warnings on one direction AND the OPPOSITE direction's
+   //   CVCSM is OPEN AND no existing pending/position in the proximity window → fire counter-trade.
+   bool   bb_exhaustion_reversal_enabled;        // default 1
+   int    bb_exhaustion_reversal_min_warnings;   // default 4 — stricter than UMCG block (3); reversal needs more confidence
+   double bb_exhaustion_reversal_lot;            // default 0.10 — fractional, counter-HTF caution
+   double bb_exhaustion_reversal_sl_atr_mult;    // default 1.0 — SL = bb_band + sl_mult×ATR
+   double bb_exhaustion_reversal_tp1_atr_mult;   // default 0.0 — if 0, use bb_mid as TP1 target
+   double bb_exhaustion_reversal_tp2_atr_mult;   // default 0.0 — if 0, use vwap_price as TP2 target
+   int    bb_exhaustion_reversal_cooldown_sec;   // default 1800 — 30 min between reversal fires
+   double bb_exhaustion_reversal_proximity_atr;  // default 1.5 — if existing same-direction pending/position
+                                                  //   within this×ATR of current price, skip (existing covers it)
+   // v2.7.89 — Conviction-tier amplifier + legs override for BB_EXHAUSTION_REVERSAL.
+   //   Operator request: "more legs if we meet a set of criterias" + "set via constant to amplifier it".
+   //   Two tiers driven by g_pemcg_*_warning_count at fire-time:
+   //     BASE tier (warnings ≥ min_warnings, default 4): legs=1, lot = base × lot_amplifier (1.0×)
+   //     HIGH tier (warnings ≥ high_conviction_warnings, default 6): legs=legs_high_conviction (3),
+   //                                                                  lot = base × lot_amplifier × high_conviction_lot_factor
+   //   Wires bb_exhaustion_reversal_lot (previously logged-only) into actual lot resolution via pin block.
+   double bb_exhaustion_reversal_lot_amplifier;          // default 1.0 — base lot multiplier (constant amp on top of bb_exhaustion_reversal_lot)
+   int    bb_exhaustion_reversal_high_conviction_warnings; // default 6 — PEMCG threshold for HIGH-conviction tier
+   double bb_exhaustion_reversal_high_conviction_lot_factor; // default 2.0 — additional lot multiplier at HIGH tier
+   int    bb_exhaustion_reversal_legs_high_conviction;   // default 3 — leg count at HIGH tier (BASE = 1 leg)
+   // v2.7.92 — Don't counter-trade in strong trends. Run 6 evidence: 2 BB_EXHAUSTION_REVERSAL_SELL
+   //   fires into bull thrust at ADX 41.6 lost ~$1,260 (price 4602 → 4619 in 4 min — thrust still alive).
+   //   Wilder + canonical counter-trend literature: ADX > 30-35 = trend has momentum, reversals form
+   //   on FALLING ADX. Gate: block Layer 3 fire when M5 ADX ≥ max_adx. 0 disables gate.
+   double bb_exhaustion_reversal_max_adx;                // default 35.0 — block Layer 3 when m5_adx ≥ this (0 = disabled)
+   // v2.7.94 — Don't catch the falling knife. After a wide-range bar (capitulation/spike), the move
+   //   is still resolving. Run 7 Apr 2 04:10 evidence: BUY-reversal fired right after a 41-pt M5
+   //   bar (4.3×ATR) → price continued -68 pts before bouncing → lost $2,897 across 4 legs.
+   //   Industry pattern (Larry Williams, Bulkowski, Tradeciety): block reversal when prev M5 bar
+   //   range exceeds 2×ATR. Wait for at least one normal-range bar before counter-trading.
+   //   Complements ADX gate: ADX catches sustained trend; WRB catches single-bar capitulation.
+   double bb_exhaustion_reversal_max_prev_bar_range_atr_mult;  // default 2.0 — block Layer 3 when prev_bar_range/atr ≥ this (0 = disabled)
+   bool   bb_pullback_buy_block_on_falling_velocity; // default 1
+   double bb_pullback_buy_min_velocity_5bar_signed;  // default -1.0 — block when signed velocity ≤ this
    bool   bull_day_dip_buy_enabled;
    double bull_day_dip_buy_lot_mult;
    double bull_day_dip_buy_sl_atr_mult;
@@ -1315,6 +1605,20 @@ struct RegimeState {
    string killzone;             // NY_OPEN_KZ | LONDON_OPEN_KZ | LONDON_CLOSE_KZ | ASIAN_KZ | ""
    int    minutes_into_kz;      // minutes since current killzone started (Judas Swing detector)
    bool   news_active;          // mirrors news_filter hot state
+
+   // Layer 6: Trade Conviction State (v2.7.75 — pre-computed every tick, consumed by all setups)
+   // Industry-canonical pattern: weighted multi-atom score (0-100) + tier hysteresis.
+   // Refs: Nyao Scalper (0-10 score), ML Supertrend (0-100 confidence buffer),
+   //       Position Sizing for Algo-Traders (5-tier classification).
+   int    trade_score_buy;             // 0-100 weighted score this tick (can negative on bad atoms)
+   int    trade_score_buy_avg5;        // running average of last 5 M5 bar scores
+   int    trade_score_buy_5bar[5];     // ring buffer for noise reduction
+   // v2.7.76 — Score velocity (Run 31 G5005 diagnosis: avg5 fell 76→63 in 6min, amp deployed 5 legs anyway)
+   int    trade_score_buy_avg5_prev;   // previous M5 bar's avg5 (for velocity calc)
+   int    trade_score_buy_velocity;    // avg5_now − avg5_prev (signed; <0 = falling, >0 = rising)
+   string trade_score_buy_tier;        // "LOW" | "EMERGING" | "HIGH" | "ULTRA"
+   int    trade_score_buy_tier_bars;   // consecutive M5 bars at current tier (hysteresis)
+   datetime trade_score_buy_last_bar_t; // last M5 bar timestamp processed (for bar-edge detection)
 };
 
 RegimeState g_regime;            // populated each tick by RegimeUpdate() — single source of truth
@@ -1379,6 +1683,13 @@ struct SellLimitEntry {
    bool     active;
 };
 SellLimitEntry g_sell_limit_stack[10]; // 10 slots: [0]=L1 SELL LIMIT, [1]=L2 SELL LIMIT, [2-8]=SELL STOP continuation legs (up to 7, set by sell_stop_cont_legs), [9]=BUY LIMIT recovery
+// v2.7.95 — BUY-side parallel stack (mirror semantics). Re-uses the SellLimitEntry
+// struct type (which is generic: ticket/group_id/mkt_magic/expiry/active) — the
+// type name is historical from the original SELL-only design. Slot layout:
+//   [0],[1] = reserved for future BUY LIMIT L1/L2 cascade if needed (currently unused)
+//   [2..8]  = BUY STOP continuation legs (up to 7, set by buy_stop_cont_legs)
+//   [9]     = SELL LIMIT recovery (counter-trend pullback after BUY TP1)
+SellLimitEntry g_buy_stop_stack[10];
 
 // MULTI-TIMEFRAME INDICATORS (M5, M15, M30) — for AURUM scalping context
 struct TFIndicators {
@@ -1397,6 +1708,11 @@ struct TradeGroup {
    double tp4;       // 2.7.27: TP4 price for runner staging (only set when breakout_tp4_staging_enabled)
    double tp5;       // 2.7.27: TP5 price for runner staging (only set when breakout_tp5_staging_enabled)
    double tp1_close_pct;
+   double tp2_close_pct;  // v2.7.96 Set 2 — % of REMAINING positions to close at TP2 touch (0 = no close, ratchet-only; current default). Read at entry from g_sc.<family>_tp2_close_pct.
+   // v2.7.97 Sets 6+7 — Direction Lock per-group state (independent from CVCSM).
+   bool   direction_lock_broken;   // set true when EvaluateDirectionLock returns INVALID/NEUTRAL/PROFIT_TARGET; prevents re-arm
+   double entry_swing_high;        // M5 swing high in N bars before Leg 1 placement — break level for SELL lock
+   double entry_swing_low;         // M5 swing low — break level for BUY lock
    bool   tp1_hit;
    bool   tp2_hit;   // set when all TP2 runners are modified to target TP3
    bool   tp3_hit;   // 2.7.27: set when all TP3 runners are modified to target TP4 (SL ratcheted to TP2)
@@ -1422,6 +1738,15 @@ struct TradeGroup {
    // 2.7.25 — ATR trail peak/trough tracking (FORGE_RATCHET_LOGIC_IDEAS.md section 5/6)
    double peak_price;     // highest bid seen since entry (BUY) — drives ATR trail SL
    double trough_price;   // lowest ask seen since entry (SELL) — drives ATR trail SL
+   // v2.7.77 — Conviction-decay partial close (Nyao reverse pyramid pattern)
+   //   Captures the entry-time score; subsequent ticks compare current/initial ratio.
+   //   Ratio ≤ 0.75 → L1 close 25% (decay_close_level=1)
+   //   Ratio ≤ 0.50 → L2 close 50% (decay_close_level=2)
+   //   Ratio ≤ 0.25 → L3 close 100% (decay_close_level=3, group sealed)
+   //   Defends against G5005-class trades where score decays AFTER entry.
+   int    initial_score;          // trade_score_buy_avg5 at entry (0-100); 0 = not tracked
+   int    decay_close_level;      // 0=none, 1=L1 fired, 2=L2 fired, 3=L3 fired (full exit)
+   datetime decay_entry_time;     // group entry time (for grace-period check)
 };
 TradeGroup g_groups[];
 
@@ -1841,7 +2166,7 @@ void OnTick() {
    ManageStagedNativeLegs();
    ManageOpenGroups();
    ManagePendingLadderAbort();
-   // Pending ladder expiry + fill-detection (2.7.7b/2.7.10): all 5 slots
+   // Pending ladder expiry + fill-detection (2.7.7b/2.7.10): all 10 slots
    { datetime _now = TimeTradeServer();
      for(int _si = 0; _si < 10; _si++) {
         if(!g_sell_limit_stack[_si].active) continue;
@@ -1855,6 +2180,20 @@ void OnTick() {
            if(_pending) g_trade.OrderDelete(g_sell_limit_stack[_si].ticket);
            g_sell_limit_stack[_si].active = false;
            PrintFormat("FORGE SCALPER: ladder slot[%d] ticket=%d expired", _si, g_sell_limit_stack[_si].ticket);
+        }
+     }
+     // v2.7.95 — BUY-side parallel stack expiry sweep (mirror of above)
+     for(int _bi = 0; _bi < 10; _bi++) {
+        if(!g_buy_stop_stack[_bi].active) continue;
+        bool _pending_b = OrderSelect(g_buy_stop_stack[_bi].ticket);
+        if(!_pending_b && _now < g_buy_stop_stack[_bi].expiry) {
+           g_buy_stop_stack[_bi].active = false;
+           PrintFormat("FORGE SCALPER: buy_stop_stack slot[%d] ticket=%d no longer pending (filled or external cancel)",
+                       _bi, g_buy_stop_stack[_bi].ticket);
+        } else if(_now >= g_buy_stop_stack[_bi].expiry) {
+           if(_pending_b) g_trade.OrderDelete(g_buy_stop_stack[_bi].ticket);
+           g_buy_stop_stack[_bi].active = false;
+           PrintFormat("FORGE SCALPER: buy_stop_stack slot[%d] ticket=%d expired", _bi, g_buy_stop_stack[_bi].ticket);
         }
      }
    }
@@ -2097,6 +2436,36 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].tp4           = 0;   // 2.7.27: BRIDGE path does not stage TP4
    g_groups[gi].tp5           = 0;   // 2.7.27: BRIDGE path does not stage TP5
    g_groups[gi].tp1_close_pct = tp1_close_pct;
+   g_groups[gi].tp2_close_pct = g_sc.breakout_tp2_close_pct;  // v2.7.96 Set 2 — BRIDGE path defaults to BREAKOUT-family % (most BRIDGE groups are breakout). Dormant until g_sc.tp2_close_enabled flipped.
+   // v2.7.97 Sets 6+7 — Direction Lock per-group state. Compute entry swing high/low over last N M5 bars (used as break levels in EvaluateDirectionLock).
+   g_groups[gi].direction_lock_broken = false;
+   {
+      int _lb = g_sc.dirlock_swing_lookback_bars;
+      if(_lb < 1) _lb = 5;
+      double _swing_h = 0.0, _swing_l = 0.0;
+      double _hbuf[], _lbuf[];
+      if(CopyHigh(_Symbol, PERIOD_M5, 1, _lb, _hbuf) == _lb && CopyLow(_Symbol, PERIOD_M5, 1, _lb, _lbuf) == _lb) {
+         _swing_h = _hbuf[0]; _swing_l = _lbuf[0];
+         for(int _b = 1; _b < _lb; _b++) {
+            if(_hbuf[_b] > _swing_h) _swing_h = _hbuf[_b];
+            if(_lbuf[_b] < _swing_l) _swing_l = _lbuf[_b];
+         }
+      }
+      g_groups[gi].entry_swing_high = _swing_h;
+      g_groups[gi].entry_swing_low  = _swing_l;
+   }
+   // Direction Lock IDLE → ARMED transition (only when feature is enabled)
+   if(g_sc.direction_lock_enabled) {
+      if(direction == "BUY") {
+         g_dirlock_state_buy        = 1;     // ARMED
+         g_dirlock_armed_time_buy   = TimeCurrent();
+         g_dirlock_active_group_buy = gi;
+      } else if(direction == "SELL") {
+         g_dirlock_state_sell        = 1;
+         g_dirlock_armed_time_sell   = TimeCurrent();
+         g_dirlock_active_group_sell = gi;
+      }
+   }
    g_groups[gi].tp1_hit       = false;
    g_groups[gi].tp2_hit       = false;
    g_groups[gi].tp3_hit       = false;  // 2.7.27
@@ -2121,6 +2490,10 @@ void ExecuteOpenGroup(const string &json) {
    // 2.7.25 — ATR trail peak/trough init (per FORGE_RATCHET_LOGIC_IDEAS.md)
    g_groups[gi].peak_price   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    g_groups[gi].trough_price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   // v2.7.77 — BRIDGE path does not track decay (no entry-time score known)
+   g_groups[gi].initial_score     = 0;
+   g_groups[gi].decay_close_level = 0;
+   g_groups[gi].decay_entry_time  = TimeCurrent();
    int bridge_group_positions[];
    GetGroupPositions(group_magic, bridge_group_positions);
    g_groups[gi].had_positions = (ArraySize(bridge_group_positions) > 0);
@@ -2164,6 +2537,35 @@ void ManageStagedNativeLegs() {
          else
             okf = ((g_groups[gi].staged_anchor - ask) / point >= fav_req);
          if(!okf) continue;
+      }
+      // v2.7.70 — Pyramid kill on adverse direction. Caps G5032-class growth.
+      //   Sum live P&L across all open positions for this group. If net loss exceeds
+      //   pyramid_kill_max_loss_usd AND M5 signed velocity is still adverse to the trade
+      //   direction by ≥ pyramid_kill_velocity_threshold ×ATR, freeze staging — the price
+      //   is still moving wrong way, adding more legs grows the eventual SL hit.
+      //   G5032 Run 29: 8-leg BLR_BUY pyramid grew while price kept falling. By leg 4
+      //   the group was already ~$200 adverse; killing here would have capped loss ~$1,000
+      //   instead of letting it run to $2,166 at leg 8.
+      if(g_sc.pyramid_kill_enabled) {
+         double _pk_pnl = 0.0;
+         for(int _pi = 0; _pi < ArraySize(pos); _pi++) {
+            if(PositionSelectByTicket(pos[_pi]))
+               _pk_pnl += PositionGetDouble(POSITION_PROFIT);
+         }
+         bool _pk_adverse_pnl = (_pk_pnl <= -g_sc.pyramid_kill_max_loss_usd);
+         bool _pk_adverse_dir = false;
+         if(g_groups[gi].direction == "BUY")
+            _pk_adverse_dir = (g_eval_m5_velocity_5bar_signed <= -g_sc.pyramid_kill_velocity_threshold);
+         else
+            _pk_adverse_dir = (g_eval_m5_velocity_5bar_signed >=  g_sc.pyramid_kill_velocity_threshold);
+         if(_pk_adverse_pnl && _pk_adverse_dir) {
+            g_groups[gi].staging_active = false;
+            PrintFormat("FORGE 2.7.70 PYRAMID-KILL: group %d staging frozen (pnl=$%.2f, signed_vel=%.2f×ATR, dir=%s, legs_filled=%d/%d)",
+                        g_groups[gi].id, _pk_pnl, g_eval_m5_velocity_5bar_signed,
+                        g_groups[gi].direction,
+                        g_groups[gi].next_staged_leg_i, g_groups[gi].legs_planned);
+            continue;
+         }
       }
       int i = g_groups[gi].next_staged_leg_i;
       double tp1g = g_groups[gi].tp1;
@@ -2320,9 +2722,81 @@ void RemoveGroupAt(int index) {
 }
 
 //+------------------------------------------------------------------+
+//| ManageConvictionDecay (v2.7.77) — Nyao Scalper reverse-pyramid    |
+//|                                                                   |
+//| Per open group with initial_score > 0 (BUY-only Phase 1):         |
+//|   ratio = current_score_avg5 / initial_score                      |
+//|   ratio ≤ L1 (default 0.75) → close 25%, set level=1              |
+//|   ratio ≤ L2 (default 0.50) → close 50% more, set level=2         |
+//|   ratio ≤ L3 (default 0.25) → close 100%, set level=3 (sealed)    |
+//|                                                                   |
+//| Grace period (default 2 M5 bars) before any check fires.          |
+//+------------------------------------------------------------------+
+void ManageConvictionDecay() {
+   if(!g_sc.conviction_decay_partial_close_enabled) return;
+   int current_score = g_regime.trade_score_buy_avg5;
+   for(int gi = 0; gi < ArraySize(g_groups); gi++) {
+      // Only BUY groups (Phase 1); SELL mirror queued for Phase 2.
+      if(g_groups[gi].direction != "BUY") continue;
+      // initial_score == 0 means group wasn't tracked at entry (BRIDGE path or pre-v2.7.77 state).
+      if(g_groups[gi].initial_score <= 0) continue;
+      // Already at full close (level 3) — nothing to do.
+      if(g_groups[gi].decay_close_level >= 3) continue;
+      // Grace period: skip first N M5 bars after entry.
+      if(g_sc.conviction_decay_grace_bars > 0 && g_groups[gi].decay_entry_time > 0) {
+         int bars_elapsed = iBarShift(_Symbol, PERIOD_M5, g_groups[gi].decay_entry_time, false);
+         if(bars_elapsed < g_sc.conviction_decay_grace_bars) continue;
+      }
+      double ratio = (double)current_score / (double)g_groups[gi].initial_score;
+      int positions[];
+      GetGroupPositions(g_groups[gi].magic_offset, positions);
+      int n_pos = ArraySize(positions);
+      if(n_pos == 0) continue;  // group fully closed by SL/TP — no remaining
+      // Determine target level based on current ratio
+      int target_level = g_groups[gi].decay_close_level;
+      double close_pct = 0.0;
+      if(g_groups[gi].decay_close_level == 0 && ratio <= g_sc.conviction_decay_l1_ratio) {
+         target_level = 1;
+         close_pct = g_sc.conviction_decay_l1_close_pct;
+      } else if(g_groups[gi].decay_close_level == 1 && ratio <= g_sc.conviction_decay_l2_ratio) {
+         target_level = 2;
+         close_pct = g_sc.conviction_decay_l2_close_pct;
+      } else if(g_groups[gi].decay_close_level == 2 && ratio <= g_sc.conviction_decay_l3_ratio) {
+         target_level = 3;
+         close_pct = 100.0;  // L3 = full exit
+      }
+      if(target_level == g_groups[gi].decay_close_level) continue;  // no transition
+      // Close close_pct of each open position in the group
+      double min_vol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      int closed_count = 0;
+      for(int pi = 0; pi < n_pos; pi++) {
+         if(!PositionSelectByTicket(positions[pi])) continue;
+         double pos_vol = PositionGetDouble(POSITION_VOLUME);
+         double close_vol = NormalizeLot(pos_vol * (close_pct / 100.0));
+         if(target_level == 3) close_vol = pos_vol;  // full close at L3
+         if(close_vol < min_vol) {
+            if(target_level == 3) close_vol = pos_vol;  // force full close on L3
+            else continue;
+         }
+         if(close_vol > pos_vol) close_vol = pos_vol;
+         if(g_trade.PositionClosePartial(positions[pi], close_vol)) closed_count++;
+      }
+      if(closed_count > 0) {
+         g_groups[gi].decay_close_level = target_level;
+         PrintFormat("FORGE 2.7.77 CONVICTION-DECAY: group %d level=%d ratio=%.2f (cur=%d / init=%d) close_pct=%.1f%% closed=%d/%d positions",
+                     g_groups[gi].id, target_level, ratio,
+                     current_score, g_groups[gi].initial_score,
+                     close_pct, closed_count, n_pos);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Manage open groups: TP1 partial close + BE move                   |
 //+------------------------------------------------------------------+
 void ManageOpenGroups() {
+   // v2.7.77 — Conviction-decay partial close runs before TP/SL logic so partials happen first.
+   ManageConvictionDecay();
    // 2.7.56 — Reset MOMENTUM_DUMP pyramid counter when ALL same-direction groups close.
    //   Counter increments in MarkSetupCooldownAnchorOnTaken at entry time; reset here at
    //   the start of each tick when no MOMENTUM_DUMP groups remain open in a direction.
@@ -2622,6 +3096,35 @@ void ManageOpenGroups() {
       bool tp2_reached = (dir2 == "BUY" && bid2 >= tp2_price) || (dir2 == "SELL" && ask2 <= tp2_price);
       if(!tp2_reached) continue;
 
+      // ──────────────────────────────────────────────────────────────────────
+      // v2.7.96 Set 2 — TP2 banking close (operator-mandated 25% of remaining)
+      //   Closes ceil(remaining × tp2_close_pct/100) positions before the existing
+      //   SL ratchet. Decision logged in docs/FORGE_CORE_LOGIC_DESIGN.md §9 (2026-05-14).
+      //   Default-OFF via g_sc.tp2_close_enabled — current ratchet-only behavior
+      //   preserved when flag is false. Per-group pct is set in EnterScalperGroup
+      //   from g_sc.<family>_tp2_close_pct.
+      //   Industry pattern: "TP1 exits 50%, TP2 exits 25%, TP3 takes the rest"
+      //   (Triple-Scale Method) — eazypips.com.
+      // ──────────────────────────────────────────────────────────────────────
+      if(g_sc.tp2_close_enabled && g_groups[gi2].tp2_close_pct > 0.0) {
+         int pos_tp2[];
+         GetGroupPositions(gm2, pos_tp2);
+         int total_before_tp2 = ArraySize(pos_tp2);
+         int to_close_tp2 = (int)MathCeil(total_before_tp2 * g_groups[gi2].tp2_close_pct / 100.0);
+         if(to_close_tp2 > 0 && total_before_tp2 > 0) {
+            int closed_tp2 = 0;
+            // Iterate forward; closes oldest tickets first (FIFO bank).
+            for(int j_tp2 = 0; j_tp2 < total_before_tp2 && closed_tp2 < to_close_tp2; j_tp2++) {
+               if(g_pos.SelectByTicket(pos_tp2[j_tp2])) {
+                  if(g_trade.PositionClose(pos_tp2[j_tp2])) closed_tp2++;
+               }
+            }
+            if(closed_tp2 > 0)
+               PrintFormat("FORGE: Group %d TP2 banked — closed %d/%d positions (%.0f%% of remaining) at TP2=%.2f",
+                           g_groups[gi2].id, closed_tp2, total_before_tp2, g_groups[gi2].tp2_close_pct, tp2_price);
+         }
+      }
+
       // 2.7.24 — Milestone 2 SL ratchet (FORGE_RATCHET_LOGIC_IDEAS.md): when TP2 reached, ratchet SL up
       // to TP1 level (locks +TP1-distance of profit on remaining runners). SL invariant: BUY only raises
       // SL, SELL only lowers. Falls back to legacy behavior (SL unchanged) when ratchet disabled.
@@ -2794,7 +3297,23 @@ void ManageOpenGroups() {
             // Skip tiny moves to avoid OrderModify spam (≥ 1 point change required)
             double point_t = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
             if(MathAbs(trail_sl - cur_sl_t) < point_t) continue;
-            g_trade.PositionModify(trail_pos[tj], NormalizeDouble(trail_sl, _Digits), NormalizeDouble(cur_tp_t, _Digits));
+            // ────────────────────────────────────────────────────────────────
+            // v2.7.100 Set 3 Option 3C — SL-trail-driven dynamic TP3.
+            //   When tp3_mode=1, also extend TP3 = trail_sl + dist × ATR (BUY)
+            //   or trail_sl − dist × ATR (SELL). Direction-preserving: never retract.
+            //   Operator's literal phrasing "dynamic based on structure using the S/L movement".
+            //   Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14 (Set 3 pick 3C).
+            // ────────────────────────────────────────────────────────────────
+            double new_tp_t = cur_tp_t;
+            if(g_sc.tp3_mode == 1) {
+               double tp3_ext = (dir_t == "BUY")
+                  ? trail_sl + g_sc.tp3_dist_from_sl_atr_mult * grp_atr_t
+                  : trail_sl - g_sc.tp3_dist_from_sl_atr_mult * grp_atr_t;
+               // Extend-only invariant (mirror of SL invariant: BUY raises TP, SELL lowers TP)
+               if(g_pos.PositionType() == POSITION_TYPE_BUY  && tp3_ext > cur_tp_t) new_tp_t = tp3_ext;
+               if(g_pos.PositionType() == POSITION_TYPE_SELL && (cur_tp_t == 0 || tp3_ext < cur_tp_t)) new_tp_t = tp3_ext;
+            }
+            g_trade.PositionModify(trail_pos[tj], NormalizeDouble(trail_sl, _Digits), NormalizeDouble(new_tp_t, _Digits));
          }
       }
    }
@@ -3320,6 +3839,20 @@ void WriteMarketData() {
    // v2.7.65 — Velocity / momentum-rate atoms (price-speed measurement)
    j += "\"m5_velocity_1bar\":"   + DoubleToString(g_eval_m5_velocity_1bar, 4)  + ",";
    j += "\"m5_velocity_5bar\":"   + DoubleToString(g_eval_m5_velocity_5bar, 4)  + ",";
+   j += "\"m5_velocity_5bar_signed\":" + DoubleToString(g_eval_m5_velocity_5bar_signed, 4) + ",";  // v2.7.69 — signed for direction
+   // v2.7.75 — Trade Conviction State Machine (BUY-only Phase 1)
+   j += "\"trade_score_buy\":"        + IntegerToString(g_regime.trade_score_buy)        + ",";
+   j += "\"trade_score_buy_avg5\":"   + IntegerToString(g_regime.trade_score_buy_avg5)   + ",";
+   j += "\"trade_score_buy_tier\":\"" + JsonEscape(g_regime.trade_score_buy_tier)        + "\",";
+   j += "\"trade_score_buy_tier_bars\":" + IntegerToString(g_regime.trade_score_buy_tier_bars) + ",";
+   j += "\"trade_score_buy_5bar\":[" + IntegerToString(g_regime.trade_score_buy_5bar[0])
+        + "," + IntegerToString(g_regime.trade_score_buy_5bar[1])
+        + "," + IntegerToString(g_regime.trade_score_buy_5bar[2])
+        + "," + IntegerToString(g_regime.trade_score_buy_5bar[3])
+        + "," + IntegerToString(g_regime.trade_score_buy_5bar[4]) + "],";
+   // v2.7.76 — score velocity (avg5 derivative) for visibility
+   j += "\"trade_score_buy_velocity\":" + IntegerToString(g_regime.trade_score_buy_velocity) + ",";
+   j += "\"trade_score_buy_avg5_prev\":" + IntegerToString(g_regime.trade_score_buy_avg5_prev) + ",";
    j += "\"m5_adx_delta_5bar\":"  + DoubleToString(g_eval_m5_adx_delta_5bar, 2) + ",";
    j += "\"m5_macd_slope_5bar\":" + DoubleToString(g_eval_m5_macd_slope_5bar, 4) + ",";
    j += "\"m5_atr_ratio_5bar\":"  + DoubleToString(g_eval_m5_atr_ratio_5bar, 3) + ",";
@@ -3611,11 +4144,34 @@ void InitScalperConfig() {
    g_sc.breakout_tp3_atr_mult = 2.5;
    g_sc.breakout_tp4_atr_mult = 4.0;
    g_sc.breakout_tp1_close_pct = 40;
+   g_sc.breakout_tp2_close_pct = 25;   // v2.7.96 Set 2 — operator-spec'd 25% close at TP2 (of remaining). Gated by tp2_close_enabled (default false), so this is dormant until master flag flipped.
    g_sc.breakout_require_m15 = true;
    g_sc.breakout_move_be = true;
    // (peak/trough initialized at group creation in two paths below)
    g_sc.breakout_be_cushion_atr_mult = 0.0;  // 2.7.23: 0 = legacy tight BE+spread+5pts buffer. >0 enables ATR cushion.
    g_sc.breakout_tp2_sl_ratchet_enabled = false;  // 2.7.24: 0 = legacy TP2 only promotes TP→TP3. 1 = also ratchets SL to TP1 level.
+   g_sc.tp2_close_enabled = false;  // v2.7.96 Set 2 master flag — false = current ratchet-only behavior preserved. true = bank <family>_tp2_close_pct of remaining positions at TP2 touch before ratchet. Flip via FORGE_GEOMETRY_TP2_CLOSE_ENABLED=1.
+   // v2.7.97 Sets 6+7+8 — Direction Lock defaults (all default-OFF; flip master via FORGE_SETUP_DIRECTION_LOCK_ENABLED=1)
+   g_sc.direction_lock_enabled         = false;  // master flag — when false, evaluator + state machine are inert
+   g_sc.dirlock_struct_break_atr_mult  = 0.5;    // ICT MSS body-close pattern, ATR-validated invalidation distance
+   g_sc.dirlock_flip_threshold         = 5;      // opposite PEMCG warnings ≥ 5 → INVALID
+   g_sc.dirlock_neutral_threshold      = 3;      // bilateral PEMCG ≥ 3 each → NEUTRAL
+   g_sc.dirlock_h1_disagreement        = 0.5;    // h1_trend disagreement by ≥ 0.5 → INVALID
+   g_sc.dirlock_break_bilateral_cooldown_bars = 0; // Set 8 default 0 (off); flip to 2 for 10min bilateral suppression
+   g_sc.dirlock_swing_lookback_bars    = 5;      // entry_swing computed over last 5 M5 bars
+   // v2.7.98 Set 1 — Batch entry defaults (infrastructure only; helper not yet wired). batch_size=1 preserves current behavior.
+   g_sc.batch_size              = 1;             // operator-decided value when enabling: 4 legs
+   g_sc.batch_mode              = 0;             // operator-decided Option 1A (literal)
+   g_sc.batch_spacing_atr_mult  = 0.0;           // 0 = all legs at market price; flip to 0.5 for industry-canonical 0.5×ATR stagger
+   g_sc.batch_max_legs          = 7;             // hard cap per industry safety
+   // v2.7.100 Set 3 Option 3C — SL-trail-driven dynamic TP3 (operator pick)
+   g_sc.tp3_mode                = 0;             // 0=fixed (current behavior), 1=sl_trail (Option 3C). Default-OFF.
+   g_sc.tp3_dist_from_sl_atr_mult = 2.0;         // TP3 extends 2×ATR ahead of current SL
+   g_sc.structure_flip_cancel_enabled = false;   // v2.7.101 Set 4 Option 4B — default-OFF; flip via FORGE_TIMING_COOL_PERIOD_STRUCTURE_CANCEL_ENABLED=1
+   // v2.7.102 TP pip-floor defaults (operator spec: TP1=40pips, TP2=60pips). All default 0 = no floor; flip to enable.
+   g_sc.tp1_pip_floor = 0.0;
+   g_sc.tp2_pip_floor = 0.0;
+   g_sc.tp3_pip_floor = 0.0;
    g_sc.breakout_atr_trail_enabled = false;       // 2.7.25: 0 = no ATR trail. 1 = continuous trail SL at peak∓trail_mult×ATR after TP1.
    g_sc.breakout_atr_trail_mult = 1.5;            // 2.7.25: ATR multiplier for trail (spec default).
    // 2.7.27 — Daily Direction Gate defaults (Run 17 G5048 fix).
@@ -3895,9 +4451,61 @@ void InitScalperConfig() {
    g_sc.bb_lower_reversion_buy_consec_loss_window_sec  = 1800;
    g_sc.bb_lower_reversion_buy_consec_loss_cooldown_sec = 1800;
    g_sc.bb_lower_reversion_buy_h4_min                  = -1.0;  // block when H4 trend ≤ -1.0 (strongly bearish HTF)
+   // v2.7.69 — ICT market-structure gates (Run 29 falling-knife + exhausted-top losses)
+   g_sc.blr_buy_block_on_bearish_bos                   = true;  // BOS = -1 blocks BLR_BUY (catches G5015/G5016/G5027/G5032)
+   g_sc.blr_buy_min_velocity_5bar_signed               = -1.0;  // signed velocity ≤ -1.0×ATR blocks BLR_BUY (accelerating fall)
+   // v2.7.80 — BLR capitulation override defaults (Apr 6 03:30 @ 4603 RSI 23 + Apr 14 13:39 @ 4752 RSI 26.2 fix)
+   g_sc.blr_buy_capitulation_override_enabled          = true;
+   g_sc.blr_buy_capitulation_min_atoms                 = 3;
+   g_sc.blr_buy_capitulation_rsi_max                   = 28.0;
+   g_sc.blr_buy_capitulation_displacement_min_atr      = 1.5;
+   g_sc.blr_buy_capitulation_atr_ratio_min             = 1.3;
+   g_sc.blr_buy_capitulation_lot                       = 0.30;
+   g_sc.blr_buy_capitulation_sl_atr_mult               = 1.5;
+   g_sc.blr_buy_capitulation_tp1_atr_mult              = 0.5;
+   g_sc.blr_buy_capitulation_tp2_atr_mult              = 1.5;
+   g_sc.breakout_buy_exhaustion_rsi                    = 72.0;  // RSI ≥ 72 triggers exhaustion check (G5005=74.5, G5022=68.6→trio peaked 74)
+   g_sc.breakout_buy_block_exhaustion_without_bos      = true;  // when RSI ≥ exhaustion_rsi AND BOS != +1 → block
+   // v2.7.73 — VWAP-distance gate (BB_BREAKOUT BUY G5005 trap diagnosis: vwap_dist/atr=2.76, $1,694 lost)
+   g_sc.breakout_buy_max_vwap_dist_atr                 = 2.5;   // 2.41 G5004 winner allowed, 2.76 G5005 loser blocked
+   g_sc.breakout_sell_max_vwap_dist_atr                = 2.5;   // mirror — block SELL when 2.5×ATR below VWAP
+   // v2.7.93 — Min breakout distance at entry (anti-retest gate)
+   g_sc.bb_breakout_min_breakout_atr_mult              = 0.1;   // BUY must be ≥ 0.1 ATR above BB upper at entry tick
+   g_sc.bb_breakout_min_breakdown_atr_mult             = 0.1;   // SELL must be ≥ 0.1 ATR below BB lower at entry tick
+   // v2.7.74 — BB_BREAKOUT BUY conviction amplifier defaults
+   g_sc.breakout_buy_conviction_enabled                = true;
+   g_sc.breakout_buy_conviction_min_atoms              = 4;     // 4 of 6 must align
+   g_sc.breakout_buy_conviction_initial_legs           = 5;     // was 3 — fire more on conviction
+   g_sc.breakout_buy_conviction_tp1_close_pct          = 50.0;  // was 70 — leave more for TP3 runner
+   // v2.7.76 — Score velocity gate (caps amp when score is decaying)
+   g_sc.breakout_buy_score_velocity_check_enabled      = true;
+   g_sc.breakout_buy_score_velocity_threshold          = -5;     // velocity ≤ -5 (avg5 fell 5+) caps tier
+   // v2.7.77 — Conviction-decay partial close defaults (Nyao reverse-pyramid)
+   g_sc.conviction_decay_partial_close_enabled         = true;
+   g_sc.conviction_decay_l1_ratio                      = 0.75;
+   g_sc.conviction_decay_l2_ratio                      = 0.50;
+   g_sc.conviction_decay_l3_ratio                      = 0.25;
+   g_sc.conviction_decay_l1_close_pct                  = 25.0;
+   g_sc.conviction_decay_l2_close_pct                  = 50.0;
+   g_sc.conviction_decay_grace_bars                    = 2;      // Nyao HealthGraceBars equivalent
+   // v2.7.70 — Pyramid kill (caps G5032-class 8-leg pyramid growth)
+   g_sc.pyramid_kill_enabled                           = true;
+   g_sc.pyramid_kill_max_loss_usd                      = 50.0;  // freeze staging when group P&L ≤ -$50
+   g_sc.pyramid_kill_velocity_threshold                = 0.5;   // AND signed velocity still ≥ 0.5×ATR in adverse direction
+   // v2.7.70 — NY_SESSION_BEARISH_BREAKOUT_SELL (captures 220pt+ overnight + session-open descents)
+   g_sc.ny_session_bearish_sell_enabled                = true;
+   g_sc.ny_session_bearish_sell_kz_max_min             = 90;    // first 90min of LONDON_OPEN / NY_OPEN
+   g_sc.ny_session_bearish_sell_min_velocity           = 1.5;   // signed velocity ≤ -1.5×ATR
+   g_sc.ny_session_bearish_sell_max_rsi                = 50.0;  // RSI < 50 (room to fall)
+   g_sc.ny_session_bearish_sell_room_min_atr           = 1.0;   // close - day_low ≥ 1.0×ATR
+   g_sc.ny_session_bearish_sell_sl_atr_mult            = 3.5;
+   g_sc.ny_session_bearish_sell_tp1_atr_mult           = 1.0;
+   g_sc.ny_session_bearish_sell_tp2_atr_mult           = 2.5;
+   g_sc.ny_session_bearish_sell_cooldown_sec           = 0;
+   g_sc.ny_session_bearish_sell_lot_factor             = 1.0;
    // 2.7.57 — TREND_CONTINUATION init defaults (atlas §5.2)
    g_sc.trend_continuation_buy_enabled              = true;
-   g_sc.trend_continuation_buy_h1_min               = 0.10;
+   g_sc.trend_continuation_buy_h1_min               = 1.0;   // v2.7.85 — bumped 0.10→1.0 (catches Apr 6 17:35 -$720 loss with h1=0.27 weak HTF)
    g_sc.trend_continuation_buy_rsi_min              = 60.0;
    g_sc.trend_continuation_buy_rsi_max              = 75.0;
    g_sc.trend_continuation_buy_adx_min              = 20.0;
@@ -3917,7 +4525,7 @@ void InitScalperConfig() {
    g_sc.trend_continuation_buy_require_h4_alignment  = true;
    g_sc.trend_continuation_buy_h4_min                = 0.0;
    g_sc.trend_continuation_sell_enabled             = true;
-   g_sc.trend_continuation_sell_h1_max              = 0.10;
+   g_sc.trend_continuation_sell_h1_max              = 1.0;   // v2.7.85 — bumped 0.10→1.0 (mirror; requires h1 ≤ -1.0 for TC_SELL)
    g_sc.trend_continuation_sell_rsi_min             = 25.0;
    g_sc.trend_continuation_sell_rsi_max             = 40.0;
    g_sc.trend_continuation_sell_adx_min             = 20.0;
@@ -3943,8 +4551,8 @@ void InitScalperConfig() {
    g_sc.trend_continuation_sell_max_macd_slope_5bar      = -0.2;  // bear momentum strengthening
    g_sc.trend_continuation_buy_min_di_balance            = 0.0;   // DI+ > DI-
    g_sc.trend_continuation_sell_max_di_balance           = 0.0;   // DI+ < DI-
-   g_sc.trend_continuation_buy_max_dist_from_day_high_atr  = 0.5; // not at day-high
-   g_sc.trend_continuation_sell_max_dist_from_day_low_atr  = 0.5; // not at day-low
+   g_sc.trend_continuation_buy_max_dist_from_day_high_atr  = 3.0; // v2.7.85 — bumped 0.5→3.0 (require ≥3×ATR room above price)
+   g_sc.trend_continuation_sell_max_dist_from_day_low_atr  = 3.0; // v2.7.85 — bumped 0.5→3.0 (require ≥3×ATR room below price)
    g_sc.trend_continuation_sell_h4_max                = 0.0;
    // 2.7.7 defaults
    g_sc.session_ny_sell_cutoff_utc      = 17;
@@ -3986,6 +4594,27 @@ void InitScalperConfig() {
    g_sc.buy_limit_recovery_lot_factor   = 0.25;
    g_sc.buy_limit_recovery_expiry_bars  = 4;     // 20 min — stale recovery limits become losing longs
    g_sc.buy_limit_recovery_sl_atr_mult  = 1.0;   // SL below crash low by 1 ATR
+   // ─────────────────────────────────────────────────────────────────────────────
+   // v2.7.95 — BUY-side cascade defaults (mirror of sell_stop_cont, all default-OFF)
+   // Closes the BUY-side asymmetry: enables BUY_STOP continuation after BUY TP1.
+   g_sc.buy_stop_cont_enabled            = false;  // off by default — flip via FORGE_GEOMETRY_BUY_STOP_CONT_ENABLED=1
+   g_sc.buy_stop_cont_atr_mult           = 0.40;
+   g_sc.buy_stop_cont_sl_atr_mult        = 1.5;   // mirror — SL anchored to cascade entry
+   g_sc.buy_stop_cont_lot_factor         = 1.0;   // full lot — cascade is confirmed continuation
+   g_sc.buy_stop_cont_tp_atr_mult        = 1.5;   // mirror — ~9pts @ ATR=6
+   g_sc.buy_stop_cont_expiry_bars        = 2;     // 10 min — scalp window
+   g_sc.buy_stop_cont_max_rsi            = 75.0;  // mirror: SELL needs RSI > 25 (not exhausted oversold), BUY needs RSI < 75 (not exhausted overbought)
+   g_sc.buy_stop_cont_min_adx            = 25.0;  // mirror — trend strength gate
+   g_sc.buy_stop_cont_require_h1_di      = true;  // require H1 DI+ > DI− (H1 bullish, mirror)
+   g_sc.buy_stop_cont_require_trend_regime = false; // mirror — 0=off; 1=require regime != RANGE
+   g_sc.buy_stop_cont_legs               = 5;     // mirror — 5 legs default
+   // v2.7.95 — SELL LIMIT recovery defaults (mirror of buy_limit_recovery, default-OFF)
+   g_sc.sell_limit_recovery_enabled      = false;
+   g_sc.sell_limit_recovery_max_rsi      = 65.0;  // mirror — Cardwell Bear Resistance zone threshold
+   g_sc.sell_limit_recovery_lot_factor   = 0.25;  // mirror
+   g_sc.sell_limit_recovery_expiry_bars  = 4;     // mirror — 20 min
+   g_sc.sell_limit_recovery_sl_atr_mult  = 1.0;   // mirror — SL above rally high by 1 ATR
+   // ─────────────────────────────────────────────────────────────────────────────
    // H4 supplemental gates — off by default; enable via .env + scalper_config.json
    g_sc.h4_rsi_gate_enabled  = false;
    g_sc.h4_rsi_sell_max      = 60.0;  // Cardwell Bear Resistance ceiling
@@ -4000,6 +4629,14 @@ void InitScalperConfig() {
       g_sell_limit_stack[_si].mkt_magic = 0;
       g_sell_limit_stack[_si].expiry   = 0;
       g_sell_limit_stack[_si].active   = false;
+   }
+   // v2.7.95 — Init BUY-side parallel stack (mirror layout, all slots empty)
+   for(int _bi = 0; _bi < 10; _bi++) {
+      g_buy_stop_stack[_bi].ticket    = 0;
+      g_buy_stop_stack[_bi].group_id  = 0;
+      g_buy_stop_stack[_bi].mkt_magic = 0;
+      g_buy_stop_stack[_bi].expiry    = 0;
+      g_buy_stop_stack[_bi].active    = false;
    }
    g_sc.post_sl_cooldown_sec          = 3600;
    g_sc.breakout_near_floor_lot_factor = 0.25;
@@ -4044,6 +4681,79 @@ void InitScalperConfig() {
    g_sc.fractional_sell_in_bull_lot_factor    = 0.25;
    g_sc.fractional_sell_in_bull_sl_atr_mult   = 1.5;
    g_sc.fractional_sell_in_bull_tp1_atr_mult  = 0.3;
+   // v2.7.78 — REVERSE_SELL_IN_BULL defaults (G5005 character analysis: RSI 74.5, VWAP 2.75×ATR, h1 +2.14)
+   g_sc.reverse_sell_in_bull_enabled                       = true;
+   g_sc.reverse_sell_in_bull_lot_factor                    = 0.5;
+   g_sc.reverse_sell_in_bull_min_rsi                       = 72.0;
+   g_sc.reverse_sell_in_bull_min_vwap_dist_atr             = 2.0;
+   g_sc.reverse_sell_in_bull_min_h1_trend                  = 1.0;
+   g_sc.reverse_sell_in_bull_require_di_plus_above_minus   = true;
+   g_sc.reverse_sell_in_bull_sl_atr_mult                   = 2.0;
+   g_sc.reverse_sell_in_bull_tp1_atr_mult                  = 1.0;
+   g_sc.reverse_sell_in_bull_tp2_atr_mult                  = 2.0;
+   g_sc.reverse_sell_in_bull_cooldown_sec                  = 300;
+   // v2.7.79 — GRINDING_SELL defaults (Apr 8 fix: slow-grind descent regardless of killzone)
+   g_sc.grinding_sell_enabled                              = true;
+   g_sc.grinding_sell_lot_factor                           = 0.5;
+   g_sc.grinding_sell_min_velocity                         = 0.5;   // slower than NY_SESSION's 1.5 (catches grinds, not just impulses)
+   g_sc.grinding_sell_max_rsi                              = 55.0;
+   g_sc.grinding_sell_min_rsi                              = 30.0;
+   g_sc.grinding_sell_room_min_atr                         = 0.5;
+   g_sc.grinding_sell_sl_atr_mult                          = 2.5;
+   g_sc.grinding_sell_tp1_atr_mult                         = 0.7;
+   g_sc.grinding_sell_tp2_atr_mult                         = 1.5;
+   g_sc.grinding_sell_cooldown_sec                         = 600;
+   // v2.7.81 — ASIA_CAPITULATION_BUY defaults (Apr 6 03:30 @ 4603 RSI 23 pre-London V-flush fix)
+   g_sc.asia_capitulation_buy_enabled                      = true;
+   g_sc.asia_capitulation_buy_min_atoms                    = 3;
+   g_sc.asia_capitulation_buy_rsi_max                      = 28.0;
+   g_sc.asia_capitulation_buy_displacement_min_atr         = 1.5;
+   g_sc.asia_capitulation_buy_atr_ratio_min                = 1.3;
+   g_sc.asia_capitulation_buy_session_start_utc            = 22;     // Asia open
+   g_sc.asia_capitulation_buy_session_end_utc              = 7;      // pre-London (exclusive)
+   g_sc.asia_capitulation_buy_lot                          = 0.20;   // smaller than BLR capitulation 0.30 (Asia is thinner)
+   g_sc.asia_capitulation_buy_sl_atr_mult                  = 1.5;
+   g_sc.asia_capitulation_buy_tp1_atr_mult                 = 0.5;
+   g_sc.asia_capitulation_buy_tp2_atr_mult                 = 1.5;
+   g_sc.asia_capitulation_buy_cooldown_sec                 = 1800;
+   // v2.7.84 — 3-layer entry-gating defaults (UMCG + CVCSM + BB_EXHAUSTION_REVERSAL)
+   g_sc.umcg_enabled                          = true;
+   g_sc.umcg_buy_block_threshold              = 5;   // v2.7.86 — was 3 (majority-minus-one over-blocked range bars); 5 = supermajority catches G5006 (6/7) + G5015 (5/7)
+   g_sc.umcg_sell_block_threshold             = 5;   // v2.7.86 — was 3 (mirror)
+   g_sc.umcg_pemcg_rsi_overbought             = 65.0;   // v2.7.88 — was 70.0; G5006 reproduced @ RSI 69.3 (post-peak retest 90s after RSI 74.5 peak)
+   g_sc.umcg_pemcg_rsi_oversold               = 35.0;   // v2.7.88 — was 30.0 (mirror)
+   g_sc.umcg_pemcg_body_pct_max_weak          = 0.5;
+   g_sc.umcg_pemcg_atr_ratio_max_contract     = 1.0;
+   g_sc.umcg_pemcg_bb_dist_atr_threshold      = 0.3;
+   g_sc.cvcsm_enabled                         = true;
+   g_sc.cvcsm_release_threshold               = 2;
+   g_sc.cvcsm_required_clean_bars             = 2;
+   g_sc.cvcsm_max_cooldown_sec                = 1800;
+   g_sc.cvcsm_trigger_on_sl                   = true;
+   g_sc.cvcsm_trigger_on_regime_flip          = true;
+   g_sc.bb_exhaustion_reversal_enabled        = true;
+   g_sc.bb_exhaustion_reversal_min_warnings   = 4;
+   g_sc.bb_exhaustion_reversal_lot            = 0.10;
+   g_sc.bb_exhaustion_reversal_sl_atr_mult    = 1.0;
+   g_sc.bb_exhaustion_reversal_tp1_atr_mult   = 0.0;  // 0 = use bb_mid
+   g_sc.bb_exhaustion_reversal_tp2_atr_mult   = 0.0;  // 0 = use vwap_price
+   // v2.7.91 — Cooldown 1800 → 0. Operator: "fire more legs immediately without cool period".
+   //   Rationale: proximity_atr=1.5 is the natural wave-riding throttle — new SELL only fires
+   //   when price moves 1.5×ATR away from existing SELL. On a developing bear leg, each new low
+   //   triggers another SELL leg, scaling the position into the trend. Time cooldown was redundant
+   //   AND harmful (blocked the second wave once proximity cleared).
+   g_sc.bb_exhaustion_reversal_cooldown_sec   = 0;     // v2.7.91: was 1800 (30 min)
+   g_sc.bb_exhaustion_reversal_proximity_atr  = 1.5;   // PRIMARY throttle — lower = more aggressive stacking
+   // v2.7.89/91 — Conviction-tier amplifier + legs override (operator-mandated sizing)
+   g_sc.bb_exhaustion_reversal_lot_amplifier          = 1.5;   // v2.7.91: was 1.0; BASE tier lot 0.10 → 0.15
+   g_sc.bb_exhaustion_reversal_high_conviction_warnings = 6;   // PEMCG ≥6/7 → HIGH tier
+   g_sc.bb_exhaustion_reversal_high_conviction_lot_factor = 2.0;  // HIGH multiplier on top of BASE amp (0.15 × 2.0 = 0.30/leg)
+   g_sc.bb_exhaustion_reversal_legs_high_conviction   = 4;     // v2.7.91: was 3; HIGH = 4 legs × 0.30 = 1.20 total (parity vs typical 3 × 0.38 = 1.14 BB_BREAKOUT trap)
+   g_sc.bb_exhaustion_reversal_max_adx                = 35.0;  // v2.7.92: block Layer 3 when M5 ADX ≥ 35 (don't counter-trade strong trends)
+   g_sc.bb_exhaustion_reversal_max_prev_bar_range_atr_mult = 2.0;  // v2.7.94: block when prev M5 bar > 2×ATR (wide-range capitulation bar)
+   // v2.7.79 — BB_PULLBACK_SCALP BUY velocity gate defaults
+   g_sc.bb_pullback_buy_block_on_falling_velocity          = true;
+   g_sc.bb_pullback_buy_min_velocity_5bar_signed           = -1.0;
    g_sc.bull_day_dip_buy_enabled              = false;
    g_sc.bull_day_dip_buy_lot_mult             = 1.0;
    g_sc.bull_day_dip_buy_sl_atr_mult          = 1.0;
@@ -4332,6 +5042,91 @@ void ReadScalperConfig() {
          v = JsonGetDouble(breakout_json, "tp2_sl_ratchet_enabled");
          g_sc.breakout_tp2_sl_ratchet_enabled = (v >= 0.5);
       }
+      // v2.7.96 Set 2 — TP2 banking config:
+      //   tp2_close_enabled  master flag — when true, close <family>_tp2_close_pct of remaining positions at TP2 touch
+      //   breakout_tp2_close_pct — % of remaining BREAKOUT positions to close at TP2 (default 25, operator-spec)
+      // Default-OFF: master flag off preserves current ratchet-only behavior.
+      if(JsonHasKey(breakout_json, "tp2_close_enabled")) {
+         v = JsonGetDouble(breakout_json, "tp2_close_enabled");
+         g_sc.tp2_close_enabled = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "tp2_close_pct")) {
+         v = JsonGetDouble(breakout_json, "tp2_close_pct");
+         if(v >= 0.0 && v <= 100.0) g_sc.breakout_tp2_close_pct = v;
+      }
+      // v2.7.97 Sets 6+7+8 — Direction Lock config loaders (all gated by master flag)
+      if(JsonHasKey(breakout_json, "direction_lock_enabled")) {
+         v = JsonGetDouble(breakout_json, "direction_lock_enabled");
+         g_sc.direction_lock_enabled = (v >= 0.5);
+      }
+      if(JsonHasKey(breakout_json, "dirlock_struct_break_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "dirlock_struct_break_atr_mult");
+         if(v >= 0.0 && v <= 5.0) g_sc.dirlock_struct_break_atr_mult = v;
+      }
+      if(JsonHasKey(breakout_json, "dirlock_flip_threshold")) {
+         v = JsonGetDouble(breakout_json, "dirlock_flip_threshold");
+         if(v >= 1.0 && v <= 7.0) g_sc.dirlock_flip_threshold = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "dirlock_neutral_threshold")) {
+         v = JsonGetDouble(breakout_json, "dirlock_neutral_threshold");
+         if(v >= 1.0 && v <= 7.0) g_sc.dirlock_neutral_threshold = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "dirlock_h1_disagreement")) {
+         v = JsonGetDouble(breakout_json, "dirlock_h1_disagreement");
+         if(v >= 0.0 && v <= 5.0) g_sc.dirlock_h1_disagreement = v;
+      }
+      if(JsonHasKey(breakout_json, "dirlock_break_bilateral_cooldown_bars")) {
+         v = JsonGetDouble(breakout_json, "dirlock_break_bilateral_cooldown_bars");
+         if(v >= 0.0 && v <= 50.0) g_sc.dirlock_break_bilateral_cooldown_bars = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "dirlock_swing_lookback_bars")) {
+         v = JsonGetDouble(breakout_json, "dirlock_swing_lookback_bars");
+         if(v >= 1.0 && v <= 50.0) g_sc.dirlock_swing_lookback_bars = (int)v;
+      }
+      // v2.7.98 Set 1 — batch entry config loaders
+      if(JsonHasKey(breakout_json, "batch_size")) {
+         v = JsonGetDouble(breakout_json, "batch_size");
+         if(v >= 1.0 && v <= 7.0) g_sc.batch_size = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "batch_mode")) {
+         v = JsonGetDouble(breakout_json, "batch_mode");
+         if(v >= 0.0 && v <= 1.0) g_sc.batch_mode = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "batch_spacing_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "batch_spacing_atr_mult");
+         if(v >= 0.0 && v <= 5.0) g_sc.batch_spacing_atr_mult = v;
+      }
+      if(JsonHasKey(breakout_json, "batch_max_legs")) {
+         v = JsonGetDouble(breakout_json, "batch_max_legs");
+         if(v >= 1.0 && v <= 7.0) g_sc.batch_max_legs = (int)v;
+      }
+      // v2.7.100 Set 3 Option 3C — TP3 mode config loaders
+      if(JsonHasKey(breakout_json, "tp3_mode")) {
+         v = JsonGetDouble(breakout_json, "tp3_mode");
+         if(v >= 0.0 && v <= 1.0) g_sc.tp3_mode = (int)v;
+      }
+      if(JsonHasKey(breakout_json, "tp3_dist_from_sl_atr_mult")) {
+         v = JsonGetDouble(breakout_json, "tp3_dist_from_sl_atr_mult");
+         if(v >= 0.5 && v <= 10.0) g_sc.tp3_dist_from_sl_atr_mult = v;
+      }
+      // v2.7.101 Set 4 Option 4B — structural pending cancel
+      if(JsonHasKey(breakout_json, "structure_flip_cancel_enabled")) {
+         v = JsonGetDouble(breakout_json, "structure_flip_cancel_enabled");
+         g_sc.structure_flip_cancel_enabled = (v >= 0.5);
+      }
+      // v2.7.102 TP pip-floor knobs
+      if(JsonHasKey(breakout_json, "tp1_pip_floor")) {
+         v = JsonGetDouble(breakout_json, "tp1_pip_floor");
+         if(v >= 0.0 && v <= 1000.0) g_sc.tp1_pip_floor = v;
+      }
+      if(JsonHasKey(breakout_json, "tp2_pip_floor")) {
+         v = JsonGetDouble(breakout_json, "tp2_pip_floor");
+         if(v >= 0.0 && v <= 1000.0) g_sc.tp2_pip_floor = v;
+      }
+      if(JsonHasKey(breakout_json, "tp3_pip_floor")) {
+         v = JsonGetDouble(breakout_json, "tp3_pip_floor");
+         if(v >= 0.0 && v <= 2000.0) g_sc.tp3_pip_floor = v;
+      }
       // 2.7.25 — ATR trail (per FORGE_RATCHET_LOGIC_IDEAS.md). After TP1, trail SL at group peak∓mult×ATR.
       if(JsonHasKey(breakout_json, "atr_trail_enabled")) {
          v = JsonGetDouble(breakout_json, "atr_trail_enabled");
@@ -4450,6 +5245,26 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "buy_limit_recovery_lot_factor")) { v = JsonGetDouble(breakout_json,"buy_limit_recovery_lot_factor"); if(v > 0 && v <= 1.0) g_sc.buy_limit_recovery_lot_factor = v; }
       if(JsonHasKey(breakout_json, "buy_limit_recovery_expiry_bars")){ v = JsonGetDouble(breakout_json,"buy_limit_recovery_expiry_bars"); if(v >= 1 && v <= 50) g_sc.buy_limit_recovery_expiry_bars = (int)v; }
       if(JsonHasKey(breakout_json, "buy_limit_recovery_sl_atr_mult")){ v = JsonGetDouble(breakout_json,"buy_limit_recovery_sl_atr_mult"); if(v > 0 && v <= 5.0) g_sc.buy_limit_recovery_sl_atr_mult = v; }
+      // ─────────────────────────────────────────────────────────────────────────
+      // v2.7.95 — BUY-side cascade JsonHasKey loaders (mirror of sell_stop_cont)
+      if(JsonHasKey(breakout_json, "buy_stop_cont_enabled"))    { v = JsonGetDouble(breakout_json,"buy_stop_cont_enabled");    g_sc.buy_stop_cont_enabled    = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_atr_mult"))   { v = JsonGetDouble(breakout_json,"buy_stop_cont_atr_mult");   if(v > 0 && v <= 5.0)  g_sc.buy_stop_cont_atr_mult   = v; }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_sl_atr_mult")){ v = JsonGetDouble(breakout_json,"buy_stop_cont_sl_atr_mult"); if(v >= 0.0 && v <= 10.0) g_sc.buy_stop_cont_sl_atr_mult = v; }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_lot_factor")) { v = JsonGetDouble(breakout_json,"buy_stop_cont_lot_factor"); if(v > 0 && v <= 2.0)  g_sc.buy_stop_cont_lot_factor = v; }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_tp_atr_mult")){ v = JsonGetDouble(breakout_json,"buy_stop_cont_tp_atr_mult"); if(v >= 0.0) g_sc.buy_stop_cont_tp_atr_mult = v; }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_expiry_bars")){ v = JsonGetDouble(breakout_json,"buy_stop_cont_expiry_bars"); if(v >= 1 && v <= 50) g_sc.buy_stop_cont_expiry_bars = (int)v; }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_max_rsi"))    { v = JsonGetDouble(breakout_json,"buy_stop_cont_max_rsi");    if(v > 50 && v <= 100) g_sc.buy_stop_cont_max_rsi    = v; }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_min_adx"))    { v = JsonGetDouble(breakout_json,"buy_stop_cont_min_adx");    if(v >= 0 && v <= 80) g_sc.buy_stop_cont_min_adx    = v; }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_require_h1_di")) { v = JsonGetDouble(breakout_json,"buy_stop_cont_require_h1_di"); g_sc.buy_stop_cont_require_h1_di = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_require_trend_regime")) { v = JsonGetDouble(breakout_json,"buy_stop_cont_require_trend_regime"); g_sc.buy_stop_cont_require_trend_regime = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "buy_stop_cont_legs"))       { v = JsonGetDouble(breakout_json,"buy_stop_cont_legs");       if(v >= 1 && v <= 7) g_sc.buy_stop_cont_legs       = (int)v; }
+      // v2.7.95 — SELL LIMIT recovery JsonHasKey loaders (mirror of buy_limit_recovery)
+      if(JsonHasKey(breakout_json, "sell_limit_recovery_enabled"))    { v = JsonGetDouble(breakout_json,"sell_limit_recovery_enabled");    g_sc.sell_limit_recovery_enabled    = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "sell_limit_recovery_max_rsi"))    { v = JsonGetDouble(breakout_json,"sell_limit_recovery_max_rsi");    if(v > 0 && v <= 100) g_sc.sell_limit_recovery_max_rsi    = v; }
+      if(JsonHasKey(breakout_json, "sell_limit_recovery_lot_factor")) { v = JsonGetDouble(breakout_json,"sell_limit_recovery_lot_factor"); if(v > 0 && v <= 1.0) g_sc.sell_limit_recovery_lot_factor = v; }
+      if(JsonHasKey(breakout_json, "sell_limit_recovery_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_limit_recovery_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_limit_recovery_expiry_bars = (int)v; }
+      if(JsonHasKey(breakout_json, "sell_limit_recovery_sl_atr_mult")){ v = JsonGetDouble(breakout_json,"sell_limit_recovery_sl_atr_mult"); if(v > 0 && v <= 5.0) g_sc.sell_limit_recovery_sl_atr_mult = v; }
+      // ─────────────────────────────────────────────────────────────────────────
       // H4 supplemental gates (2.7.10) — disabled by default
       if(JsonHasKey(breakout_json, "h4_rsi_gate_enabled"))  { v = JsonGetDouble(breakout_json,"h4_rsi_gate_enabled");  g_sc.h4_rsi_gate_enabled  = (v >= 0.5); }
       if(JsonHasKey(breakout_json, "h4_rsi_sell_max"))      { v = JsonGetDouble(breakout_json,"h4_rsi_sell_max");      if(v > 0 && v <= 100) g_sc.h4_rsi_sell_max      = v; }
@@ -4627,6 +5442,56 @@ void ReadScalperConfig() {
    if(JsonHasKey(content,"bb_lower_reversion_buy_consec_loss_window_sec"))  { v=JsonGetDouble(content,"bb_lower_reversion_buy_consec_loss_window_sec");  if(v>=0 && v<=7200) g_sc.bb_lower_reversion_buy_consec_loss_window_sec=(int)v; }
    if(JsonHasKey(content,"bb_lower_reversion_buy_consec_loss_cooldown_sec")){ v=JsonGetDouble(content,"bb_lower_reversion_buy_consec_loss_cooldown_sec");if(v>=0 && v<=7200) g_sc.bb_lower_reversion_buy_consec_loss_cooldown_sec=(int)v; }
    if(JsonHasKey(content,"bb_lower_reversion_buy_h4_min"))                  { v=JsonGetDouble(content,"bb_lower_reversion_buy_h4_min");                  if(v>=-10.0 && v<=10.0) g_sc.bb_lower_reversion_buy_h4_min=v; }
+   // v2.7.69 — ICT market-structure gates
+   if(JsonHasKey(content,"blr_buy_block_on_bearish_bos"))                   { v=JsonGetDouble(content,"blr_buy_block_on_bearish_bos");                   g_sc.blr_buy_block_on_bearish_bos=(v>=0.5); }
+   if(JsonHasKey(content,"blr_buy_min_velocity_5bar_signed"))               { v=JsonGetDouble(content,"blr_buy_min_velocity_5bar_signed");               if(v>=-10.0 && v<=10.0) g_sc.blr_buy_min_velocity_5bar_signed=v; }
+   // v2.7.80 — BLR capitulation override loaders
+   if(JsonHasKey(content,"blr_buy_capitulation_override_enabled"))          { v=JsonGetDouble(content,"blr_buy_capitulation_override_enabled");          g_sc.blr_buy_capitulation_override_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"blr_buy_capitulation_min_atoms"))                 { v=JsonGetDouble(content,"blr_buy_capitulation_min_atoms");                 if(v>=1.0 && v<=5.0) g_sc.blr_buy_capitulation_min_atoms=(int)v; }
+   if(JsonHasKey(content,"blr_buy_capitulation_rsi_max"))                   { v=JsonGetDouble(content,"blr_buy_capitulation_rsi_max");                   if(v>=10.0 && v<=40.0) g_sc.blr_buy_capitulation_rsi_max=v; }
+   if(JsonHasKey(content,"blr_buy_capitulation_displacement_min_atr"))      { v=JsonGetDouble(content,"blr_buy_capitulation_displacement_min_atr");      if(v>=0.5 && v<=5.0) g_sc.blr_buy_capitulation_displacement_min_atr=v; }
+   if(JsonHasKey(content,"blr_buy_capitulation_atr_ratio_min"))             { v=JsonGetDouble(content,"blr_buy_capitulation_atr_ratio_min");             if(v>=1.0 && v<=3.0) g_sc.blr_buy_capitulation_atr_ratio_min=v; }
+   if(JsonHasKey(content,"blr_buy_capitulation_lot"))                       { v=JsonGetDouble(content,"blr_buy_capitulation_lot");                       if(v>=0.01 && v<=2.0) g_sc.blr_buy_capitulation_lot=v; }
+   if(JsonHasKey(content,"blr_buy_capitulation_sl_atr_mult"))               { v=JsonGetDouble(content,"blr_buy_capitulation_sl_atr_mult");               if(v>=0.5 && v<=5.0) g_sc.blr_buy_capitulation_sl_atr_mult=v; }
+   if(JsonHasKey(content,"blr_buy_capitulation_tp1_atr_mult"))              { v=JsonGetDouble(content,"blr_buy_capitulation_tp1_atr_mult");              if(v>=0.1 && v<=3.0) g_sc.blr_buy_capitulation_tp1_atr_mult=v; }
+   if(JsonHasKey(content,"blr_buy_capitulation_tp2_atr_mult"))              { v=JsonGetDouble(content,"blr_buy_capitulation_tp2_atr_mult");              if(v>=0.1 && v<=5.0) g_sc.blr_buy_capitulation_tp2_atr_mult=v; }
+   if(JsonHasKey(content,"breakout_buy_exhaustion_rsi"))                    { v=JsonGetDouble(content,"breakout_buy_exhaustion_rsi");                    if(v>=0 && v<=100.0) g_sc.breakout_buy_exhaustion_rsi=v; }
+   if(JsonHasKey(content,"breakout_buy_block_exhaustion_without_bos"))      { v=JsonGetDouble(content,"breakout_buy_block_exhaustion_without_bos");      g_sc.breakout_buy_block_exhaustion_without_bos=(v>=0.5); }
+   // v2.7.73 — VWAP-distance gates
+   if(JsonHasKey(content,"breakout_buy_max_vwap_dist_atr"))                 { v=JsonGetDouble(content,"breakout_buy_max_vwap_dist_atr");                 if(v>=0 && v<=20.0) g_sc.breakout_buy_max_vwap_dist_atr=v; }
+   if(JsonHasKey(content,"bb_breakout_min_breakout_atr_mult"))              { v=JsonGetDouble(content,"bb_breakout_min_breakout_atr_mult");              if(v>=0 && v<=5.0) g_sc.bb_breakout_min_breakout_atr_mult=v; }
+   if(JsonHasKey(content,"bb_breakout_min_breakdown_atr_mult"))             { v=JsonGetDouble(content,"bb_breakout_min_breakdown_atr_mult");             if(v>=0 && v<=5.0) g_sc.bb_breakout_min_breakdown_atr_mult=v; }
+   if(JsonHasKey(content,"breakout_sell_max_vwap_dist_atr"))                { v=JsonGetDouble(content,"breakout_sell_max_vwap_dist_atr");                if(v>=0 && v<=20.0) g_sc.breakout_sell_max_vwap_dist_atr=v; }
+   // v2.7.74 — Conviction amplifier
+   if(JsonHasKey(content,"breakout_buy_conviction_enabled"))                { v=JsonGetDouble(content,"breakout_buy_conviction_enabled");                g_sc.breakout_buy_conviction_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"breakout_buy_conviction_min_atoms"))              { v=JsonGetDouble(content,"breakout_buy_conviction_min_atoms");              if(v>=0 && v<=10) g_sc.breakout_buy_conviction_min_atoms=(int)v; }
+   if(JsonHasKey(content,"breakout_buy_conviction_initial_legs"))           { v=JsonGetDouble(content,"breakout_buy_conviction_initial_legs");           if(v>=1 && v<=30) g_sc.breakout_buy_conviction_initial_legs=(int)v; }
+   if(JsonHasKey(content,"breakout_buy_conviction_tp1_close_pct"))          { v=JsonGetDouble(content,"breakout_buy_conviction_tp1_close_pct");          if(v>=0 && v<=100) g_sc.breakout_buy_conviction_tp1_close_pct=v; }
+   // v2.7.76 — Score velocity gate
+   if(JsonHasKey(content,"breakout_buy_score_velocity_check_enabled"))      { v=JsonGetDouble(content,"breakout_buy_score_velocity_check_enabled");      g_sc.breakout_buy_score_velocity_check_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"breakout_buy_score_velocity_threshold"))          { v=JsonGetDouble(content,"breakout_buy_score_velocity_threshold");          if(v>=-100 && v<=100) g_sc.breakout_buy_score_velocity_threshold=(int)v; }
+   // v2.7.77 — Conviction-decay partial close
+   if(JsonHasKey(content,"conviction_decay_partial_close_enabled"))         { v=JsonGetDouble(content,"conviction_decay_partial_close_enabled");         g_sc.conviction_decay_partial_close_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"conviction_decay_l1_ratio"))                      { v=JsonGetDouble(content,"conviction_decay_l1_ratio");                      if(v>=0 && v<=1.0) g_sc.conviction_decay_l1_ratio=v; }
+   if(JsonHasKey(content,"conviction_decay_l2_ratio"))                      { v=JsonGetDouble(content,"conviction_decay_l2_ratio");                      if(v>=0 && v<=1.0) g_sc.conviction_decay_l2_ratio=v; }
+   if(JsonHasKey(content,"conviction_decay_l3_ratio"))                      { v=JsonGetDouble(content,"conviction_decay_l3_ratio");                      if(v>=0 && v<=1.0) g_sc.conviction_decay_l3_ratio=v; }
+   if(JsonHasKey(content,"conviction_decay_l1_close_pct"))                  { v=JsonGetDouble(content,"conviction_decay_l1_close_pct");                  if(v>=0 && v<=100) g_sc.conviction_decay_l1_close_pct=v; }
+   if(JsonHasKey(content,"conviction_decay_l2_close_pct"))                  { v=JsonGetDouble(content,"conviction_decay_l2_close_pct");                  if(v>=0 && v<=100) g_sc.conviction_decay_l2_close_pct=v; }
+   if(JsonHasKey(content,"conviction_decay_grace_bars"))                    { v=JsonGetDouble(content,"conviction_decay_grace_bars");                    if(v>=0 && v<=30) g_sc.conviction_decay_grace_bars=(int)v; }
+   // v2.7.70 — Pyramid kill + NY_SESSION_BEARISH_BREAKOUT_SELL
+   if(JsonHasKey(content,"pyramid_kill_enabled"))               { v=JsonGetDouble(content,"pyramid_kill_enabled");               g_sc.pyramid_kill_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"pyramid_kill_max_loss_usd"))          { v=JsonGetDouble(content,"pyramid_kill_max_loss_usd");          if(v>=0 && v<=10000.0) g_sc.pyramid_kill_max_loss_usd=v; }
+   if(JsonHasKey(content,"pyramid_kill_velocity_threshold"))    { v=JsonGetDouble(content,"pyramid_kill_velocity_threshold");    if(v>=0 && v<=10.0) g_sc.pyramid_kill_velocity_threshold=v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_enabled"))       { v=JsonGetDouble(content,"ny_session_bearish_sell_enabled");       g_sc.ny_session_bearish_sell_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"ny_session_bearish_sell_kz_max_min"))    { v=JsonGetDouble(content,"ny_session_bearish_sell_kz_max_min");    if(v>=0 && v<=300) g_sc.ny_session_bearish_sell_kz_max_min=(int)v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_min_velocity"))  { v=JsonGetDouble(content,"ny_session_bearish_sell_min_velocity");  if(v>=0 && v<=10.0) g_sc.ny_session_bearish_sell_min_velocity=v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_max_rsi"))       { v=JsonGetDouble(content,"ny_session_bearish_sell_max_rsi");       if(v>=0 && v<=100.0) g_sc.ny_session_bearish_sell_max_rsi=v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_room_min_atr"))  { v=JsonGetDouble(content,"ny_session_bearish_sell_room_min_atr");  if(v>=0 && v<=10.0) g_sc.ny_session_bearish_sell_room_min_atr=v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_sl_atr_mult"))   { v=JsonGetDouble(content,"ny_session_bearish_sell_sl_atr_mult");   if(v>=0.1 && v<=10.0) g_sc.ny_session_bearish_sell_sl_atr_mult=v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_tp1_atr_mult"))  { v=JsonGetDouble(content,"ny_session_bearish_sell_tp1_atr_mult");  if(v>=0.1 && v<=10.0) g_sc.ny_session_bearish_sell_tp1_atr_mult=v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_tp2_atr_mult"))  { v=JsonGetDouble(content,"ny_session_bearish_sell_tp2_atr_mult");  if(v>=0.1 && v<=10.0) g_sc.ny_session_bearish_sell_tp2_atr_mult=v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_cooldown_sec"))  { v=JsonGetDouble(content,"ny_session_bearish_sell_cooldown_sec");  if(v>=0 && v<=7200) g_sc.ny_session_bearish_sell_cooldown_sec=(int)v; }
+   if(JsonHasKey(content,"ny_session_bearish_sell_lot_factor"))    { v=JsonGetDouble(content,"ny_session_bearish_sell_lot_factor");    if(v>=0.1 && v<=10.0) g_sc.ny_session_bearish_sell_lot_factor=v; }
    if(JsonHasKey(content,"dump_cascade_enabled"))                           { v=JsonGetDouble(content,"dump_cascade_enabled");                           g_sc.dump_cascade_enabled=(v>=0.5); }
    // v2.7.60 — MD V2 composite loaders
    if(JsonHasKey(content,"dump_v2_enabled"))         { v=JsonGetDouble(content,"dump_v2_enabled");         g_sc.dump_v2_enabled=(v>=0.5); }
@@ -4861,6 +5726,73 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "fractional_sell_in_bull_lot_factor"))    { v=JsonGetDouble(content,"fractional_sell_in_bull_lot_factor");    if(v>0.0&&v<=1.0) g_sc.fractional_sell_in_bull_lot_factor=v; }
    if(JsonHasKey(content, "fractional_sell_in_bull_sl_atr_mult"))   { v=JsonGetDouble(content,"fractional_sell_in_bull_sl_atr_mult");   if(v>=0.5&&v<=5.0) g_sc.fractional_sell_in_bull_sl_atr_mult=v; }
    if(JsonHasKey(content, "fractional_sell_in_bull_tp1_atr_mult"))  { v=JsonGetDouble(content,"fractional_sell_in_bull_tp1_atr_mult");  if(v>=0.1&&v<=2.0) g_sc.fractional_sell_in_bull_tp1_atr_mult=v; }
+   // v2.7.78 — REVERSE_SELL_IN_BULL
+   if(JsonHasKey(content, "reverse_sell_in_bull_enabled"))                     { v=JsonGetDouble(content,"reverse_sell_in_bull_enabled");                     g_sc.reverse_sell_in_bull_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "reverse_sell_in_bull_lot_factor"))                  { v=JsonGetDouble(content,"reverse_sell_in_bull_lot_factor");                  if(v>0.0&&v<=2.0) g_sc.reverse_sell_in_bull_lot_factor=v; }
+   if(JsonHasKey(content, "reverse_sell_in_bull_min_rsi"))                     { v=JsonGetDouble(content,"reverse_sell_in_bull_min_rsi");                     if(v>=0&&v<=100) g_sc.reverse_sell_in_bull_min_rsi=v; }
+   if(JsonHasKey(content, "reverse_sell_in_bull_min_vwap_dist_atr"))           { v=JsonGetDouble(content,"reverse_sell_in_bull_min_vwap_dist_atr");           if(v>=0&&v<=20.0) g_sc.reverse_sell_in_bull_min_vwap_dist_atr=v; }
+   if(JsonHasKey(content, "reverse_sell_in_bull_min_h1_trend"))                { v=JsonGetDouble(content,"reverse_sell_in_bull_min_h1_trend");                if(v>=-10.0&&v<=10.0) g_sc.reverse_sell_in_bull_min_h1_trend=v; }
+   if(JsonHasKey(content, "reverse_sell_in_bull_require_di_plus_above_minus")) { v=JsonGetDouble(content,"reverse_sell_in_bull_require_di_plus_above_minus"); g_sc.reverse_sell_in_bull_require_di_plus_above_minus=(v>=0.5); }
+   if(JsonHasKey(content, "reverse_sell_in_bull_sl_atr_mult"))                 { v=JsonGetDouble(content,"reverse_sell_in_bull_sl_atr_mult");                 if(v>=0.1&&v<=10.0) g_sc.reverse_sell_in_bull_sl_atr_mult=v; }
+   if(JsonHasKey(content, "reverse_sell_in_bull_tp1_atr_mult"))                { v=JsonGetDouble(content,"reverse_sell_in_bull_tp1_atr_mult");                if(v>=0.1&&v<=10.0) g_sc.reverse_sell_in_bull_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "reverse_sell_in_bull_tp2_atr_mult"))                { v=JsonGetDouble(content,"reverse_sell_in_bull_tp2_atr_mult");                if(v>=0.1&&v<=10.0) g_sc.reverse_sell_in_bull_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "reverse_sell_in_bull_cooldown_sec"))                { v=JsonGetDouble(content,"reverse_sell_in_bull_cooldown_sec");                if(v>=0&&v<=7200) g_sc.reverse_sell_in_bull_cooldown_sec=(int)v; }
+   // v2.7.79 — GRINDING_SELL + BB_PULLBACK_SCALP BUY velocity gate
+   if(JsonHasKey(content, "grinding_sell_enabled"))                 { v=JsonGetDouble(content,"grinding_sell_enabled");                 g_sc.grinding_sell_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "grinding_sell_lot_factor"))              { v=JsonGetDouble(content,"grinding_sell_lot_factor");              if(v>0.0&&v<=2.0) g_sc.grinding_sell_lot_factor=v; }
+   if(JsonHasKey(content, "grinding_sell_min_velocity"))            { v=JsonGetDouble(content,"grinding_sell_min_velocity");            if(v>=0.0&&v<=10.0) g_sc.grinding_sell_min_velocity=v; }
+   if(JsonHasKey(content, "grinding_sell_max_rsi"))                 { v=JsonGetDouble(content,"grinding_sell_max_rsi");                 if(v>=0.0&&v<=100.0) g_sc.grinding_sell_max_rsi=v; }
+   if(JsonHasKey(content, "grinding_sell_min_rsi"))                 { v=JsonGetDouble(content,"grinding_sell_min_rsi");                 if(v>=0.0&&v<=100.0) g_sc.grinding_sell_min_rsi=v; }
+   if(JsonHasKey(content, "grinding_sell_room_min_atr"))            { v=JsonGetDouble(content,"grinding_sell_room_min_atr");            if(v>=0.0&&v<=10.0) g_sc.grinding_sell_room_min_atr=v; }
+   if(JsonHasKey(content, "grinding_sell_sl_atr_mult"))             { v=JsonGetDouble(content,"grinding_sell_sl_atr_mult");             if(v>=0.1&&v<=10.0) g_sc.grinding_sell_sl_atr_mult=v; }
+   if(JsonHasKey(content, "grinding_sell_tp1_atr_mult"))            { v=JsonGetDouble(content,"grinding_sell_tp1_atr_mult");            if(v>=0.1&&v<=10.0) g_sc.grinding_sell_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "grinding_sell_tp2_atr_mult"))            { v=JsonGetDouble(content,"grinding_sell_tp2_atr_mult");            if(v>=0.1&&v<=10.0) g_sc.grinding_sell_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "grinding_sell_cooldown_sec"))            { v=JsonGetDouble(content,"grinding_sell_cooldown_sec");            if(v>=0&&v<=7200) g_sc.grinding_sell_cooldown_sec=(int)v; }
+   // v2.7.81 — ASIA_CAPITULATION_BUY loaders
+   if(JsonHasKey(content, "asia_capitulation_buy_enabled"))                  { v=JsonGetDouble(content,"asia_capitulation_buy_enabled");                  g_sc.asia_capitulation_buy_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "asia_capitulation_buy_min_atoms"))                { v=JsonGetDouble(content,"asia_capitulation_buy_min_atoms");                if(v>=1.0&&v<=5.0) g_sc.asia_capitulation_buy_min_atoms=(int)v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_rsi_max"))                  { v=JsonGetDouble(content,"asia_capitulation_buy_rsi_max");                  if(v>=10.0&&v<=40.0) g_sc.asia_capitulation_buy_rsi_max=v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_displacement_min_atr"))     { v=JsonGetDouble(content,"asia_capitulation_buy_displacement_min_atr");     if(v>=0.5&&v<=5.0) g_sc.asia_capitulation_buy_displacement_min_atr=v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_atr_ratio_min"))            { v=JsonGetDouble(content,"asia_capitulation_buy_atr_ratio_min");            if(v>=1.0&&v<=3.0) g_sc.asia_capitulation_buy_atr_ratio_min=v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_session_start_utc"))        { v=JsonGetDouble(content,"asia_capitulation_buy_session_start_utc");        if(v>=0.0&&v<=23.0) g_sc.asia_capitulation_buy_session_start_utc=(int)v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_session_end_utc"))          { v=JsonGetDouble(content,"asia_capitulation_buy_session_end_utc");          if(v>=0.0&&v<=23.0) g_sc.asia_capitulation_buy_session_end_utc=(int)v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_lot"))                      { v=JsonGetDouble(content,"asia_capitulation_buy_lot");                      if(v>=0.01&&v<=2.0) g_sc.asia_capitulation_buy_lot=v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_sl_atr_mult"))              { v=JsonGetDouble(content,"asia_capitulation_buy_sl_atr_mult");              if(v>=0.5&&v<=5.0) g_sc.asia_capitulation_buy_sl_atr_mult=v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_tp1_atr_mult"))             { v=JsonGetDouble(content,"asia_capitulation_buy_tp1_atr_mult");             if(v>=0.1&&v<=3.0) g_sc.asia_capitulation_buy_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_tp2_atr_mult"))             { v=JsonGetDouble(content,"asia_capitulation_buy_tp2_atr_mult");             if(v>=0.1&&v<=5.0) g_sc.asia_capitulation_buy_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "asia_capitulation_buy_cooldown_sec"))             { v=JsonGetDouble(content,"asia_capitulation_buy_cooldown_sec");             if(v>=0.0&&v<=7200.0) g_sc.asia_capitulation_buy_cooldown_sec=(int)v; }
+   // v2.7.84 — 3-layer entry-gating loaders
+   if(JsonHasKey(content, "umcg_enabled"))                          { v=JsonGetDouble(content,"umcg_enabled");                          g_sc.umcg_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "umcg_buy_block_threshold"))              { v=JsonGetDouble(content,"umcg_buy_block_threshold");              if(v>=1.0&&v<=7.0) g_sc.umcg_buy_block_threshold=(int)v; }
+   if(JsonHasKey(content, "umcg_sell_block_threshold"))             { v=JsonGetDouble(content,"umcg_sell_block_threshold");             if(v>=1.0&&v<=7.0) g_sc.umcg_sell_block_threshold=(int)v; }
+   if(JsonHasKey(content, "umcg_pemcg_rsi_overbought"))             { v=JsonGetDouble(content,"umcg_pemcg_rsi_overbought");             if(v>=50.0&&v<=90.0) g_sc.umcg_pemcg_rsi_overbought=v; }
+   if(JsonHasKey(content, "umcg_pemcg_rsi_oversold"))               { v=JsonGetDouble(content,"umcg_pemcg_rsi_oversold");               if(v>=10.0&&v<=50.0) g_sc.umcg_pemcg_rsi_oversold=v; }
+   if(JsonHasKey(content, "umcg_pemcg_body_pct_max_weak"))          { v=JsonGetDouble(content,"umcg_pemcg_body_pct_max_weak");          if(v>=0.1&&v<=1.0) g_sc.umcg_pemcg_body_pct_max_weak=v; }
+   if(JsonHasKey(content, "umcg_pemcg_atr_ratio_max_contract"))     { v=JsonGetDouble(content,"umcg_pemcg_atr_ratio_max_contract");     if(v>=0.5&&v<=2.0) g_sc.umcg_pemcg_atr_ratio_max_contract=v; }
+   if(JsonHasKey(content, "umcg_pemcg_bb_dist_atr_threshold"))      { v=JsonGetDouble(content,"umcg_pemcg_bb_dist_atr_threshold");      if(v>=0.0&&v<=2.0) g_sc.umcg_pemcg_bb_dist_atr_threshold=v; }
+   if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
+   if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
+   if(JsonHasKey(content, "cvcsm_max_cooldown_sec"))                { v=JsonGetDouble(content,"cvcsm_max_cooldown_sec");                if(v>=60.0&&v<=14400.0) g_sc.cvcsm_max_cooldown_sec=(int)v; }
+   if(JsonHasKey(content, "cvcsm_trigger_on_sl"))                   { v=JsonGetDouble(content,"cvcsm_trigger_on_sl");                   g_sc.cvcsm_trigger_on_sl=(v>=0.5); }
+   if(JsonHasKey(content, "cvcsm_trigger_on_regime_flip"))          { v=JsonGetDouble(content,"cvcsm_trigger_on_regime_flip");          g_sc.cvcsm_trigger_on_regime_flip=(v>=0.5); }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_enabled"))        { v=JsonGetDouble(content,"bb_exhaustion_reversal_enabled");        g_sc.bb_exhaustion_reversal_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_min_warnings"))   { v=JsonGetDouble(content,"bb_exhaustion_reversal_min_warnings");   if(v>=1.0&&v<=7.0) g_sc.bb_exhaustion_reversal_min_warnings=(int)v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_lot"))            { v=JsonGetDouble(content,"bb_exhaustion_reversal_lot");            if(v>=0.01&&v<=2.0) g_sc.bb_exhaustion_reversal_lot=v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_sl_atr_mult"))    { v=JsonGetDouble(content,"bb_exhaustion_reversal_sl_atr_mult");    if(v>=0.1&&v<=5.0) g_sc.bb_exhaustion_reversal_sl_atr_mult=v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_tp1_atr_mult"))   { v=JsonGetDouble(content,"bb_exhaustion_reversal_tp1_atr_mult");   if(v>=0.0&&v<=5.0) g_sc.bb_exhaustion_reversal_tp1_atr_mult=v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_tp2_atr_mult"))   { v=JsonGetDouble(content,"bb_exhaustion_reversal_tp2_atr_mult");   if(v>=0.0&&v<=10.0) g_sc.bb_exhaustion_reversal_tp2_atr_mult=v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_cooldown_sec"))   { v=JsonGetDouble(content,"bb_exhaustion_reversal_cooldown_sec");   if(v>=0.0&&v<=14400.0) g_sc.bb_exhaustion_reversal_cooldown_sec=(int)v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_proximity_atr"))  { v=JsonGetDouble(content,"bb_exhaustion_reversal_proximity_atr");  if(v>=0.1&&v<=5.0) g_sc.bb_exhaustion_reversal_proximity_atr=v; }
+   // v2.7.89 — BB_EXHAUSTION_REVERSAL conviction-tier amplifier + legs loaders
+   if(JsonHasKey(content, "bb_exhaustion_reversal_lot_amplifier"))            { v=JsonGetDouble(content,"bb_exhaustion_reversal_lot_amplifier");            if(v>=0.1&&v<=10.0) g_sc.bb_exhaustion_reversal_lot_amplifier=v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_high_conviction_warnings")) { v=JsonGetDouble(content,"bb_exhaustion_reversal_high_conviction_warnings"); if(v>=1.0&&v<=7.0) g_sc.bb_exhaustion_reversal_high_conviction_warnings=(int)v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_high_conviction_lot_factor")) { v=JsonGetDouble(content,"bb_exhaustion_reversal_high_conviction_lot_factor"); if(v>=0.5&&v<=10.0) g_sc.bb_exhaustion_reversal_high_conviction_lot_factor=v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_legs_high_conviction"))     { v=JsonGetDouble(content,"bb_exhaustion_reversal_legs_high_conviction");     if(v>=1.0&&v<=10.0) g_sc.bb_exhaustion_reversal_legs_high_conviction=(int)v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_max_adx"))                  { v=JsonGetDouble(content,"bb_exhaustion_reversal_max_adx");                  if(v>=0.0&&v<=100.0) g_sc.bb_exhaustion_reversal_max_adx=v; }
+   if(JsonHasKey(content, "bb_exhaustion_reversal_max_prev_bar_range_atr_mult")) { v=JsonGetDouble(content,"bb_exhaustion_reversal_max_prev_bar_range_atr_mult"); if(v>=0.0&&v<=20.0) g_sc.bb_exhaustion_reversal_max_prev_bar_range_atr_mult=v; }
+   if(JsonHasKey(content, "bb_pullback_buy_block_on_falling_velocity")) { v=JsonGetDouble(content,"bb_pullback_buy_block_on_falling_velocity"); g_sc.bb_pullback_buy_block_on_falling_velocity=(v>=0.5); }
+   if(JsonHasKey(content, "bb_pullback_buy_min_velocity_5bar_signed")) { v=JsonGetDouble(content,"bb_pullback_buy_min_velocity_5bar_signed"); if(v>=-10.0&&v<=10.0) g_sc.bb_pullback_buy_min_velocity_5bar_signed=v; }
    if(JsonHasKey(content, "bull_day_dip_buy_enabled"))              { v=JsonGetDouble(content,"bull_day_dip_buy_enabled");              g_sc.bull_day_dip_buy_enabled=(v>=0.5); }
    if(JsonHasKey(content, "bull_day_dip_buy_lot_mult"))             { v=JsonGetDouble(content,"bull_day_dip_buy_lot_mult");             if(v>=0.1&&v<=10.0) g_sc.bull_day_dip_buy_lot_mult=v; }
    if(JsonHasKey(content, "bull_day_dip_buy_sl_atr_mult"))          { v=JsonGetDouble(content,"bull_day_dip_buy_sl_atr_mult");          if(v>=0.3&&v<=5.0) g_sc.bull_day_dip_buy_sl_atr_mult=v; }
@@ -5743,10 +6675,12 @@ void ForgeEvalAtoms() {
       // 1-bar velocity uses last 2 closes (now vs 1 bar back = element 4)
       g_eval_m5_velocity_1bar  = MathAbs(_v_buf6[5] - _v_buf6[4]) / m5_atr_now;
       g_eval_m5_velocity_5bar  = MathAbs(m5_close_now - m5_close_5) / m5_atr_now;
+      g_eval_m5_velocity_5bar_signed = (m5_close_now - m5_close_5) / m5_atr_now;  // v2.7.69 — signed for direction
       g_eval_m5_macd_slope_5bar = (m5_macd_now - m5_macd_5) / m5_atr_now;
    } else {
       g_eval_m5_velocity_1bar = 0;
       g_eval_m5_velocity_5bar = 0;
+      g_eval_m5_velocity_5bar_signed = 0;
       g_eval_m5_macd_slope_5bar = 0;
    }
    g_eval_m5_adx_delta_5bar = m5_adx_now - m5_adx_5;
@@ -6001,7 +6935,259 @@ void ForgeEvalAtoms() {
    g_eval_long_upper_wick = (_rg > 0.0 && (_upper_wick / _rg) > 0.50) ? 1 : 0;
    // Range expanding: prior bar range > prior-to-prior range
    g_eval_m5_range_expanding = (_rg_prev > 0.0 && _rg > _rg_prev) ? 1 : 0;
+
+   // v2.7.75 — Trade Conviction State Machine (BUY-only Phase 1)
+   //
+   // Weighted multi-atom score computed every tick. Tier updated with 2-bar hysteresis on M5
+   // bar close. Setups consult g_regime.trade_score_buy_tier for sizing.
+   //
+   // Industry refs: Nyao Scalper (0-10), ML Supertrend (0-100 buffer), 5-tier classification
+   // pattern from algo-trading literature.
+   //
+   // Score weights (Run 30 G5004 vs G5005 derivation):
+   //   BOS = +1                : +20   (most important structural signal)
+   //   velocity > 0            : +10   (climbing)
+   //   velocity > 0.5×ATR      : +10   (fast climb bonus)
+   //   bb_ext / ATR ≥ 0.5      : +15   (strong impulse not fake touch)
+   //   VWAP_dist / ATR ≤ 1.5   : +15   (within value zone)
+   //   VWAP_dist / ATR > 2.5   : -20   (overextended — mean-reversion danger)
+   //   RSI 55-72               : +15   (sweet spot)
+   //   RSI > 72                : -15   (exhaustion zone)
+   //   M15 ADX ≥ 20            : +10   (multi-TF confirms)
+   //   macd_slope_5bar > 0     : +5    (momentum bonus)
+   double _ts_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+   double _ts_atr_now = (m5_atr_now > 0.0) ? m5_atr_now : 1.0;  // safety
+   int _ts_buy = 0;
+   // Atom 1: BOS direction +1 (bullish break)
+   if(g_eval_bos_direction == 1) _ts_buy += 20;
+   // Atom 2/3: signed velocity
+   if(g_eval_m5_velocity_5bar_signed > 0.0) {
+      _ts_buy += 10;
+      if(g_eval_m5_velocity_5bar_signed > 0.5) _ts_buy += 10;
+   }
+   // Atom 4: bb_ext / ATR (read M5 BB upper from broker handle buffer 1=UPPER)
+   double _ts_bbu_buf[1];
+   if(g_mtf[0].h_bb != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_bb, 1, 0, 1, _ts_bbu_buf) == 1) {
+      double _ts_bbu_val = _ts_bbu_buf[0];
+      if(_ts_bbu_val > 0.0 && (_ts_mid - _ts_bbu_val) / _ts_atr_now >= 0.5) _ts_buy += 15;
+   }
+   // Atom 5/6: VWAP distance
+   if(g_vwap_price > 0.0) {
+      double _ts_vwap_dist_atr = (_ts_mid - g_vwap_price) / _ts_atr_now;
+      if(_ts_vwap_dist_atr <= 1.5) _ts_buy += 15;
+      if(_ts_vwap_dist_atr > 2.5)  _ts_buy -= 20;
+   }
+   // Atom 7/8: RSI band
+   double _ts_rsi_buf[1]; double _ts_rsi = 0.0;
+   if(g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _ts_rsi_buf) == 1) {
+      _ts_rsi = _ts_rsi_buf[0];
+      if(_ts_rsi >= 55.0 && _ts_rsi <= 72.0) _ts_buy += 15;
+      if(_ts_rsi > 72.0) _ts_buy -= 15;
+   }
+   // Atom 9: M15 ADX
+   double _ts_m15adx_buf[1];
+   if(g_mtf[1].h_adx != INVALID_HANDLE && CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _ts_m15adx_buf) == 1
+      && _ts_m15adx_buf[0] >= 20.0) _ts_buy += 10;
+   // Atom 10: MACD slope
+   if(g_eval_m5_macd_slope_5bar > 0.0) _ts_buy += 5;
+   // Persist current score
+   g_regime.trade_score_buy = _ts_buy;
+   // Ring buffer update on M5 bar close (avoid intra-bar churn)
+   datetime _ts_bar = iTime(_Symbol, PERIOD_M5, 0);
+   if(_ts_bar != g_regime.trade_score_buy_last_bar_t) {
+      // shift ring buffer left, append new
+      for(int _ts_i = 0; _ts_i < 4; _ts_i++)
+         g_regime.trade_score_buy_5bar[_ts_i] = g_regime.trade_score_buy_5bar[_ts_i + 1];
+      g_regime.trade_score_buy_5bar[4] = _ts_buy;
+      int _ts_sum = 0;
+      for(int _ts_j = 0; _ts_j < 5; _ts_j++) _ts_sum += g_regime.trade_score_buy_5bar[_ts_j];
+      // v2.7.76 — compute velocity BEFORE updating avg5 (signed: rising > 0, falling < 0)
+      g_regime.trade_score_buy_avg5_prev = g_regime.trade_score_buy_avg5;
+      g_regime.trade_score_buy_avg5 = _ts_sum / 5;
+      g_regime.trade_score_buy_velocity = g_regime.trade_score_buy_avg5 - g_regime.trade_score_buy_avg5_prev;
+      // Tier transition with hysteresis (2-bar persistence required)
+      string _ts_new_tier;
+      int _ts_eff = g_regime.trade_score_buy_avg5;  // tier based on 5-bar avg for smoothing
+      if(_ts_eff <= 30)       _ts_new_tier = "LOW";
+      else if(_ts_eff <= 55)  _ts_new_tier = "EMERGING";
+      else if(_ts_eff <= 75)  _ts_new_tier = "HIGH";
+      else                    _ts_new_tier = "ULTRA";
+      if(_ts_new_tier == g_regime.trade_score_buy_tier) {
+         g_regime.trade_score_buy_tier_bars++;
+      } else {
+         // require 2-bar persistence at NEW tier before transitioning
+         if(g_regime.trade_score_buy_tier_bars >= 2 || StringLen(g_regime.trade_score_buy_tier) == 0) {
+            g_regime.trade_score_buy_tier = _ts_new_tier;
+            g_regime.trade_score_buy_tier_bars = 1;
+         } else {
+            g_regime.trade_score_buy_tier_bars++;  // stay at old tier, accumulate
+         }
+      }
+      g_regime.trade_score_buy_last_bar_t = _ts_bar;
+   }
+
+   // v2.7.84 — Compute PEMCG_BUY + PEMCG_SELL warning counts (Layer 1 — UMCG)
+   // See docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md §4.1 for atom rationale.
+   // 7 atoms per direction. Threshold ≥ umcg_*_block_threshold blocks setup entry.
+   // Reuses local variables m5_close_now / m5_atr_now / m5_macd_now defined earlier in this fn.
+   if(g_sc.umcg_enabled) {
+      // Read M5 RSI + BB upper/lower via the existing per-TF indicator handles.
+      double _pemcg_rsi_buf[1], _pemcg_bbu_buf[1], _pemcg_bbl_buf[1];
+      double m5_rsi_pemcg = 0.0, m5_bb_u_pemcg = 0.0, m5_bb_l_pemcg = 0.0;
+      if(g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _pemcg_rsi_buf) == 1)
+         m5_rsi_pemcg = _pemcg_rsi_buf[0];
+      if(g_mtf[0].h_bb != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_bb, 1, 0, 1, _pemcg_bbu_buf) == 1)
+         m5_bb_u_pemcg = _pemcg_bbu_buf[0];
+      if(g_mtf[0].h_bb != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_bb, 2, 0, 1, _pemcg_bbl_buf) == 1)
+         m5_bb_l_pemcg = _pemcg_bbl_buf[0];
+      // v2.7.87 — Use absolute distance so A5 fires ONLY when close is near BB upper (within ±threshold×ATR).
+      //   v2.7.84 used signed `(close - bb_upper)/atr` which was negative whenever close was below
+      //   BB upper — and any negative number < 0.3 = always TRUE. Result: A5 fired on every BUY in
+      //   non-extended trends, inflating PEMCG warnings by 1 across the board. Run 5 ORB BUYs at
+      //   04:10 (price 4538.94, BB upper 4554.03, dist=−1.26 ATR) all hit A5 incorrectly.
+      //   Case study: G5006 (dist −0.09) and G5015 (dist +0.14) both pass absolute check (~0.04-0.07 ATR).
+      double bbu_dist_atr_pemcg = (m5_atr_now > 0.0) ? MathAbs(m5_close_now - m5_bb_u_pemcg) / m5_atr_now : 0.0;
+      double bbl_dist_atr_pemcg = (m5_atr_now > 0.0) ? MathAbs(m5_bb_l_pemcg - m5_close_now) / m5_atr_now : 0.0;
+      double m5_close_1_pemcg   = iClose(_Symbol, PERIOD_M5, 1);
+
+      // PEMCG_BUY: catches BUY-into-reversal traps (bull exhaustion at top)
+      int buy_w = 0;
+      if(m5_rsi_pemcg >= g_sc.umcg_pemcg_rsi_overbought)                       buy_w++;  // A1: overbought
+      if(g_eval_m5_body_pct < g_sc.umcg_pemcg_body_pct_max_weak)               buy_w++;  // A2: weak candle
+      if(g_eval_m5_strong_bar == 0)                                            buy_w++;  // A3: no strong-bar
+      if(g_eval_m5_range_expanding == 0)                                       buy_w++;  // A4: range contracting
+      if(bbu_dist_atr_pemcg < g_sc.umcg_pemcg_bb_dist_atr_threshold)           buy_w++;  // A5: no real breakout above BB
+      if(g_eval_m5_atr_ratio_5bar < g_sc.umcg_pemcg_atr_ratio_max_contract)    buy_w++;  // A6: ATR contracting
+      if(m5_macd_now < 0.0 && m5_close_now > m5_close_1_pemcg)                 buy_w++;  // A7: bearish divergence
+      g_pemcg_buy_warning_count = buy_w;
+
+      // PEMCG_SELL: catches SELL-into-reversal traps (bear exhaustion at bottom — mirror)
+      int sell_w = 0;
+      if(m5_rsi_pemcg <= g_sc.umcg_pemcg_rsi_oversold)                         sell_w++; // A1: oversold
+      if(g_eval_m5_body_pct < g_sc.umcg_pemcg_body_pct_max_weak)               sell_w++; // A2: weak candle
+      if(g_eval_m5_strong_bar == 0)                                            sell_w++; // A3: no strong-bar
+      if(g_eval_m5_range_expanding == 0)                                       sell_w++; // A4: range contracting
+      if(bbl_dist_atr_pemcg < g_sc.umcg_pemcg_bb_dist_atr_threshold)           sell_w++; // A5: no real breakdown below BB
+      if(g_eval_m5_atr_ratio_5bar < g_sc.umcg_pemcg_atr_ratio_max_contract)    sell_w++; // A6: ATR contracting
+      if(m5_macd_now > 0.0 && m5_close_now < m5_close_1_pemcg)                 sell_w++; // A7: bullish divergence
+      g_pemcg_sell_warning_count = sell_w;
+   } else {
+      g_pemcg_buy_warning_count  = 0;
+      g_pemcg_sell_warning_count = 0;
+   }
+
+   // v2.7.84 — CVCSM (Layer 2) state-machine retry — once per M5 bar close
+   // State transitions: COOLDOWN → RETRYING (if PEMCG cleared) → OPEN (after N clean bars)
+   // Safety: COOLDOWN → OPEN after max_cooldown_sec timeout regardless
+   if(g_sc.cvcsm_enabled) {
+      datetime _m5_bar = iTime(_Symbol, PERIOD_M5, 0);
+      if(_m5_bar != g_cvcsm_last_eval_bar) {
+         g_cvcsm_last_eval_bar = _m5_bar;
+         // Evaluate BUY direction
+         if(g_cvcsm_state_buy == 1) {  // COOLDOWN
+            if(g_pemcg_buy_warning_count < g_sc.cvcsm_release_threshold) {
+               g_cvcsm_state_buy = 2;  // RETRYING
+               g_cvcsm_clean_bars_buy = 1;
+            } else if(g_cvcsm_cooldown_start_buy > 0
+                      && (TimeCurrent() - g_cvcsm_cooldown_start_buy) >= g_sc.cvcsm_max_cooldown_sec) {
+               g_cvcsm_state_buy = 0;  // safety release
+               g_cvcsm_clean_bars_buy = 0;
+            }
+         } else if(g_cvcsm_state_buy == 2) {  // RETRYING
+            if(g_pemcg_buy_warning_count < g_sc.cvcsm_release_threshold) {
+               g_cvcsm_clean_bars_buy++;
+               if(g_cvcsm_clean_bars_buy >= g_sc.cvcsm_required_clean_bars) {
+                  g_cvcsm_state_buy = 0;  // OPEN
+                  PrintFormat("FORGE 2.7.84: CVCSM_BUY released to OPEN after %d clean bars",
+                              g_cvcsm_clean_bars_buy);
+               }
+            } else {
+               g_cvcsm_state_buy = 1;  // back to COOLDOWN (dirty again)
+               g_cvcsm_clean_bars_buy = 0;
+            }
+         }
+         // Evaluate SELL direction (mirror)
+         if(g_cvcsm_state_sell == 1) {
+            if(g_pemcg_sell_warning_count < g_sc.cvcsm_release_threshold) {
+               g_cvcsm_state_sell = 2;
+               g_cvcsm_clean_bars_sell = 1;
+            } else if(g_cvcsm_cooldown_start_sell > 0
+                      && (TimeCurrent() - g_cvcsm_cooldown_start_sell) >= g_sc.cvcsm_max_cooldown_sec) {
+               g_cvcsm_state_sell = 0;
+               g_cvcsm_clean_bars_sell = 0;
+            }
+         } else if(g_cvcsm_state_sell == 2) {
+            if(g_pemcg_sell_warning_count < g_sc.cvcsm_release_threshold) {
+               g_cvcsm_clean_bars_sell++;
+               if(g_cvcsm_clean_bars_sell >= g_sc.cvcsm_required_clean_bars) {
+                  g_cvcsm_state_sell = 0;
+                  PrintFormat("FORGE 2.7.84: CVCSM_SELL released to OPEN after %d clean bars",
+                              g_cvcsm_clean_bars_sell);
+               }
+            } else {
+               g_cvcsm_state_sell = 1;
+               g_cvcsm_clean_bars_sell = 0;
+            }
+         }
+
+         // ──────────────────────────────────────────────────────────────────
+         // v2.7.97 Sets 6+7+8 — Direction Lock evaluator + state machine.
+         //   Independent from CVCSM (which is SL-triggered post-loss cooldown).
+         //   This system commits to one direction at Leg 1 fire; lock breaks on:
+         //     (1) structural level violated
+         //     (2) PEMCG flip (opposite dir warnings ≥ threshold)
+         //     (3) profit target hit (entire group TP3 or all closed)
+         //   On break → DISCARDED + bilateral cooldown; require fresh signal.
+         //   Default-OFF — only active when g_sc.direction_lock_enabled.
+         //   Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §4 Sets 6/7/8.
+         //   g_dirlock_last_eval_bar = _m5_bar guard prevents per-tick churn.
+         // ──────────────────────────────────────────────────────────────────
+         if(g_sc.direction_lock_enabled && _m5_bar != g_dirlock_last_eval_bar) {
+            g_dirlock_last_eval_bar = _m5_bar;
+            UpdateDirLockState("BUY");
+            UpdateDirLockState("SELL");
+            // v2.7.101 Set 4 Option 4B — structural pending cancel (no-timer cool period)
+            // Runs alongside direction lock evaluation; cancels cascade pendings when their
+            // group's direction lock returns INVALID or NEUTRAL.
+            CancelPendingOnStructureFlip();
+         }
+
+         // v2.7.84 — Pending-order cancellation on UMCG flip (operator-mandated, 2026-05-13).
+         //   "we need to track pending or unfilled orders so that we can act on them"
+         //   On every M5 close, iterate FORGE-owned pendings. If pending direction's PEMCG
+         //   warnings >= block threshold, cancel it. Protects against filling stale-condition
+         //   pending orders when market has flipped between placement and fill.
+         if(g_sc.umcg_enabled) {
+            for(int _po = OrdersTotal() - 1; _po >= 0; _po--) {
+               ulong _po_ticket = OrderGetTicket(_po);
+               if(_po_ticket == 0 || !OrderSelect(_po_ticket)) continue;
+               if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+               long _po_magic = OrderGetInteger(ORDER_MAGIC);
+               // Filter FORGE magic range: MagicNumber (base) and base+1..base+9999 (cascade)
+               if(_po_magic < MagicNumber || _po_magic >= MagicNumber + 10000) continue;
+               ENUM_ORDER_TYPE _po_type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+               bool is_buy_pending  = (_po_type == ORDER_TYPE_BUY_LIMIT  || _po_type == ORDER_TYPE_BUY_STOP);
+               bool is_sell_pending = (_po_type == ORDER_TYPE_SELL_LIMIT || _po_type == ORDER_TYPE_SELL_STOP);
+               if(!is_buy_pending && !is_sell_pending) continue;
+               bool cancel = (is_buy_pending  && g_pemcg_buy_warning_count  >= g_sc.umcg_buy_block_threshold) ||
+                             (is_sell_pending && g_pemcg_sell_warning_count >= g_sc.umcg_sell_block_threshold);
+               if(cancel) {
+                  double _po_price = OrderGetDouble(ORDER_PRICE_OPEN);
+                  if(g_trade.OrderDelete(_po_ticket)) {
+                     PrintFormat("FORGE 2.7.84: cancelled FORGE pending %d (%s @ %.2f, magic %d) — PEMCG_%s=%d/7 ≥ threshold %d",
+                                 _po_ticket,
+                                 EnumToString(_po_type), _po_price, _po_magic,
+                                 is_buy_pending ? "BUY" : "SELL",
+                                 is_buy_pending ? g_pemcg_buy_warning_count : g_pemcg_sell_warning_count,
+                                 is_buy_pending ? g_sc.umcg_buy_block_threshold : g_sc.umcg_sell_block_threshold);
+                  }
+               }
+            }
+         }
+      }
+   }
 }
+
 
 //+------------------------------------------------------------------+
 //| 2.7.38 — Tier 1 Boolean Composites                              |
@@ -7924,6 +9110,24 @@ void JournalRecordSignal(string outcome, string gate_reason,
       }
    }
 
+   // v2.7.69 — Self-populate m15_adx_val (same class of bug as v2.7.63 macd_hist).
+   //   Run 29 audit: 18,789 of 18,810 signals with rsi>0 (99.9%) logged m15_adx=0 because most
+   //   SKIP call sites don't pass it; only TAKEN sites at fire time computed and passed it explicitly.
+   //   Fix: read buffer 0 of pre-initialized g_mtf[1].h_adx (M15 iADX, MAIN line).
+   if(m15_adx_val == 0.0 && g_mtf[1].h_adx != INVALID_HANDLE) {
+      double _m15adx_buf[1];
+      if(CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _m15adx_buf) == 1) {
+         m15_adx_val = _m15adx_buf[0];
+      } else {
+         static datetime _last_m15adx_warn = 0;
+         if((TimeCurrent() - _last_m15adx_warn) > 300) {
+            _last_m15adx_warn = TimeCurrent();
+            PrintFormat("FORGE 2.7.69 WARN: m15_adx self-populate failed (handle=%d) — column will log 0.0",
+                        g_mtf[1].h_adx);
+         }
+      }
+   }
+
    string session  = ComputeCurrentSessionLabel();
    string killzone = ComputeCurrentKillzoneLabel();
    // 2.7.45 — minutes_into_kz computed fresh (RegimeUpdate may not have run for early-gate SKIPs)
@@ -8894,7 +10098,23 @@ void CheckNativeScalperSetups() {
       session_blocked = true;
    else if(MQLInfoInteger(MQL_TESTER) != 0 && !ScalperTesterSessionOK())
       session_blocked = true;
-   if(session_blocked) {
+   // v2.7.83 — Restored v2.7.81 Asia capitulation window bypass.
+   //   Operator confirmed: the v2.7.82 revert was a panic — the "flood" we attributed to this
+   //   bypass was actually pre-existing FORGE trades from before v2.7.81 shipped (journal
+   //   sync was broken from 2026-05-08, so flood backlog was misattributed).
+   //
+   //   Asia window WRAPS midnight when session_start_utc > session_end_utc (default 22 → 07).
+   //   Other setups have their own downstream `sess == "LONDON" || sess == "NY"` checks, so
+   //   only ASIA_CAPITULATION_BUY's trigger at line ~10153 actually responds to the fall-through.
+   bool _asia_cap_window = false;
+   if(g_sc.asia_capitulation_buy_enabled) {
+      int _aws = g_sc.asia_capitulation_buy_session_start_utc;
+      int _awe = g_sc.asia_capitulation_buy_session_end_utc;
+      if(_aws == _awe)            _asia_cap_window = false;           // empty window
+      else if(_aws < _awe)        _asia_cap_window = (hour >= _aws && hour < _awe);
+      else                        _asia_cap_window = (hour >= _aws || hour < _awe); // wrap
+   }
+   if(session_blocked && !_asia_cap_window) {
       datetime m5bar = iTime(_Symbol, PERIOD_M5, 0);
       if(m5bar != g_scalper_last_sesswarn_log_bar) {
          g_scalper_last_sesswarn_log_bar = m5bar;
@@ -8906,6 +10126,12 @@ void CheckNativeScalperSetups() {
       g_scalper_prev_session_blocked = true;
       return;
    }
+   bool _asia_only_mode = (session_blocked && _asia_cap_window);
+   // v2.7.80 — BLR capitulation override per-tick flag (scoped to this function).
+   //   Set true when BB_LOWER_REVERSION_BUY fires via the capitulation override path
+   //   (RSI≤28 + BB_l pierce + sharp drop + ATR spike + rejection bar). Read by the
+   //   lot computation block ~12530 to pin lot = g_sc.blr_buy_capitulation_lot.
+   bool blr_capitulation_active = false;
    // 2.7.46 §11.5 — per-killzone trade cap (default OFF). Operator opts in via
    //   FORGE_GATE_KILLZONE_MAX_TRADES=5 (or similar). Blocks further entries
    //   in the current killzone window once cap is reached; counter resets on
@@ -9385,7 +10611,12 @@ void CheckNativeScalperSetups() {
                    || g_pullback_scalp_last_buy_time == 0
                    || (_now_psb - g_pullback_scalp_last_buy_time) >= g_sc.pullback_scalp_cooldown_seconds
                    || CooldownBypassActive("BUY", "BB_PULLBACK_SCALP", m5_adx, h1_trend_strength));  // 2.7.41 — bypass when last TP1 + TREND_BULL + ADX ok; 2.7.53 — H1-OR-M15 with-trend bypass
-            if(pullback_buy_ok) {
+            // v2.7.79 — Apr 8 12:50 knife-catch fix: block BB_PULLBACK_SCALP BUY when signed velocity ≤ threshold.
+            //   Run 32 Apr 8 12:50 BUY @ 4786 RSI 34 fired during ongoing -38pt descent. Vel was strongly negative.
+            //   Blocking here lets the descent continue without us BUYing into it.
+            bool _pbv_ok = (!g_sc.bb_pullback_buy_block_on_falling_velocity
+                            || g_eval_m5_velocity_5bar_signed > g_sc.bb_pullback_buy_min_velocity_5bar_signed);
+            if(pullback_buy_ok && _pbv_ok) {
          direction = "BUY";
                double pb_sl  = NormalizeDouble(bid - m5_atr * g_sc.pullback_scalp_sl_atr_mult, _Digits);
                double pb_tp1 = NormalizeDouble(ask + m5_atr * g_sc.pullback_scalp_tp1_atr_mult, _Digits);
@@ -9397,6 +10628,15 @@ void CheckNativeScalperSetups() {
                g_pullback_scalp_last_buy_time = _now_psb;
                PrintFormat("FORGE 2.7.31: BB_PULLBACK_SCALP BUY fired @ %.2f (h1_trend=%.2f, ADX=%.1f, psar_flip_age=%d)",
                            ask, h1_trend_strength, m5_adx, psar_flip_age);
+            } else if(pullback_buy_ok && !_pbv_ok) {
+               // Velocity block emit SKIP for visibility
+               datetime _pbv_bar = iTime(_Symbol, PERIOD_M5, 0);
+               static datetime _pbv_last_log_bar = 0;
+               if(_pbv_bar != _pbv_last_log_bar) {
+                  _pbv_last_log_bar = _pbv_bar;
+                  JournalRecordSignal("SKIP","bb_pullback_buy_falling_velocity_block","BB_PULLBACK_SCALP","BUY",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
             } else {
                datetime _psb_bar = iTime(_Symbol, PERIOD_M5, 0);
                if(_psb_bar != g_scalper_last_psar_log_bar) {
@@ -9529,6 +10769,158 @@ void CheckNativeScalperSetups() {
             m5_rsi, mid, m5_atr);
       }
    }
+   // v2.7.78 — REVERSE_SELL_IN_BULL trigger (FIRES BEFORE BB_BREAKOUT BUY)
+   //
+   // G5005 character analysis (Run 31/32 −$1,760 to −$2,934 loss): at 04/01 08:46 the M5
+   // setup was at exhaustion peak (RSI 74.5, VWAP +2.75×ATR, price barely above bb_upper).
+   // BB_BREAKOUT BUY claimed direction at this tick and lost. The CORRECT direction was
+   // SELL (mean-reversion to bb_mid). This setup detects that pattern EXPLICITLY and
+   // claims direction=SELL BEFORE BB_BREAKOUT BUY gets the chance.
+   //
+   // Atoms (5 must all align, validated against G5005):
+   //   1. RSI ≥ 72.0 (M5 peak exhaustion zone)
+   //   2. (price − VWAP) / ATR > 2.0 (overextended above value)
+   //   3. price > bb_upper (above the band, mean-revert target = bb_mid)
+   //   4. h1_trend > 1.0 (HTF bullish — counter-trend context)
+   //   5. h1_di_plus > h1_di_minus (HTF still bullish, confirms counter-trend probe)
+   //
+   // Geometry: SL 2.0×ATR tight (counter-trend should fail fast),
+   //           TP1 1.0×ATR (target bb_mid retrace), TP2 2.0×ATR (deeper exhaustion retrace),
+   //           lot factor 0.5 (full half-lot, NOT fractional probe).
+   if(direction == "" && g_sc.reverse_sell_in_bull_enabled && m5_atr > 0.0
+      && m5_bb_u > 0.0 && g_vwap_price > 0.0) {
+      double _rsib_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK)
+                        + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+      bool _rsib_rsi_ok      = (m5_rsi >= g_sc.reverse_sell_in_bull_min_rsi);
+      bool _rsib_vwap_ok     = ((_rsib_mid - g_vwap_price) / m5_atr > g_sc.reverse_sell_in_bull_min_vwap_dist_atr);
+      bool _rsib_above_bb    = (_rsib_mid > m5_bb_u);
+      bool _rsib_h1_ok       = (h1_trend_strength > g_sc.reverse_sell_in_bull_min_h1_trend);
+      bool _rsib_di_ok       = (!g_sc.reverse_sell_in_bull_require_di_plus_above_minus
+                                || g_eval_h1_di_plus > g_eval_h1_di_minus);
+      datetime _rsib_now     = TimeCurrent();
+      bool _rsib_cool_ok     = (g_sc.reverse_sell_in_bull_cooldown_sec <= 0
+                                || g_last_reverse_sell_in_bull_time == 0
+                                || (_rsib_now - g_last_reverse_sell_in_bull_time)
+                                     >= g_sc.reverse_sell_in_bull_cooldown_sec);
+      if(_rsib_rsi_ok && _rsib_vwap_ok && _rsib_above_bb && _rsib_h1_ok && _rsib_di_ok && _rsib_cool_ok) {
+         direction  = "SELL";
+         setup_type = "REVERSE_SELL_IN_BULL";
+         double _rsib_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double _rsib_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         sl  = NormalizeDouble(_rsib_ask + m5_atr * g_sc.reverse_sell_in_bull_sl_atr_mult,  _Digits);
+         tp1 = NormalizeDouble(_rsib_bid - m5_atr * g_sc.reverse_sell_in_bull_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(_rsib_bid - m5_atr * g_sc.reverse_sell_in_bull_tp2_atr_mult, _Digits);
+         g_last_reverse_sell_in_bull_time = _rsib_now;
+         PrintFormat("FORGE 2.7.78: REVERSE_SELL_IN_BULL fired @ %.2f (RSI=%.1f vwap_dist=%.2f×ATR bb_ext=%.2f h1=%.2f DI+=%.1f DI-=%.1f)",
+                     _rsib_bid, m5_rsi,
+                     (_rsib_mid - g_vwap_price) / m5_atr,
+                     _rsib_mid - m5_bb_u,
+                     h1_trend_strength,
+                     g_eval_h1_di_plus, g_eval_h1_di_minus);
+      }
+   }
+
+   // v2.7.81 — ASIA_CAPITULATION_BUY trigger (FIRES BEFORE BB_BREAKOUT/BB_BOUNCE chain)
+   //   Catches pre-London V-flushes (Apr 6 03:30 @ 4603 RSI 23 type bottoms). Bypasses
+   //   the session_off gate via _asia_only_mode + _asia_cap_window fall-through above.
+   //   Identical 5-atom capitulation composite as v2.7.80 BLR capitulation override:
+   //     A1: m5_rsi ≤ rsi_max (deep oversold)
+   //     A2: close < m5_bb_l (pierce of lower band)
+   //     A3: -velocity_5bar ≥ displacement_min_atr (sharp drop)
+   //     A4: m5_atr_ratio_5bar ≥ atr_ratio_min (volatility expansion)
+   //     A5: g_eval_long_lower_wick == 1 || g_eval_m5_doji == 1 (rejection bar)
+   //   Requires ≥ min_atoms (default 3) AND Asia session window AND cooldown elapsed.
+   //   Fires fixed lot (default 0.20), tight SL (1.5×ATR below bb_l), TPs from entry.
+   if(direction == "" && g_sc.asia_capitulation_buy_enabled && _asia_cap_window
+      && m5_atr > 0.0 && m5_bb_l > 0.0) {
+      datetime _ascb_now = TimeCurrent();
+      bool _ascb_cool_ok = (g_last_asia_capitulation_buy_time == 0
+                            || (_ascb_now - g_last_asia_capitulation_buy_time)
+                                 >= g_sc.asia_capitulation_buy_cooldown_sec);
+      double _ascb_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK)
+                        + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+      bool _ascb_below_band = (_ascb_mid < m5_bb_l);
+      // 5-atom composite
+      int  _ascb_a1 = (m5_rsi <= g_sc.asia_capitulation_buy_rsi_max) ? 1 : 0;
+      int  _ascb_a2 = (_ascb_below_band) ? 1 : 0;
+      int  _ascb_a3 = ((-g_eval_m5_velocity_5bar_signed) >= g_sc.asia_capitulation_buy_displacement_min_atr) ? 1 : 0;
+      int  _ascb_a4 = (g_eval_m5_atr_ratio_5bar >= g_sc.asia_capitulation_buy_atr_ratio_min) ? 1 : 0;
+      int  _ascb_a5 = (g_eval_long_lower_wick == 1 || g_eval_m5_doji == 1) ? 1 : 0;
+      int  _ascb_count = _ascb_a1 + _ascb_a2 + _ascb_a3 + _ascb_a4 + _ascb_a5;
+      bool _ascb_atoms_ok = (_ascb_count >= g_sc.asia_capitulation_buy_min_atoms);
+      // Forensic SKIPs for blocked candidates (only emit when below_band — main precondition)
+      if(_ascb_below_band && _ascb_cool_ok && !_ascb_atoms_ok) {
+         JournalRecordSignal("SKIP","asia_capitulation_buy_atoms_below_min","ASIA_CAPITULATION_BUY","BUY",
+            _ascb_mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+      } else if(_ascb_below_band && !_ascb_cool_ok) {
+         JournalRecordSignal("SKIP","asia_capitulation_buy_cooldown","ASIA_CAPITULATION_BUY","BUY",
+            _ascb_mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+      }
+      if(_ascb_below_band && _ascb_cool_ok && _ascb_atoms_ok) {
+         direction  = "BUY";
+         setup_type = "ASIA_CAPITULATION_BUY";
+         double _ascb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         sl  = NormalizeDouble(m5_bb_l - m5_atr * g_sc.asia_capitulation_buy_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(_ascb_ask + m5_atr * g_sc.asia_capitulation_buy_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(_ascb_ask + m5_atr * g_sc.asia_capitulation_buy_tp2_atr_mult, _Digits);
+         g_last_asia_capitulation_buy_time = _ascb_now;
+         PrintFormat("FORGE 2.7.81: ASIA_CAPITULATION_BUY fired @ %.2f (atoms=%d/5, hour=%d UTC, RSI=%.1f, vel=%.2f×ATR, atr_ratio=%.2f, wick=%d, doji=%d, bbl=%.2f, SL=%.2f TP1=%.2f TP2=%.2f, lot=%.2f)",
+                     _ascb_ask, _ascb_count, hour, m5_rsi,
+                     g_eval_m5_velocity_5bar_signed, g_eval_m5_atr_ratio_5bar,
+                     g_eval_long_lower_wick, g_eval_m5_doji,
+                     m5_bb_l, sl, tp1, tp2, g_sc.asia_capitulation_buy_lot);
+      }
+   }
+
+   // v2.7.79 — GRINDING_SELL trigger (FIRES BEFORE BB_BREAKOUT/BB_BOUNCE chain)
+   //
+   // Apr 8 case study: 12:00-14:00 descent from $4820 → $4782 (-38pts in 2h).
+   // NY_SESSION_BEARISH_BREAKOUT_SELL didn't fire — descent was OUTSIDE both LONDON_OPEN_KZ
+   // (07-09) and NY_OPEN_KZ (13-15). Slow-grind in dead-zone between killzones.
+   //
+   // GRINDING_SELL is the killzone-independent slow-grind catcher. Atoms (6):
+   //   1. Active session (LONDON or NY) — basic liquidity check
+   //   2. M5 close < BB middle — price below mean (mean-rev target = bb_lower)
+   //   3. signed_velocity_5bar ≤ -0.5×ATR — slow descent (looser than NY_SESSION's 1.5)
+   //   4. RSI in [30, 55] — descending but not yet oversold (room to fall)
+   //   5. macd_slope_5bar < 0 — momentum confirms direction
+   //   6. (price − day_low) / ATR ≥ 0.5 — still has room to fall before sweep
+   //
+   // NO h1/h4 macro check (HTF lags M5 by hours — operator-mandated insight).
+   // Geometry: SL 2.5×ATR, TP1 0.7×ATR, TP2 1.5×ATR, lot 0.5.
+   if(direction == "" && g_sc.grinding_sell_enabled && m5_atr > 0.0
+      && m5_bb_m > 0.0) {
+      double _grs_m5_close   = iClose(_Symbol, PERIOD_M5, 0);
+      string _grs_sess       = ComputeCurrentSessionLabel();
+      bool   _grs_sess_ok    = (_grs_sess == "LONDON" || _grs_sess == "NY");
+      bool   _grs_bbm_ok     = (_grs_m5_close < m5_bb_m);
+      bool   _grs_vel_ok     = (g_eval_m5_velocity_5bar_signed <= -g_sc.grinding_sell_min_velocity);
+      bool   _grs_rsi_ok     = (m5_rsi >= g_sc.grinding_sell_min_rsi && m5_rsi <= g_sc.grinding_sell_max_rsi);
+      bool   _grs_macd_ok    = (g_eval_m5_macd_slope_5bar < 0.0);
+      bool   _grs_room_ok    = (g_eval_day_low > 0.0
+                                && (_grs_m5_close - g_eval_day_low) >= g_sc.grinding_sell_room_min_atr * m5_atr);
+      datetime _grs_now      = TimeCurrent();
+      bool   _grs_cool_ok    = (g_sc.grinding_sell_cooldown_sec <= 0
+                                || g_last_grinding_sell_time == 0
+                                || (_grs_now - g_last_grinding_sell_time) >= g_sc.grinding_sell_cooldown_sec);
+      if(_grs_sess_ok && _grs_bbm_ok && _grs_vel_ok && _grs_rsi_ok
+         && _grs_macd_ok && _grs_room_ok && _grs_cool_ok) {
+         direction  = "SELL";
+         setup_type = "GRINDING_SELL";
+         double _grs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double _grs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         sl  = NormalizeDouble(_grs_ask + m5_atr * g_sc.grinding_sell_sl_atr_mult,  _Digits);
+         tp1 = NormalizeDouble(_grs_bid - m5_atr * g_sc.grinding_sell_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(_grs_bid - m5_atr * g_sc.grinding_sell_tp2_atr_mult, _Digits);
+         g_last_grinding_sell_time = _grs_now;
+         PrintFormat("FORGE 2.7.79: GRINDING_SELL fired @ %.2f (sess=%s vel=%.2f RSI=%.1f macd_slope=%.4f room=%.2f×ATR close=%.2f bbm=%.2f)",
+                     _grs_bid, _grs_sess,
+                     g_eval_m5_velocity_5bar_signed, m5_rsi, g_eval_m5_macd_slope_5bar,
+                     (_grs_m5_close - g_eval_day_low) / m5_atr,
+                     _grs_m5_close, m5_bb_m);
+      }
+   }
+
    if(direction == "" && (g_scalper_mode == "BB_BREAKOUT" || g_scalper_mode == "DUAL")
       && g_sc.breakout_enabled && m5_adx >= breakout_adx_min_eff) {
       bool m5_bull  = m5_trend_strength > trend_thr_eff;
@@ -9577,6 +10969,46 @@ void CheckNativeScalperSetups() {
             if(_rbc_bar != g_scalper_last_rsibuyceil_log_bar) {
                g_scalper_last_rsibuyceil_log_bar = _rbc_bar;
                JournalRecordSignal("SKIP","entry_quality_rsi_buy_ceil","BB_BREAKOUT","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.breakout_buy_block_exhaustion_without_bos
+                   && m5_rsi >= g_sc.breakout_buy_exhaustion_rsi
+                   && !(g_eval_bos_direction == 1
+                        && g_eval_m5_velocity_5bar_signed > 0.5
+                        && g_eval_m5_macd_slope_5bar > 0.0)) {
+            // v2.7.69/71 — Run 29 second-leg-at-top trap (G5005 -$1,694, G5022 -$897, G5023 -$438,
+            //   G5025/G5026 -$255). All fired BB_BREAKOUT BUY at RSI 68→71→74 climbing in 5min.
+            //
+            //   v2.7.69 original: blocked when RSI ≥ 72 AND BOS != +1. Run 30 PROBLEM:
+            //     G5005 Apr 1 08:45 had BOS = +1 (overnight rally), gate exempted → BUY fired → -$1,694 again.
+            //
+            //   v2.7.71 fix: require ALL THREE for exemption (sustained-momentum confirmation):
+            //     BOS = +1  AND  signed_velocity > 0.5×ATR  AND  macd_slope > 0.
+            //   Bullish BOS alone isn't enough — momentum must STILL be accelerating up. At RSI 74
+            //   with stalling velocity or flat MACD = textbook exhaustion top regardless of BOS.
+            datetime _bex_bar = iTime(_Symbol, PERIOD_M5, 0);
+            static datetime _last_bex_log_bar = 0;
+            if(_bex_bar != _last_bex_log_bar) {
+               _last_bex_log_bar = _bex_bar;
+               JournalRecordSignal("SKIP","bb_breakout_buy_exhaustion_no_bos","BB_BREAKOUT","BUY",
+                  mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+            }
+         } else if(g_sc.breakout_buy_max_vwap_dist_atr > 0.0
+                   && g_vwap_price > 0.0 && m5_atr > 0.0
+                   && (mid - g_vwap_price) / m5_atr > g_sc.breakout_buy_max_vwap_dist_atr) {
+            // v2.7.73 — VWAP-distance gate. Run 30 G5005 diagnosis:
+            //   G5004 winner @ 4700.70: (4700.70 - 4688.64) / 5.01 = 2.41×ATR above VWAP — allowed
+            //   G5005 loser  @ 4702.29: (4702.29 - 4688.89) / 4.86 = 2.76×ATR above VWAP — BLOCKED
+            //   G5010 small @ 4735.29: (4735.29 - 4707.04) / 5.44 = 5.19×ATR above VWAP — BLOCKED (saves staged-add loss)
+            //   G5013 +$985 @ 4753.70: (4753.70 - 4732.42) / 11.77 = 1.81×ATR above VWAP — allowed (high ATR forgives)
+            //   Threshold 2.5×ATR catches G5005 trap cleanly while preserving G5004/G5013 wins.
+            //   Industry-pattern: VWAP-distance > 2×ATR = mean-reversion zone, trend-continuation entries
+            //   here have <40% win rate vs >70% within 2×ATR (Tradeciety / MQL5 institutional scalping).
+            datetime _bvw_bar = iTime(_Symbol, PERIOD_M5, 0);
+            static datetime _last_bvw_log_bar = 0;
+            if(_bvw_bar != _last_bvw_log_bar) {
+               _last_bvw_log_bar = _bvw_bar;
+               JournalRecordSignal("SKIP","bb_breakout_buy_vwap_overextended","BB_BREAKOUT","BUY",
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
             }
          } else {
@@ -9742,7 +11174,25 @@ void CheckNativeScalperSetups() {
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_buy_ok = false;
             }
-            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && brk_failed_buy_ok && psar_align_buy_ok && nf_buy_ok)
+            // v2.7.93 — Anti-retest gate. prev_close triggered the bar (bar broke above BB),
+            //   but by entry tick the retest may have pulled price BACK below BB upper.
+            //   That's the failed-breakout trap (Run 7 G5006: bar prev_close was above BB, but
+            //   by tick 4699.76 vs BB upper 4702 → price 0.47 ATR BELOW band → trap).
+            //   Require minimum distance ABOVE band at entry. 0 disables gate.
+            bool bo_min_dist_buy_ok = true;
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && brk_failed_buy_ok && psar_align_buy_ok && nf_buy_ok
+               && g_sc.bb_breakout_min_breakout_atr_mult > 0.0 && m5_atr > 0.0) {
+               double _bo_dist_atr = (mid - m5_bb_u) / m5_atr;
+               if(_bo_dist_atr < g_sc.bb_breakout_min_breakout_atr_mult) {
+                  datetime _bo_dist_bar = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_bo_dist_bar != g_scalper_last_psar_log_bar) {  // reuse per-bar throttle slot
+                     JournalRecordSignal("SKIP","bb_breakout_buy_below_band","BB_BREAKOUT","BUY",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  bo_min_dist_buy_ok = false;
+               }
+            }
+            if(h1_di_ok && macd_buy_ok && h4_rsi_buy_ok && h4_adx_buy_ok && h1_macd_buy_ok && bo_cooldown_buy_ok && brk_failed_buy_ok && psar_align_buy_ok && nf_buy_ok && bo_min_dist_buy_ok)
             { // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             // 2.7.18 — BUY-only SL override: when breakout_buy_sl_atr_mult > 0, replace base mult to widen
             // BUY SL against SL-hunt wicks (Run 15 G5015: 2.49×ATR adverse wick wiped 11 legs at 2.0×ATR SL,
@@ -9835,6 +11285,18 @@ void CheckNativeScalperSetups() {
                if(_adxsell_bar != g_scalper_last_adxsell_log_bar) {
                   g_scalper_last_adxsell_log_bar = _adxsell_bar;
                   JournalRecordSignal("SKIP","entry_quality_adx_min_sell","BB_BREAKOUT","SELL",
+                     mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+               }
+            } else if(g_sc.breakout_sell_max_vwap_dist_atr > 0.0
+                      && g_vwap_price > 0.0 && m5_atr > 0.0
+                      && (g_vwap_price - mid) / m5_atr > g_sc.breakout_sell_max_vwap_dist_atr) {
+               // v2.7.73 — VWAP-distance mirror for SELL: block when price is 2.5×ATR below VWAP
+               //   (mean-reversion zone — overextended for fresh breakdown).
+               datetime _svw_bar = iTime(_Symbol, PERIOD_M5, 0);
+               static datetime _last_svw_log_bar = 0;
+               if(_svw_bar != _last_svw_log_bar) {
+                  _last_svw_log_bar = _svw_bar;
+                  JournalRecordSignal("SKIP","bb_breakout_sell_vwap_overextended","BB_BREAKOUT","SELL",
                      mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                }
             } else {
@@ -10075,7 +11537,23 @@ void CheckNativeScalperSetups() {
                   mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
                nf_sell_ok = false;
             }
-            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok && psar_align_sell_ok && nf_sell_ok) {
+            // v2.7.93 — Anti-retest gate (SELL mirror). Require min breakdown distance BELOW BB lower at entry.
+            //   Prev_close gated the trigger (bar broke below BB), but the retest may have pulled price BACK above.
+            //   That's the mirror failed-breakdown trap. 0 disables gate.
+            bool bo_min_dist_sell_ok = true;
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok && psar_align_sell_ok && nf_sell_ok
+               && g_sc.bb_breakout_min_breakdown_atr_mult > 0.0 && m5_atr > 0.0) {
+               double _bo_dist_atr_s = (m5_bb_l - mid) / m5_atr;
+               if(_bo_dist_atr_s < g_sc.bb_breakout_min_breakdown_atr_mult) {
+                  datetime _bo_dist_bar_s = iTime(_Symbol, PERIOD_M5, 0);
+                  if(_bo_dist_bar_s != g_scalper_last_psar_log_bar) {
+                     JournalRecordSignal("SKIP","bb_breakout_sell_above_band","BB_BREAKOUT","SELL",
+                        mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+                  }
+                  bo_min_dist_sell_ok = false;
+               }
+            }
+            if(adx_dur_ok && rsi_decl_ok && hid_bull_ok && macd_sell_ok && h1_macd_sell_ok && m30_bear_ok && h4_rsi_sell_ok && h4_adx_sell_ok && bo_cooldown_sell_ok && psar_align_sell_ok && nf_sell_ok && bo_min_dist_sell_ok) {
             // Breakout SL is pure ATR — no structural widening (OB widening blows out RR at TP4).
             double bo_sl = NormalizeDouble(ask + m5_atr * breakout_sl_mult_eff, _Digits);
             double bo_sl_ceil = NormalizeDouble(ask + m5_atr * g_sc.min_sl_atr_mult, _Digits);
@@ -10531,23 +12009,149 @@ void CheckNativeScalperSetups() {
       // Consecutive-loss throttle: if recently throttled, block.
       bool   _bbr_throttle_ok = (g_blr_buy_throttle_until == 0
                                 || _bbr_now >= g_blr_buy_throttle_until);
+      // v2.7.69 — Market-structure gates (Run 29 falling-knife losses G5015/G5016/G5027/G5032):
+      //   BOS gate: g_eval_bos_direction == -1 means M5 closed below last swing low ≥ once
+      //             in last 30 M5 bars — i.e. bearish structure confirmed. Buying here = knife.
+      //   Velocity gate: signed velocity_5bar ≤ -1.0×ATR means price fell ≥1×ATR in last 25min
+      //             AND is still moving down. The G5032 knife had velocity ≈ -2.0×ATR.
+      bool   _bbr_bos_ok = (!g_sc.blr_buy_block_on_bearish_bos
+                            || g_eval_bos_direction != -1);
+      bool   _bbr_vel_ok = (g_eval_m5_velocity_5bar_signed >= g_sc.blr_buy_min_velocity_5bar_signed);
+      // v2.7.80 — BLR capitulation override: bypasses velocity gate on real V-flush (not grind).
+      // Atoms (need ≥ g_sc.blr_buy_capitulation_min_atoms of 5):
+      //   A1: m5_rsi ≤ blr_buy_capitulation_rsi_max (deep oversold, default 28)
+      //   A2: m5_close < m5_bb_l (pierce of lower band — same as _bbr_below_band)
+      //   A3: -velocity_5bar ≥ blr_buy_capitulation_displacement_min_atr (sharp drop, default ≥1.5×ATR)
+      //   A4: m5_atr_ratio_5bar ≥ blr_buy_capitulation_atr_ratio_min (volatility expansion, default 1.3)
+      //   A5: g_eval_long_lower_wick == 1 OR g_eval_m5_doji == 1 (rejection bar)
+      int    _bbr_cap_a1 = (m5_rsi <= g_sc.blr_buy_capitulation_rsi_max) ? 1 : 0;
+      int    _bbr_cap_a2 = (_bbr_below_band) ? 1 : 0;
+      int    _bbr_cap_a3 = ((-g_eval_m5_velocity_5bar_signed) >= g_sc.blr_buy_capitulation_displacement_min_atr) ? 1 : 0;
+      int    _bbr_cap_a4 = (g_eval_m5_atr_ratio_5bar >= g_sc.blr_buy_capitulation_atr_ratio_min) ? 1 : 0;
+      int    _bbr_cap_a5 = (g_eval_long_lower_wick == 1 || g_eval_m5_doji == 1) ? 1 : 0;
+      int    _bbr_cap_count = _bbr_cap_a1 + _bbr_cap_a2 + _bbr_cap_a3 + _bbr_cap_a4 + _bbr_cap_a5;
+      bool   _bbr_cap_override = (g_sc.blr_buy_capitulation_override_enabled
+                                  && _bbr_cap_count >= g_sc.blr_buy_capitulation_min_atoms);
+      // Effective velocity gate result (override flips falling-vel block when capitulation atoms confirm flush)
+      bool   _bbr_vel_pass = _bbr_vel_ok || _bbr_cap_override;
+      // Emit specific SKIP codes when the structure gates block (forensic visibility)
+      if(_bbr_below_band && _bbr_rsi_ok && _bbr_adx_ok && _bbr_daily_ok
+         && _bbr_sess_ok && _bbr_h1_ok && _bbr_cool_ok && _bbr_reversal_ok
+         && _bbr_h4_ok && _bbr_throttle_ok && !_bbr_bos_ok) {
+         JournalRecordSignal("SKIP","blr_buy_bearish_bos_block","BB_LOWER_REVERSION_BUY","BUY",
+            _bbr_mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+      } else if(_bbr_below_band && _bbr_rsi_ok && _bbr_adx_ok && _bbr_daily_ok
+                && _bbr_sess_ok && _bbr_h1_ok && _bbr_cool_ok && _bbr_reversal_ok
+                && _bbr_h4_ok && _bbr_throttle_ok && _bbr_bos_ok && !_bbr_vel_pass) {
+         JournalRecordSignal("SKIP","blr_buy_falling_velocity_block","BB_LOWER_REVERSION_BUY","BUY",
+            _bbr_mid,spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,0,h1_trend_strength,0);
+      }
       if(_bbr_below_band && _bbr_rsi_ok && _bbr_adx_ok && _bbr_daily_ok
          && _bbr_sess_ok && _bbr_h1_ok && _bbr_cool_ok
-         && _bbr_reversal_ok && _bbr_h4_ok && _bbr_throttle_ok) {
+         && _bbr_reversal_ok && _bbr_h4_ok && _bbr_throttle_ok
+         && _bbr_bos_ok && _bbr_vel_pass) {
          direction  = "BUY";
          setup_type = "BB_LOWER_REVERSION_BUY";
          double _bbr_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
          double _bbr_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         sl  = NormalizeDouble(m5_bb_l - m5_atr * g_sc.bb_lower_reversion_buy_sl_atr_mult, _Digits);
-         tp1 = (g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult > 0.0)
-               ? NormalizeDouble(m5_bb_m - m5_atr * g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult, _Digits)
-               : NormalizeDouble(m5_bb_m, _Digits);
-         tp2 = (g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult > 0.0)
-               ? NormalizeDouble(m5_bb_u - m5_atr * g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult, _Digits)
-               : NormalizeDouble(m5_bb_u, _Digits);
-         PrintFormat("FORGE 2.7.55: BB_LOWER_REVERSION_BUY fired @ %.2f (bbl=%.2f bbm=%.2f bbu=%.2f, ATR=%.2f, RSI=%.1f, ADX=%.1f, h1=%.2f, regime=%s)",
-                     _bbr_ask, m5_bb_l, m5_bb_m, m5_bb_u, m5_atr, m5_rsi, m5_adx,
-                     h1_trend_strength, g_regime_label);
+         // v2.7.80 — Capitulation-override path uses TIGHTER geometry + SMALLER lot
+         //   Reason: capitulation = flush wick. SL goes BELOW the wick (1.5×ATR), TP1/TP2 close-in
+         //   (0.5/1.5×ATR) to bank the bounce fast. Use blr_buy_capitulation_lot in lot calc downstream.
+         bool _bbr_use_cap_geom = (_bbr_cap_override && !_bbr_vel_ok);
+         if(_bbr_use_cap_geom) blr_capitulation_active = true;
+         double _sl_atr_mult  = _bbr_use_cap_geom ? g_sc.blr_buy_capitulation_sl_atr_mult
+                                                   : g_sc.bb_lower_reversion_buy_sl_atr_mult;
+         sl  = NormalizeDouble(m5_bb_l - m5_atr * _sl_atr_mult, _Digits);
+         if(_bbr_use_cap_geom) {
+            tp1 = NormalizeDouble(_bbr_ask + m5_atr * g_sc.blr_buy_capitulation_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(_bbr_ask + m5_atr * g_sc.blr_buy_capitulation_tp2_atr_mult, _Digits);
+         } else {
+            tp1 = (g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult > 0.0)
+                  ? NormalizeDouble(m5_bb_m - m5_atr * g_sc.bb_lower_reversion_buy_tp1_offset_atr_mult, _Digits)
+                  : NormalizeDouble(m5_bb_m, _Digits);
+            tp2 = (g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult > 0.0)
+                  ? NormalizeDouble(m5_bb_u - m5_atr * g_sc.bb_lower_reversion_buy_tp2_offset_atr_mult, _Digits)
+                  : NormalizeDouble(m5_bb_u, _Digits);
+         }
+         if(_bbr_use_cap_geom) {
+            PrintFormat("FORGE 2.7.80: BB_LOWER_REVERSION_BUY CAPITULATION OVERRIDE @ %.2f (atoms=%d/5, RSI=%.1f, vel=%.2f×ATR, atr_ratio=%.2f, wick=%d, doji=%d, lot=%.2f, SL=%.2f TP1=%.2f TP2=%.2f)",
+                        _bbr_ask, _bbr_cap_count, m5_rsi, g_eval_m5_velocity_5bar_signed,
+                        g_eval_m5_atr_ratio_5bar, g_eval_long_lower_wick, g_eval_m5_doji,
+                        g_sc.blr_buy_capitulation_lot, sl, tp1, tp2);
+         } else {
+            PrintFormat("FORGE 2.7.55: BB_LOWER_REVERSION_BUY fired @ %.2f (bbl=%.2f bbm=%.2f bbu=%.2f, ATR=%.2f, RSI=%.1f, ADX=%.1f, h1=%.2f, regime=%s)",
+                        _bbr_ask, m5_bb_l, m5_bb_m, m5_bb_u, m5_atr, m5_rsi, m5_adx,
+                        h1_trend_strength, g_regime_label);
+         }
+      }
+   }
+
+   // v2.7.70 — NY_SESSION_BEARISH_BREAKOUT_SELL trigger
+   //   Captures the 220pt+ overnight + London/NY-open descents that Run 29 missed entirely.
+   //   Apr 1 19:00 high $4787 → Apr 2 09:11 low $4555 = -232pt move in 14h. FORGE caught zero
+   //   SELLs because every existing setup requires HTF (h1/h4) bearish confirmation, and HTF
+   //   lagged M5 by hours. By the time h1 flipped, the move was over.
+   //
+   //   This setup deliberately ignores h1/h4 — reads M5 structure directly:
+   //     - Killzone window: LONDON_OPEN_KZ or NY_OPEN_KZ, first kz_max_min minutes (default 90)
+   //     - Signed velocity ≤ -min_velocity ×ATR  (accelerating drop, 1.5×ATR default = -22pt in 25min)
+   //     - m5_close < m5_bb_m  (price already below mean — structure broken)
+   //     - m5_rsi < max_rsi  (room to fall before oversold, default 50)
+   //     - g_eval_m5_macd_slope_5bar < 0  (momentum confirms direction)
+   //     - (m5_close - g_eval_day_low) ≥ room_min_atr ×ATR  (room before sweeping prior day low)
+   //
+   //   Geometry: wide SL (3.5×ATR ~ judas-swing absorber), TP1 1.0×ATR, TP2 2.5×ATR.
+   //   Backtest projection: Apr 2 08:00-08:33 LONDON open had velocity ≈ -2.0×ATR + RSI 44 +
+   //     macd_slope -0.6 + close < bb_m → would have fired SELL ~4670 → 4555 = +115pt capture.
+   if(direction == "" && g_sc.ny_session_bearish_sell_enabled && m5_atr > 0.0
+      && m5_bb_m > 0.0) {
+      double _nybs_m5_close = iClose(_Symbol, PERIOD_M5, 0);
+      string _nybs_kz       = ComputeCurrentKillzoneLabel();
+      bool   _nybs_kz_ok    = ((_nybs_kz == "LONDON_OPEN_KZ" || _nybs_kz == "NY_OPEN_KZ")
+                              && g_regime.minutes_into_kz <= g_sc.ny_session_bearish_sell_kz_max_min);
+      bool   _nybs_vel_ok   = (g_eval_m5_velocity_5bar_signed <= -g_sc.ny_session_bearish_sell_min_velocity);
+      bool   _nybs_bbm_ok   = (_nybs_m5_close < m5_bb_m);
+      bool   _nybs_rsi_ok   = (m5_rsi < g_sc.ny_session_bearish_sell_max_rsi);
+      bool   _nybs_macd_ok  = (g_eval_m5_macd_slope_5bar < 0.0);
+      bool   _nybs_room_ok  = (g_eval_day_low > 0.0
+                              && (_nybs_m5_close - g_eval_day_low) >= g_sc.ny_session_bearish_sell_room_min_atr * m5_atr);
+      datetime _nybs_now    = TimeCurrent();
+      bool   _nybs_cool_ok  = (g_sc.ny_session_bearish_sell_cooldown_sec <= 0
+                              || g_ny_session_bearish_sell_last_time == 0
+                              || (_nybs_now - g_ny_session_bearish_sell_last_time)
+                                   >= g_sc.ny_session_bearish_sell_cooldown_sec);
+      if(_nybs_kz_ok && _nybs_vel_ok && _nybs_bbm_ok && _nybs_rsi_ok
+         && _nybs_macd_ok && _nybs_room_ok && _nybs_cool_ok) {
+         direction  = "SELL";
+         setup_type = "NY_SESSION_BEARISH_BREAKOUT_SELL";
+         double _nybs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double _nybs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         sl  = NormalizeDouble(_nybs_ask + m5_atr * g_sc.ny_session_bearish_sell_sl_atr_mult, _Digits);
+         tp1 = NormalizeDouble(_nybs_bid - m5_atr * g_sc.ny_session_bearish_sell_tp1_atr_mult, _Digits);
+         tp2 = NormalizeDouble(_nybs_bid - m5_atr * g_sc.ny_session_bearish_sell_tp2_atr_mult, _Digits);
+         PrintFormat("FORGE 2.7.70: NY_SESSION_BEARISH_BREAKOUT_SELL fired @ %.2f (kz=%s min_into=%d signed_vel=%.2f×ATR RSI=%.1f macd_slope=%.4f room=%.2f×ATR)",
+                     _nybs_bid, _nybs_kz, g_regime.minutes_into_kz,
+                     g_eval_m5_velocity_5bar_signed, m5_rsi, g_eval_m5_macd_slope_5bar,
+                     (_nybs_m5_close - g_eval_day_low) / m5_atr);
+      } else if(_nybs_kz_ok) {
+         // v2.7.71 — Diagnostic SKIPs (Run 30 issue: setup was silent on Apr 2 descent; no way
+         //   to diagnose which atom failed). Only emit when in KZ window (avoids flooding outside
+         //   the 90/120-min trading window). Throttled to one-per-bar.
+         datetime _nybs_bar = iTime(_Symbol, PERIOD_M5, 0);
+         static datetime _last_nybs_log_bar = 0;
+         if(_nybs_bar != _last_nybs_log_bar) {
+            _last_nybs_log_bar = _nybs_bar;
+            string _nybs_reason = "ny_session_bearish_other_block";
+            if(!_nybs_vel_ok)        _nybs_reason = "ny_session_bearish_low_velocity";
+            else if(!_nybs_bbm_ok)   _nybs_reason = "ny_session_bearish_close_above_bbm";
+            else if(!_nybs_rsi_ok)   _nybs_reason = "ny_session_bearish_rsi_too_high";
+            else if(!_nybs_macd_ok)  _nybs_reason = "ny_session_bearish_macd_positive";
+            else if(!_nybs_room_ok)  _nybs_reason = "ny_session_bearish_no_room";
+            else if(!_nybs_cool_ok)  _nybs_reason = "ny_session_bearish_cooldown";
+            JournalRecordSignal("SKIP", _nybs_reason, "NY_SESSION_BEARISH_BREAKOUT_SELL", "SELL",
+               _nybs_m5_close, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m, 0,
+               h1_trend_strength, 0);
+         }
       }
    }
 
@@ -11225,6 +12829,189 @@ void CheckNativeScalperSetups() {
       return;
    }
 
+   // v2.7.84 — UMCG (Layer 1) + CVCSM (Layer 2) enforcement
+   //   Applied AFTER setup triggers ran (so we know setup_type + direction) and BEFORE order placement.
+   //   When the gate blocks, reset direction/setup_type to "" so the rest of the function treats it
+   //   like "no setup fired this tick" (logs to journal + falls through to BB_EXHAUSTION_REVERSAL_*).
+   //   See docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md §4 for design.
+   if(direction != "" && setup_type != "BB_EXHAUSTION_REVERSAL_SELL" && setup_type != "BB_EXHAUSTION_REVERSAL_BUY") {
+      bool umcg_blocked = false;
+      bool cvcsm_blocked = false;
+      string block_reason = "";
+      if(g_sc.umcg_enabled) {
+         if(direction == "BUY" && g_pemcg_buy_warning_count >= g_sc.umcg_buy_block_threshold) {
+            umcg_blocked = true; block_reason = "pemcg_buy_reversal_block";
+         } else if(direction == "SELL" && g_pemcg_sell_warning_count >= g_sc.umcg_sell_block_threshold) {
+            umcg_blocked = true; block_reason = "pemcg_sell_reversal_block";
+         }
+      }
+      if(!umcg_blocked && g_sc.cvcsm_enabled) {
+         if(direction == "BUY" && g_cvcsm_state_buy != 0) {
+            cvcsm_blocked = true; block_reason = "cvcsm_cooldown_block_buy";
+         } else if(direction == "SELL" && g_cvcsm_state_sell != 0) {
+            cvcsm_blocked = true; block_reason = "cvcsm_cooldown_block_sell";
+         }
+      }
+      // v2.7.97 Sets 6+7+8 — Direction Lock enforcement (alongside UMCG/CVCSM).
+      //   IsDirLockBlocked returns true when:
+      //     - bilateral cooldown active (within N bars of any direction's lock-break)
+      //     - DISCARDED state for the requested direction
+      //   This is the "no auto-flip" rule: after a lock break, BOTH directions are
+      //   suppressed until N clean M5 bars elapse AND a fresh setup re-trigger fires.
+      bool dirlock_blocked = false;
+      if(!umcg_blocked && !cvcsm_blocked && g_sc.direction_lock_enabled) {
+         if(IsDirLockBlocked(direction)) {
+            dirlock_blocked = true;
+            block_reason = (direction == "BUY") ? "dirlock_block_buy" : "dirlock_block_sell";
+         }
+      }
+      if(umcg_blocked || cvcsm_blocked || dirlock_blocked) {
+         double _gate_mid_px = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
+         JournalRecordSignal("SKIP", block_reason, setup_type, direction,
+            _gate_mid_px, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m, 0, h1_trend_strength, 0);
+         PrintFormat("FORGE 2.7.84: %s blocked %s %s @ %.2f (pemcg_buy=%d pemcg_sell=%d cvcsm_buy=%d cvcsm_sell=%d)",
+                     block_reason, setup_type, direction, _gate_mid_px,
+                     g_pemcg_buy_warning_count, g_pemcg_sell_warning_count,
+                     g_cvcsm_state_buy, g_cvcsm_state_sell);
+         // Reset so this tick treats as "no setup fired" — allows fall-through to BB_EXHAUSTION_REVERSAL_*
+         direction  = "";
+         setup_type = "";
+         sl = 0; tp1 = 0; tp2 = 0;
+      }
+   }
+
+   // v2.7.84 — Layer 3: BB_EXHAUSTION_REVERSAL_SELL — counter-trade when PEMCG_BUY ≥ min_warnings
+   //   AND no existing SELL pending/position within proximity_atr×ATR of current price.
+   //   Operator mandate (2026-05-13): "if we umcg block buy ... initiate counter trade at that
+   //   price point if no other limit or stop can take advantage of that market at that time."
+   // v2.7.90 — Directional opposite-side gate. Bar-quality atoms (A2/A3/A4/A6) are
+   //   direction-AGNOSTIC: they fire for BOTH BUY and SELL PEMCG composites on the same weak
+   //   bar. Using TOTAL warning count for the opposite-side check (pre-v2.7.90 default of 2)
+   //   prevented Layer 3 from ever firing on real trap bars — exactly when we want it most.
+   //   The G5006 retest (Run 5, Apr 1 08:46) had PEMCG_BUY=5/7 AND PEMCG_SELL=5/7 simultaneously,
+   //   even though directionally SELL was fine (RSI 69 not oversold, close at BB upper not lower).
+   //   New gate: counter-SELL is blocked ONLY when opposite direction is in its OWN trap zone —
+   //   i.e. SELL A1 (RSI ≤ oversold) AND SELL A5 (close near BB lower) are both TRUE.
+   //   Uses existing PEMCG thresholds (no new knobs). Mirror at the BB_EXHAUSTION_REVERSAL_BUY block.
+   // v2.7.92 — ADX gate: don't counter-trade when M5 ADX is strong (trend still has momentum).
+   //   Run 6 evidence: 2 SELL reversals at ADX 41.6 lost ~$1,260 to a continuing thrust.
+   //   Set bb_exhaustion_reversal_max_adx = 0 to disable this gate.
+   // v2.7.94 — Wide-Range Bar (WRB) check: don't catch the falling knife. If the prior M5 bar
+   //   was a capitulation bar (range >= max_prev_bar_range_atr_mult × ATR), the move is still
+   //   resolving — wait at least one normal-range bar before counter-trading.
+   double _wrb_prev_range = iHigh(_Symbol, PERIOD_M5, 1) - iLow(_Symbol, PERIOD_M5, 1);
+   bool _wrb_block = (g_sc.bb_exhaustion_reversal_max_prev_bar_range_atr_mult > 0.0
+                      && m5_atr > 0.0
+                      && _wrb_prev_range / m5_atr >= g_sc.bb_exhaustion_reversal_max_prev_bar_range_atr_mult);
+   if(direction == "" && g_sc.bb_exhaustion_reversal_enabled && m5_atr > 0.0 && m5_bb_u > 0.0
+      && g_pemcg_buy_warning_count >= g_sc.bb_exhaustion_reversal_min_warnings
+      && !((m5_rsi <= g_sc.umcg_pemcg_rsi_oversold)
+           && (MathAbs(m5_bb_l - mid) / m5_atr < g_sc.umcg_pemcg_bb_dist_atr_threshold))
+      && (g_sc.bb_exhaustion_reversal_max_adx <= 0.0
+          || m5_adx < g_sc.bb_exhaustion_reversal_max_adx)
+      && !_wrb_block
+      && g_cvcsm_state_sell == 0) {
+      datetime _revs_now = TimeCurrent();
+      bool _revs_cool_ok = (g_last_bb_exhaustion_reversal_sell_time == 0
+                            || (_revs_now - g_last_bb_exhaustion_reversal_sell_time)
+                                 >= g_sc.bb_exhaustion_reversal_cooldown_sec);
+      // Proximity check — is any existing SELL position/pending within proximity_atr×ATR of current price?
+      double _revs_proximity = g_sc.bb_exhaustion_reversal_proximity_atr * m5_atr;
+      double _revs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      bool _revs_existing_sell = false;
+      for(int _pi = PositionsTotal() - 1; _pi >= 0 && !_revs_existing_sell; _pi--) {
+         ulong _pt = PositionGetTicket(_pi);
+         if(_pt > 0 && PositionSelectByTicket(_pt)
+            && PositionGetString(POSITION_SYMBOL) == _Symbol
+            && PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL) {
+            double _ep = PositionGetDouble(POSITION_PRICE_OPEN);
+            if(MathAbs(_ep - _revs_bid) <= _revs_proximity) _revs_existing_sell = true;
+         }
+      }
+      for(int _oi = OrdersTotal() - 1; _oi >= 0 && !_revs_existing_sell; _oi--) {
+         ulong _ot = OrderGetTicket(_oi);
+         if(_ot > 0 && OrderSelect(_ot)
+            && OrderGetString(ORDER_SYMBOL) == _Symbol) {
+            ENUM_ORDER_TYPE _otype = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+            if(_otype == ORDER_TYPE_SELL_LIMIT || _otype == ORDER_TYPE_SELL_STOP) {
+               double _op = OrderGetDouble(ORDER_PRICE_OPEN);
+               if(MathAbs(_op - _revs_bid) <= _revs_proximity) _revs_existing_sell = true;
+            }
+         }
+      }
+      if(_revs_cool_ok && !_revs_existing_sell) {
+         direction  = "SELL";
+         setup_type = "BB_EXHAUSTION_REVERSAL_SELL";
+         double _revs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         sl  = NormalizeDouble(m5_bb_u + m5_atr * g_sc.bb_exhaustion_reversal_sl_atr_mult, _Digits);
+         tp1 = (g_sc.bb_exhaustion_reversal_tp1_atr_mult > 0.0)
+               ? NormalizeDouble(_revs_bid - m5_atr * g_sc.bb_exhaustion_reversal_tp1_atr_mult, _Digits)
+               : NormalizeDouble(m5_bb_m, _Digits);
+         tp2 = (g_sc.bb_exhaustion_reversal_tp2_atr_mult > 0.0)
+               ? NormalizeDouble(_revs_bid - m5_atr * g_sc.bb_exhaustion_reversal_tp2_atr_mult, _Digits)
+               : NormalizeDouble(g_vwap_price > 0.0 ? g_vwap_price : m5_bb_m, _Digits);
+         g_last_bb_exhaustion_reversal_sell_time = _revs_now;
+         PrintFormat("FORGE 2.7.84: BB_EXHAUSTION_REVERSAL_SELL fired @ %.2f (pemcg_buy=%d/7, SL=%.2f TP1=%.2f TP2=%.2f, lot=%.2f)",
+                     _revs_bid, g_pemcg_buy_warning_count, sl, tp1, tp2, g_sc.bb_exhaustion_reversal_lot);
+      }
+   }
+
+   // v2.7.84 — Layer 3 mirror: BB_EXHAUSTION_REVERSAL_BUY — counter-trade when PEMCG_SELL ≥ min_warnings
+   // v2.7.90 — Directional opposite-side gate (mirror of SELL block above).
+   //   Counter-BUY is blocked ONLY when opposite direction (BUY) is in its OWN trap zone:
+   //   BUY A1 (RSI ≥ overbought) AND BUY A5 (close near BB upper) are both TRUE.
+   // v2.7.92 — ADX gate (mirror of SELL block above): block counter-BUY in strong bear trend.
+   if(direction == "" && g_sc.bb_exhaustion_reversal_enabled && m5_atr > 0.0 && m5_bb_l > 0.0
+      && g_pemcg_sell_warning_count >= g_sc.bb_exhaustion_reversal_min_warnings
+      && !((m5_rsi >= g_sc.umcg_pemcg_rsi_overbought)
+           && (MathAbs(m5_bb_u - mid) / m5_atr < g_sc.umcg_pemcg_bb_dist_atr_threshold))
+      && (g_sc.bb_exhaustion_reversal_max_adx <= 0.0
+          || m5_adx < g_sc.bb_exhaustion_reversal_max_adx)
+      && !_wrb_block        // v2.7.94 — reuse the WRB check computed above (single iHigh/iLow read per tick)
+      && g_cvcsm_state_buy == 0) {
+      datetime _revb_now = TimeCurrent();
+      bool _revb_cool_ok = (g_last_bb_exhaustion_reversal_buy_time == 0
+                            || (_revb_now - g_last_bb_exhaustion_reversal_buy_time)
+                                 >= g_sc.bb_exhaustion_reversal_cooldown_sec);
+      double _revb_proximity = g_sc.bb_exhaustion_reversal_proximity_atr * m5_atr;
+      double _revb_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      bool _revb_existing_buy = false;
+      for(int _pj = PositionsTotal() - 1; _pj >= 0 && !_revb_existing_buy; _pj--) {
+         ulong _pt2 = PositionGetTicket(_pj);
+         if(_pt2 > 0 && PositionSelectByTicket(_pt2)
+            && PositionGetString(POSITION_SYMBOL) == _Symbol
+            && PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
+            double _ep2 = PositionGetDouble(POSITION_PRICE_OPEN);
+            if(MathAbs(_ep2 - _revb_ask) <= _revb_proximity) _revb_existing_buy = true;
+         }
+      }
+      for(int _oj = OrdersTotal() - 1; _oj >= 0 && !_revb_existing_buy; _oj--) {
+         ulong _ot2 = OrderGetTicket(_oj);
+         if(_ot2 > 0 && OrderSelect(_ot2)
+            && OrderGetString(ORDER_SYMBOL) == _Symbol) {
+            ENUM_ORDER_TYPE _otype2 = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+            if(_otype2 == ORDER_TYPE_BUY_LIMIT || _otype2 == ORDER_TYPE_BUY_STOP) {
+               double _op2 = OrderGetDouble(ORDER_PRICE_OPEN);
+               if(MathAbs(_op2 - _revb_ask) <= _revb_proximity) _revb_existing_buy = true;
+            }
+         }
+      }
+      if(_revb_cool_ok && !_revb_existing_buy) {
+         direction  = "BUY";
+         setup_type = "BB_EXHAUSTION_REVERSAL_BUY";
+         sl  = NormalizeDouble(m5_bb_l - m5_atr * g_sc.bb_exhaustion_reversal_sl_atr_mult, _Digits);
+         tp1 = (g_sc.bb_exhaustion_reversal_tp1_atr_mult > 0.0)
+               ? NormalizeDouble(_revb_ask + m5_atr * g_sc.bb_exhaustion_reversal_tp1_atr_mult, _Digits)
+               : NormalizeDouble(m5_bb_m, _Digits);
+         tp2 = (g_sc.bb_exhaustion_reversal_tp2_atr_mult > 0.0)
+               ? NormalizeDouble(_revb_ask + m5_atr * g_sc.bb_exhaustion_reversal_tp2_atr_mult, _Digits)
+               : NormalizeDouble(g_vwap_price > 0.0 ? g_vwap_price : m5_bb_m, _Digits);
+         g_last_bb_exhaustion_reversal_buy_time = _revb_now;
+         PrintFormat("FORGE 2.7.84: BB_EXHAUSTION_REVERSAL_BUY fired @ %.2f (pemcg_sell=%d/7, SL=%.2f TP1=%.2f TP2=%.2f, lot=%.2f)",
+                     _revb_ask, g_pemcg_sell_warning_count, sl, tp1, tp2, g_sc.bb_exhaustion_reversal_lot);
+      }
+   }
+
    if(direction == "") {
       datetime m5b = iTime(_Symbol, PERIOD_M5, 0);
       if(m5b != g_scalper_last_nosetup_log_bar) {
@@ -11348,6 +13135,7 @@ void CheckNativeScalperSetups() {
                    || setup_type == "BULL_DAY_DIP_BUY"
                    || setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST"   // 2.7.53 — parity with legacy MOMENTUM_DUMP
                    || setup_type == "BB_LOWER_REVERSION_BUY"          // 2.7.55 — tight-SL mean-reversion scalp; geometry-anchored
+                   || setup_type == "ASIA_CAPITULATION_BUY"            // 2.7.81 — tight-SL Asia V-flush; geometry-anchored, fixed-lot
                    || setup_type == "TREND_CONTINUATION_BUY"          // 2.7.57 — tight scalp 0.3×ATR TP1; geometry-anchored
                    || setup_type == "TREND_CONTINUATION_SELL");       // 2.7.57 — mirror
    if(!_rr_bypass && (risk <= 0 || reward / risk < rr_min_eff)) {
@@ -11752,10 +13540,122 @@ void CheckNativeScalperSetups() {
    //   ScalperLotFactor multiplier above. INPUTS lot_sizing_source still controls leg count.
    double base_lot = g_sc.lot_fixed;
    double lot = NormalizeLot(base_lot * lot_mult * combined_lot_factor);
+   // v2.7.80 — BLR capitulation override: pin lot to fixed capitulation size,
+   // bypassing all factors. Capitulation is a high-risk flush-bottom catch — we
+   // want a known small fixed size, not whatever the combined-factor chain produces.
+   if(blr_capitulation_active && setup_type == "BB_LOWER_REVERSION_BUY"
+      && g_sc.blr_buy_capitulation_lot > 0.0) {
+      double _cap_lot_min = MathMax(g_sc.blr_buy_capitulation_lot, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
+      lot = NormalizeLot(_cap_lot_min);
+      PrintFormat("FORGE 2.7.80: BLR capitulation lot override → %.2f (was %.2f after factors)",
+                  lot, NormalizeLot(base_lot * lot_mult * combined_lot_factor));
+   }
+   // v2.7.81 — ASIA_CAPITULATION_BUY lot pin (same rationale: thin Asia liquidity, known small fixed size)
+   if(setup_type == "ASIA_CAPITULATION_BUY"
+      && g_sc.asia_capitulation_buy_lot > 0.0) {
+      double _ascb_lot_min = MathMax(g_sc.asia_capitulation_buy_lot, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
+      lot = NormalizeLot(_ascb_lot_min);
+      PrintFormat("FORGE 2.7.81: ASIA_CAPITULATION_BUY lot pin → %.2f (was %.2f after factors)",
+                  lot, NormalizeLot(base_lot * lot_mult * combined_lot_factor));
+   }
+   // v2.7.89 — BB_EXHAUSTION_REVERSAL lot pin + conviction-tier amplifier.
+   //   Operator mandate: counter-trade at trap point with a SIZED position, not just default chain lot.
+   //   Two tiers (BASE / HIGH) determined by PEMCG warning count at fire-time:
+   //     BASE (warnings >= min_warnings, default 4): lot = base × lot_amplifier        (~0.10 × 1.0  = 0.10)
+   //     HIGH (warnings >= high_conviction_warnings, default 6): lot = base × amp × HIGH factor (~0.10 × 1.0 × 2.0 = 0.20)
+   //   This pin OVERRIDES the combined_lot_factor chain (which would otherwise reduce reversal lot to 0.01
+   //   on stack/dump/factor compounding). Bb_exhaustion_reversal_lot was previously logged-only — now consumed.
+   //   Leg count override is set further below (see _bb_score_legs assignment block for BB_EXHAUSTION_REVERSAL).
+   bool _bbexr_high_conviction = false;
+   if((setup_type == "BB_EXHAUSTION_REVERSAL_SELL" || setup_type == "BB_EXHAUSTION_REVERSAL_BUY")
+      && g_sc.bb_exhaustion_reversal_lot > 0.0) {
+      int  _bbexr_warnings = (setup_type == "BB_EXHAUSTION_REVERSAL_SELL")
+                              ? g_pemcg_buy_warning_count       // SELL reversal fires when BUY-warnings high
+                              : g_pemcg_sell_warning_count;     // mirror
+      double _bbexr_lot_mult = g_sc.bb_exhaustion_reversal_lot_amplifier;  // base amp (constant)
+      if(_bbexr_warnings >= g_sc.bb_exhaustion_reversal_high_conviction_warnings) {
+         _bbexr_lot_mult *= g_sc.bb_exhaustion_reversal_high_conviction_lot_factor;  // HIGH tier: stack the lot factor
+         _bbexr_high_conviction = true;
+      }
+      double _bbexr_lot_min = MathMax(g_sc.bb_exhaustion_reversal_lot * _bbexr_lot_mult,
+                                      SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
+      lot = NormalizeLot(_bbexr_lot_min);
+      PrintFormat("FORGE 2.7.89: %s lot pin → %.2f (base=%.2f × amp=%.2f, warnings=%d/7, tier=%s, was %.2f after factors)",
+                  setup_type, lot, g_sc.bb_exhaustion_reversal_lot, _bbexr_lot_mult, _bbexr_warnings,
+                  _bbexr_high_conviction ? "HIGH" : "BASE",
+                  NormalizeLot(base_lot * lot_mult * combined_lot_factor));
+   }
    double tp2_price = (tp2 > 0) ? tp2 : tp1;
    double tp1_split_pct = is_breakout_setup ? g_sc.breakout_tp1_close_pct : g_sc.bounce_tp1_close_pct;
+   // v2.7.75 — Trade Conviction State Machine (replaces v2.7.74 inline check)
+   //   Reads g_regime.trade_score_buy_tier (pre-computed every tick in ForgeEvalAtoms).
+   //   Tier set by 5-bar avg weighted score + 2-bar hysteresis. See FORGE_TRADE_CONVICTION_STATE_MACHINE.md.
+   //   Industry pattern (validated via WebSearch 2026-05-13):
+   //     - Nyao Scalper: confidence 0-10 weighted multi-factor
+   //     - ML Supertrend: confidence 0-100 buffer
+   //     - Algo-trading literature: 5-tier classification (Strong Buy / Buy / Neutral / Sell / Strong Sell)
+   //   BB_BREAKOUT BUY tier → leg + TP1 close pct mapping:
+   //     ULTRA  (76-100): 7 legs, TP1 close 30% (maximum amplification)
+   //     HIGH   (56-75):  5 legs, TP1 close 50% (v2.7.74 behavior preserved)
+   //     EMERGING (31-55): 3 legs, TP1 close 70% (standard fire)
+   //     LOW    (≤30):    1 leg, TP1 close 90% (probe — bad atoms)
+   bool bbb_conviction = false;  // legacy var name preserved for compatibility with print below
+   int  _bb_score_legs = -1;     // override; -1 = use default staged_initial_legs
+   if(g_sc.breakout_buy_conviction_enabled && is_breakout_setup && direction == "BUY") {
+      string _bb_tier = g_regime.trade_score_buy_tier;
+      // v2.7.76 — Score velocity cap (Run 31 G5005 −$2,934 fix). If score is decaying fast
+      //   (avg5 fell ≥ |threshold| from prior bar), CAP the tier at EMERGING. Prevents
+      //   amp deploying 5-7 legs into a fading wave. Industry pattern: Nyao Scalper uses
+      //   `velocity = finalScore - prevScore` as a tier-modulation signal.
+      //   Without this cap, Run 31 G5005 fired tier=HIGH avg5=63 (decay from 76) → 5 legs → $2,934 loss.
+      //   With this cap (vel=-13 ≤ -5), tier drops to EMERGING → 3 legs → likely $1,800 loss instead.
+      if(g_sc.breakout_buy_score_velocity_check_enabled
+         && (_bb_tier == "ULTRA" || _bb_tier == "HIGH")
+         && g_regime.trade_score_buy_velocity <= g_sc.breakout_buy_score_velocity_threshold) {
+         PrintFormat("FORGE 2.7.76 SCORE-VELOCITY-CAP: BB_BREAKOUT BUY tier=%s (avg5=%d prev=%d vel=%d) → capped to EMERGING",
+                     _bb_tier, g_regime.trade_score_buy_avg5,
+                     g_regime.trade_score_buy_avg5_prev,
+                     g_regime.trade_score_buy_velocity);
+         _bb_tier = "EMERGING";
+      }
+      if(_bb_tier == "ULTRA") {
+         _bb_score_legs = MathMax(_bb_score_legs, 7);
+         tp1_split_pct = 30.0;
+         bbb_conviction = true;
+      } else if(_bb_tier == "HIGH") {
+         _bb_score_legs = MathMax(_bb_score_legs, g_sc.breakout_buy_conviction_initial_legs);  // default 5
+         tp1_split_pct = g_sc.breakout_buy_conviction_tp1_close_pct;                            // default 50
+         bbb_conviction = true;
+      } else if(_bb_tier == "EMERGING") {
+         _bb_score_legs = MathMax(_bb_score_legs, 3);
+         // tp1_split_pct stays at default (70)
+      } else {
+         // LOW (or empty/uninitialized) → probe — 1 leg
+         _bb_score_legs = 1;
+         tp1_split_pct = 90.0;
+      }
+      PrintFormat("FORGE 2.7.75 TRADE-SCORE: BB_BREAKOUT BUY tier=%s score=%d avg5=%d bars=%d legs=%d tp1_pct=%.1f%%",
+                  _bb_tier, g_regime.trade_score_buy, g_regime.trade_score_buy_avg5,
+                  g_regime.trade_score_buy_tier_bars, _bb_score_legs, tp1_split_pct);
+   }
+   // v2.7.89 — BB_EXHAUSTION_REVERSAL conviction-tier leg override.
+   //   When the counter-trade fires, the PEMCG warning count is our conviction signal.
+   //   BASE tier (4-5 warnings): 1 leg — defensive single-shot probe
+   //   HIGH tier (≥6 warnings):  N legs (default 3) — high-conviction multi-leg counter-trade
+   //   Threshold and leg count are knob-driven (bb_exhaustion_reversal_high_conviction_warnings /
+   //   _legs_high_conviction). The _bbexr_high_conviction flag was set in the lot-pin block above.
+   //   Sets _bb_score_legs (existing override hook used by BB_BREAKOUT_BUY conviction logic).
+   if(setup_type == "BB_EXHAUSTION_REVERSAL_SELL" || setup_type == "BB_EXHAUSTION_REVERSAL_BUY") {
+      _bb_score_legs = _bbexr_high_conviction
+                        ? MathMax(1, g_sc.bb_exhaustion_reversal_legs_high_conviction)  // HIGH: configured legs (default 3)
+                        : 1;                                                              // BASE: single defensive leg
+      PrintFormat("FORGE 2.7.89: %s leg override → %d legs (tier=%s)",
+                  setup_type, _bb_score_legs, _bbexr_high_conviction ? "HIGH" : "BASE");
+   }
    int tp1_count = (int)MathCeil(n * tp1_split_pct / 100.0);
-   int init_cap = MathMax(1, MathMin(30, g_sc.staged_initial_legs));
+   int init_cap = (_bb_score_legs > 0)
+                  ? MathMax(1, MathMin(30, _bb_score_legs))
+                  : MathMax(1, MathMin(30, g_sc.staged_initial_legs));
    // Staged scale-in: open init_cap legs immediately; remainder added via ManageStagedNativeLegs.
    // When staged_initial_legs >= n, ALL legs fire at once (immediate multi-leg — scalp mode).
    // Fix 2026-05-10: was MathMin(init_cap, n-1) which always held one back even when init_cap>=n.
@@ -11849,15 +13749,22 @@ void CheckNativeScalperSetups() {
    ArrayResize(g_groups, gi + 1);
    g_groups[gi].id            = group_id;
    g_groups[gi].direction     = direction;
-   g_groups[gi].tp1           = tp1;
-   g_groups[gi].tp2           = tp2;
+   // v2.7.102 — TP pip-floor hybrid (operator spec "TP1=40 pips, TP2=60 pips" with ATR adaptation).
+   //   Apply FloorTpPrice to each TP tier so distance from entry >= pip_floor × pip_size
+   //   regardless of ATR. Default 0 = no floor = current behavior. Native path only;
+   //   BRIDGE path trusts externally-provided TPs.
+   g_groups[gi].tp1           = FloorTpPrice(direction, rr_entry_ref, tp1, g_sc.tp1_pip_floor);
+   g_groups[gi].tp2           = FloorTpPrice(direction, rr_entry_ref, tp2, g_sc.tp2_pip_floor);
    // TP3 live target — runner rides to TP3 after TP2 hit. 0 disables staging.
    // Only set for breakout setups; tp3_atr_mult=0 or bounce disables it.
-   g_groups[gi].tp3 = (is_breakout_setup && g_sc.breakout_tp3_atr_mult > 0.0)
-                      ? NormalizeDouble((direction == "SELL")
-                          ? rr_entry_ref - m5_atr * g_sc.breakout_tp3_atr_mult
-                          : rr_entry_ref + m5_atr * g_sc.breakout_tp3_atr_mult, _Digits)
-                      : 0.0;
+   {
+      double raw_tp3 = (is_breakout_setup && g_sc.breakout_tp3_atr_mult > 0.0)
+                       ? NormalizeDouble((direction == "SELL")
+                           ? rr_entry_ref - m5_atr * g_sc.breakout_tp3_atr_mult
+                           : rr_entry_ref + m5_atr * g_sc.breakout_tp3_atr_mult, _Digits)
+                       : 0.0;
+      g_groups[gi].tp3 = FloorTpPrice(direction, rr_entry_ref, raw_tp3, g_sc.tp3_pip_floor);
+   }
    // 2.7.27 — TP4/TP5 levels for extended runner staging in TRENDING regime.
    // TP4 = 4.0×ATR (already configured via breakout_tp4_atr_mult); TP5 = 5.5×ATR (breakout_tp5_atr_mult).
    // Levels are precomputed at entry; staging activation is gated at runtime by ADX + regime.
@@ -11872,6 +13779,37 @@ void CheckNativeScalperSetups() {
                           : rr_entry_ref + m5_atr * g_sc.breakout_tp5_atr_mult, _Digits)
                       : 0.0;
    g_groups[gi].tp1_close_pct = tp1_split_pct;
+   // v2.7.96 Set 2 — per-family tp2_close_pct (breakout vs bounce). Dormant until g_sc.tp2_close_enabled flipped.
+   g_groups[gi].tp2_close_pct = is_breakout_setup ? g_sc.breakout_tp2_close_pct : g_sc.bounce_tp2_close_pct;
+   // v2.7.97 Sets 6+7 — Direction Lock per-group state. Compute entry swing high/low (break levels).
+   g_groups[gi].direction_lock_broken = false;
+   {
+      int _lb_nat = g_sc.dirlock_swing_lookback_bars;
+      if(_lb_nat < 1) _lb_nat = 5;
+      double _swing_h_nat = 0.0, _swing_l_nat = 0.0;
+      double _hbuf_nat[], _lbuf_nat[];
+      if(CopyHigh(_Symbol, PERIOD_M5, 1, _lb_nat, _hbuf_nat) == _lb_nat && CopyLow(_Symbol, PERIOD_M5, 1, _lb_nat, _lbuf_nat) == _lb_nat) {
+         _swing_h_nat = _hbuf_nat[0]; _swing_l_nat = _lbuf_nat[0];
+         for(int _b_n = 1; _b_n < _lb_nat; _b_n++) {
+            if(_hbuf_nat[_b_n] > _swing_h_nat) _swing_h_nat = _hbuf_nat[_b_n];
+            if(_lbuf_nat[_b_n] < _swing_l_nat) _swing_l_nat = _lbuf_nat[_b_n];
+         }
+      }
+      g_groups[gi].entry_swing_high = _swing_h_nat;
+      g_groups[gi].entry_swing_low  = _swing_l_nat;
+   }
+   // Direction Lock IDLE → ARMED transition (only when feature is enabled)
+   if(g_sc.direction_lock_enabled) {
+      if(direction == "BUY") {
+         g_dirlock_state_buy        = 1;
+         g_dirlock_armed_time_buy   = TimeCurrent();
+         g_dirlock_active_group_buy = gi;
+      } else if(direction == "SELL") {
+         g_dirlock_state_sell        = 1;
+         g_dirlock_armed_time_sell   = TimeCurrent();
+         g_dirlock_active_group_sell = gi;
+      }
+   }
    g_groups[gi].tp1_hit       = false;
    g_groups[gi].tp2_hit       = false;
    g_groups[gi].tp3_hit       = false;  // 2.7.27
@@ -11893,6 +13831,12 @@ void CheckNativeScalperSetups() {
    // Post-TP1 ladder context: execution price is crash_low for SELL (bid) or entry_high for BUY (ask)
    g_groups[gi].crash_low  = (direction == "SELL") ? bid : ask;
    g_groups[gi].entry_atr  = m5_atr;
+   // v2.7.77 — Conviction-decay partial close anchor (Nyao reverse pyramid)
+   //   Capture trade_score_buy_avg5 at entry for BUY setups. SELL not yet (Phase 2).
+   //   Initial score = 0 disables decay tracking for that group.
+   g_groups[gi].initial_score      = (direction == "BUY") ? g_regime.trade_score_buy_avg5 : 0;
+   g_groups[gi].decay_close_level  = 0;
+   g_groups[gi].decay_entry_time   = TimeCurrent();
    // 2.7.25 — ATR trail peak/trough init (per FORGE_RATCHET_LOGIC_IDEAS.md)
    g_groups[gi].peak_price   = bid;
    g_groups[gi].trough_price = ask;
@@ -12192,14 +14136,22 @@ void RebuildGroups() {
 // Enable via FORGE_SELL_STOP_CONT_ENABLED=1 in .env.
 void ArmPostTP1Ladder(const int gi) {
    if(gi < 0 || gi >= ArraySize(g_groups)) return;
+   // ─────────────────────────────────────────────────────────────────────────────
+   // REMOVED v2.7.95 — Direction early-return.
+   // Replaced by: per-block direction guards (SELL blocks below, new BUY block at end).
+   // Original code preserved for reference; safe to delete in v2.8.0 cleanup.
+   /*
    // Day 2 only arms for SELL groups — BUY recovery is Day 3
    if(g_groups[gi].direction != "SELL") return;
+   */
+   // ─────────────────────────────────────────────────────────────────────────────
    // 2.7.28 — MOMENTUM_DUMP was hardcoded single-shot. v2.7.59 — gate behind dump_cascade_enabled
    //   (default true; v2.7.56 multi-leg intent supersedes v2.7.28). Set FORGE_GATE_DUMP_CASCADE_ENABLED=0
    //   to restore old behavior.
    if(g_groups[gi].scalper_setup == "MOMENTUM_DUMP" && !g_sc.dump_cascade_enabled) return;
    // 2.7.31 — BB_PULLBACK_SCALP is also a single-shot tight scalp; no cascade.
    if(g_groups[gi].scalper_setup == "BB_PULLBACK_SCALP") return;
+   string direction = g_groups[gi].direction;  // v2.7.95 — hoisted for direction-aware branching
    double crash_low = g_groups[gi].crash_low;
    double entry_atr = g_groups[gi].entry_atr;
    int    grp_id    = g_groups[gi].id;
@@ -12216,7 +14168,8 @@ void ArmPostTP1Ladder(const int gi) {
    // Each leg = full lot (lot_factor=1.0 default) — cascade is a confirmed continuation, not a minor add.
    // Rationale: TP1 hit proves the trend is real. ADX rising + RSI declining = indicators aligned.
    // Use same lot as primary entry — this IS a primary entry at a better (confirmed) price.
-   if(g_sc.sell_stop_cont_enabled) {
+   // v2.7.95 — added explicit direction == "SELL" guard (was provided by early-return; now per-block).
+   if(direction == "SELL" && g_sc.sell_stop_cont_enabled) {
       double _rbuf[1];
       bool cascade_ok = true;
       double cur_rsi = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _rbuf) == 1) ? _rbuf[0] : 0;
@@ -12317,7 +14270,8 @@ void ArmPostTP1Ladder(const int gi) {
    // Captures the May-1-style parabolic reversal: RSI bounces from 20 back through 35 = recovery starting.
    // Price: TP1 level (crash low) — buy at the established swing low, not chasing.
    // BUY LIMIT at bid-level of TP1 is valid pending: bid ≈ ask - spread, order sits below current ask.
-   if(g_sc.buy_limit_recovery_enabled) {
+   // v2.7.95 — added explicit direction == "SELL" guard (counter-trend recovery for SELL setups only).
+   if(direction == "SELL" && g_sc.buy_limit_recovery_enabled) {
       if(g_sell_limit_stack[9].active) {
          PrintFormat("FORGE: ArmPostTP1Ladder G%d — slot [9] occupied, BUY LIMIT recovery skipped", grp_id);
       } else {
@@ -12378,6 +14332,527 @@ void ArmPostTP1Ladder(const int gi) {
          }
       }
    }
+   // ─────────────────────────────────────────────────────────────────────────────
+   // v2.7.95 — BUY-side cascade block (mirror of SELL_STOP_CONT above).
+   // Closes the post-TP1 BUY continuation gap: when a BUY setup hits TP1, places
+   // up to buy_stop_cont_legs BUY_STOP pendings ABOVE TP1 in g_buy_stop_stack[2..8].
+   // Default-OFF — flip via FORGE_GEOMETRY_BUY_STOP_CONT_ENABLED=1.
+   // Gate semantics inverted from SELL where applicable:
+   //   SELL needs RSI > min_rsi (not exhausted-oversold)   ↔ BUY needs RSI < max_rsi (not exhausted-overbought)
+   //   SELL needs H1 DI- > DI+ (H1 bearish, continuation)  ↔ BUY needs H1 DI+ > DI- (H1 bullish, continuation)
+   //   ADX gate and Regime gate are direction-agnostic.
+   if(direction == "BUY" && g_sc.buy_stop_cont_enabled) {
+      double _rbuf[1];
+      bool cascade_ok_b = true;
+      double cur_rsi_b = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _rbuf) == 1) ? _rbuf[0] : 0;
+      double cur_adx_b = (g_mtf[0].h_adx != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_adx, 0, 0, 1, _rbuf) == 1) ? _rbuf[0] : 0;
+
+      // Gate 1 — RSI exhaustion (mirror): block when RSI is too high (overbought continuation = trap)
+      if(cascade_ok_b && cur_rsi_b > 0 && cur_rsi_b >= g_sc.buy_stop_cont_max_rsi) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d (BUY) — skipped RSI=%.1f >= %.1f (overbought, exhausted)",
+                     grp_id, cur_rsi_b, g_sc.buy_stop_cont_max_rsi);
+         cascade_ok_b = false;
+      }
+      // Gate 2 — ADX (same): trend must be confirmed
+      if(cascade_ok_b && g_sc.buy_stop_cont_min_adx > 0 && cur_adx_b > 0 && cur_adx_b < g_sc.buy_stop_cont_min_adx) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d (BUY) — skipped ADX=%.1f < %.1f (trend not confirmed)",
+                     grp_id, cur_adx_b, g_sc.buy_stop_cont_min_adx);
+         cascade_ok_b = false;
+      }
+      // Gate 3 — H1 DI (mirror): H1 must be bullish — DI+ > DI−
+      if(cascade_ok_b && g_sc.buy_stop_cont_require_h1_di && g_h_adx != INVALID_HANDLE) {
+         double _di_b[1];
+         double arm_di_plus_b  = (CopyBuffer(g_h_adx, 1, 0, 1, _di_b) == 1) ? _di_b[0] : 0;
+         double arm_di_minus_b = (CopyBuffer(g_h_adx, 2, 0, 1, _di_b) == 1) ? _di_b[0] : 0;
+         if(arm_di_plus_b > 0 && arm_di_minus_b > 0 && arm_di_plus_b <= arm_di_minus_b) {
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d (BUY) — skipped H1 DI+=%.1f <= DI-=%.1f (H1 bearish, counter-trend)",
+                        grp_id, arm_di_plus_b, arm_di_minus_b);
+            cascade_ok_b = false;
+         }
+      }
+      // Gate 4 — Regime (same): cascade is a TREND amplifier; RANGE = SL-hunt risk
+      if(cascade_ok_b && g_sc.buy_stop_cont_require_trend_regime) {
+         if(g_regime_label == "RANGE" || g_regime_label == "") {
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d (BUY) — skipped regime='%s' (require_trend_regime=1, only arm in TREND_BULL/TREND_BEAR/VOLATILE)",
+                        grp_id, g_regime_label);
+            cascade_ok_b = false;
+         }
+      }
+
+      if(cascade_ok_b) {
+         double tp1_ref_b  = g_groups[gi].tp1;
+         // Cascade entry ABOVE TP1 (BUY continuation pushes through TP1 to the upside).
+         double bs_price = NormalizeDouble(tp1_ref_b + entry_atr * g_sc.buy_stop_cont_atr_mult, _Digits);
+         // SL geometry (mirror): BUY SL BELOW cascade entry. cascade_entry − atr×sl_mult.
+         // sl_mult=0 → legacy fallback: SL = tp1 − atr×atr_mult (symmetric to SELL legacy).
+         double _bs_sl_mult = g_sc.buy_stop_cont_sl_atr_mult;
+         double bs_sl    = (_bs_sl_mult > 0.0)
+                           ? NormalizeDouble(bs_price - entry_atr * _bs_sl_mult, _Digits)
+                           : NormalizeDouble(tp1_ref_b - entry_atr * g_sc.buy_stop_cont_atr_mult, _Digits);
+         double bs_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                                                g_sc.lot_fixed * g_sc.buy_stop_cont_lot_factor));
+         datetime bs_exp = TimeCurrent() + (datetime)(g_sc.buy_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));
+         // TP ABOVE cascade entry (mirror).
+         double bs_tp    = (g_sc.buy_stop_cont_tp_atr_mult > 0.0)
+                           ? NormalizeDouble(bs_price + entry_atr * g_sc.buy_stop_cont_tp_atr_mult, _Digits)
+                           : 0.0;
+         int legs_placed_b = 0;
+         int legs_target_b = MathMin(g_sc.buy_stop_cont_legs, 7);
+         for(int _sb = 2; _sb <= 8 && legs_placed_b < legs_target_b; _sb++) {
+            if(g_buy_stop_stack[_sb].active) continue;
+            ulong bs_magic = (ulong)grp_magic + 20002 + (ulong)(_sb - 2);
+            MqlTradeRequest _bsr = {}; MqlTradeResult _bsres = {};
+            _bsr.action       = TRADE_ACTION_PENDING;
+            _bsr.type         = ORDER_TYPE_BUY_STOP;
+            _bsr.symbol       = _Symbol;
+            _bsr.volume       = bs_lot;
+            _bsr.price        = bs_price;
+            _bsr.sl           = bs_sl;
+            _bsr.tp           = bs_tp;
+            _bsr.type_time    = ORDER_TIME_SPECIFIED;
+            _bsr.expiration   = bs_exp;
+            _bsr.type_filling = ORDER_FILLING_RETURN;
+            _bsr.magic        = bs_magic;
+            _bsr.comment      = "SCALP_BUY_STOP_CONT|G" + IntegerToString(grp_id) + "|L" + IntegerToString(legs_placed_b + 1);
+            g_trade.SetExpertMagicNumber(bs_magic);
+            if(OrderSend(_bsr, _bsres) && _bsres.order > 0) {
+               g_buy_stop_stack[_sb].ticket    = _bsres.order;
+               g_buy_stop_stack[_sb].group_id  = grp_id;
+               g_buy_stop_stack[_sb].mkt_magic = (ulong)grp_magic;
+               g_buy_stop_stack[_sb].expiry    = bs_exp;
+               g_buy_stop_stack[_sb].active    = true;
+               legs_placed_b++;
+               if(legs_placed_b == 1)
+                  PrintFormat("FORGE: BUY STOP CONT G%d — placing %d legs price=%.2f TP=%.2f SL=%.2f lot=%.2f ATR=%.2f RSI=%.1f",
+                              grp_id, legs_target_b, bs_price, bs_tp, bs_sl, bs_lot, entry_atr, cur_rsi_b);
+            } else {
+               PrintFormat("FORGE: BUY STOP CONT placement FAILED G%d slot[%d] retcode=%d", grp_id, _sb, _bsres.retcode);
+            }
+            g_trade.SetExpertMagicNumber(MagicNumber);
+         }
+         if(legs_placed_b == 0)
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d (BUY) — no free slots [2..8], all %d cascade legs skipped",
+                        grp_id, legs_target_b);
+         else
+            PrintFormat("FORGE: ArmPostTP1Ladder G%d (BUY) — %d/%d BUY STOP legs placed (ADX=%.1f RSI=%.1f)",
+                        grp_id, legs_placed_b, legs_target_b, cur_adx_b, cur_rsi_b);
+      }  // end if(cascade_ok_b)
+   }  // end if(direction == "BUY" && buy_stop_cont_enabled)
+
+   // SELL LIMIT recovery (slot [9] of g_buy_stop_stack) — Cardwell Bear Resistance entry at rally high after BUY TP1.
+   // Mirror of BUY_LIMIT recovery for SELL setups. Captures the parabolic-top pullback:
+   // RSI eases from 75 back through 65 → recovery toward Bear Resistance zone.
+   // SELL LIMIT at ask-level of TP1 is valid pending: ask ≈ bid + spread, order sits above current bid.
+   if(direction == "BUY" && g_sc.sell_limit_recovery_enabled) {
+      if(g_buy_stop_stack[9].active) {
+         PrintFormat("FORGE: ArmPostTP1Ladder G%d (BUY) — slot[9] occupied, SELL LIMIT recovery skipped", grp_id);
+      } else {
+         double _rbuf2_b[1];
+         double cur_rsi_sell = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi, 0, 0, 1, _rbuf2_b) == 1) ? _rbuf2_b[0] : 0;
+         if(cur_rsi_sell > 0 && cur_rsi_sell > g_sc.sell_limit_recovery_max_rsi) {
+            PrintFormat("FORGE: G%d SELL LIMIT skipped (RSI=%.1f > max=%.1f, Bear Resistance not confirmed)",
+                        grp_id, cur_rsi_sell, g_sc.sell_limit_recovery_max_rsi);
+         } else {
+            double tp1_ref_sell = g_groups[gi].tp1;   // rally high = TP1 hit price (ask at hit)
+            double bid_now      = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            double _pt_b        = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            int    _stoplv_b    = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double min_dist_b   = MathMax(_stoplv_b * _pt_b, _pt_b);
+            // SELL LIMIT must be ABOVE current bid by at least broker min-stop distance (mirror).
+            double sl_price = NormalizeDouble(MathMax(tp1_ref_sell, bid_now + min_dist_b), _Digits);
+            double sl_sl    = NormalizeDouble(sl_price + entry_atr * g_sc.sell_limit_recovery_sl_atr_mult, _Digits);
+            // Validate price + SL are tradeable
+            if(sl_price <= 0 || sl_sl <= 0 || sl_sl <= sl_price + min_dist_b) {
+               PrintFormat("FORGE: SELL LIMIT RECOV skipped G%d — invalid price %.2f or SL %.2f (bid=%.2f min_dist=%.5f)",
+                           grp_id, sl_price, sl_sl, bid_now, min_dist_b);
+               g_trade.SetExpertMagicNumber(MagicNumber);
+            } else {
+               double sl_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                                                      g_sc.lot_fixed * g_sc.sell_limit_recovery_lot_factor));
+               datetime sl_exp = TimeCurrent() + (datetime)(g_sc.sell_limit_recovery_expiry_bars * PeriodSeconds(PERIOD_M5));
+               MqlTradeRequest _slr = {}; MqlTradeResult _slres = {};
+               _slr.action       = TRADE_ACTION_PENDING;
+               _slr.type         = ORDER_TYPE_SELL_LIMIT;
+               _slr.symbol       = _Symbol;
+               _slr.volume       = sl_lot;
+               _slr.price        = sl_price;
+               _slr.sl           = sl_sl;
+               _slr.tp           = 0;    // no TP — trail manually or let RSI cancellation handle exit (mirror)
+               _slr.type_time    = ORDER_TIME_SPECIFIED;
+               _slr.expiration   = sl_exp;
+               _slr.type_filling = ORDER_FILLING_RETURN;
+               _slr.magic        = (ulong)grp_magic + 20009;  // slot[9] — clear of cascade slots [2..8]
+               _slr.comment      = "SCALP_SELL_LIMIT_RECOV|G" + IntegerToString(grp_id);
+               g_trade.SetExpertMagicNumber(_slr.magic);
+               if(OrderSend(_slr, _slres) && _slres.order > 0) {
+                  g_buy_stop_stack[9].ticket    = _slres.order;
+                  g_buy_stop_stack[9].group_id  = grp_id;
+                  g_buy_stop_stack[9].mkt_magic = (ulong)grp_magic;
+                  g_buy_stop_stack[9].expiry    = sl_exp;
+                  g_buy_stop_stack[9].active    = true;
+                  PrintFormat("FORGE: SELL LIMIT RECOV placed G%d slot[9] ticket=%d price=%.2f SL=%.2f lot=%.2f RSI=%.1f exp=%s",
+                              grp_id, _slres.order, sl_price, sl_sl, sl_lot, cur_rsi_sell,
+                              TimeToString(sl_exp, TIME_DATE|TIME_SECONDS));
+               } else {
+                  PrintFormat("FORGE: SELL LIMIT RECOV placement FAILED G%d retcode=%d", grp_id, _slres.retcode);
+               }
+               g_trade.SetExpertMagicNumber(MagicNumber);
+            }
+         }
+      }
+   }  // end SELL LIMIT recovery
+   // ─────────────────────────────────────────────────────────────────────────────
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.7.102 — PipSize() — auto-detect pip size from broker digits.
+//
+// OPERATOR-BROKER CONVENTION (confirmed 2026-05-14 over earlier industry-convention ship):
+//   XAUUSD 2-digit (price 1942.57):  1 pip = $0.10 = 10 points. TP1=40 pips = $4 move.
+//   XAUUSD 3-digit (price 1942.575): 1 pip = $0.10 = 100 points (pipette).
+//   USDJPY 2-digit (price 150.00):   1 pip = 0.01 = 1 point.
+//   USDJPY 3-digit (price 150.001):  1 pip = 0.01 = 10 points (pipette).
+//   Forex 4-digit (1.1000):          1 pip = 0.0001 = 1 point.
+//   Forex 5-digit (1.10000):         1 pip = 0.0001 = 10 points (pipette).
+//
+// XAU is special-cased: whole-number broker convention regardless of digit count.
+// See docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14 (pip convention) — the v2.7.102
+// initial ship used the industry "1 pip = $0.01" reading; operator confirmed the BROKER
+// convention is the authority (TP1=40 pips means $4.00 price move, a realistic scalp target).
+// ─────────────────────────────────────────────────────────────────────────────
+double PipSize() {
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   string sym    = _Symbol;
+   StringToUpper(sym);
+   // XAUUSD broker convention: 1 pip = $0.10 (10 points on 2-digit; 100 points on 3-digit)
+   if(StringFind(sym, "XAU") >= 0) {
+      return (digits == 3) ? 100.0 * point : 10.0 * point;
+   }
+   // Forex/JPY: pipette brokers (3 or 5 digits) → 1 pip = 10 points; otherwise 1 pip = 1 point
+   if(digits == 3 || digits == 5) return 10.0 * point;
+   return point;
+}
+
+// ApplyPipFloor — return max(pip_floor × pip_size, base_distance) preserving direction.
+//   When pip_floor = 0 → returns base_distance unchanged (current behavior).
+//   When pip_floor > 0 → enforces minimum TP distance in pips, regardless of ATR.
+double ApplyPipFloor(const double base_distance, const double pip_floor) {
+   if(pip_floor <= 0.0) return base_distance;
+   double floor_dist = pip_floor * PipSize();
+   return MathMax(base_distance, floor_dist);
+}
+
+// FloorTpPrice — wrap a raw TP price with a pip-floor minimum distance from entry.
+//   For BUY: returns max(raw_tp, entry + pip_floor × pip_size)
+//   For SELL: returns min(raw_tp, entry − pip_floor × pip_size)
+//   pip_floor = 0 → no change; preserves current behavior across all setups.
+//   Used at the g_groups[].tp1/tp2/tp3 assignment sites.
+double FloorTpPrice(const string direction, const double entry, const double raw_tp, const double pip_floor) {
+   if(pip_floor <= 0.0 || entry <= 0.0 || raw_tp <= 0.0) return raw_tp;
+   double dist_raw = (direction == "BUY") ? (raw_tp - entry) : (entry - raw_tp);
+   if(dist_raw <= 0.0) return raw_tp;  // sanity: don't process if raw_tp is on the wrong side
+   double dist_floored = ApplyPipFloor(dist_raw, pip_floor);
+   return NormalizeDouble((direction == "BUY") ? entry + dist_floored : entry - dist_floored, _Digits);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.7.101 Set 4 Option 4B — Structural pending cancel (no-timer cool period).
+//
+// PURPOSE: replace operator-rejected "Cool Period = timer expiry" with
+// "Cool Period = re-analyze structure". Every M5 close, iterate each group with
+// active cascade pendings (slot stack [2..9] in g_sell_limit_stack + g_buy_stop_stack).
+// For each, evaluate the group's direction lock. If verdict ∈ {INVALID, NEUTRAL},
+// cancel all matching pending orders for that group.
+//
+// Decision: docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14 (Set 4 pick 4B).
+// Industry pattern: MQL5 forum 388433 + Article 21759 — "monitor pending order
+// status via OnTradeTransaction OR per-cycle status check, cancel on regime flip".
+// FORGE uses the per-M5-cycle pattern (simpler, no OnTradeTransaction reentrancy risk).
+//
+// Default-OFF: gated by g_sc.structure_flip_cancel_enabled.
+// Complements (does NOT replace) existing CancelPendingOnDailyFlip (D1 trigger)
+// and broker-side ORDER_TIME_SPECIFIED expiry (timer safety net).
+// ─────────────────────────────────────────────────────────────────────────────
+void CancelPendingOnStructureFlip() {
+   if(!g_sc.structure_flip_cancel_enabled) return;
+   if(!g_sc.direction_lock_enabled) return;  // requires Set 7 evaluator
+
+   for(int gi = 0; gi < ArraySize(g_groups); gi++) {
+      // Only groups with active cascade pendings matter
+      bool has_active_pending = false;
+      for(int _s = 2; _s <= 9 && !has_active_pending; _s++) {
+         if(g_sell_limit_stack[_s].active && g_sell_limit_stack[_s].group_id == g_groups[gi].id) has_active_pending = true;
+         if(g_buy_stop_stack[_s].active   && g_buy_stop_stack[_s].group_id   == g_groups[gi].id) has_active_pending = true;
+      }
+      if(!has_active_pending) continue;
+
+      int verdict = EvaluateDirectionLock(g_groups[gi].direction, gi);
+      if(verdict == DLV_VALID || verdict == DLV_PROFIT_TARGET) continue;
+      // DLV_INVALID or DLV_NEUTRAL — cancel matching pendings
+
+      int cancelled = 0;
+      // Iterate SELL_LIMIT/SELL_STOP cascade stack
+      for(int _s = 2; _s <= 9; _s++) {
+         if(g_sell_limit_stack[_s].active && g_sell_limit_stack[_s].group_id == g_groups[gi].id) {
+            if(g_trade.OrderDelete(g_sell_limit_stack[_s].ticket)) {
+               g_sell_limit_stack[_s].active = false;
+               cancelled++;
+            }
+         }
+         // v2.7.95 BUY-side parallel stack
+         if(g_buy_stop_stack[_s].active && g_buy_stop_stack[_s].group_id == g_groups[gi].id) {
+            if(g_trade.OrderDelete(g_buy_stop_stack[_s].ticket)) {
+               g_buy_stop_stack[_s].active = false;
+               cancelled++;
+            }
+         }
+      }
+      if(cancelled > 0) {
+         g_groups[gi].direction_lock_broken = true;  // prevent ArmPostTP1Ladder re-arm
+         string verdict_s = (verdict == DLV_INVALID) ? "INVALID" : "NEUTRAL";
+         PrintFormat("FORGE 2.7.101: structure_flip_cancel G%d (%s lock %s) — cancelled %d cascade pendings",
+                     g_groups[gi].id, g_groups[gi].direction, verdict_s, cancelled);
+      }
+   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.7.97 Sets 6+7+8 — Direction Lock helpers (evaluator + state transitions + blocker)
+//
+// PURPOSE: enforce operator-mandated direction commitment after Leg 1 fires.
+//   Break only on: (1) structural level violated, (2) PEMCG flip / NEUTRAL,
+//   (3) profit target hit. NOT broken by: temporary pullbacks, timer expiry,
+//   or news spike (those are handled elsewhere).
+//
+// SOURCE: docs/FORGE_CORE_LOGIC_DESIGN.md §4 Sets 6/7/8 (step-by-step + industry research)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// EvaluateDirectionLock — given a locked direction + group index, return a verdict.
+//   DLV_VALID         — lock holds; continue trading in this direction
+//   DLV_INVALID       — structural break OR opposite PEMCG flip OR h1 disagreement
+//   DLV_NEUTRAL       — bilateral PEMCG high (both directions show warnings)
+//   DLV_PROFIT_TARGET — TP3 hit or all positions closed (clean exit, no penalty)
+//
+// All thresholds default-OFF (master flag g_sc.direction_lock_enabled).
+// Uses LAST CLOSED M5 bar (iClose with shift=1) — wicks alone don't break the lock.
+int EvaluateDirectionLock(const string locked_dir, const int gi) {
+   if(gi < 0 || gi >= ArraySize(g_groups)) return DLV_VALID;
+
+   // Trigger 3 — profit target (clean exit, not a break)
+   if(g_groups[gi].tp3_hit) return DLV_PROFIT_TARGET;
+   int gpos[];
+   GetGroupPositions(g_groups[gi].magic_offset, gpos);
+   if(ArraySize(gpos) == 0 && g_groups[gi].tp1_hit) return DLV_PROFIT_TARGET;
+
+   // Trigger 1 — structural level violated (ICT MSS body-close pattern)
+   //   BUY  break: m5_close < entry_swing_low  − atr × dirlock_struct_break_atr_mult
+   //   SELL break: m5_close > entry_swing_high + atr × dirlock_struct_break_atr_mult
+   //   Uses iClose shift=1 (last CLOSED bar) — wick-only breaches do NOT trigger.
+   double m5c = iClose(_Symbol, PERIOD_M5, 1);
+   double atr_now = 0.0;
+   double _atrbuf[1];
+   if(g_mtf[0].h_atr != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_atr, 0, 0, 1, _atrbuf) == 1)
+      atr_now = _atrbuf[0];
+   if(atr_now > 0.0 && m5c > 0.0) {
+      if(locked_dir == "BUY" && g_groups[gi].entry_swing_low > 0.0) {
+         double buy_break = g_groups[gi].entry_swing_low - atr_now * g_sc.dirlock_struct_break_atr_mult;
+         if(m5c < buy_break) return DLV_INVALID;
+      }
+      if(locked_dir == "SELL" && g_groups[gi].entry_swing_high > 0.0) {
+         double sell_break = g_groups[gi].entry_swing_high + atr_now * g_sc.dirlock_struct_break_atr_mult;
+         if(m5c > sell_break) return DLV_INVALID;
+      }
+   }
+
+   // Trigger 2a — opposite-direction PEMCG flip
+   int opp_warnings  = (locked_dir == "BUY") ? g_pemcg_sell_warning_count : g_pemcg_buy_warning_count;
+   int same_warnings = (locked_dir == "BUY") ? g_pemcg_buy_warning_count  : g_pemcg_sell_warning_count;
+   if(opp_warnings >= g_sc.dirlock_flip_threshold) return DLV_INVALID;
+
+   // Trigger 2b — bilateral PEMCG → NEUTRAL
+   if(opp_warnings  >= g_sc.dirlock_neutral_threshold &&
+      same_warnings >= g_sc.dirlock_neutral_threshold) return DLV_NEUTRAL;
+
+   // Trigger 2c — h1_trend disagreement
+   // g_eval_h1_trend is the global mirror set every tick at line ~10214 from
+   // h1_trend_strength = (h1_ema20 - h1_ema50) / max(h1_atr, point).
+   double h1 = g_eval_h1_trend;
+   if(locked_dir == "BUY"  && h1 < -g_sc.dirlock_h1_disagreement) return DLV_INVALID;
+   if(locked_dir == "SELL" && h1 >  g_sc.dirlock_h1_disagreement) return DLV_INVALID;
+
+   return DLV_VALID;
+}
+
+// UpdateDirLockState — per-direction state machine transitions, called once per M5 close.
+//   IDLE → ARMED: handled at Leg 1 placement in EnterScalperGroup (this function doesn't set IDLE→ARMED)
+//   ARMED → COOLDOWN_REEVAL: every M5 close (transient)
+//   COOLDOWN_REEVAL → ARMED:    verdict = DLV_VALID
+//   COOLDOWN_REEVAL → DISCARDED: verdict ∈ {INVALID, NEUTRAL, PROFIT_TARGET}
+//   DISCARDED → IDLE: handled by IsDirLockBlocked() bilateral cooldown release
+void UpdateDirLockState(const string dir) {
+   // MQL5 doesn't allow pointer-to-global-int; use direct branched assignment via if/else below.
+   int state  = (dir == "BUY") ? g_dirlock_state_buy        : g_dirlock_state_sell;
+   int active = (dir == "BUY") ? g_dirlock_active_group_buy : g_dirlock_active_group_sell;
+
+   if(state == 0) return;   // IDLE — nothing to evaluate
+
+   if(state == 1 || state == 2) {  // ARMED or COOLDOWN_REEVAL — re-evaluate
+      if(active < 0 || active >= ArraySize(g_groups)) {
+         // Stale group reference — return to IDLE
+         if(dir == "BUY") { g_dirlock_state_buy  = 0; g_dirlock_active_group_buy  = -1; }
+         else             { g_dirlock_state_sell = 0; g_dirlock_active_group_sell = -1; }
+         return;
+      }
+      int verdict = EvaluateDirectionLock(dir, active);
+      if(verdict == DLV_VALID) {
+         // Re-arm (transition COOLDOWN_REEVAL → ARMED) — no log if already ARMED
+         if(state == 2) {
+            if(dir == "BUY") g_dirlock_state_buy = 1; else g_dirlock_state_sell = 1;
+         }
+         return;
+      }
+      // Break — transition to DISCARDED
+      if(dir == "BUY") g_dirlock_state_buy = 3; else g_dirlock_state_sell = 3;
+      g_groups[active].direction_lock_broken = true;
+      g_dirlock_last_break_time = TimeCurrent();
+      string verdict_str = (verdict == DLV_INVALID)       ? "INVALID"
+                          : (verdict == DLV_NEUTRAL)      ? "NEUTRAL"
+                          : (verdict == DLV_PROFIT_TARGET)? "PROFIT_TARGET"
+                          : "UNKNOWN";
+      PrintFormat("FORGE 2.7.97: dirlock_break dir=%s group=G%d verdict=%s — bilateral cooldown engaged (%d bars)",
+                  dir, g_groups[active].id, verdict_str, g_sc.dirlock_break_bilateral_cooldown_bars);
+      return;
+   }
+
+   if(state == 3) {  // DISCARDED — release back to IDLE after bilateral cooldown elapses (managed by IsDirLockBlocked checks)
+      datetime cooldown_end = g_dirlock_last_break_time + g_sc.dirlock_break_bilateral_cooldown_bars * PeriodSeconds(PERIOD_M5);
+      if(TimeCurrent() >= cooldown_end) {
+         if(dir == "BUY") { g_dirlock_state_buy  = 0; g_dirlock_active_group_buy  = -1; }
+         else             { g_dirlock_state_sell = 0; g_dirlock_active_group_sell = -1; }
+         PrintFormat("FORGE 2.7.97: dirlock_released dir=%s — bilateral cooldown elapsed, IDLE", dir);
+      }
+   }
+}
+
+// IsDirLockBlocked — gate to call at every setup-trigger fire.
+//   Returns true if the requested direction should be SKIPPED:
+//     - DISCARDED state for this direction OR opposite direction (bilateral cooldown)
+//     - bilateral cooldown active (within N bars of any break)
+//   Returns false if the trigger may proceed.
+bool IsDirLockBlocked(const string requested_dir) {
+   if(!g_sc.direction_lock_enabled) return false;
+
+   // Bilateral cooldown — block BOTH directions for N bars after any break
+   if(g_dirlock_last_break_time > 0 && g_sc.dirlock_break_bilateral_cooldown_bars > 0) {
+      datetime cooldown_end = g_dirlock_last_break_time + g_sc.dirlock_break_bilateral_cooldown_bars * PeriodSeconds(PERIOD_M5);
+      if(TimeCurrent() < cooldown_end) return true;
+   }
+
+   // DISCARDED state for the requested direction → block until released via UpdateDirLockState
+   int req_state = (requested_dir == "BUY") ? g_dirlock_state_buy : g_dirlock_state_sell;
+   if(req_state == 3) return true;
+
+   return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.7.98 Set 1 — PlaceMarketBatch: multi-leg entry helper (Option 1A literal positions).
+//
+// PURPOSE: replace single OrderSend at setup-trigger time with N OrderSends, each
+// with its own magic suffix (group_magic + 30001..30007). Per-leg SL/TP, per-leg
+// magic for ratchet tracking. At batch_size=1, behavior is identical to single
+// OrderSend (default-preserved).
+//
+// PARAMETERS:
+//   direction       — "BUY" or "SELL"
+//   target_lot      — total intended exposure (will be divided across legs)
+//   sl, tp          — stop loss + take profit prices (applied to all legs)
+//   group_magic     — base magic for the group (legs use group_magic + 30001..)
+//   comment_base    — comment prefix; helper appends "|L<n>"
+//
+// RETURNS: number of legs successfully placed (0 = failure; ≥1 = partial or full)
+//
+// SAFETY:
+//   - batch_size clamped to [1, batch_max_legs]
+//   - per_leg_lot ≥ SYMBOL_VOLUME_MIN OR fallback to batch_size that satisfies min
+//   - margin check: total exposure × leverage ≤ free margin (delegated to broker validation)
+//   - spacing > 0: legs staggered by spacing × ATR from market price
+//
+// NOT YET WIRED — call sites are still single OrderSend. Tracker §5 lists the wiring tasks.
+// ─────────────────────────────────────────────────────────────────────────────
+int PlaceMarketBatch(const string direction, const double target_lot,
+                     const double sl, const double tp,
+                     const ulong group_magic, const string comment_base) {
+   int legs_target = g_sc.batch_size;
+   if(legs_target < 1) legs_target = 1;
+   if(legs_target > g_sc.batch_max_legs) legs_target = g_sc.batch_max_legs;
+
+   // Compute per-leg lot. Reduce batch_size if per-leg falls below broker minimum.
+   double sym_min = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double per_leg_lot = NormalizeLot(target_lot / legs_target);
+   while(per_leg_lot < sym_min && legs_target > 1) {
+      legs_target--;
+      per_leg_lot = NormalizeLot(target_lot / legs_target);
+   }
+   if(per_leg_lot < sym_min) per_leg_lot = sym_min;
+
+   double atr_now = 0.0;
+   double _atr_b[1];
+   if(g_mtf[0].h_atr != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_atr, 0, 0, 1, _atr_b) == 1)
+      atr_now = _atr_b[0];
+   double spacing = (g_sc.batch_spacing_atr_mult > 0.0 && atr_now > 0.0)
+                    ? g_sc.batch_spacing_atr_mult * atr_now
+                    : 0.0;
+
+   int placed = 0;
+   for(int leg = 0; leg < legs_target; leg++) {
+      // v2.7.99 — Per industry research (mql5.com forum 431285): in HEDGE mode (FORGE's
+      // assumption — confirmed by existing cascade design at group_magic + 20002..20008),
+      // each OrderSend creates an independent position TICKET even with the same magic.
+      // Using the SAME group_magic for all legs means existing GetGroupPositions(magic, …)
+      // returns all 4 tickets without modification — TP1/TP2 close + SL ratchet logic
+      // work unchanged. No sub-magic suffix needed.
+      // See docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14 (Set 1 wiring decision).
+      ulong leg_magic = group_magic;
+      // Spaced entry price: BUY legs space upward, SELL legs space downward.
+      double leg_price = (spacing > 0.0)
+         ? ((direction == "BUY")
+              ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) + leg * spacing
+              : SymbolInfoDouble(_Symbol, SYMBOL_BID) - leg * spacing)
+         : 0.0;  // 0 = market price (TRADE_ACTION_DEAL ignores price for market orders)
+
+      MqlTradeRequest req = {}; MqlTradeResult res = {};
+      if(spacing > 0.0 && leg > 0) {
+         // Staggered legs use pending stops (entry on continuation)
+         req.action = TRADE_ACTION_PENDING;
+         req.type   = (direction == "BUY") ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+         req.price  = leg_price;
+         req.type_time   = ORDER_TIME_GTC;
+      } else {
+         // First leg always market; spacing=0 keeps all legs at market
+         req.action = TRADE_ACTION_DEAL;
+         req.type   = (direction == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      }
+      req.symbol       = _Symbol;
+      req.volume       = per_leg_lot;
+      req.sl           = sl;
+      req.tp           = tp;
+      req.type_filling = ORDER_FILLING_RETURN;
+      req.magic        = leg_magic;
+      req.comment      = comment_base + "|L" + IntegerToString(leg + 1);
+      req.deviation    = 30;
+
+      g_trade.SetExpertMagicNumber(leg_magic);
+      if(OrderSend(req, res) && res.order > 0) placed++;
+      else PrintFormat("FORGE 2.7.98: PlaceMarketBatch leg %d/%d failed retcode=%d", leg + 1, legs_target, res.retcode);
+   }
+   g_trade.SetExpertMagicNumber(MagicNumber);
+
+   if(placed > 0)
+      PrintFormat("FORGE 2.7.98: PlaceMarketBatch %s %d/%d legs placed (lot=%.3f spacing=%.2f comment=%s)",
+                  direction, placed, legs_target, per_leg_lot, spacing, comment_base);
+   return placed;
 }
 
 // v2.7.59 — BLR_BUY consecutive-loss throttle helper (Apr 2 G5021-G5024 4-back-to-back fix)
@@ -12445,6 +14920,28 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          if(dtype == DEAL_TYPE_BUY)  g_last_sl_time_sell = TimeGMT();
          // DEAL_TYPE_SELL closes a BUY position (SL on BUY group)
          else if(dtype == DEAL_TYPE_SELL) g_last_sl_time_buy = TimeGMT();
+         // v2.7.84 — CVCSM hook: SL fired → enter COOLDOWN for that direction
+         //   Independent BUY/SELL state machines per design spec.
+         //   Release condition handled in EvalCVCSM (every M5 close, retries both directions).
+         if(g_sc.cvcsm_enabled && g_sc.cvcsm_trigger_on_sl) {
+            if(dtype == DEAL_TYPE_SELL) {
+               // closed a BUY position via SL
+               if(g_cvcsm_state_buy == 0) {
+                  g_cvcsm_state_buy = 1;  // COOLDOWN
+                  g_cvcsm_cooldown_start_buy = TimeCurrent();
+                  g_cvcsm_clean_bars_buy = 0;
+                  PrintFormat("FORGE 2.7.84: CVCSM_BUY → COOLDOWN (SL fired on BUY group magic %d)", _deal_magic);
+               }
+            } else if(dtype == DEAL_TYPE_BUY) {
+               // closed a SELL position via SL
+               if(g_cvcsm_state_sell == 0) {
+                  g_cvcsm_state_sell = 1;
+                  g_cvcsm_cooldown_start_sell = TimeCurrent();
+                  g_cvcsm_clean_bars_sell = 0;
+                  PrintFormat("FORGE 2.7.84: CVCSM_SELL → COOLDOWN (SL fired on SELL group magic %d)", _deal_magic);
+               }
+            }
+         }
          // v2.7.59 — BLR_BUY consecutive-loss tracker for falling-knife throttle
          for(int _bg = 0; _bg < ArraySize(g_groups); _bg++) {
             if((long)(MagicNumber + g_groups[_bg].magic_offset) == _deal_magic
@@ -12633,6 +15130,19 @@ bool PlaceOpenGroupLeg(
          JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,ask,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
       }
+      // v2.7.99 Set 1 — multi-leg batch entry at first leg of the group only.
+      //   batch_size > 1 && leg_index == 0 && market order → expand to N OrderSends
+      //   via PlaceMarketBatch. Subsequent staged legs (leg_index >= 1) keep single OrderSend
+      //   so BB_BREAKOUT L2 / MOMENTUM_DUMP pyramid add-ons aren't unintentionally batched.
+      //   Industry research + decision rationale: docs/FORGE_CORE_LOGIC_DESIGN.md §9 (2026-05-14 Set 1 wiring).
+      if(g_sc.batch_size > 1 && leg_index == 0) {
+         int batch_placed = PlaceMarketBatch("BUY", lot_norm,
+                                             NormalizeDouble(sl_for_this, _Digits),
+                                             NormalizeDouble(tp_for_this, _Digits),
+                                             (ulong)group_magic, comment);
+         ok = (batch_placed > 0);
+         return ok;
+      }
       ok = g_trade.Buy(lot_norm, _Symbol, ask, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
       return true;
    }
@@ -12641,6 +15151,15 @@ bool PlaceOpenGroupLeg(
          fail_reason = "invalid SELL market stops";
          JournalRecordSignal("SKIP","open_group_invalid_stops","OPEN_GROUP",direction,bid,0,0,_log_rsi,_log_adx,0,0,0,0,0,0);
          return false;
+      }
+      // v2.7.99 Set 1 — multi-leg batch entry (mirror of BUY path above).
+      if(g_sc.batch_size > 1 && leg_index == 0) {
+         int batch_placed = PlaceMarketBatch("SELL", lot_norm,
+                                             NormalizeDouble(sl_for_this, _Digits),
+                                             NormalizeDouble(tp_for_this, _Digits),
+                                             (ulong)group_magic, comment);
+         ok = (batch_placed > 0);
+         return ok;
       }
       ok = g_trade.Sell(lot_norm, _Symbol, bid, NormalizeDouble(sl_for_this, _Digits), NormalizeDouble(tp_for_this, _Digits), comment);
       return true;
@@ -13075,12 +15594,18 @@ void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direct
    } else if(setup_type == "BB_LOWER_REVERSION_BUY") {
       // 2.7.55 — single-direction BUY (BB lower-band mean-reversion); always buy direction.
       if(buy)  g_bb_lower_reversion_buy_last_time = now;
+   } else if(setup_type == "ASIA_CAPITULATION_BUY") {
+      // 2.7.81 — single-direction BUY (Asia pre-London V-flush). Anchor written at fire-time inside trigger.
+      if(buy)  g_last_asia_capitulation_buy_time = now;
    } else if(setup_type == "TREND_CONTINUATION_BUY") {
       // 2.7.57 — direction-locked BUY (canonical roadmap composite).
       if(buy)  g_trend_continuation_buy_last_time = now;
    } else if(setup_type == "TREND_CONTINUATION_SELL") {
       // 2.7.57 — direction-locked SELL (mirror).
       if(sell) g_trend_continuation_sell_last_time = now;
+   } else if(setup_type == "NY_SESSION_BEARISH_BREAKOUT_SELL") {
+      // v2.7.70 — direction-locked SELL.
+      if(sell) g_ny_session_bearish_sell_last_time = now;
    }
    // 2.7.56 — Pyramid counter increment for MOMENTUM_DUMP (also covers MOMENTUM_DUMP_COMPOSITE_TEST).
    //   Direction flip resets opposite-direction counter; same-direction increments.
