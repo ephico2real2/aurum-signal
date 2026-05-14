@@ -630,7 +630,15 @@ class Scribe:
                     m5_inside_bar INTEGER DEFAULT 0, m5_outside_bar INTEGER DEFAULT 0,
                     m5_doji INTEGER DEFAULT 0, m5_strong_bar INTEGER DEFAULT 0,
                     long_lower_wick INTEGER DEFAULT 0, long_upper_wick INTEGER DEFAULT 0,
-                    m5_range_expanding INTEGER DEFAULT 0
+                    m5_range_expanding INTEGER DEFAULT 0,
+                    -- v2.7.110 CES (Confluence Entry Score) — Option C instrumentation
+                    ces_score INTEGER DEFAULT 0,
+                    ces_dtc INTEGER DEFAULT 0,
+                    ces_pemcg INTEGER DEFAULT 0,
+                    ces_momentum INTEGER DEFAULT 0,
+                    ces_rsi INTEGER DEFAULT 0,
+                    ces_vwap INTEGER DEFAULT 0,
+                    ces_di INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -756,6 +764,25 @@ class Scribe:
                     # Idempotent under concurrent Scribe() init (see _v37_cols loop)
                     if "duplicate column" not in str(_e).lower():
                         raise
+        # 2.7.110 — CES (Confluence Entry Score) — 7 INTEGER cols (default 0)
+        _v110_ces_cols = [
+            ("ces_score",    "INTEGER DEFAULT 0"),
+            ("ces_dtc",      "INTEGER DEFAULT 0"),
+            ("ces_pemcg",    "INTEGER DEFAULT 0"),
+            ("ces_momentum", "INTEGER DEFAULT 0"),
+            ("ces_rsi",      "INTEGER DEFAULT 0"),
+            ("ces_vwap",     "INTEGER DEFAULT 0"),
+            ("ces_di",       "INTEGER DEFAULT 0"),
+        ]
+        for _col, _decl in _v110_ces_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    if "duplicate column" not in str(_e).lower():
+                        raise
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_ces_score ON forge_signals(ces_score)")
         # 2.7.37 — v37 telemetry indexes. CREATE INDEX IF NOT EXISTS is idempotent;
         # always run so fresh DBs (which pass the col-missing check) still get indexes.
         # Previously gated by `not in fs_cols` which left fresh tables index-less.
@@ -1092,6 +1119,12 @@ class Scribe:
                 "long_lower_wick", "long_upper_wick", "m5_range_expanding",
             ]
             has_v37g3 = all(c in src_cols for c in v37g3_cols)
+            # 2.7.110 — CES (Confluence Entry Score) — 7 INTEGER cols, all-or-nothing (same pattern as v37g3)
+            v110_ces_cols = [
+                "ces_score", "ces_dtc", "ces_pemcg",
+                "ces_momentum", "ces_rsi", "ces_vwap", "ces_di",
+            ]
+            has_v110_ces = all(c in src_cols for c in v110_ces_cols)
 
             # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
@@ -1208,6 +1241,8 @@ class Scribe:
                 + (", " + ", ".join(v37_cols) if has_v37 else ", " + ", ".join(["NULL"] * len(v37_cols)))
                 # 2.7.37 Group 3 — 45 more cols, same all-or-nothing pattern
                 + (", " + ", ".join(v37g3_cols) if has_v37g3 else ", " + ", ".join(["NULL"] * len(v37g3_cols)))
+                # 2.7.110 — CES (Confluence Entry Score) — 7 INTEGER cols, same all-or-nothing pattern
+                + (", " + ", ".join(v110_ces_cols) if has_v110_ces else ", " + ", ".join(["0"] * len(v110_ces_cols)))
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1252,11 +1287,13 @@ class Scribe:
                 v37_vals = tuple(r[37 + i] if len(r) > 37 + i else None for i in range(24))
                 # 2.7.37 Group 3 — 45 more cols at positions r[61]..r[105] (was r[58]..r[102] before 2.7.47)
                 v37g3_vals = tuple(r[61 + i] if len(r) > 61 + i else None for i in range(45))
+                # 2.7.110 — CES — 7 INTEGER cols at positions r[106]..r[112]
+                v110_ces_vals = tuple(r[106 + i] if len(r) > 106 + i else 0 for i in range(7))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
                     htf_h1_strong_val, intraday_label_val, intraday_counter_htf_v,
-                    *v37_vals, *v37g3_vals,
+                    *v37_vals, *v37g3_vals, *v110_ces_vals,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1295,12 +1332,17 @@ class Scribe:
                         "h1_open, h1_high, h1_low, h1_close, "
                         "h4_open, h4_high, h4_low, h4_close, "
                         "m5_inside_bar, m5_outside_bar, m5_doji, m5_strong_bar, "
-                        "long_lower_wick, long_upper_wick, m5_range_expanding"
+                        "long_lower_wick, long_upper_wick, m5_range_expanding, "
+                        # 2.7.110 — CES (Confluence Entry Score) — 7 INTEGER cols
+                        "ces_score, ces_dtc, ces_pemcg, ces_momentum, "
+                        "ces_rsi, ces_vwap, ces_di"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
-                        # + 3 v2.7.47 RegimeState trio). Was (37+24+45)=106 — caused
-                        # "106 values for 110 columns" sync errors and infinite recovery loop.
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45)) + ")",
+                        # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → total now
+                        # 41 + 24 + 45 + 7 = 117. If you add/remove a column in the col list
+                        # ABOVE, bump both the count below AND the v110_ces_vals tuple build.
+                        # (See forge-monitor SKILL.md Check C — v2.7.45/47 historical incident.)
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)
