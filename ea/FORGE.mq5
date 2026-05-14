@@ -1433,6 +1433,18 @@ struct ScalperConfig {
    double dtc_h4_trend_min_agreement;                 // default 0.5 — |h4_trend_strength| ≥ this for H4 bias to count as "decided"
    bool   dtc_block_counter_trend_buys;               // default 0 — block BUYs in COUNTER_TREND_BULL state (intraday bull inside bear H4)
    bool   dtc_block_counter_trend_sells;              // default 0 — block SELLs in COUNTER_TREND_BEAR state (intraday bear inside bull H4)
+   // v2.7.108 — DTC-aware SL/TP geometry widener (R:R matching on trend-aligned days)
+   //   Origin: Run 36 v2.7.102 Apr-08 disaster — G5024 cascade BUY_STOP_CONT 5 legs entered
+   //   at 4756 SL'd by a 19pt PULLBACK while the rally then ran to 4810+ (legs missed the move).
+   //   Industry rule (mql5.com/blogs/769205): "Volatility-aware ATR > fixed pip. Swing 1hr:
+   //   2.5×ATR. Chop: 1.5×ATR. Adaptive stop based on regime — tighten on chop, widen on trends."
+   //   Two widen factors applied multiplicatively to existing cascade SL/TP ATR multipliers:
+   //   when state == TREND_ALIGNED matching direction, effective_mult *= widen_factor.
+   //   R:R preservation: widening both SL AND TP preserves the ratio while adapting to volatility.
+   //   Operator mandate: "we need enough S/L to NOT get killed AS WELL AS good TP to win in the pull".
+   bool   dtc_geometry_widen_enabled;                 // master flag (default false)
+   double dtc_trend_aligned_sl_widen_factor;          // SL mult ×= this when TREND_ALIGNED (default 1.0; rec 1.67 → 2.5×ATR)
+   double dtc_trend_aligned_tp_widen_factor;          // TP mult ×= this when TREND_ALIGNED (default 1.0; rec 2.0 for trend capture)
    // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
    //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
    //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
@@ -4872,6 +4884,10 @@ void InitScalperConfig() {
    g_sc.dtc_h4_trend_min_agreement            = 0.5;   // |h4_trend| ≥ this for H4 bias to be "decided"
    g_sc.dtc_block_counter_trend_buys          = false; // block BUYs in COUNTER_TREND_BULL (G5021-class catch)
    g_sc.dtc_block_counter_trend_sells         = false; // block SELLs in COUNTER_TREND_BEAR (mirror)
+   // v2.7.108 DTC-aware geometry widener defaults (all OFF; flip dtc_geometry_widen_enabled + factors > 1.0 to activate)
+   g_sc.dtc_geometry_widen_enabled            = false;
+   g_sc.dtc_trend_aligned_sl_widen_factor     = 1.0;   // 1.0 = no widen; operator-rec 1.67 → 1.5×1.67=2.5×ATR (industry swing rule)
+   g_sc.dtc_trend_aligned_tp_widen_factor     = 1.0;   // 1.0 = no widen; operator-rec 2.0 to capture trend extension
    g_sc.cvcsm_enabled                         = true;
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
@@ -5942,6 +5958,10 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "dtc_h4_trend_min_agreement"))             { v=JsonGetDouble(content,"dtc_h4_trend_min_agreement");             if(v>=0.0&&v<=10.0) g_sc.dtc_h4_trend_min_agreement=v; }
    if(JsonHasKey(content, "dtc_block_counter_trend_buys"))           { v=JsonGetDouble(content,"dtc_block_counter_trend_buys");           g_sc.dtc_block_counter_trend_buys=(v>=0.5); }
    if(JsonHasKey(content, "dtc_block_counter_trend_sells"))          { v=JsonGetDouble(content,"dtc_block_counter_trend_sells");          g_sc.dtc_block_counter_trend_sells=(v>=0.5); }
+   // v2.7.108 DTC-aware geometry widener
+   if(JsonHasKey(content, "dtc_geometry_widen_enabled"))             { v=JsonGetDouble(content,"dtc_geometry_widen_enabled");             g_sc.dtc_geometry_widen_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "dtc_trend_aligned_sl_widen_factor"))      { v=JsonGetDouble(content,"dtc_trend_aligned_sl_widen_factor");      if(v>=0.5&&v<=5.0) g_sc.dtc_trend_aligned_sl_widen_factor=v; }
+   if(JsonHasKey(content, "dtc_trend_aligned_tp_widen_factor"))      { v=JsonGetDouble(content,"dtc_trend_aligned_tp_widen_factor");      if(v>=0.5&&v<=5.0) g_sc.dtc_trend_aligned_tp_widen_factor=v; }
    if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
    if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
@@ -14572,14 +14592,21 @@ void ArmPostTP1Ladder(const int gi) {
          // h1_trend=-1.997 trend was maximally strong; weaker continuations would wick out at the old 0.8×ATR SL).
          // Fallback to legacy geometry (sl_atr_mult=0 → tp1 + atr_mult×ATR) preserves backward compatibility.
          double _ss_sl_mult = g_sc.sell_stop_cont_sl_atr_mult;
+         double _ss_tp_mult = g_sc.sell_stop_cont_tp_atr_mult;
+         // v2.7.108 — DTC-aware widen on TREND_ALIGNED bear day (matches SELL cascade direction)
+         if(g_sc.dtc_geometry_widen_enabled && g_sc.dtc_5state_enabled
+            && g_dtc_state == DTC_STATE_BEAR_TREND_ALIGNED) {
+            _ss_sl_mult *= g_sc.dtc_trend_aligned_sl_widen_factor;
+            _ss_tp_mult *= g_sc.dtc_trend_aligned_tp_widen_factor;
+         }
          double ss_sl    = (_ss_sl_mult > 0.0)
                            ? NormalizeDouble(ss_price + entry_atr * _ss_sl_mult, _Digits)
                            : NormalizeDouble(tp1_ref + entry_atr * g_sc.sell_stop_cont_atr_mult, _Digits);
          double ss_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                                                 g_sc.lot_fixed * g_sc.sell_stop_cont_lot_factor));
          datetime ss_exp = TimeCurrent() + (datetime)(g_sc.sell_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));
-         double ss_tp    = (g_sc.sell_stop_cont_tp_atr_mult > 0.0)
-                           ? NormalizeDouble(ss_price - entry_atr * g_sc.sell_stop_cont_tp_atr_mult, _Digits)
+         double ss_tp    = (_ss_tp_mult > 0.0)
+                           ? NormalizeDouble(ss_price - entry_atr * _ss_tp_mult, _Digits)
                            : 0.0;
          int legs_placed = 0;
          int legs_target = MathMin(g_sc.sell_stop_cont_legs, 7); // max 7 legs — slots [2..8]
@@ -14741,6 +14768,17 @@ void ArmPostTP1Ladder(const int gi) {
          // SL geometry (mirror): BUY SL BELOW cascade entry. cascade_entry − atr×sl_mult.
          // sl_mult=0 → legacy fallback: SL = tp1 − atr×atr_mult (symmetric to SELL legacy).
          double _bs_sl_mult = g_sc.buy_stop_cont_sl_atr_mult;
+         double _bs_tp_mult = g_sc.buy_stop_cont_tp_atr_mult;
+         // v2.7.108 — DTC-aware widen on TREND_ALIGNED bull day (matches BUY cascade direction).
+         // Apr-08 G5024 cascade case: 5 BUY_STOP_CONT legs entered at 4756 with SL 4737 (19pt
+         // = 1.40×entry_atr 13.64). 19pt pullback inside an 184pt rally stopped all 5 legs.
+         // With widen=1.67, SL would be at 4736 (32pt = 2.34×ATR) → cascade survives the pullback,
+         // captures the run to 4810+.
+         if(g_sc.dtc_geometry_widen_enabled && g_sc.dtc_5state_enabled
+            && g_dtc_state == DTC_STATE_BULL_TREND_ALIGNED) {
+            _bs_sl_mult *= g_sc.dtc_trend_aligned_sl_widen_factor;
+            _bs_tp_mult *= g_sc.dtc_trend_aligned_tp_widen_factor;
+         }
          double bs_sl    = (_bs_sl_mult > 0.0)
                            ? NormalizeDouble(bs_price - entry_atr * _bs_sl_mult, _Digits)
                            : NormalizeDouble(tp1_ref_b - entry_atr * g_sc.buy_stop_cont_atr_mult, _Digits);
@@ -14748,8 +14786,8 @@ void ArmPostTP1Ladder(const int gi) {
                                                 g_sc.lot_fixed * g_sc.buy_stop_cont_lot_factor));
          datetime bs_exp = TimeCurrent() + (datetime)(g_sc.buy_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));
          // TP ABOVE cascade entry (mirror).
-         double bs_tp    = (g_sc.buy_stop_cont_tp_atr_mult > 0.0)
-                           ? NormalizeDouble(bs_price + entry_atr * g_sc.buy_stop_cont_tp_atr_mult, _Digits)
+         double bs_tp    = (_bs_tp_mult > 0.0)
+                           ? NormalizeDouble(bs_price + entry_atr * _bs_tp_mult, _Digits)
                            : 0.0;
          int legs_placed_b = 0;
          int legs_target_b = MathMin(g_sc.buy_stop_cont_legs, 7);

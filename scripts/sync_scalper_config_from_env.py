@@ -231,6 +231,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_DTC_H4_TREND_MIN_AGREEMENT":                     ("safety",    "dtc_h4_trend_min_agreement",                    "float",  0.0,   10.0),
     "FORGE_GATE_DTC_BLOCK_COUNTER_TREND_BUYS":                   ("safety",    "dtc_block_counter_trend_buys",                  "bool01", None,  None),
     "FORGE_GATE_DTC_BLOCK_COUNTER_TREND_SELLS":                  ("safety",    "dtc_block_counter_trend_sells",                 "bool01", None,  None),
+    # v2.7.108 — DTC-aware SL/TP geometry widener for cascade orders on TREND_ALIGNED days.
+    # Solves the Apr-08 G5024 case: 5 cascade legs SL'd by a 19pt pullback inside a 184pt rally.
+    # Industry rule (mql5.com/blogs/769205): swing 1hr ≥ 2.5×ATR; chop ≤ 1.5×ATR.
+    "FORGE_COMPOSITE_DTC_GEOMETRY_WIDEN_ENABLED":                ("safety",    "dtc_geometry_widen_enabled",                    "bool01", None,  None),
+    "FORGE_GEOMETRY_DTC_TREND_ALIGNED_SL_WIDEN_FACTOR":          ("safety",    "dtc_trend_aligned_sl_widen_factor",             "float",  0.5,   5.0),
+    "FORGE_GEOMETRY_DTC_TREND_ALIGNED_TP_WIDEN_FACTOR":          ("safety",    "dtc_trend_aligned_tp_widen_factor",             "float",  0.5,   5.0),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),

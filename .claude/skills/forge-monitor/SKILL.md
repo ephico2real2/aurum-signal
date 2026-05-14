@@ -1099,6 +1099,76 @@ The 5-state design is the direct implementation of this rule.
 
 ---
 
+### MANDATORY: SL/ATR ratio audit on every loss + R:R matching on trend days
+
+**Operator mandate** (2026-05-14, Run 36 Apr-06/07/08 loss audit): "SL too small on April 6, 7 and 8 — the TP was very small too. It was a bull run. We need to match both risk and reward that day. We need enough S/L to NOT get killed AS WELL AS good TP to win in the pull."
+
+**Key insight from the data**: cascade entries placed using `entry_atr` (snapshot at original group entry) can be **mismatched to current volatility** when the cascade fires 20+ hours later. Worse: 1.5×ATR is correct for chop but **TOO TIGHT for trending days** where normal pullbacks routinely exceed 1.5×ATR.
+
+**When this audit fires** (every loss group with SL hit):
+
+```python
+import sqlite3
+DB = "<active source DB>"
+conn = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+# For each loss, compute SL_distance / ATR_at_entry
+losses = conn.execute("""
+  SELECT t.deal_ticket, t.magic, t.price as close_px, t.comment,
+         t.profit, datetime(t.time,'unixepoch') as t_close,
+         s.price as entry_px, s.atr as entry_atr, s.setup_type, s.direction
+  FROM TRADES t
+  LEFT JOIN SIGNALS s ON s.magic = t.magic AND s.outcome='TAKEN'
+  WHERE t.run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+    AND t.profit < 0
+    AND t.comment LIKE 'sl %'
+  ORDER BY t.time
+""").fetchall()
+for row in losses:
+    deal, magic, close, comment, pnl, t_close, entry, atr, setup, dirn = row
+    if entry and atr and atr > 0:
+        # Parse SL price from comment "sl 4737.10"
+        sl_price = float(comment.replace('sl ', '').strip())
+        sl_dist = abs(sl_price - entry)
+        sl_atr_ratio = sl_dist / atr
+        verdict = "TOO TIGHT" if sl_atr_ratio < 1.5 else ("OK" if sl_atr_ratio < 2.5 else "CHOP-SIZED")
+        print(f"  {magic} {setup} {dirn} entry={entry} sl={sl_price} dist={sl_dist:.1f}pt atr={atr:.2f} ratio={sl_atr_ratio:.2f}× {verdict}")
+```
+
+**Thresholds** (per [mql5.com/blogs/769205 SL strategies 2026](https://www.mql5.com/en/blogs/post/769205)):
+
+| SL/ATR ratio | Day type fit | Action |
+|---|---|---|
+| < 1.0×ATR | None — guaranteed wick-out | **Always flag — structural flaw** |
+| 1.0–1.5×ATR | Chop only | OK in NEUTRAL state; **TOO TIGHT** in TREND_ALIGNED state |
+| 1.5–2.5×ATR | Mixed — depends on context | OK in NEUTRAL/COUNTER_TREND; **borderline** in TREND_ALIGNED |
+| 2.5–3.0×ATR | **Trending day standard** (industry) | OK in TREND_ALIGNED |
+| > 3.0×ATR | Excessive room — bad R:R | Flag if TP isn't also widened |
+
+**R:R matching rule** (operator-mandated):
+> "Enough S/L to NOT get killed AS WELL AS good TP to win in the pull."
+
+If you widen the SL on trend days, you MUST also widen the TP proportionally — otherwise you accumulate small wins and full SL losses (negative-expectancy R:R drift). Always check BOTH:
+- `tp_atr_mult ≥ sl_atr_mult × 0.6` (R:R = 1.67:1 minimum)
+- `tp_atr_mult ≤ sl_atr_mult × 2.0` (R:R = 2:1 maximum — beyond that TP rarely hits)
+
+**Reporting format**:
+
+> "Loss G5024 cascade 5 legs −$2,456: entry 4756.18, SL 4737.10, distance 19.08pt, entry_atr 13.64, **ratio 1.40×ATR**. Below 1.5× threshold (chop SL on a trend day). DTC state at fire time: BULL_TREND_ALIGNED (intraday + H4 both bull). v2.7.108 fix with `dtc_geometry_widen_enabled=1` + `dtc_trend_aligned_sl_widen_factor=1.67` would have widened SL to 4736.18 (2.34×ATR → cascade survives the pullback) and `dtc_trend_aligned_tp_widen_factor=2.0` widens TP to capture the run to 4810+."
+
+**Anti-pattern**: classifying a loss as "trend-failure" without checking SL/ATR ratio. If the SL fired at < 1.5×ATR during a trending day, it's an SL-geometry problem, not a setup problem.
+
+**Cross-references**:
+- v2.7.108 ship: `docs/FORGE_PEMCG_ARCHITECTURE.md` (geometry widener section)
+- Knob discovery: `.env.example` block under "v2.7.108 — DTC-aware SL/TP geometry widener"
+- Backup: `backups/v2.7.108/FORGE.mq5.pre-dtc-geometry`
+- Industry citations:
+  - [mql5.com/blogs/769205 — SL Strategies 2026](https://www.mql5.com/en/blogs/post/769205) (chop 1.5×ATR, swing 2.5×ATR)
+  - [mql5.com/blogs/769205 — Adaptive SL based on regime](https://www.mql5.com/en/blogs/post/769205)
+  - [earnforex — ATR Trailing Stop](https://www.earnforex.com/metatrader-expert-advisors/atr-trailing-stop/)
+  - [tradingview — Multiple Time Frame R:R](https://www.tradingview.com/support/solutions/43000591728/)
+
+---
+
 ### MANDATORY: case study file for date-range / multi-day pattern analyses
 
 Whenever the analysis spans **2 or more trading days** (e.g. day-typing, cross-day composite
