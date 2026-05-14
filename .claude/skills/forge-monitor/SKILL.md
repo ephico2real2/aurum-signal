@@ -1169,82 +1169,77 @@ If you widen the SL on trend days, you MUST also widen the TP proportionally —
 
 ---
 
-### MANDATORY: CES (Confluence Entry Score) audit on every loss/win — check if score correlated with outcome
+### MANDATORY: ISS (ICT Structure Score) audit on every loss/win — check if score correlated with outcome
 
-v2.7.110 ships CES (Confluence Entry Score) in Option C / instrumentation mode:
-0-10 score per setup-trigger from 7 atoms (DTC-aligned +3, PEMCG-clean +2,
-M5-momentum-candle +2, RSI-trend-zone +1, VWAP-confirm +1, H1-DI-dominance +1).
-Logged to `SIGNALS.ces_score` + 6 component cols (`ces_dtc`, `ces_pemcg`,
-`ces_momentum`, `ces_rsi`, `ces_vwap`, `ces_di`).
+v2.7.112 ships ISS (ICT Structure Score) — scaffolding only (atoms stubbed at 0):
+0-10 score per setup-trigger from 3 ICT structure atoms (MSS +5, FVG +3, ChoCH support +2).
+ChoCH-against is a separate hard gate (not summed). Logged to `SIGNALS.iss_score`
++ 4 atom cols (`iss_mss`, `iss_fvg`, `iss_choch_support`, `iss_choch_against`).
 
-**Why this audit is mandatory**: CES is the operator-requested "internal logic to
-calculate win or loss before entry". The whole point of Option C is to validate
-the score's predictive power *before* enabling Option A (block-below-threshold
-gate, `FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD=1`). Every loss + every win you
-analyse during monitoring MUST log its CES score + component breakdown.
+**v2.7.112 caveat**: all atoms stub at 0 because real MSS/ChoCH/FVG detection
+requires a swing-pivot tracker (v2.7.113) + FVG state tracker (v2.7.115) that
+haven't shipped yet. Until then, `iss_score = 0` on every row is EXPECTED — the
+schema + score-compute plumbing are in place, just no signal yet. Don't flag
+zero-everywhere as a bug pre-v2.7.115.
 
-**Canonical join query** — pulls every TAKEN entry's CES total + component split
-joined with its closing P&L from TRADES (matched by magic + run):
+**Why this audit is mandatory** (post-v2.7.115): the ICT methodology encodes
+thresholds directly (≥8 high-conviction, ≥5 standard, <5 skip). Validation
+against actual outcomes confirms the encoded thresholds match reality before
+flipping `iss_block_below_threshold=1` to activate the gate.
+
+**Canonical join query** — every TAKEN entry's ISS + atom split, joined with P&L:
 
 ```bash
 sqlite3 -readonly "$DB" "
-SELECT s.magic,
-       s.setup_type, s.direction,
-       s.ces_score, s.ces_dtc, s.ces_pemcg, s.ces_momentum,
-       s.ces_rsi, s.ces_vwap, s.ces_di,
+SELECT s.magic, s.setup_type, s.direction,
+       s.iss_score, s.iss_mss, s.iss_fvg, s.iss_choch_support, s.iss_choch_against,
        ROUND(SUM(t.profit), 2) AS net_pnl,
        COUNT(t.deal_ticket)    AS deals
 FROM SIGNALS s
-LEFT JOIN TRADES t ON t.magic = s.magic AND t.run_id = s.run_id AND t.direction IN (1,2,3)
+LEFT JOIN TRADES t ON t.magic = s.magic AND t.run_id = s.run_id
 WHERE s.outcome = 'TAKEN'
   AND s.run_id = (SELECT MAX(id) FROM TESTER_RUNS)
-  AND s.ces_score > 0
 GROUP BY s.magic
 ORDER BY net_pnl ASC;
 "
 ```
 
-**Aggregate query** — win rate + net P&L by CES bucket (run at end-of-monitoring):
+**Aggregate query** — win rate + net P&L by ISS bucket (run at end-of-monitoring):
 
 ```bash
 sqlite3 -readonly "$DB" "
-SELECT s.ces_score,
+SELECT s.iss_score,
        COUNT(*)                                        AS taken,
        SUM(CASE WHEN t.profit > 0 THEN 1 ELSE 0 END)   AS wins,
        ROUND(SUM(t.profit), 2)                         AS net_pnl,
        ROUND(AVG(t.profit), 2)                         AS avg_pnl
 FROM SIGNALS s
 JOIN TRADES t ON t.magic = s.magic AND t.run_id = s.run_id
-WHERE s.outcome='TAKEN' AND s.ces_score > 0
+WHERE s.outcome='TAKEN'
   AND s.run_id = (SELECT MAX(id) FROM TESTER_RUNS)
-GROUP BY s.ces_score
-ORDER BY s.ces_score;
+GROUP BY s.iss_score
+ORDER BY s.iss_score;
 "
 ```
 
-**Reporting rule**: every per-trade post-mortem section (loss decision table,
-win celebration, missed-opportunity) MUST include a CES line:
-`CES score: 7/10 (DTC +3, PEMCG +2, Momentum +0, RSI +1, VWAP +1, DI +0)`.
-
-If `ces_score = 0` across all rows: `FORGE_COMPOSITE_CES_ENABLED` is OFF or the
-EA hasn't been recompiled since v2.7.110 — flag this at the start of the
-monitoring session, do NOT silently skip the audit.
+**Reporting rule** (post-v2.7.115): every per-trade post-mortem section (loss decision
+table, win celebration, missed-opportunity) MUST include an ISS line:
+`ISS score: 8/10 (MSS +5, FVG +3, ChoCH+ +0, ChoCH− 0)`.
 
 **Activation check** (run once at the start of each monitoring session):
 
 ```bash
-grep -E "^FORGE_COMPOSITE_CES_ENABLED|^FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD" \
+grep -E "^FORGE_COMPOSITE_ISS_ENABLED|^FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD" \
      /Users/olasumbo/signal_system/.env
 ```
 
-Expected: `FORGE_COMPOSITE_CES_ENABLED=1` (instrumentation ON) AND
-`FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD=0` (gate OFF — Option C ship).
+Expected for v2.7.112: `FORGE_COMPOSITE_ISS_ENABLED=0` (scaffolding ship; atoms stubbed).
+Expected for v2.7.115+: `FORGE_COMPOSITE_ISS_ENABLED=1` (atoms wired, logging-only)
+AND `FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD=0` (gate OFF until validation).
+Expected for v2.7.116+: both `=1` once empirical evidence supports the threshold.
 
-If both are `1` the operator has flipped Option A on and CES is now a hard
-gate — log `ces_below_threshold` SKIP count separately in tick output.
-
-See `docs/FORGE_CES_DESIGN.md` for atom citations + scoring rationale +
-decision matrix for promoting to Option A.
+See `docs/ICT-Structure-Score.md` for atom definitions + decision tiers +
+4-version migration plan (v2.7.113-116).
 
 ---
 
@@ -1650,22 +1645,22 @@ sqlite3 -readonly "$DB" "
 SELECT datetime(time,'unixepoch') as sim_time, magic, setup_type, direction,
        ROUND(price,2) as price, ROUND(atr,2) as atr,
        ROUND(rsi,1) as rsi, ROUND(adx,1) as adx, session,
-       ces_score, ces_dtc, ces_pemcg, ces_momentum, ces_rsi, ces_vwap, ces_di
+       iss_score, iss_mss, iss_fvg, iss_choch_support, iss_choch_against
 FROM SIGNALS WHERE outcome='TAKEN'
   AND run_id=(SELECT MAX(id) FROM TESTER_RUNS)
 ORDER BY time;"
 ```
 
-**CES columns** (v2.7.110 Option C, default-OFF gate):
-- `ces_score` (0–10) — sum of 6 weighted boolean atoms; default threshold `ces_min_threshold=6`
-- `ces_dtc` (0 or 3) — DTC matches trade direction (dominant weight)
-- `ces_pemcg` (0 or 2) — PEMCG warnings clean
-- `ces_momentum` (0 or 2) — momentum-candle confirmation (strong bar + range expanding)
-- `ces_rsi` (0 or 1) — RSI in trend zone for direction
-- `ces_vwap` (0 or 1) — VWAP confirmation
-- `ces_di` (0 or 1) — H1 DI dominance for direction
+**ISS columns** (v2.7.112 scaffolding only — atoms stubbed at 0 until v2.7.113-115 lands real detection):
+- `iss_score` (0–10) — sum of 3 weighted boolean atoms; default threshold `iss_min_threshold=5` (= MSS-mandatory bar)
+- `iss_mss` (0 or 5) — MSS confirmed in trade direction (structural; primary, mandatory)
+- `iss_fvg` (0 or 3) — price in active FVG retracement zone aligned with direction
+- `iss_choch_support` (0 or 2) — recent counter-trend ChoCH supporting reversal turn
+- `iss_choch_against` (0 or 1) — opposing ChoCH against trade direction — **HARD GATE** when set (not summed into score)
 
-**Reporting requirement**: every TAKEN row in tick reports + every analysis-doc TAKEN row MUST show `ces_score` and the component breakdown. Pattern in cross-day analysis: low-CES winners on chop days = DTC=0 structural; high-CES winners on trend days = full confluence. Loss correlation only validates the Option A threshold cutoff — see `docs/FORGE_CES_DESIGN.md` §6.
+**Reporting requirement**: every TAKEN row in tick reports + every analysis-doc TAKEN row MUST show `iss_score` and the atom breakdown. Until v2.7.113+ activates real atom detection, all values are 0 — that's expected. Once detection lands, watch for the threshold-tier pattern (≥8 = high-conviction, ≥5 = standard, <5 = should-have-skipped). See `docs/ICT-Structure-Score.md` §3-4 for atom definitions + decision tiers.
+
+**Note**: CES (v2.7.110) was retired in v2.7.112. The old `ces_*` columns may still exist in pre-v2.7.112 source DBs (intentionally not dropped) but are no longer populated. For runs ≥ v2.7.112, query `iss_*` columns only.
 
 ### Q3 — Gate breakdown
 ```bash
@@ -2218,10 +2213,10 @@ If you discover a table/column not in `FORGE_TESTER_JOURNAL_QUERIES.md`:
 - Athena cross-check: ✓/✗ gate counts match, performance.total_pnl=$N.NN confirmed
 
 ## TAKEN Groups
-| Sim Time (UTC) | Group | Setup | Direction | Session | RSI | ADX | ATR | Price | CES | DTC | PEMCG | MOM | RSI* | VWAP | DI | TP reached | P&L |
-|----------------|-------|-------|-----------|---------|-----|-----|-----|-------|-----|-----|-------|-----|------|------|----|-----------|-----|
+| Sim Time (UTC) | Group | Setup | Direction | Session | RSI | ADX | ATR | Price | ISS | MSS | FVG | ChoCH+ | ChoCH− | TP reached | P&L |
+|----------------|-------|-------|-----------|---------|-----|-----|-----|-------|-----|-----|-----|--------|--------|-----------|-----|
 
-*CES columns are weighted-boolean components: DTC(0/3), PEMCG(0/2), MOM(0/2), RSI*(0/1), VWAP(0/1), DI(0/1). Sum = `ces_score` (0–10). v2.7.110 Option C — logged only, not yet a gate.*
+*ISS columns are weighted-boolean components: MSS(0/5), FVG(0/3), ChoCH_support(0/2). ChoCH_against is a HARD GATE (not summed). Sum = `iss_score` (0–10). Decision tiers: ≥8 high-conviction · ≥5 standard · <5 SKIP. v2.7.112 ships scaffolding only — real atom detection in v2.7.113-115. See `docs/ICT-Structure-Score.md`.*
 
 ## Gate Breakdown (final, all SKIP reasons)
 | Gate Reason | Count | Human Label |
