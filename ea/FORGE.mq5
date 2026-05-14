@@ -450,6 +450,10 @@ datetime g_last_asia_capitulation_buy_time = 0;
 //   opposite-direction setup fires (the warnings that BLOCK a BUY become a SELL trigger).
 int      g_pemcg_buy_warning_count   = 0;   // 0-7, counts BUY-reversal-warning atoms (PEMCG_BUY composite)
 int      g_pemcg_sell_warning_count  = 0;   // 0-7, mirror — counts SELL-reversal-warning atoms
+// v2.7.105 — Day-Type Classifier (DTC) globals. Computed once per M5 close in the PEMCG block.
+bool     g_dtc_bear_day_intraday    = false; // VWAP_dist + M15_ADX + H1 DI dominance confirm bear continuation
+bool     g_dtc_bull_day_intraday    = false; // mirror
+double   g_eval_vwap_dist_atr       = 0.0;   // (m5_close - vwap_price) / m5_atr — signed; negative = below VWAP
 int      g_cvcsm_state_buy           = 0;   // 0=OPEN, 1=COOLDOWN, 2=RETRYING (BUY direction)
 int      g_cvcsm_state_sell          = 0;   // 0=OPEN, 1=COOLDOWN, 2=RETRYING (SELL direction)
 datetime g_cvcsm_cooldown_start_buy  = 0;   // timestamp BUY cooldown began (safety timeout reference)
@@ -1361,6 +1365,46 @@ struct ScalperConfig {
    double umcg_pemcg_body_pct_max_weak;          // default 0.5 — A2: weak candle when m5_body_pct < this
    double umcg_pemcg_atr_ratio_max_contract;     // default 1.0 — A6: volatility contracting when m5_atr_ratio_5bar < this
    double umcg_pemcg_bb_dist_atr_threshold;      // default 0.3 — A5: no real breakout/breakdown when |close-bb_band|/atr < this
+   // v2.7.105 — Day-Type Classifier (DTC) + PEMCG modifier + Day-Bias Block
+   //   Origin: Run 36 v2.7.102 monitoring 2026-05-14. PEMCG_SELL fired 63,716× during a 140pt
+   //   bear move (Apr-01 22:00 → Apr-02 23:59) while ZERO SELLs were TAKEN. Mirror PEMCG_BUY
+   //   fired only 5,494× — a 12× asymmetry. Root cause: PEMCG_SELL atoms A1 (RSI≤35) + A5
+   //   (close near BB_lower) fire in ANY sustained bear leg by definition, and combined with
+   //   A2/A3/A4/A6 firing opportunistically on small bars in the bear chop, the warning count
+   //   reaches 5/7 (block threshold) regardless of whether this is a reversal-trap dip or a
+   //   trend-continuation entry. Data validation (11,669 blocked SELLs in 10:00-15:00 Apr-02):
+   //     - avg ATR 10.08, avg VWAP-dist −43.51 pts = −4.18 ATR (price massively below VWAP)
+   //     - avg M15 ADX 28.7 (trend strength confirmed)
+   //     - avg h1_trend +0.42 (POSITIVE — H1 EMA lagging; bad day-type detector)
+   //     - avg RSI 47.1 (NOT oversold; PEMCG firing on non-A1 atoms in continuation)
+   //   Conclusion: use INTRADAY indicators (VWAP-distance, M15 ADX, H1 DI dominance) — NOT
+   //   h1_trend_strength which lags 1+ hour during fresh reversals.
+   //
+   //   Industry citations (per WebSearch 2026-05-14):
+   //     - "A high ADX reading confirms a strong trend, making RSI's overbought/oversold signals
+   //       less reliable for reversals and more indicative of continuation." (volity.io RSI guide)
+   //     - "When the price is below VWAP, the market sentiment is bearish." (MQL5 blog 767595)
+   //     - "Hidden bullish divergence: price makes lower lows but RSI makes higher lows →
+   //       trend continuation, NOT reversal." (alchemymarkets hidden-divergence)
+   //
+   //   Two consequences when bear-day-intraday is confirmed:
+   //     (a) PEMCG_SELL modifier — subtract dtc_pemcg_bypass_atoms (default 2) from
+   //         g_pemcg_sell_warning_count, lowering chance of false reversal-trap block on
+   //         continuation entries.
+   //     (b) Day-bias hard block — block BUY setups (knife-catches) via new gate code
+   //         bear_day_buy_block. Exemption list at dtc_exempt_buy_setups (default
+   //         BB_EXHAUSTION_REVERSAL_BUY — the intentional counter-reversal capture setup).
+   //   Mirror for bull-day-intraday (with FRACTIONAL_SELL_IN_BULL exempt from SELL block).
+   //   All default-OFF; flip master via FORGE_COMPOSITE_DTC_ENABLED=1.
+   bool   dtc_enabled;                                // master flag (default false)
+   bool   dtc_pemcg_modifier_enabled;                 // when day-type matches direction, de-weight PEMCG warnings (default false)
+   bool   dtc_day_bias_block_enabled;                 // when day-type opposes direction, block as hard gate (default false)
+   double dtc_vwap_dist_atr_threshold;                // default 1.5 — |price − vwap| / atr ≥ this is "strongly off VWAP"
+   int    dtc_m15_adx_min;                            // default 25 — M15 trend strength confirmation
+   double dtc_h1_di_dominance_min;                    // default 5.0 — |DI+ − DI−| ≥ this for bear/bull dominance
+   int    dtc_pemcg_bypass_atoms;                     // default 2 — subtract from warning count when day-type matches direction
+   string dtc_exempt_buy_setups;                      // comma-list — BUY setups exempt from bear_day_buy_block (default "BB_EXHAUSTION_REVERSAL_BUY")
+   string dtc_exempt_sell_setups;                     // comma-list — SELL setups exempt from bull_day_sell_block (default "FRACTIONAL_SELL_IN_BULL,BB_EXHAUSTION_REVERSAL_SELL")
    // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
    //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
    //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
@@ -4785,6 +4829,16 @@ void InitScalperConfig() {
    g_sc.umcg_pemcg_body_pct_max_weak          = 0.5;
    g_sc.umcg_pemcg_atr_ratio_max_contract     = 1.0;
    g_sc.umcg_pemcg_bb_dist_atr_threshold      = 0.3;
+   // v2.7.105 DTC defaults — all OFF; flip master via FORGE_COMPOSITE_DTC_ENABLED=1.
+   g_sc.dtc_enabled                           = false;
+   g_sc.dtc_pemcg_modifier_enabled            = false;
+   g_sc.dtc_day_bias_block_enabled            = false;
+   g_sc.dtc_vwap_dist_atr_threshold           = 1.5;   // |price − vwap|/atr ≥ 1.5 = strongly off VWAP (Run 36 data: avg 4.18 ATR below)
+   g_sc.dtc_m15_adx_min                       = 25;    // industry: ADX≥25 = trending regime
+   g_sc.dtc_h1_di_dominance_min               = 5.0;   // DI dominance threshold for bear/bull direction confirmation
+   g_sc.dtc_pemcg_bypass_atoms                = 2;     // when day-type matches direction, subtract from warnings
+   g_sc.dtc_exempt_buy_setups                 = "BB_EXHAUSTION_REVERSAL_BUY";  // exempt from bear_day_buy_block
+   g_sc.dtc_exempt_sell_setups                = "FRACTIONAL_SELL_IN_BULL,BB_EXHAUSTION_REVERSAL_SELL";  // exempt from bull_day_sell_block
    g_sc.cvcsm_enabled                         = true;
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
@@ -5840,6 +5894,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "umcg_pemcg_body_pct_max_weak"))          { v=JsonGetDouble(content,"umcg_pemcg_body_pct_max_weak");          if(v>=0.1&&v<=1.0) g_sc.umcg_pemcg_body_pct_max_weak=v; }
    if(JsonHasKey(content, "umcg_pemcg_atr_ratio_max_contract"))     { v=JsonGetDouble(content,"umcg_pemcg_atr_ratio_max_contract");     if(v>=0.5&&v<=2.0) g_sc.umcg_pemcg_atr_ratio_max_contract=v; }
    if(JsonHasKey(content, "umcg_pemcg_bb_dist_atr_threshold"))      { v=JsonGetDouble(content,"umcg_pemcg_bb_dist_atr_threshold");      if(v>=0.0&&v<=2.0) g_sc.umcg_pemcg_bb_dist_atr_threshold=v; }
+   // v2.7.105 DTC knobs
+   if(JsonHasKey(content, "dtc_enabled"))                            { v=JsonGetDouble(content,"dtc_enabled");                            g_sc.dtc_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "dtc_pemcg_modifier_enabled"))             { v=JsonGetDouble(content,"dtc_pemcg_modifier_enabled");             g_sc.dtc_pemcg_modifier_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "dtc_day_bias_block_enabled"))             { v=JsonGetDouble(content,"dtc_day_bias_block_enabled");             g_sc.dtc_day_bias_block_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "dtc_vwap_dist_atr_threshold"))            { v=JsonGetDouble(content,"dtc_vwap_dist_atr_threshold");            if(v>=0.0&&v<=10.0) g_sc.dtc_vwap_dist_atr_threshold=v; }
+   if(JsonHasKey(content, "dtc_m15_adx_min"))                        { v=JsonGetDouble(content,"dtc_m15_adx_min");                        if(v>=0&&v<=80)     g_sc.dtc_m15_adx_min=(int)v; }
+   if(JsonHasKey(content, "dtc_h1_di_dominance_min"))                { v=JsonGetDouble(content,"dtc_h1_di_dominance_min");                if(v>=0.0&&v<=50.0) g_sc.dtc_h1_di_dominance_min=v; }
+   if(JsonHasKey(content, "dtc_pemcg_bypass_atoms"))                 { v=JsonGetDouble(content,"dtc_pemcg_bypass_atoms");                 if(v>=0&&v<=7)      g_sc.dtc_pemcg_bypass_atoms=(int)v; }
+   if(JsonHasKey(content, "dtc_exempt_buy_setups"))                  { g_sc.dtc_exempt_buy_setups  = JsonGetString(content, "dtc_exempt_buy_setups"); }
+   if(JsonHasKey(content, "dtc_exempt_sell_setups"))                 { g_sc.dtc_exempt_sell_setups = JsonGetString(content, "dtc_exempt_sell_setups"); }
    if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
    if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
@@ -7144,6 +7208,87 @@ void ForgeEvalAtoms() {
    } else {
       g_pemcg_buy_warning_count  = 0;
       g_pemcg_sell_warning_count = 0;
+   }
+
+   // ─────────────────────────────────────────────────────────────────────────
+   // v2.7.105 — Day-Type Classifier (DTC) + PEMCG modifier
+   //
+   // PURPOSE: distinguish "PEMCG warning fires because we're in a reversal-trap"
+   //   from "PEMCG warning fires because we're in sustained trend continuation".
+   //   In a sustained bear leg, A1 (RSI≤35) + A5 (close near BB_lower) fire by
+   //   definition and combined with A2/A3/A4/A6 firing on small consolidation
+   //   bars, warning count reaches 5/7 (block threshold) on EVERY M5 bar even
+   //   though direction-correct SELL entries should be ALLOWED.
+   //
+   // INDICATOR TRIAD (operator-validated from Run 36 data 11,669-sample query):
+   //   1. VWAP-distance (intraday sentiment) — price massively off VWAP = strong
+   //      day-type bias. Run 36 bear-window avg: −4.18 ATR below VWAP.
+   //   2. M15 ADX (trend strength confirmation) — industry rule: ADX≥25 means
+   //      "RSI overbought/oversold signals less reliable for reversals, more
+   //      indicative of continuation" (volity.io / alchemymarkets).
+   //   3. H1 DI dominance (direction-of-trend confirmation) — DI− >> DI+ means
+   //      bears in control even when h1_trend_strength is still lagging positive.
+   //   Notably ABSENT from this triad: h1_trend_strength. Run 36 data shows it
+   //   was still +0.42 (positive) during the active 140pt bear — H1 EMA lags 1+ hour
+   //   on fresh reversals, so it's a bad day-type detector.
+   //
+   // CONSEQUENCES (both default-OFF):
+   //   (a) dtc_pemcg_modifier_enabled — when day-type matches direction, subtract
+   //       dtc_pemcg_bypass_atoms (default 2) from the matching-direction
+   //       warning count. Lowers the chance of false reversal-trap block on
+   //       direction-correct continuation entries.
+   //   (b) dtc_day_bias_block_enabled — when day-type OPPOSES direction, emit a
+   //       hard SKIP gate (bear_day_buy_block / bull_day_sell_block). Exempt
+   //       lists at dtc_exempt_buy_setups / dtc_exempt_sell_setups protect the
+   //       intentional counter-regime setups (BB_EXHAUSTION_REVERSAL_*,
+   //       FRACTIONAL_SELL_IN_BULL).
+   //
+   // CITATIONS:
+   //   - tradingfinder.com — MSS / hidden divergence for continuation
+   //   - alchemymarkets.com/education/strategies/hidden-bearish-divergence/
+   //   - mql5.com/en/blogs/post/767595 — VWAP for XAUUSD intraday sentiment
+   //   - volity.io/forex/rsi-indicator/ — ADX as RSI context modulator
+   //   - tradersunion.com/interesting-articles/rsi-indicator-strategies/rsi-divergence/
+   // ─────────────────────────────────────────────────────────────────────────
+   if(g_sc.dtc_enabled) {
+      // Compute live M15 ADX (mirror of pattern at line 11404)
+      double _dtc_m15_buf[1];
+      double _dtc_m15_adx = 0.0;
+      if(g_mtf[1].h_adx != INVALID_HANDLE && CopyBuffer(g_mtf[1].h_adx, 0, 0, 1, _dtc_m15_buf) == 1)
+         _dtc_m15_adx = _dtc_m15_buf[0];
+      // VWAP distance in ATR units (signed: negative = below VWAP)
+      g_eval_vwap_dist_atr = (m5_atr_now > 0.0 && g_vwap_price > 0.0)
+                             ? (m5_close_now - g_vwap_price) / m5_atr_now
+                             : 0.0;
+      // H1 DI dominance
+      double _dtc_di_balance = g_eval_h1_di_plus - g_eval_h1_di_minus;
+      // Bear-day-intraday: 3 confluence conditions, optionally daily-bias filter
+      g_dtc_bear_day_intraday =
+            (g_eval_vwap_dist_atr <= -g_sc.dtc_vwap_dist_atr_threshold)
+         && (_dtc_m15_adx >= g_sc.dtc_m15_adx_min)
+         && (_dtc_di_balance <= -g_sc.dtc_h1_di_dominance_min)
+         && (!g_daily_bull_bias);
+      // Bull-day-intraday: mirror
+      g_dtc_bull_day_intraday =
+            (g_eval_vwap_dist_atr >= g_sc.dtc_vwap_dist_atr_threshold)
+         && (_dtc_m15_adx >= g_sc.dtc_m15_adx_min)
+         && (_dtc_di_balance >=  g_sc.dtc_h1_di_dominance_min)
+         && (!g_daily_bear_bias);
+      // PEMCG modifier — de-weight matching-direction warnings when day-type confirms continuation
+      if(g_sc.dtc_pemcg_modifier_enabled && g_sc.dtc_pemcg_bypass_atoms > 0) {
+         if(g_dtc_bear_day_intraday) {
+            int _newsell = g_pemcg_sell_warning_count - g_sc.dtc_pemcg_bypass_atoms;
+            g_pemcg_sell_warning_count = (_newsell < 0) ? 0 : _newsell;
+         }
+         if(g_dtc_bull_day_intraday) {
+            int _newbuy = g_pemcg_buy_warning_count - g_sc.dtc_pemcg_bypass_atoms;
+            g_pemcg_buy_warning_count = (_newbuy < 0) ? 0 : _newbuy;
+         }
+      }
+   } else {
+      g_dtc_bear_day_intraday = false;
+      g_dtc_bull_day_intraday = false;
+      g_eval_vwap_dist_atr    = 0.0;
    }
 
    // v2.7.84 — CVCSM (Layer 2) state-machine retry — once per M5 bar close
@@ -12938,7 +13083,29 @@ void CheckNativeScalperSetups() {
             block_reason = (direction == "BUY") ? "dirlock_block_buy" : "dirlock_block_sell";
          }
       }
-      if(umcg_blocked || cvcsm_blocked || dirlock_blocked) {
+      // v2.7.105 — DTC day-bias hard block. When day-type opposes setup direction AND the
+      //   setup is NOT in the exempt list, emit a hard SKIP gate. Prevents knife-catch BUYs
+      //   on confirmed bear days (G5016 BB_LOWER_REVERSION_BUY −$112 was the canonical case)
+      //   and mirror SELLs on confirmed bull days (FRACTIONAL_SELL_IN_BULL exempt — operator's
+      //   intentional counter-regime probe).
+      //   Exempt-list check uses StringFind on the comma-separated knob value.
+      bool dtc_day_bias_blocked = false;
+      if(!umcg_blocked && !cvcsm_blocked && !dirlock_blocked && g_sc.dtc_enabled && g_sc.dtc_day_bias_block_enabled) {
+         if(direction == "BUY" && g_dtc_bear_day_intraday) {
+            // BUY into a bear day — block unless setup is in exempt list
+            if(StringFind(g_sc.dtc_exempt_buy_setups, setup_type) < 0) {
+               dtc_day_bias_blocked = true;
+               block_reason = "bear_day_buy_block";
+            }
+         } else if(direction == "SELL" && g_dtc_bull_day_intraday) {
+            // SELL into a bull day — block unless setup is in exempt list
+            if(StringFind(g_sc.dtc_exempt_sell_setups, setup_type) < 0) {
+               dtc_day_bias_blocked = true;
+               block_reason = "bull_day_sell_block";
+            }
+         }
+      }
+      if(umcg_blocked || cvcsm_blocked || dirlock_blocked || dtc_day_bias_blocked) {
          double _gate_mid_px = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
          JournalRecordSignal("SKIP", block_reason, setup_type, direction,
             _gate_mid_px, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m, 0, h1_trend_strength, 0);

@@ -213,6 +213,18 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_UMCG_PEMCG_BODY_PCT_MAX_WEAK":                   ("safety",    "umcg_pemcg_body_pct_max_weak",                  "float",  0.1,   1.0),
     "FORGE_GATE_UMCG_PEMCG_ATR_RATIO_MAX_CONTRACT":              ("safety",    "umcg_pemcg_atr_ratio_max_contract",             "float",  0.5,   2.0),
     "FORGE_GATE_UMCG_PEMCG_BB_DIST_ATR_THRESHOLD":               ("safety",    "umcg_pemcg_bb_dist_atr_threshold",              "float",  0.0,   2.0),
+    # v2.7.105 — Day-Type Classifier (DTC) + PEMCG modifier + Day-Bias hard block.
+    # Validated via Run 36 v2.7.102 monitoring data (11,669 mis-blocked SELLs in 5h bear window).
+    # See docs/FORGE_PEMCG_ARCHITECTURE.md §3.4 and docs/FORGE_CORE_LOGIC_DESIGN.md §9 v2.7.105 entry.
+    "FORGE_COMPOSITE_DTC_ENABLED":                               ("safety",    "dtc_enabled",                                   "bool01", None,  None),
+    "FORGE_COMPOSITE_DTC_PEMCG_MODIFIER_ENABLED":                ("safety",    "dtc_pemcg_modifier_enabled",                    "bool01", None,  None),
+    "FORGE_COMPOSITE_DTC_DAY_BIAS_BLOCK_ENABLED":                ("safety",    "dtc_day_bias_block_enabled",                    "bool01", None,  None),
+    "FORGE_GATE_DTC_VWAP_DIST_ATR_THRESHOLD":                    ("safety",    "dtc_vwap_dist_atr_threshold",                   "float",  0.0,   10.0),
+    "FORGE_GATE_DTC_M15_ADX_MIN":                                ("safety",    "dtc_m15_adx_min",                               "int",    0,     80),
+    "FORGE_GATE_DTC_H1_DI_DOMINANCE_MIN":                        ("safety",    "dtc_h1_di_dominance_min",                       "float",  0.0,   50.0),
+    "FORGE_GATE_DTC_PEMCG_BYPASS_ATOMS":                         ("safety",    "dtc_pemcg_bypass_atoms",                        "int",    0,     7),
+    "FORGE_GATE_DTC_EXEMPT_BUY_SETUPS":                          ("safety",    "dtc_exempt_buy_setups",                         "string", None,  None),
+    "FORGE_GATE_DTC_EXEMPT_SELL_SETUPS":                         ("safety",    "dtc_exempt_sell_setups",                        "string", None,  None),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),

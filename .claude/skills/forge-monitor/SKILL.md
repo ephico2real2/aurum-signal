@@ -959,6 +959,89 @@ Industry citation framework (WebSearch mandate applies):
 
 ---
 
+### MANDATORY: PEMCG asymmetry audit on every monitoring tick + bear/bull-day intraday detection
+
+**Operator mandate** (2026-05-14, Run 36 v2.7.102 monitoring): "PEMCG_SELL fired 63,716 times during a 140-pt bear move. ZERO SELL setups TAKEN... pemcg_BUY_block = 5,494 vs pemcg_SELL_block = 63,716 (12x ratio)."
+
+**Insight that surfaced from this audit** (the headline lesson):
+> **`h1_trend_strength` is a TRAILING indicator and CANNOT be used to detect fresh intraday reversals.** During the Apr-01→Apr-02 140-pt bear move, `h1_trend_strength` averaged +0.42 (still POSITIVE) across the 11,669 blocked-SELL sample. By the time the H1 EMA crosses negative, the move is hours old. **VWAP-distance + M15 ADX + H1 DI dominance are the correct intraday-bias triad** — they catch a regime shift within 1-2 M15 bars, not 1-2 H1 bars.
+
+**When this audit fires** (mandatory every tick that includes a non-trivial PEMCG block window):
+
+```python
+import sqlite3
+DB = "<active source DB>"
+conn = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+# Pull the BUY vs SELL block ratio over the current monitoring window
+row = conn.execute("""
+  SELECT
+    SUM(CASE WHEN gate_reason='pemcg_buy_reversal_block'  THEN 1 ELSE 0 END) AS buy_blocks,
+    SUM(CASE WHEN gate_reason='pemcg_sell_reversal_block' THEN 1 ELSE 0 END) AS sell_blocks
+  FROM SIGNALS
+  WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+    AND outcome='SKIP'
+    AND time >= strftime('%s', '<window start>')
+    AND time <= strftime('%s', '<window end>')
+""").fetchone()
+buy, sell = row
+ratio = max(buy, sell) / max(1, min(buy, sell))
+direction = "SELL_HEAVY" if sell > buy else "BUY_HEAVY"
+print(f"PEMCG block asymmetry: BUY={buy} SELL={sell} ratio={ratio:.1f}× ({direction})")
+```
+
+**Rule**: if **ratio ≥ 5× in either direction**, flag as **"PEMCG over-filtering candidate — check day-type"**. Then run the DAY-TYPE VERIFICATION query (below) to confirm whether the bias was structural or noise.
+
+**DAY-TYPE VERIFICATION** (canonical query — pulls the intraday triad that v2.7.105 DTC uses):
+
+```python
+conn.execute("""
+  SELECT
+    ROUND(AVG((vwap_price - price) / atr), 2)   AS avg_below_vwap_atr,
+    ROUND(AVG(m15_adx), 1)                       AS avg_m15_adx,
+    ROUND(AVG(h1_trend), 2)                      AS avg_h1_trend,
+    ROUND(AVG(rsi), 1)                           AS avg_rsi,
+    ROUND(MIN(price), 2)                         AS min_px,
+    ROUND(MAX(price), 2)                         AS max_px,
+    COUNT(*)                                     AS sample_n
+  FROM SIGNALS
+  WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS)
+    AND outcome='SKIP'
+    AND gate_reason = '<the over-blocked gate>'  -- pemcg_sell_reversal_block in Run 36
+    AND time BETWEEN strftime('%s','<start>') AND strftime('%s','<end>')
+    AND atr > 0
+""").fetchall()
+```
+
+**Interpretation table**:
+
+| Indicator | "Yes, this is a confirmed bear day" thresholds | "Yes, this is a confirmed bull day" thresholds |
+|---|---|---|
+| avg_below_vwap_atr | ≥ +1.5 (price way below VWAP) | ≤ −1.5 (price way above VWAP) |
+| avg_m15_adx | ≥ 25 | ≥ 25 |
+| avg_h1_trend | usually still positive in fresh bear; **don't trust this signal** | usually still negative in fresh bull |
+| avg_rsi | mid-range (40-55) suggests bear continuation not oversold reversal | mid-range (45-60) suggests bull continuation |
+| sample_n | ≥ 1,000 in window | ≥ 1,000 in window |
+
+**If 2 of 3 confirmation indicators (VWAP-dist, M15 ADX, h1_trend if relevant) point the same direction AND the over-blocked gate matches that direction** (e.g. bear day + pemcg_sell over-blocked), the v2.7.105 DTC modifier + day-bias-block stack is the structural fix.
+
+**Reporting format** in tick + analysis doc:
+
+> "PEMCG asymmetry: BUY=5,494 SELL=63,716 ratio=11.6× SELL_HEAVY in window 22:00 Apr-01 → 23:59 Apr-02. Day-type verification: avg VWAP-dist −4.18 ATR (bear-confirmed), M15 ADX 28.7 (trend-confirmed), h1_trend +0.42 (lagging — discard), RSI 47.1 (not oversold). **Confirmed bear day with PEMCG_SELL over-firing on direction-correct continuation entries**. v2.7.105 DTC (FORGE_COMPOSITE_DTC_*) is the structural fix; flip both `dtc_pemcg_modifier_enabled` and `dtc_day_bias_block_enabled` on next backtest restart."
+
+**Anti-pattern**: reporting "63k SELL blocks during a bear move" as evidence of "PEMCG working as designed". The system is supposed to block reversal-trap SELLs at the bottom of bounces, not direction-correct continuation SELLs during a sustained bear. **Direction asymmetry + day-type confirmation = over-filter, not feature.**
+
+**Cross-references**:
+- v2.7.105 ship notes (this version): `docs/FORGE_PEMCG_ARCHITECTURE.md` §3.4 "Layer 4 — DTC"
+- Gate codes: `bear_day_buy_block`, `bull_day_sell_block` in `config/gate_legend.json`
+- Knob discovery: `.env.example` block under "v2.7.105 — Day-Type Classifier"
+- Industry research (per WebSearch mandate, 2026-05-14):
+  - [volity.io — RSI Indicator](https://www.volity.io/forex/rsi-indicator/) ("A high ADX reading confirms a strong trend, making RSI's overbought/oversold signals less reliable for reversals and more indicative of continuation.")
+  - [mql5.com/blogs/post/767595 — VWAP for Trading Gold](https://www.mql5.com/en/blogs/post/767595) ("When the price is below VWAP, the market sentiment is bearish.")
+  - [alchemymarkets — Hidden Bearish Divergence](https://alchemymarkets.com/education/strategies/hidden-bearish-divergence/) (continuation, not reversal)
+  - [tradersunion — RSI Divergence](https://tradersunion.com/interesting-articles/rsi-indicator-strategies/rsi-divergence/) (regular vs hidden divergence semantics)
+
+---
+
 ### MANDATORY: case study file for date-range / multi-day pattern analyses
 
 Whenever the analysis spans **2 or more trading days** (e.g. day-typing, cross-day composite

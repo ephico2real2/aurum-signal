@@ -428,6 +428,77 @@ BUY counter-trade: full mirror with PEMCG_SELL, BB upper, m5_rsi ≥ overbought,
 | `bb_exhaustion_reversal_proximity_atr` | 1.5 | Throttle: skip if existing same-dir within this×ATR |
 | `bb_exhaustion_reversal_cooldown_sec` | 0 (v2.7.91) | Time cooldown disabled — proximity is the throttle |
 
+### §3.4 Layer 4 — DTC (Day-Type Classifier) — PEMCG modifier + Day-Bias hard block (v2.7.105)
+
+**File:line**: `ea/FORGE.mq5` PEMCG-block (computation) + UMCG enforcement block (hard-block check).
+**Statefulness**: Stateless per-tick — recomputed at every M5 close from live indicators.
+**Origin**: Run 36 v2.7.102 monitoring 2026-05-14. PEMCG_SELL fired **63,716** times during a 140-pt bear move (Apr-01 22:00 → Apr-02 23:59) while ZERO SELL setups were TAKEN. Mirror PEMCG_BUY fired only **5,494** times — **12× asymmetry**. Root cause: PEMCG_SELL atoms A1 (RSI≤35) and A5 (close near BB_lower) fire by definition in ANY sustained bear leg; combined with A2/A3/A4/A6 firing opportunistically on small consolidation bars, the warning count reaches 5/7 even when the signal is direction-correct trend-continuation.
+
+**Indicator triad** (validated against 11,669-sample blocked-SELL window 10:00-15:00 Apr-02):
+
+| Indicator | Bear-day threshold | Bull-day threshold | Rationale |
+|---|---|---|---|
+| VWAP-distance (in ATR) | ≤ −1.5 | ≥ +1.5 | Run 36 bear-window avg: −4.18 ATR. VWAP is the canonical intraday sentiment line (mql5.com/blogs/767595). |
+| M15 ADX | ≥ 25 | ≥ 25 | Industry rule: ADX ≥ 25 means trending regime; RSI overbought/oversold loses reliability as reversal signal and gains reliability as continuation (volity.io RSI guide). |
+| H1 DI dominance | DI− − DI+ ≥ 5 | DI+ − DI− ≥ 5 | Direction-of-trend even when h1_trend_strength lags (Run 36 showed h1_trend was still +0.42 during active bear; DI+/DI− leads). |
+| Daily-bias guard | NOT `g_daily_bull_bias` | NOT `g_daily_bear_bias` | Avoid firing against the macro daily context. |
+
+**Notably absent from the triad**: `h1_trend_strength`. Run 36 data proved it was still +0.42 (POSITIVE) during the active 140-pt bear — the H1 EMA-based trend strength lags 1+ hour on fresh reversals. **VWAP + M15 ADX + H1 DI is the correct intraday-bias detector**.
+
+**Two consequences when day-type confirmed** (both default-OFF; activated independently via sub-flags):
+
+#### §3.4a — PEMCG modifier (`dtc_pemcg_modifier_enabled`)
+When `g_dtc_bear_day_intraday` AND direction == SELL → subtract `dtc_pemcg_bypass_atoms` (default 2) from `g_pemcg_sell_warning_count` (clamped to 0). Lowers the chance of false reversal-trap block on direction-correct continuation SELLs.
+
+Mirror: `g_dtc_bull_day_intraday` AND direction == BUY → subtract from `g_pemcg_buy_warning_count`.
+
+#### §3.4b — Day-Bias hard block (`dtc_day_bias_block_enabled`)
+When day-type OPPOSES setup direction AND setup NOT in exempt list → emit hard SKIP gate:
+- `bear_day_buy_block` when `g_dtc_bear_day_intraday` AND direction == BUY
+- `bull_day_sell_block` when `g_dtc_bull_day_intraday` AND direction == SELL
+
+Exemption lists (comma-separated strings) protect intentional counter-regime setups:
+- `dtc_exempt_buy_setups` default = `"BB_EXHAUSTION_REVERSAL_BUY"` (the §3.3 reversal-capture setup)
+- `dtc_exempt_sell_setups` default = `"FRACTIONAL_SELL_IN_BULL,BB_EXHAUSTION_REVERSAL_SELL"` (operator's intentional bull-day SELL probe + §3.3 mirror)
+
+**Knobs**:
+| Knob | Default | Meaning |
+|---|---|---|
+| `dtc_enabled` | 0 | Master switch (false = no DTC computation; behaves like pre-v2.7.105) |
+| `dtc_pemcg_modifier_enabled` | 0 | Apply §3.4a de-weighting on day-type match |
+| `dtc_day_bias_block_enabled` | 0 | Apply §3.4b hard block on day-type oppose |
+| `dtc_vwap_dist_atr_threshold` | 1.5 | VWAP-distance threshold (ATR units, absolute) |
+| `dtc_m15_adx_min` | 25 | M15 ADX minimum |
+| `dtc_h1_di_dominance_min` | 5.0 | H1 |DI+ − DI−| minimum |
+| `dtc_pemcg_bypass_atoms` | 2 | Atoms subtracted when day-type matches |
+| `dtc_exempt_buy_setups` | "BB_EXHAUSTION_REVERSAL_BUY" | Bear-day BUY-block exempt list |
+| `dtc_exempt_sell_setups` | "FRACTIONAL_SELL_IN_BULL,BB_EXHAUSTION_REVERSAL_SELL" | Bull-day SELL-block exempt list |
+
+**Layer ordering** (in UMCG enforcement block):
+1. UMCG (Layer 1 — PEMCG threshold) — but PEMCG count already modified by §3.4a if enabled
+2. CVCSM (Layer 2 — cooldown state)
+3. DirLock (v2.7.97 — direction lock state)
+4. **DTC Day-Bias hard block (§3.4b — new, v2.7.105)** ← inserted here
+5. Setup fires only if all 4 layers pass
+
+This makes DTC the OUTERMOST gate when day-type opposes direction — fast-rejects knife-catches even when UMCG/CVCSM/DirLock all pass.
+
+**Cross-references**:
+- `config/gate_legend.json` entries: `bear_day_buy_block`, `bull_day_sell_block`
+- `scripts/sync_scalper_config_from_env.py` mappings: `FORGE_COMPOSITE_DTC_*` + `FORGE_GATE_DTC_*`
+- `.env.example` block: search `FORGE_COMPOSITE_DTC_ENABLED`
+- Industry research log: see §9 v2.7.105 entry below
+
+**Validation evidence** (Run 36 v2.7.102 backtest, 11,669-sample blocked-SELL window):
+```
+Avg ATR              10.08
+Avg VWAP-distance    -43.51 pts = -4.18 ATR (target threshold: -1.5 ATR → ALL 11,669 caught)
+Avg M15 ADX          28.7 (target: ≥ 25 → ALL caught)
+Avg H1 DI balance    < -5 (confirmed bear DI dominance)
+Avg RSI              47.1 (NOT oversold — confirms PEMCG was over-firing on non-A1 atoms)
+Avg h1_trend         +0.42 (POSITIVE — proves h1_trend is unreliable for fresh reversals)
+```
+
 ---
 
 ## §4 Side gates that DO NOT use PEMCG
@@ -756,6 +827,7 @@ When `/forge-monitor` runs:
 - 2026-05-14 — v2.7.89/90/91/92/94 recorded: Layer 3 enhancements (§3.3)
 - 2026-05-14 — v2.7.93 recorded as independent side gate (§4)
 - 2026-05-14 — v2.7.103 recorded: DLV consumers now plural — stack-based `CancelPendingOnStructureFlip` (slot-range knob added) + new walker-based `CancelStrayPendingsOnStructureFlip` (core-range pendings). Both default-OFF. ICT MSS sources added to §9 references.
+- 2026-05-14 — v2.7.105 recorded: **§3.4 Layer 4 — DTC (Day-Type Classifier) added** as a fourth consumer of the PEMCG signal AND a new outermost gate. Solves 12× SELL-block asymmetry observed in Run 36 v2.7.102 (63,716 PEMCG_SELL blocks during a 140-pt bear move). Triad: VWAP-distance + M15 ADX + H1 DI dominance — deliberately excludes h1_trend_strength (proven lagging during fresh reversals). Two new gate codes: `bear_day_buy_block`, `bull_day_sell_block`. Industry citations: volity.io (ADX gates RSI continuation/reversal), mql5.com/blogs/767595 (VWAP intraday sentiment), alchemymarkets hidden-divergence (continuation pattern). All knobs default-OFF behind `FORGE_COMPOSITE_DTC_ENABLED`.
 - 2026-05-14 — **§1A added** — acronym dictionary (PEMCG / UMCG / CVCSM + new DLV / DLS introduced in v2.7.97), layer relationship diagram, and explicit grouping of *indicators → thresholds → atoms → counts → layer verdicts*. Operator request after asking "add meaning of PEMCG, UMCG and CVCSM how they all related together how indicators values, thresholds, bool are groups". DLV (Direction Lock Verdict) + DLS (Direction Lock State) are new in v2.7.97 — naming follows the existing 4-5 letter pattern + FORGE_NAMING_CONVENTIONS §4.7.
 - 2026-05-14 — **§9 References expanded** — added 12 industry article citations used during the v2.7.95-2.7.102 redesign (ICT MSS, LuxAlgo validation, Triple MA EA re-entry rule, MQL5 hedge-mode docs, OnTradeTransaction patterns, MQL5 Articles 21759 + 20587, pyramid systems, Triple-Scale TP method, XAUUSD pip convention sources). These informed Sets 1/4/6/7/8 design.
 - 2026-05-14 — Live evidence §7 first populated: Run 9 v2.7.94, sim Apr 1 19:44, 4,234 v2.7.93 blocks confirming G5006 retest trap caught
