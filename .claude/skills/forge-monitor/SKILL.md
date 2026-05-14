@@ -1649,11 +1649,23 @@ FROM SIGNALS WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS);"
 sqlite3 -readonly "$DB" "
 SELECT datetime(time,'unixepoch') as sim_time, magic, setup_type, direction,
        ROUND(price,2) as price, ROUND(atr,2) as atr,
-       ROUND(rsi,1) as rsi, ROUND(adx,1) as adx, session
+       ROUND(rsi,1) as rsi, ROUND(adx,1) as adx, session,
+       ces_score, ces_dtc, ces_pemcg, ces_momentum, ces_rsi, ces_vwap, ces_di
 FROM SIGNALS WHERE outcome='TAKEN'
   AND run_id=(SELECT MAX(id) FROM TESTER_RUNS)
 ORDER BY time;"
 ```
+
+**CES columns** (v2.7.110 Option C, default-OFF gate):
+- `ces_score` (0–10) — sum of 6 weighted boolean atoms; default threshold `ces_min_threshold=6`
+- `ces_dtc` (0 or 3) — DTC matches trade direction (dominant weight)
+- `ces_pemcg` (0 or 2) — PEMCG warnings clean
+- `ces_momentum` (0 or 2) — momentum-candle confirmation (strong bar + range expanding)
+- `ces_rsi` (0 or 1) — RSI in trend zone for direction
+- `ces_vwap` (0 or 1) — VWAP confirmation
+- `ces_di` (0 or 1) — H1 DI dominance for direction
+
+**Reporting requirement**: every TAKEN row in tick reports + every analysis-doc TAKEN row MUST show `ces_score` and the component breakdown. Pattern in cross-day analysis: low-CES winners on chop days = DTC=0 structural; high-CES winners on trend days = full confluence. Loss correlation only validates the Option A threshold cutoff — see `docs/FORGE_CES_DESIGN.md` §6.
 
 ### Q3 — Gate breakdown
 ```bash
@@ -2206,8 +2218,10 @@ If you discover a table/column not in `FORGE_TESTER_JOURNAL_QUERIES.md`:
 - Athena cross-check: ✓/✗ gate counts match, performance.total_pnl=$N.NN confirmed
 
 ## TAKEN Groups
-| Sim Time (UTC) | Group | Direction | Session | RSI | ADX | ATR | Price | TP reached | P&L |
-|----------------|-------|-----------|---------|-----|-----|-----|-------|-----------|-----|
+| Sim Time (UTC) | Group | Setup | Direction | Session | RSI | ADX | ATR | Price | CES | DTC | PEMCG | MOM | RSI* | VWAP | DI | TP reached | P&L |
+|----------------|-------|-------|-----------|---------|-----|-----|-----|-------|-----|-----|-------|-----|------|------|----|-----------|-----|
+
+*CES columns are weighted-boolean components: DTC(0/3), PEMCG(0/2), MOM(0/2), RSI*(0/1), VWAP(0/1), DI(0/1). Sum = `ces_score` (0–10). v2.7.110 Option C — logged only, not yet a gate.*
 
 ## Gate Breakdown (final, all SKIP reasons)
 | Gate Reason | Count | Human Label |
