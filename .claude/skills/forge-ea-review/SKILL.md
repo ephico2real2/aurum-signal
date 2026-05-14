@@ -94,7 +94,47 @@ Every `/forge-ea-review` run MUST emit explicit results for these two checks. Th
   ```
 - Historical context: 2026-05-12 audit found 16 FORGE_* vars in sync mapping but missing from `.env.example` — including `FORGE_BREAKOUT_BLOCK_HID_BULL_SELL`, `FORGE_DUMP_SELL_LOT_FACTOR`, `FORGE_SELL_STOP_CONT_*`, `FORGE_WAVE_CONFIRMATION_LOT_MULT`. Several were ACTIVE in `.env` (`=1` / `=2.0` etc.) yet had no hint in `.env.example` — operators couldn't discover what knobs existed without reading the sync script directly.
 
-All three checks must appear in the report's "Validation Summary" header AND in their own dedicated section before the section-by-section breakdown.
+#### Mandatory Check D — SIGNALS schema ↔ aurum_tester ↔ scribe sync parity (must PASS or list all failures)
+
+When a new column is added to `ea/FORGE.mq5`'s `JournalRecordSignal` / `SIGNALS` table, **THREE files must update in lockstep** or the bridge will silently drop every signal:
+
+1. `ea/FORGE.mq5` — `SIGNALS` `CREATE TABLE` schema + `JournalRecordSignal` INSERT
+2. `schemas/aurum_tester.sql` (or `python/scribe.py` CREATE TABLE) — mirror schema in `forge_signals`
+3. `python/scribe.py::sync_forge_journal` — both the **INSERT column list** AND the **placeholder count** in `VALUES (...)`
+
+Historical incident (2026-05-13, this skill's birth): v2.7.45 added `killzone` + `minutes_into_kz` and v2.7.47 added `htf_h1_strong` + `intraday_label` + `intraday_counter_htf` (5 new cols). The column-list and tuple-append code in `sync_forge_journal` were updated, but the placeholder count stayed at `(37 + 24 + 45) = 106`. The actual column count was `(41 + 24 + 45) = 110`. Every `INSERT OR IGNORE` silently failed with `106 values for 110 columns`. Bridge entered an infinite sync-recovery loop, syncing 5000 / inserting 0 every 60s. The Athena UI's "TAKEN ENTRIES" table went dark because no signals reached `forge_signals`, while trades (separate INSERT) kept syncing — so the dashboard showed "6 trades / 0 TAKEN", indistinguishable from a fresh run.
+
+**Audit one-liner** — counts the column-list against the placeholder math:
+
+```python
+import re, pathlib
+src = pathlib.Path("python/scribe.py").read_text()
+# Find the forge_signals INSERT block
+m = re.search(r'INSERT OR IGNORE INTO forge_signals\s*"\s*"\(([^)]+)\)"\s*"\s*VALUES\s*\("\s*\+\s*",".join\(\["\?"\]\s*\*\s*\(([^)]+)\)\)', src, re.S)
+if not m:
+    # Fallback: split-line form used in current scribe.py
+    cols_block = re.search(r'INSERT OR IGNORE INTO forge_signals.*?\) "\s*"\s*VALUES', src, re.S).group(0)
+    placeholder = re.search(r'\["\?"\]\s*\*\s*\(([^)]+)\)', src).group(1)
+else:
+    cols_block, placeholder = m.group(1), m.group(2)
+# Count column names (strip comments, split by comma)
+cols_clean = re.sub(r'#[^\n]*', '', cols_block)
+col_names = [c.strip() for c in cols_clean.replace('"', '').split(',') if c.strip()]
+n_cols = len(col_names)
+# Evaluate the placeholder arithmetic (e.g. "37 + 24 + 45" → 106)
+n_placeholders = eval(placeholder.replace(' ', ''))
+print(f"forge_signals INSERT: column_list={n_cols}  placeholder_count={n_placeholders}  match={n_cols == n_placeholders}")
+```
+
+Any mismatch is a **FAIL** — bridge will sync 0 new rows. Symptoms during monitoring (forge-monitor will detect this if it runs):
+- `bridge.log` shows repeated `BRIDGE: sync-recovery ... reset N missing rows to synced=0`
+- Followed by `scribe WARNING SCRIBE sync_forge_journal error: <X> values for <Y> columns`
+- API `/api/backtest/run/<id>` returns `signals.taken: 0` but `performance.total > 0`
+- Athena UI "TAKEN ENTRIES" panel disappears (renders only when `taken.length > 0`)
+
+The reverse case (column added to FORGE.mq5 but NOT to scribe.py / aurum_tester schema) also FAILS — extract column names from `JournalRecordSignal(` argument list in `ea/FORGE.mq5` and confirm each appears as a column in the scribe `INSERT` list above. Use `grep -nE "JournalRecordSignal\("` to find the active signature, then cross-reference.
+
+All four checks must appear in the report's "Validation Summary" header AND in their own dedicated section before the section-by-section breakdown.
 
 Historical context: Sessions 2026-05-10 found 8 dead env vars (renamed/unused), 4 case-mismatch env vars, and 3 missing gate codes (`h1_di_sell`, `h1_macd_sell`, `hid_bull_div_sell`) across consecutive reviews. The fixes were trivial; the value lost from missing them was significant (silent config drift, undecoded gates in monitoring).
 
