@@ -644,5 +644,15 @@
     "label": "SELL blocked \u2014 confirmed bull day (DTC mirror)",
     "explanation": "v2.7.105 DTC: mirror of bear_day_buy_block. When confirmed intraday bull (VWAP_dist_atr \u2265 +1.5, m15_adx \u2265 25, DI+ dominance \u2265 5, !daily_bear_bias), SELL setups are hard-blocked unless in FORGE_GATE_DTC_EXEMPT_SELL_SETUPS (default FRACTIONAL_SELL_IN_BULL,BB_EXHAUSTION_REVERSAL_SELL \u2014 operator's intentional counter-regime probes).",
     "category": "Day-Type / Bias"
+  },
+  "counter_bull_day_buy_block": {
+    "label": "BUY blocked \u2014 counter-trend bull bounce inside bear H4",
+    "explanation": "v2.7.107 DTC 5-state: BUY blocked because intraday triad confirms bull (VWAP_dist \u2265 +1.5, m15_adx \u2265 25, DI+ dom \u2265 5) BUT H4 trend disagrees (h4_trend_strength \u2264 \u22120.5 \u2192 bear macro). This is the canonical 'corrective bounce inside larger bear trend' = knife-catch BUY pattern. Run 36 G5021 case: MOMENTUM_DUMP BUY @ 4697 during the multi-day bear from 4780 \u2192 4630, lost \u2212$498.60 across 4 cascade legs. Requires FORGE_COMPOSITE_DTC_5STATE_ENABLED=1 + FORGE_GATE_DTC_BLOCK_COUNTER_TREND_BUYS=1. Exempt setups protected via FORGE_GATE_DTC_EXEMPT_BUY_SETUPS.",
+    "category": "Day-Type / Bias"
+  },
+  "counter_bear_day_sell_block": {
+    "label": "SELL blocked \u2014 counter-trend bear dip inside bull H4 (mirror)",
+    "explanation": "v2.7.107 DTC 5-state: SELL blocked because intraday triad confirms bear BUT H4 trend disagrees (h4_trend_strength \u2265 +0.5 \u2192 bull macro). This is the 'corrective dip inside larger bull trend' pattern \u2014 BUYs at deep oversold here are the OTE setup at H4 demand; SELLs are fighting the macro. Mirror of counter_bull_day_buy_block. Requires FORGE_COMPOSITE_DTC_5STATE_ENABLED=1 + FORGE_GATE_DTC_BLOCK_COUNTER_TREND_SELLS=1.",
+    "category": "Day-Type / Bias"
   }
 }

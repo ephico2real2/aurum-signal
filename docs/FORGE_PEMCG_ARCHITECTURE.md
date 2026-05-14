@@ -499,6 +499,50 @@ Avg RSI              47.1 (NOT oversold — confirms PEMCG was over-firing on no
 Avg h1_trend         +0.42 (POSITIVE — proves h1_trend is unreliable for fresh reversals)
 ```
 
+### §3.5 Layer 4 (continued) — DTC 5-state classifier (v2.7.107 ICT-canonical)
+
+v2.7.105 binary day-type was a partial fix. Run 36 produced TWO additional knife-catch losses that v2.7.105 cannot block because the **intraday triad alone is ambiguous between trend-continuation and corrective-retracement**:
+
+- **G5021 Apr-06 17:35: MOMENTUM_DUMP BUY @ 4697.86, RSI 65.9, M5 ADX 32.1, M15 ADX 22.2, h1_trend +0.28, VWAP_dist_atr +1.60.** M15 ADX 22.2 < v2.7.105's 25 threshold → `g_dtc_bull_day_intraday = false` → v2.7.105 DOES NOT BLOCK. But H4 trend by Apr-06 had been declining 4 days (4780 → 4630) — clearly bear. The intraday "bull" was a corrective bounce that the bear macro crushed. Cascade lost **−$498.60** across 4 legs.
+- **G5026 Apr-07 07:40**: BB_EXHAUSTION_REVERSAL_SELL @ 4658.5 (exempt setup, not relevant to fix).
+
+The fix is H4 trend agreement as a **fourth axis** layered on the intraday triad, producing **5 states**:
+
+| State | Intraday triad | H4 trend | ICT class | Default behaviour |
+|---|---|---|---|---|
+| `BULL_TREND_ALIGNED` | bull | ≥ +0.5 | Trend-aligned bull | de-weight pemcg_buy + block SELLs |
+| `BEAR_TREND_ALIGNED` | bear | ≤ −0.5 | Trend-aligned bear | de-weight pemcg_sell + block BUYs |
+| `COUNTER_TREND_BULL` | bull | ≤ −0.5 | Corrective bounce in bear macro | optionally block BUYs (`dtc_block_counter_trend_buys`) |
+| `COUNTER_TREND_BEAR` | bear | ≥ +0.5 | Corrective dip in bull macro (**OTE setup at H4 demand**) | optionally block SELLs (`dtc_block_counter_trend_sells`); BUYs at deep oversold remain ALLOWED |
+| `NEUTRAL` | not confirmed | any | No bias decided | pre-DTC behaviour |
+
+**Critical asymmetry**: counter-trend states do NOT trigger PEMCG modifier. The PEMCG composite stays fully strict in those states because counter-trend retracements are high-failure-rate (H4 macro re-asserts). Only TREND_ALIGNED states de-weight PEMCG warnings.
+
+**G5016 case (Apr-02 08:34 BB_LOWER_REVERSION_BUY @ 4640, lost −$111.90)** fits `COUNTER_TREND_BEAR` (bear intraday inside still-bull H4 from Apr-01 rally). The 5-state design **correctly LETS THIS FIRE** — BB_LOWER_REVERSION_BUY at deep oversold (VWAP_dist −9.68 ATR is extreme) near H4 demand is the canonical ICT OTE setup. The −$112 loss is bad-luck-on-OTE, not structural. The structural fix is a separate "weak bar at deep oversold" atom (operator's prior G5006 inflection-point mandate), not a DTC block.
+
+**ICT framework alignment** (per `tradeciety.com/multiple-time-frame-analysis` + ICT 2024 lectures):
+> "Trade only in direction of H4 bias unless confirmed MSS. Counter-bias trades at most fractional sizing. OTE re-entries at H4 premium/discount are the canonical setup."
+
+The 5-state design implements this verbatim:
+- Trend-aligned = full DTC (block opposite-direction knife-catches, amplify trend-aligned)
+- Counter-trend = optional block of knife-catch entries (operator-configurable per direction)
+- OTE = always allowed (intraday counter-trend dip inside bull H4 macro = canonical OTE — never blocked)
+
+**Knobs** (v2.7.107 adds 4 to v2.7.105's 9):
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `dtc_5state_enabled` | 0 | Master: 0 = v2.7.105 binary; 1 = v2.7.107 5-state |
+| `dtc_h4_trend_min_agreement` | 0.5 | \|h4_trend_strength\| ≥ this for H4 bias to be "decided" |
+| `dtc_block_counter_trend_buys` | 0 | Block BUYs in COUNTER_TREND_BULL state |
+| `dtc_block_counter_trend_sells` | 0 | Block SELLs in COUNTER_TREND_BEAR state |
+
+**Two new gate codes**:
+- `counter_bull_day_buy_block` (catches G5021-class corrective-bounce knife-catch BUYs)
+- `counter_bear_day_sell_block` (mirror — corrective-dip knife-catch SELLs)
+
+**Backward compatibility**: when `dtc_5state_enabled = 0` (default), the EA falls back to v2.7.105 binary behaviour exactly. v2.7.106 binary-H4-agreement was skipped — operator went straight from v2.7.105 (binary intraday) to v2.7.107 (5-state) per "Option 2 wins" ICT-canonical decision.
+
 ---
 
 ## §4 Side gates that DO NOT use PEMCG
@@ -828,6 +872,7 @@ When `/forge-monitor` runs:
 - 2026-05-14 — v2.7.93 recorded as independent side gate (§4)
 - 2026-05-14 — v2.7.103 recorded: DLV consumers now plural — stack-based `CancelPendingOnStructureFlip` (slot-range knob added) + new walker-based `CancelStrayPendingsOnStructureFlip` (core-range pendings). Both default-OFF. ICT MSS sources added to §9 references.
 - 2026-05-14 — v2.7.105 recorded: **§3.4 Layer 4 — DTC (Day-Type Classifier) added** as a fourth consumer of the PEMCG signal AND a new outermost gate. Solves 12× SELL-block asymmetry observed in Run 36 v2.7.102 (63,716 PEMCG_SELL blocks during a 140-pt bear move). Triad: VWAP-distance + M15 ADX + H1 DI dominance — deliberately excludes h1_trend_strength (proven lagging during fresh reversals). Two new gate codes: `bear_day_buy_block`, `bull_day_sell_block`. Industry citations: volity.io (ADX gates RSI continuation/reversal), mql5.com/blogs/767595 (VWAP intraday sentiment), alchemymarkets hidden-divergence (continuation pattern). All knobs default-OFF behind `FORGE_COMPOSITE_DTC_ENABLED`.
+- 2026-05-14 — v2.7.107 recorded: **§3.5 DTC 5-state classifier added** (layered on §3.4). Adds H4 trend agreement as a fourth axis, producing 5 states: BULL_TREND_ALIGNED, BEAR_TREND_ALIGNED, COUNTER_TREND_BULL, COUNTER_TREND_BEAR, NEUTRAL. Catches the G5021 −$498.60 case (counter-H4 BUY during corrective bounce inside bear H4 macro) that v2.7.105's binary intraday detector could not catch because M15 ADX was 22.2 (just below threshold). Counter-trend states DO NOT trigger PEMCG modifier (asymmetric design — PEMCG stays strict on counter-trend to filter trap entries). Two new gate codes: `counter_bull_day_buy_block`, `counter_bear_day_sell_block`. ICT framework alignment: "Trade only in direction of H4 bias unless confirmed MSS; OTE re-entries at H4 demand are canonical" (tradeciety multi-TF). Operator decision: skipped v2.7.106 binary-H4 intermediate; went direct to v2.7.107 5-state per "Option 2 wins". Backup: backups/v2.7.107/FORGE.mq5.pre-5state-dtc.
 - 2026-05-14 — **§1A added** — acronym dictionary (PEMCG / UMCG / CVCSM + new DLV / DLS introduced in v2.7.97), layer relationship diagram, and explicit grouping of *indicators → thresholds → atoms → counts → layer verdicts*. Operator request after asking "add meaning of PEMCG, UMCG and CVCSM how they all related together how indicators values, thresholds, bool are groups". DLV (Direction Lock Verdict) + DLS (Direction Lock State) are new in v2.7.97 — naming follows the existing 4-5 letter pattern + FORGE_NAMING_CONVENTIONS §4.7.
 - 2026-05-14 — **§9 References expanded** — added 12 industry article citations used during the v2.7.95-2.7.102 redesign (ICT MSS, LuxAlgo validation, Triple MA EA re-entry rule, MQL5 hedge-mode docs, OnTradeTransaction patterns, MQL5 Articles 21759 + 20587, pyramid systems, Triple-Scale TP method, XAUUSD pip convention sources). These informed Sets 1/4/6/7/8 design.
 - 2026-05-14 — Live evidence §7 first populated: Run 9 v2.7.94, sim Apr 1 19:44, 4,234 v2.7.93 blocks confirming G5006 retest trap caught

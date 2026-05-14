@@ -225,6 +225,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_DTC_PEMCG_BYPASS_ATOMS":                         ("safety",    "dtc_pemcg_bypass_atoms",                        "int",    0,     7),
     "FORGE_GATE_DTC_EXEMPT_BUY_SETUPS":                          ("safety",    "dtc_exempt_buy_setups",                         "string", None,  None),
     "FORGE_GATE_DTC_EXEMPT_SELL_SETUPS":                         ("safety",    "dtc_exempt_sell_setups",                        "string", None,  None),
+    # v2.7.107 — DTC 5-state classifier (ICT-canonical). Adds H4 trend agreement axis.
+    # See docs/FORGE_PEMCG_ARCHITECTURE.md §3.5 and Run 36 G5021/G5026 case studies.
+    "FORGE_COMPOSITE_DTC_5STATE_ENABLED":                        ("safety",    "dtc_5state_enabled",                            "bool01", None,  None),
+    "FORGE_GATE_DTC_H4_TREND_MIN_AGREEMENT":                     ("safety",    "dtc_h4_trend_min_agreement",                    "float",  0.0,   10.0),
+    "FORGE_GATE_DTC_BLOCK_COUNTER_TREND_BUYS":                   ("safety",    "dtc_block_counter_trend_buys",                  "bool01", None,  None),
+    "FORGE_GATE_DTC_BLOCK_COUNTER_TREND_SELLS":                  ("safety",    "dtc_block_counter_trend_sells",                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),
