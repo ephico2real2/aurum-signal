@@ -869,9 +869,18 @@ When PEMCG_BUY warnings ≥ 4 (high reversal-warning), a `BB_EXHAUSTION_REVERSAL
 
 ---
 
-### MANDATORY: Protective-close audit — separate SLs from PEMCG defensive exits, flag session-aware over-exits
+### MANDATORY: Close-deal magic attribution audit (v2.7.104 bug class)
 
-**Operator mandate** (2026-05-14, Run-on-v2.7.102): "i see Significant changes since prior tick — 9 new losses appeared" → after deeper investigation: 8 of those 9 were NOT SL hits, they were v2.7.84 PEMCG protective-close partial exits booked at base magic. Misclassifying them as SL losses produced an alarmist report that misrepresented what the EA actually did.
+**Operator mandate** (2026-05-14, Run-on-v2.7.102): "i see Significant changes since prior tick — 9 new losses appeared" → after deeper investigation: 8 of those 9 were tagged at **base magic 202401 with empty comment**, which I initially mis-explained as "v2.7.84 PEMCG protective closes". That was wrong. Deeper trace revealed the actual mechanism: **EA-internal `g_trade.PositionClose()` calls that do not pre-set `CTrade::m_magic` to the position's group magic**. MT5's CTrade copies `m_magic` into the close request, so the resulting close deal inherits whatever magic was last set on the CTrade instance — which is `MagicNumber` (base) after the reset calls at lines 2515 / 2610 / etc. that fire after every entry. v2.7.104 fixes all 10 affected PositionClose call sites by setting the magic before each call and resetting after the loop.
+
+**These ARE real losses** — they're not a defensive mechanism. The originating close path is one of:
+- v2.7.54 time-stop for MOMENTUM_DUMP / BB_LOWER_REVERSION_BUY (`g_trade.PositionClose(_ts_tk)` at the dump_max_hold_seconds expiry)
+- TP1 partial-close ratchet (closes `tp1_close_pct`% of group positions at TP1 touch)
+- TP2 banking close (closes `tp2_close_pct`% of remaining at TP2 touch, v2.7.96)
+- Conviction-decay partial close (v2.7.77 — `PositionClosePartial` at decay levels L1/L2/L3)
+- BRIDGE `CLOSE_GROUP` / `CLOSE_GROUP_PCT` / `CLOSE_ALL` / `CLOSE_PCT` / `CLOSE_PROFITABLE` / `CLOSE_LOSING` commands
+
+**The bug is in the EA, not in any "defensive mechanism"** — pre-v2.7.104, every internal close path mis-attributes the deal to base magic, breaking per-group P&L roll-ups and creating phantom "losses at magic 202401 with empty comment" that aren't tied to any group in the dashboard.
 
 **Why this matters**: in a single tick a cluster of `profit < 0` deals at base magic with empty comments and round M5 timestamps will appear in W/L counts and dashboards as **losses**, but they are *defensive mechanism outputs*, not structural failures. Confusing the two distorts the operator's mental model of system health and pushes toward wrong fixes (e.g., "widen SL" when the actual issue is "protective threshold too aggressive at the wrong session").
 
@@ -910,34 +919,34 @@ for r in conn.execute('''
 |----------|------------|----------------------|
 | `TRUE_SL` (comment `sl <price>`) | broker stop fired at SL price | **Loss** (real structural failure) |
 | `CASCADE_SLOT_SL` (magic ≥ base+20000, comment `sl <price>`) | cascade/recovery slot SL | **Loss** (intentional small SL on recovery leg) |
-| `PROTECTIVE_CLOSE` (magic = base, empty comment, M5 timestamp) | v2.7.84 / CVCSM defensive partial close | **Defensive exit** — NOT a loss (system working as designed) |
+| `EA_INTERNAL_CLOSE_MAGIC_BUG` (magic = base, empty comment) | v2.7.54 time-stop / TP1 ratchet / TP2 banking / conviction-decay / BRIDGE CLOSE_* — close-deal magic mis-tagged to base, real loss (fixed in v2.7.104+) | **Loss** — but **mis-attributed** to base magic; trace to originating group by timestamp + volume |
 | `STAGED_PARTIAL` (comment starts `SCALP`) | TP-tier partial close at loss (rare) | Investigate — should always be 0 or positive |
 | `UNKNOWN_INVESTIGATE` | doesn't match above patterns | Flag and grep the EA + bridge log |
 
-**Tick report format** (correct framing):
+**Tick report format** (correct framing, pre-v2.7.104):
 
-> "+5 new TAKENs, **2 SL deals (−$X), 8 protective closes (−$Y)**. Cluster net: −$Z (full group included both protective exits and the subsequent TP wins on the surviving positions)."
+> "+5 new TAKENs, **N losses total: 2 cascade-recovery SLs (-$X) + 8 EA-internal closes mis-tagged at base magic (-$Y, originate from G5011 time-stop expiry per timestamp+volume match)**. Pre-v2.7.104 the dashboard's W/L count and per-group P&L attribution are unreliable for any close that fires from one of the affected paths (time-stop, TP1/TP2 ratchet, conviction-decay, BRIDGE CLOSE_*)."
 
-NOT:
-> "9 new losses appeared." (this is dashboard-accurate but semantically wrong — it conflates two different mechanisms)
+**Post-v2.7.104** (once the operator restarts the backtest with the new build):
+> "+5 new TAKENs, N losses total broken down per-group correctly: G5011 time-stop -$X, G5012 time-stop -$Y, G5014 SELL_LIMIT_RECOV SL -$32. Per-magic P&L now reconciles cleanly."
 
-**Cross-cluster cost audit** (mandatory when protective-close cluster cost > $200):
+**Cross-cluster trace** (pre-v2.7.104 mandatory; post-v2.7.104 only if per-group P&L still looks off):
 
-After the cluster recovers to a TP win or another tick completes the group lifecycle, compute:
-1. **Sum of protective-close P&L** across the cluster (negative number)
-2. **Sum of group-magic TP P&L** for the same groups (positive number)
-3. **Cluster net** = (1) + (2)
-4. **Closed-at-bottom check** — what was the PRICE during the largest protective close vs the eventual recovery high? If the protective close was within 2 ATR of the local bottom, flag as **"closed at the bottom — over-exit candidate"**.
+Pre-v2.7.104 the base-magic close deals are real losses but TRACE TO THEIR ORIGINATING GROUP via:
+1. **Timestamp match** — close deals at HH:MM:00 (M5-bar-close fire) trace to time-stop expiry. Compute `(close_time - earliest_open_time_in_window) / 60` and compare against `dump_max_hold_seconds / 60` (typically 20 min).
+2. **Volume match** — sum of base-magic close volumes for the window vs sum of group-magic open volumes for the same window. Pre-v2.7.104, base-magic closes will exceed group-magic-attributed closes by the leakage volume.
+3. **Direction match** — base-magic close `type=1` (SELL action) closes BUY positions, `type=0` (BUY action) closes SELL positions. Match against the originating group's direction.
+4. **Closed-at-bottom check** — the close price vs the eventual recovery extreme. If close was within 2 ATR of the local bottom (BUY position bear-retrace) or local top (SELL position bull-retrace), flag as **"time-stop fired at the worst point — wider hold or session-aware threshold candidate"**.
 
-If protective-close P&L exceeds the cluster's recovery TP P&L by > 30%, surface as a recommendation candidate (next section).
+Post-v2.7.104, the deal records carry the correct group magic so the trace is automatic via `WHERE magic = <group_magic>`.
 
 **Session-aware threshold investigation** (operator-mandated 2026-05-14):
 
-When you see a protective-close cluster, ALWAYS check the SESSION column of the originating TAKEN signal AND the session at the protective-close timestamps. If both are ASIAN, flag for review:
+When you see a time-stop close cluster, ALWAYS check the SESSION column of the originating TAKEN signal AND the session at the close timestamps. If both are ASIAN, flag for review:
 
-> "ASIAN-session protective closes during PEMCG_buy_warnings spike. Run 36 case: G5011/G5012 BUYs opened 22:39-22:40 ASIAN @ 4775; PEMCG protective closes at 23:00/23:05/23:45 took out 0.56 lots cumulative at avg price 4763 (worst slice 0.13 × 2 = $430 at 23:45 price 4759, which was within 2pts of the local bottom 4757); price recovered to 4780 by 01:35 producing TP wins +$155 across surviving positions. Net cluster: −$319. ASIAN-session PEMCG threshold may need to be 6/7 (vs current 5/7) to avoid closing the biggest slice during normal Asian drift."
+> "ASIAN-session time-stop closes on MOMENTUM_DUMP BUYs. Run 36 case: G5011/G5012 BUYs opened 22:39-22:40 ASIAN @ 4775; time-stops at 23:00/23:05/23:45 force-closed 0.56 lots cumulative at avg price 4763 (worst slice 0.13 × 2 = $430 at 23:45 price 4759, which was within 2pts of the local bottom 4757); price recovered to 4780 by 01:35 producing TP wins on the surviving partial positions. Net cluster: −$319. ASIAN-session `dump_max_hold_seconds` may need to be longer (e.g. 60min vs current 20min) because Asian chop drift naturally retraces deeper before recovering — current 20-min cap force-closes at the worst point of an otherwise-recovering position."
 
-Hypothesis to test in a follow-up backtest (queue as Recommendation): **session-aware PEMCG_buy_threshold** — `5` during LONDON+NY (active sessions, faster reversals matter), `6` during ASIAN (chop drift more common than true reversals, biggest-slice-at-bottom risk higher).
+Hypothesis to test in a follow-up backtest (queue as Recommendation): **session-aware `dump_max_hold_seconds`** — current default ~20min for MOMENTUM_DUMP. ASIAN session (low-volume, deeper retraces) may warrant 60min; LONDON+NY (fast reversals) keep 20min. Knob: `FORGE_TIMING_DUMP_MAX_HOLD_SECONDS_ASIAN` (new) overrides default during `session == "ASIAN"`.
 
 Industry citation framework (WebSearch mandate applies):
 - Search: "MQL5 session-aware filter ASIAN London NY threshold scalping protective close"
@@ -946,7 +955,7 @@ Industry citation framework (WebSearch mandate applies):
 
 **Anti-pattern**: reporting protective closes as SL hits without checking the comment + magic + timestamp signature. Always classify first, then report.
 
-**Cross-reference**: this mandate originated from the Run 36 v2.7.102 monitoring session 2026-05-14 G5011-G5015 cluster analysis. The operator question that triggered it: "what is the current mode for forge - analyze the lost in Trades: 36 → 55 (+19); W/L: 35/1 → 45/10". The initial answer treated the 9 deals as SLs; the corrected analysis separated 1 SL from 8 protective closes.
+**Cross-reference**: this mandate originated from the Run 36 v2.7.102 monitoring session 2026-05-14 G5011-G5015 cluster analysis. The operator question that triggered it: "what is the current mode for forge - analyze the lost in Trades: 36 → 55 (+19); W/L: 35/1 → 45/10". The initial answer treated the 9 deals as SLs; intermediate analysis mis-explained them as "v2.7.84 PEMCG protective closes" (no such mechanism exists); the deep trace surfaced the actual root cause: `CTrade::PositionClose` mis-tagging close deals at base magic across 10 EA call sites. **v2.7.104 fixes all 10 call sites.**
 
 ---
 

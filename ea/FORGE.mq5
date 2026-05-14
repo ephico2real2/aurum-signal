@@ -2792,8 +2792,15 @@ void ManageConvictionDecay() {
             else continue;
          }
          if(close_vol > pos_vol) close_vol = pos_vol;
+         // v2.7.104: PositionClosePartial inherits magic from CTrade::m_magic, same gotcha
+         // as PositionClose. Use the position's own magic so partial close deal attributes
+         // to the originating group (positions[pi] is from GetGroupPositions(gm, ...) above,
+         // so all positions share the group's magic_offset).
+         long _pcd_magic = PositionGetInteger(POSITION_MAGIC);
+         g_trade.SetExpertMagicNumber((ulong)_pcd_magic);
          if(g_trade.PositionClosePartial(positions[pi], close_vol)) closed_count++;
       }
+      g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after conviction-decay loop
       if(closed_count > 0) {
          g_groups[gi].decay_close_level = target_level;
          PrintFormat("FORGE 2.7.77 CONVICTION-DECAY: group %d level=%d ratio=%.2f (cur=%d / init=%d) close_pct=%.1f%% closed=%d/%d positions",
@@ -2884,11 +2891,20 @@ void ManageOpenGroups() {
             if(_ts_held < _ts_max_sec) continue;
             double _ts_profit = g_pos.Profit() + g_pos.Swap() + g_pos.Commission();
             if(_ts_profit > 0) continue;  // already in profit — let trail/TP handle it
+            // v2.7.104 bug fix: CTrade::PositionClose tags close deal with CTrade::m_magic
+            // (NOT the position's original magic). Without setting m_magic to gm_lock here,
+            // the close deal gets tagged with MagicNumber (base) due to prior reset calls,
+            // causing per-magic P&L aggregation to mis-attribute the loss to the base magic.
+            // Verified via Run 36 G5011/G5012 23:00-23:45 cluster: 8 time-stop closes booked
+            // at magic 202401 with empty comments, totaling -$662, instead of attributing to
+            // the originating G5011 (207412) / G5012 (207413) groups.
+            g_trade.SetExpertMagicNumber(gm_lock);
             if(g_trade.PositionClose(_ts_tk)) {
-               PrintFormat("FORGE 2.7.56: %s time-stop — closed ticket %llu G%d held %llds, profit=%.2f, max=%ds",
-                           g_groups[gi].scalper_setup, _ts_tk, g_groups[gi].id, _ts_held, _ts_profit, _ts_max_sec);
+               PrintFormat("FORGE 2.7.56: %s time-stop — closed ticket %llu G%d held %llds, profit=%.2f, max=%ds (magic=%d)",
+                           g_groups[gi].scalper_setup, _ts_tk, g_groups[gi].id, _ts_held, _ts_profit, _ts_max_sec, gm_lock);
             }
          }
+         g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after time-stop loop
          // Re-fetch positions since some may have been closed by the time-stop above.
          GetGroupPositions(gm_lock, pos_lock);
       }
@@ -3034,11 +3050,15 @@ void ManageOpenGroups() {
       }
       int to_close = (int)MathCeil(total * g_groups[gi].tp1_close_pct / 100.0);
       int closed   = 0;
+      // v2.7.104: set magic to group magic so partial-close deals are attributed to the group
+      // (not to MagicNumber base). MT5 CTrade::PositionClose uses CTrade::m_magic for the deal.
+      g_trade.SetExpertMagicNumber(gm);
       for(int j = 0; j < total && closed < to_close; j++) {
          if(g_pos.SelectByTicket(positions[j])) {
             if(g_trade.PositionClose(positions[j])) closed++;
          }
       }
+      g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after TP1 partial-close loop
       g_groups[gi].tp1_hit = true;
       // 2.7.41 — track last TP1 win per direction for regime-aware cooldown bypass
       if(dir == "BUY")  g_scalper_last_tp1_buy_time  = TimeCurrent();
@@ -3126,15 +3146,19 @@ void ManageOpenGroups() {
          int to_close_tp2 = (int)MathCeil(total_before_tp2 * g_groups[gi2].tp2_close_pct / 100.0);
          if(to_close_tp2 > 0 && total_before_tp2 > 0) {
             int closed_tp2 = 0;
+            // v2.7.104: set magic to group magic so TP2-banking close deals are attributed
+            // to the group (not to MagicNumber base). See v2.7.104 fix notes at TP1 ratchet.
+            g_trade.SetExpertMagicNumber(gm2);
             // Iterate forward; closes oldest tickets first (FIFO bank).
             for(int j_tp2 = 0; j_tp2 < total_before_tp2 && closed_tp2 < to_close_tp2; j_tp2++) {
                if(g_pos.SelectByTicket(pos_tp2[j_tp2])) {
                   if(g_trade.PositionClose(pos_tp2[j_tp2])) closed_tp2++;
                }
             }
+            g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after TP2 banking loop
             if(closed_tp2 > 0)
-               PrintFormat("FORGE: Group %d TP2 banked — closed %d/%d positions (%.0f%% of remaining) at TP2=%.2f",
-                           g_groups[gi2].id, closed_tp2, total_before_tp2, g_groups[gi2].tp2_close_pct, tp2_price);
+               PrintFormat("FORGE: Group %d TP2 banked — closed %d/%d positions (%.0f%% of remaining) at TP2=%.2f (magic=%d)",
+                           g_groups[gi2].id, closed_tp2, total_before_tp2, g_groups[gi2].tp2_close_pct, tp2_price, gm2);
          }
       }
 
@@ -3342,10 +3366,13 @@ void ExecuteCloseAll() {
       if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol) {
          int pm = (int)g_pos.Magic();
          if(pm >= MagicNumber && pm < MagicNumber + 10000) {
+            // v2.7.104: tag close deal with the position's own magic, not base MagicNumber.
+            g_trade.SetExpertMagicNumber((ulong)pm);
             if(g_trade.PositionClose(g_pos.Ticket())) closed++;
          }
       }
    }
+   g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after CLOSE_ALL
    // 2. Cancel pending orders (limits/stops)
    int cancelled = 0;
    for(int i = OrdersTotal()-1; i >= 0; i--) {
@@ -3383,8 +3410,14 @@ void ExecuteClosePct(const string &json) {
    int to_close = (int)MathCeil(n * pct / 100.0);
    int closed = 0;
    for(int i = 0; i < n && closed < to_close; i++) {
+      // v2.7.104: tag close deal with position's own magic
+      if(PositionSelectByTicket(all[i])) {
+         long _pm = PositionGetInteger(POSITION_MAGIC);
+         g_trade.SetExpertMagicNumber((ulong)_pm);
+      }
       if(g_trade.PositionClose(all[i])) closed++;
    }
+   g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after CLOSE_PCT
    Print("FORGE: CLOSE_PCT ", pct, "% — closed ", closed, "/", n);
 }
 
@@ -3416,11 +3449,14 @@ void ExecuteCloseGroup(const string &json) {
    int target_magic = (int)JsonGetDouble(json, "magic");
    if(target_magic <= 0) { Print("FORGE: CLOSE_GROUP aborted — invalid magic"); return; }
    int closed = 0;
+   // v2.7.104: tag close deals with target_magic (the group magic), not base MagicNumber.
+   g_trade.SetExpertMagicNumber((ulong)target_magic);
    for(int i = PositionsTotal()-1; i >= 0; i--) {
       if(g_pos.SelectByIndex(i) && g_pos.Symbol() == _Symbol && (int)g_pos.Magic() == target_magic) {
          if(g_trade.PositionClose(g_pos.Ticket())) closed++;
       }
    }
+   g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after CLOSE_GROUP
    int cancelled = 0;
    for(int i = OrdersTotal()-1; i >= 0; i--) {
       ulong ot = OrderGetTicket(i);
@@ -3535,9 +3571,12 @@ void ExecuteCloseGroupPct(const string &json) {
    int n = ArraySize(tickets);
    int to_close = (int)MathCeil(n * pct / 100.0);
    int closed = 0;
+   // v2.7.104: tag close deals with target_magic (the group magic), not base MagicNumber.
+   g_trade.SetExpertMagicNumber((ulong)target_magic);
    for(int i = 0; i < n && closed < to_close; i++) {
       if(g_trade.PositionClose(tickets[i])) closed++;
    }
+   g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after CLOSE_GROUP_PCT
    Print("FORGE: CLOSE_GROUP_PCT magic=", target_magic, " ", pct, "% — closed ", closed, "/", n);
 }
 
@@ -3551,11 +3590,14 @@ void ExecuteCloseProfitable() {
          int pm = (int)g_pos.Magic();
          if(pm >= MagicNumber && pm < MagicNumber + 10000) {
             if(g_pos.Profit() + g_pos.Swap() + g_pos.Commission() > 0) {
+               // v2.7.104: tag close deal with position's own magic
+               g_trade.SetExpertMagicNumber((ulong)pm);
                if(g_trade.PositionClose(g_pos.Ticket())) closed++;
             }
          }
       }
    }
+   g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after CLOSE_PROFITABLE
    Print("FORGE: CLOSE_PROFITABLE — closed ", closed, " winning positions");
 }
 
@@ -3569,11 +3611,14 @@ void ExecuteCloseLosing() {
          int pm = (int)g_pos.Magic();
          if(pm >= MagicNumber && pm < MagicNumber + 10000) {
             if(g_pos.Profit() + g_pos.Swap() + g_pos.Commission() < 0) {
+               // v2.7.104: tag close deal with position's own magic
+               g_trade.SetExpertMagicNumber((ulong)pm);
                if(g_trade.PositionClose(g_pos.Ticket())) closed++;
             }
          }
       }
    }
+   g_trade.SetExpertMagicNumber(MagicNumber);  // v2.7.104: reset after CLOSE_LOSING
    if(closed > 0) g_scalper_last_loss_time = TimeGMT();
    Print("FORGE: CLOSE_LOSING — closed ", closed, " losing positions");
 }
