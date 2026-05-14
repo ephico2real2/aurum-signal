@@ -1445,6 +1445,24 @@ struct ScalperConfig {
    bool   dtc_geometry_widen_enabled;                 // master flag (default false)
    double dtc_trend_aligned_sl_widen_factor;          // SL mult ×= this when TREND_ALIGNED (default 1.0; rec 1.67 → 2.5×ATR)
    double dtc_trend_aligned_tp_widen_factor;          // TP mult ×= this when TREND_ALIGNED (default 1.0; rec 2.0 for trend capture)
+   // v2.7.109 — Exempt-list conditional override (BB_EXHAUSTION_REVERSAL momentum-vs-exhaustion)
+   //   Origin: Run 36 Apr-08 G5028 -$2,488. BB_EXHAUSTION_REVERSAL_SELL fired at 4773-4791
+   //   with RSI 75.7→79.7 during a confirmed bull rally to 4810+. The exemption (which is
+   //   designed to allow Layer-3 counter-trade capture) misfired because RSI≥75 in a confirmed
+   //   bull-trend-aligned day means MOMENTUM, not EXHAUSTION.
+   //   Industry pattern (volity.io RSI guide): "A high ADX reading confirms a strong trend,
+   //   making RSI's overbought/oversold signals less reliable for reversals and more indicative
+   //   of continuation." In TREND_ALIGNED state with extreme RSI in the trend direction:
+   //     - "BUY-side trend, RSI≥75" = momentum, not exhaustion → BB_EXHAUSTION_REVERSAL_SELL is fighting trend
+   //     - "SELL-side trend, RSI≤25" = momentum, not exhaustion → BB_EXHAUSTION_REVERSAL_BUY is fighting trend
+   //   When the override condition holds, the setup REMOVES from its exempt list and the
+   //   normal bull_day_sell_block / bear_day_buy_block fires.
+   //   FRACTIONAL_SELL_IN_BULL is NOT affected — it's fractional sizing, intended for momentum.
+   bool   dtc_exempt_override_enabled;                // master flag (default false)
+   double dtc_exempt_override_sell_rsi_min;           // when bull-day + SELL setup is exempt + m5_rsi ≥ this → override exemption (default 75)
+   double dtc_exempt_override_buy_rsi_max;            // when bear-day + BUY setup is exempt + m5_rsi ≤ this → override exemption (default 25)
+   string dtc_exempt_override_buy_setups;             // comma-list of BUY exempt setups subject to override (default "BB_EXHAUSTION_REVERSAL_BUY")
+   string dtc_exempt_override_sell_setups;            // comma-list of SELL exempt setups subject to override (default "BB_EXHAUSTION_REVERSAL_SELL")
    // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
    //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
    //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
@@ -4888,6 +4906,12 @@ void InitScalperConfig() {
    g_sc.dtc_geometry_widen_enabled            = false;
    g_sc.dtc_trend_aligned_sl_widen_factor     = 1.0;   // 1.0 = no widen; operator-rec 1.67 → 1.5×1.67=2.5×ATR (industry swing rule)
    g_sc.dtc_trend_aligned_tp_widen_factor     = 1.0;   // 1.0 = no widen; operator-rec 2.0 to capture trend extension
+   // v2.7.109 exempt-override defaults (all OFF; flip dtc_exempt_override_enabled to activate)
+   g_sc.dtc_exempt_override_enabled           = false;
+   g_sc.dtc_exempt_override_sell_rsi_min      = 75.0;  // RSI≥75 in bull-aligned = momentum not exhaustion (volity.io)
+   g_sc.dtc_exempt_override_buy_rsi_max       = 25.0;  // RSI≤25 in bear-aligned = momentum not exhaustion (mirror)
+   g_sc.dtc_exempt_override_buy_setups        = "BB_EXHAUSTION_REVERSAL_BUY";
+   g_sc.dtc_exempt_override_sell_setups       = "BB_EXHAUSTION_REVERSAL_SELL";
    g_sc.cvcsm_enabled                         = true;
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
@@ -5962,6 +5986,12 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "dtc_geometry_widen_enabled"))             { v=JsonGetDouble(content,"dtc_geometry_widen_enabled");             g_sc.dtc_geometry_widen_enabled=(v>=0.5); }
    if(JsonHasKey(content, "dtc_trend_aligned_sl_widen_factor"))      { v=JsonGetDouble(content,"dtc_trend_aligned_sl_widen_factor");      if(v>=0.5&&v<=5.0) g_sc.dtc_trend_aligned_sl_widen_factor=v; }
    if(JsonHasKey(content, "dtc_trend_aligned_tp_widen_factor"))      { v=JsonGetDouble(content,"dtc_trend_aligned_tp_widen_factor");      if(v>=0.5&&v<=5.0) g_sc.dtc_trend_aligned_tp_widen_factor=v; }
+   // v2.7.109 exempt-override knobs
+   if(JsonHasKey(content, "dtc_exempt_override_enabled"))            { v=JsonGetDouble(content,"dtc_exempt_override_enabled");            g_sc.dtc_exempt_override_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "dtc_exempt_override_sell_rsi_min"))       { v=JsonGetDouble(content,"dtc_exempt_override_sell_rsi_min");       if(v>=50.0&&v<=90.0) g_sc.dtc_exempt_override_sell_rsi_min=v; }
+   if(JsonHasKey(content, "dtc_exempt_override_buy_rsi_max"))        { v=JsonGetDouble(content,"dtc_exempt_override_buy_rsi_max");        if(v>=10.0&&v<=50.0) g_sc.dtc_exempt_override_buy_rsi_max=v; }
+   if(JsonHasKey(content, "dtc_exempt_override_buy_setups"))         { g_sc.dtc_exempt_override_buy_setups  = JsonGetString(content, "dtc_exempt_override_buy_setups"); }
+   if(JsonHasKey(content, "dtc_exempt_override_sell_setups"))        { g_sc.dtc_exempt_override_sell_setups = JsonGetString(content, "dtc_exempt_override_sell_setups"); }
    if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
    if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
@@ -13196,14 +13226,36 @@ void CheckNativeScalperSetups() {
       bool dtc_day_bias_blocked = false;
       if(!umcg_blocked && !cvcsm_blocked && !dirlock_blocked && g_sc.dtc_enabled && g_sc.dtc_day_bias_block_enabled) {
          if(g_sc.dtc_5state_enabled) {
+            // v2.7.109 — Exempt-list conditional override.
+            //   When TREND_ALIGNED + setup is on the exempt list + RSI is in the EXTREME momentum
+            //   zone of the trend direction (not exhaustion), the exemption is overridden and
+            //   the normal day-bias block fires. Catches the G5028 -$2,488 case where
+            //   BB_EXHAUSTION_REVERSAL_SELL fired at RSI 75.7-79.7 during a confirmed bull
+            //   rally to 4810+. Default-OFF — flip dtc_exempt_override_enabled to activate.
+            bool _buy_setup_exempt  = (StringFind(g_sc.dtc_exempt_buy_setups,  setup_type) >= 0);
+            bool _sell_setup_exempt = (StringFind(g_sc.dtc_exempt_sell_setups, setup_type) >= 0);
+            if(g_sc.dtc_exempt_override_enabled) {
+               // Bear-aligned + BUY exempt setup + RSI ≤ threshold (extreme oversold momentum) → override
+               if(_buy_setup_exempt && direction == "BUY" && g_dtc_state == DTC_STATE_BEAR_TREND_ALIGNED
+                  && m5_rsi > 0 && m5_rsi <= g_sc.dtc_exempt_override_buy_rsi_max
+                  && StringFind(g_sc.dtc_exempt_override_buy_setups, setup_type) >= 0) {
+                  _buy_setup_exempt = false;
+               }
+               // Bull-aligned + SELL exempt setup + RSI ≥ threshold (extreme overbought momentum) → override
+               if(_sell_setup_exempt && direction == "SELL" && g_dtc_state == DTC_STATE_BULL_TREND_ALIGNED
+                  && m5_rsi > 0 && m5_rsi >= g_sc.dtc_exempt_override_sell_rsi_min
+                  && StringFind(g_sc.dtc_exempt_override_sell_setups, setup_type) >= 0) {
+                  _sell_setup_exempt = false;
+               }
+            }
             // v2.7.107 5-state — block based on state + direction + optional counter-trend flags
             if(direction == "BUY" && g_dtc_state == DTC_STATE_BEAR_TREND_ALIGNED) {
-               if(StringFind(g_sc.dtc_exempt_buy_setups, setup_type) < 0) {
+               if(!_buy_setup_exempt) {
                   dtc_day_bias_blocked = true;
                   block_reason = "bear_day_buy_block";  // v2.7.105 — trend-aligned bear
                }
             } else if(direction == "SELL" && g_dtc_state == DTC_STATE_BULL_TREND_ALIGNED) {
-               if(StringFind(g_sc.dtc_exempt_sell_setups, setup_type) < 0) {
+               if(!_sell_setup_exempt) {
                   dtc_day_bias_blocked = true;
                   block_reason = "bull_day_sell_block";  // v2.7.105 — trend-aligned bull
                }
