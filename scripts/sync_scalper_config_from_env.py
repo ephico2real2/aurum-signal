@@ -733,6 +733,11 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_JOURNAL_IMPORT_TRADES": ("journal", "journal_import_trades", "bool01", None, None),
     "FORGE_JOURNAL_IMPORT_DEPTH_DAYS": ("journal", "journal_import_depth_days", "int", 1.0, 365.0),
     "FORGE_JOURNAL_STATS_INTERVAL_SEC": ("journal", "journal_stats_interval_sec", "int", 60.0, 3600.0),
+    # v2.7.111 — SQLite I/O performance (per mql5.com/articles/22009, 3500× speedup from transactions).
+    # All three default-OFF; operator-recommended: ALL three = 1 for max performance.
+    "FORGE_JOURNAL_SIGNALS_BATCH_TXN": ("journal", "journal_signals_batch_txn", "bool01", None, None),
+    "FORGE_JOURNAL_WAL_MODE":          ("journal", "journal_wal_mode",          "bool01", None, None),
+    "FORGE_JOURNAL_SYNCHRONOUS_NORMAL":("journal", "journal_synchronous_normal","bool01", None, None),
 
     # ══════════════════════════════════════════════════════════════════════
     # Phase 1 — new setups (MA_CROSSOVER, VWAP_REVERSION, FIB_CONFLUENCE)

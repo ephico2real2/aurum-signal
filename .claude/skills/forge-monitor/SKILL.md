@@ -2069,6 +2069,45 @@ git commit -m "..."
 
 If `make forge-compile` reports errors, FIX THEM before committing. Do not commit a broken FORGE.mq5.
 
+### MANDATORY: `.env` comment placement — never inline after a value
+
+The env-sync parser (`scripts/sync_scalper_config_from_env.py` → `_parse_value()`) calls
+`float(raw)` / `int(raw)` on the **entire post-`=` string**. It does NOT strip a trailing
+`#` comment. An inline comment will break the sync at compile time.
+
+**BAD — breaks `make forge-compile`:**
+```bash
+FORGE_DUMP_MAX_RSI=41             # block dump-SELL at mid-RSI in TREND_BULL
+FORGE_CES_BUY_MIN_SCORE=4.5       # weighted-boolean score
+```
+The sync script crashes with `ValueError: could not convert string to float: '41             # block dump-SELL at mid-RSI in TREND_BULL'` because the raw value becomes the entire trailing string including spaces and `#`.
+
+**GOOD — comment on the line ABOVE the assignment:**
+```bash
+# v2.7.107 — block dump-SELL at mid-RSI in TREND_BULL (gold chop bounces UP)
+FORGE_DUMP_MAX_RSI=41
+# v2.7.110 — CES weighted-boolean min score for BUY entries
+FORGE_CES_BUY_MIN_SCORE=4.5
+```
+
+**Standalone comment lines (starting with `#`) are also safe** — the parser skips them.
+Only `KEY=value # comment` on the same physical line is broken.
+
+**Verification command** — must return empty before any commit that edits `.env`:
+```bash
+grep -nE "^FORGE_[A-Z_]+=[^[:space:]]+[[:space:]]+#" .env
+```
+If non-empty, fix each offender by moving the comment to the line above before running
+`make forge-compile` / `make scalper-env-sync`.
+
+**Same rule applies to `.env.example`** — though `.env.example` is never parsed by the
+sync script (it's documentation only), inline comments here teach operators the wrong
+pattern. Keep `.env.example` comments on the line ABOVE the key for consistency.
+
+Historical context: v2.7.105 / v2.7.107 / v2.7.108 / v2.7.109 / v2.7.110 / v2.7.111 ships
+all hit this. After v2.7.111 build, 14+ lines were corrected in one sweep. The pattern is
+load-bearing — re-introducing inline comments breaks the entire compile pipeline.
+
 
 
 ### Function header comment block
