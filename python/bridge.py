@@ -33,7 +33,7 @@ from trading_session import (
 )
 from freshness import DATA_FRESHNESS_WINDOWS
 from config_io import atomic_write_json
-from market_data import enrich_mt5_for_stale_check
+from market_data import enrich_mt5_for_stale_check, stabilize_mt5_tester_overlay
 from gate_diagnostics import build_signal_gate_diagnostics, format_gate_diagnostics_herald_line
 
 log = logging.getLogger("bridge")
@@ -734,13 +734,23 @@ def _pip_size_for_symbol(symbol: str | None, open_price: float, close_price: flo
 
 def _calc_pips(symbol: str | None, direction: str, open_price: float, close_price: float) -> float:
     """
-    Compute signed pips for a closed trade.
+    Compute signed pips for a closed trade — OPERATOR-BROKER CONVENTION.
 
-    XAUUSD (Gold): broker standard — discard decimal, each whole-number move = 10 pips.
+    XAUUSD (Gold): each WHOLE-NUMBER price move = 10 pips ($0.10 per pip).
       entry 2037.12 → exit 2038.50: int(2038) - int(2037) = 1 × 10 = 10 pips
-      entry 4700    → exit 4715.75: int(4715) - int(4700) = 15 × 10 = 150 pips
+      entry 4700.00 → exit 4715.75: int(4715) - int(4700) = 15 × 10 = 150 pips
       Formula: pips = (int(close) - int(entry)) × 10  [BUY]
                pips = (int(entry) - int(close)) × 10  [SELL]
+
+      Operator's spec: TP1 = 40 pips = $4.00 price move (realistic XAUUSD scalp target).
+      Confirmed 2026-05-14 over the v2.7.102-introduced industry-convention ambiguity.
+
+    USDJPY (yen):   each WHOLE-NUMBER price move = 100 pips (0.01/pip), same broker style.
+      Move 0.35 yen → 35 pips.
+    EURUSD (forex): 1 pip = 0.0001 price move (4-decimal pair, unchanged).
+      Move 0.0015 → 15 pips.
+
+    See docs/FORGE_CORE_LOGIC_DESIGN.md §9 changelog 2026-05-14 (pip convention reverted to broker).
     """
     try:
         ep = float(open_price or 0)
@@ -749,8 +759,13 @@ def _calc_pips(symbol: str | None, direction: str, open_price: float, close_pric
             return 0.0
         sym = (symbol or "").upper()
         if "XAU" in sym:
+            # Broker convention: whole-number price moves × 10 pips
             raw = (int(cp) - int(ep)) * 10
             return float(raw if direction == "BUY" else -raw)
+        if "JPY" in sym:
+            # USDJPY broker convention: 1 pip = 0.01 (whole-yen × 100)
+            raw = (cp - ep) / 0.01
+            return round(raw if direction == "BUY" else -raw, 1)
         # Forex fallback: 4-decimal pairs, 1 pip = 0.0001
         raw = (cp - ep) / 0.0001
         return round(raw if direction == "BUY" else -raw, 1)
@@ -759,11 +774,11 @@ def _calc_pips(symbol: str | None, direction: str, open_price: float, close_pric
 
 
 def _calc_pip_value_usd(symbol: str | None, lot_size: float, pips: float) -> float:
-    """USD value of the pip move for a closed trade.
+    """USD value of the pip move — OPERATOR-BROKER CONVENTION.
 
-    XAUUSD: 1 pip = $0.10 price move per oz × 100 oz contract = $10/pip per standard lot.
+    XAUUSD: 1 pip = $0.10 price move × 100 oz/std_lot = $10 per pip per std lot.
       pip_value_usd = pips × lot_size × 10
-      Example: 50 pips × 0.08 lot × 10 = $40.00
+      Example: 50 pips × 0.08 lot × 10 = $40.00 (10-pip whole-number convention).
     """
     try:
         lot = float(lot_size or 0)
@@ -847,18 +862,22 @@ def _close_reason_from_broker_hint(
     return None
 
 
-_TP_STAGE_RE = re.compile(r"\|TP(\d+)")
+# Comment grammar emitted by FORGE: ``FORGE|G<group>|<leg_index>|TP<stage>``.
+# Require the leading ``FORGE|`` prefix so foreign comments (e.g. "foreign|TP4")
+# are correctly rejected — operator's spec from tests/api/test_modify_scope.py:246.
+_TP_STAGE_RE = re.compile(r"^FORGE\|G\d+\|\d+\|TP(\d+)")
 
 
 def _parse_tp_stage_from_comment(comment) -> int | None:
     """Extract the FORGE leg stage encoded in a position/order comment.
 
     Comment grammar emitted by FORGE: ``FORGE|G<group>|<leg_index>|TP<stage>``.
-    Returns 1/2/3 when present, otherwise None.
+    Returns 1/2/3/4 when present and the comment is a FORGE comment, otherwise None.
+    Foreign comments (those not starting with ``FORGE|``) always return None.
     """
     if not comment:
         return None
-    m = _TP_STAGE_RE.search(str(comment))
+    m = _TP_STAGE_RE.match(str(comment))  # anchored — requires FORGE prefix
     if not m:
         return None
     try:
@@ -1010,6 +1029,9 @@ class Bridge:
         self._mt5_read_fail_streak = 0
         self._last_mt5_good_unix = 0.0
         self._last_mt5_snapshot = {}
+        # v2.7.53 — Tester/live account-data flicker guard is handled by the
+        # shared per-process cache in market_data.stabilize_mt5_tester_overlay().
+        # Bridge invokes it inside _tick() after enrich_mt5_for_stale_check().
         self._last_recon_ts      = 0
         self._open_groups        = {}
         self._last_auto_scalper_ts  = 0
@@ -2783,6 +2805,13 @@ class Bridge:
         else:
             self._mt5_read_fail_streak += 1
 
+        # v2.7.53 — Tester/live account-data flicker guard. Shared helper in
+        # market_data.stabilize_mt5_tester_overlay() caches the last live
+        # snapshot per-process and overlays its stable fields onto tester
+        # reads. Athena_api uses the same helper at each /api/* endpoint read.
+        if mt5:
+            mt5 = stabilize_mt5_tester_overlay(mt5)
+
         # Transient file-write/read races can briefly return invalid JSON.
         # Reuse the last-known-good snapshot for a short grace window.
         if (
@@ -2927,7 +2956,7 @@ class Bridge:
         # ── 3b. KILLZONE TRANSITION DETECTION ─────────────────────
         new_kz = _killzone()
         if new_kz != self._current_killzone:
-            self._on_killzone_change(new_kz)
+            self._on_killzone_change(new_kz, mt5)
 
         # ── 4. BROKER INFO from FORGE ──────────────────────────────
         broker_info = _read_json(BROKER_INFO_FILE)
@@ -3105,6 +3134,28 @@ class Bridge:
 
     def _on_session_change(self, new_session: str, mt5: dict):
         """Called whenever the trading session changes."""
+        # v2.7.53 — Tester/live market_data.json contention guard.
+        # When MT5 Strategy Tester is running concurrently with the live FORGE EA,
+        # both write to Common/Files/market_data.json. Bridge sees the file flipping
+        # between (live session, live balance, strategy_tester=false) and
+        # (sim session, tester balance, strategy_tester=true), generating one
+        # SESSION-change cycle per file-flip → SCRIBE row open/close churn AND
+        # a Telegram flood ("SESSION: ASIAN $10k" ↔ "SESSION: LONDON $100k").
+        # When the latest writer was the tester, skip the whole transition handler:
+        #   - prevents SCRIBE from logging tester-tagged sessions to the live DB
+        #   - prevents HERALD from firing the spurious Telegram ping
+        # self._current_session stays anchored to the most recent LIVE write, so
+        # the next legitimate live transition fires correctly.
+        if mt5 and mt5.get("strategy_tester"):
+            balance = (mt5.get("account") or {}).get("balance")
+            log.info(
+                "BRIDGE: suppressed SESSION-change handler (%s → %s, balance=%s) — "
+                "market_data.json last-written by tester EA (strategy_tester=true)",
+                self._current_session, new_session,
+                f"${balance:,.2f}" if balance else "n/a",
+            )
+            return
+
         prev_session = self._current_session
         log.info(f"BRIDGE: Session transition {prev_session} → {new_session}")
 
@@ -3145,9 +3196,22 @@ class Bridge:
             f"🕐 <b>SESSION: {new_session}</b>{acct_tag}"
         )
 
-    def _on_killzone_change(self, new_killzone: str) -> None:
+    def _on_killzone_change(self, new_killzone: str, mt5: dict | None = None) -> None:
         """Track ICT killzone transitions. Lighter than _on_session_change:
         no SCRIBE row open/close, just an event log + optional Herald ping."""
+        # v2.7.53 — Same tester/live market_data.json contention guard as
+        # _on_session_change. Tester and live EAs alternately overwrite the
+        # killzone label in market_data.json; without this guard bridge would
+        # log a KILLZONE_CHANGE event (and optionally HERALD-ping) on every flip.
+        # Default-callable signature retained (mt5=None) for any test paths.
+        if mt5 and mt5.get("strategy_tester"):
+            log.info(
+                "BRIDGE: suppressed KILLZONE-change handler (%s → %s) — "
+                "market_data.json last-written by tester EA (strategy_tester=true)",
+                self._current_killzone or "NONE", new_killzone or "NONE",
+            )
+            return
+
         prev = self._current_killzone
         self._current_killzone   = new_killzone
         self._killzone_start_ts  = datetime.now(timezone.utc).isoformat() if new_killzone else None

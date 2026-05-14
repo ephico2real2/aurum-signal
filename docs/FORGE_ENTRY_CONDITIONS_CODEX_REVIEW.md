@@ -1,145 +1,168 @@
 # FORGE Entry Conditions — Codex Validation Review
 
-**Date**: 2026-05-12  
-**EA version**: FORGE v2.7.41 (from scalper_config.json)  
-**Reviewer**: Codex (automated, read-only)  
-**Methodology**: Every claim cited with file:line. UNVERIFIED = code not found. Active config = scalper_config.json (not defaults).
+**Date**: 2026-05-14  
+**EA version**: FORGE v2.7.94 (`config/scalper_config.json:2`)  
+**Reviewer**: Codex (automated, read-only except this report)  
+**Methodology**: Every behavioral claim is cited with file:line. Active config = `config/scalper_config.json`; defaults baseline = `config/scalper_config.defaults.json`. UNVERIFIED = code not found.
 
 ## Validation Summary
-- Gates checked: 62 EA-emitted SKIP codes from `JournalRecordSignal("SKIP",...)`.
-- PASS: 48  |  WARNING: 9  |  FAIL: 2  |  UNVERIFIED: 3
-- Mandatory Check A (dead FORGE_* env vars): PASS
-- Mandatory Check B (gate legend completeness): PASS
-- Mandatory Check C (sync ↔ .env.example parity): PASS
+- Gates checked: 103 EA-emitted SKIP codes (77 literal + 26 `Filter_*` runtime-constructed)
+- PASS: 16  |  WARNING: 5  |  FAIL: 3  |  UNVERIFIED: 0
+- Mandatory Check A — Dead `FORGE_*` env vars: **PASS**
+- Mandatory Check B — Gate legend completeness: **PASS**
+- Mandatory Check C — Sync mapping ↔ `.env.example` parity: **FAIL** → **RESOLVED 2026-05-14** (31 missing keys backfilled at `.env.example:1924-1971`; re-audit: 0 sync→doc gaps; `make scalper-env-sync` clean with 210 overrides)
+- Mandatory Check D — `scribe.py` placeholder/column count: **PASS**
 
-## Section 1 — BB_BREAKOUT BUY Gates
-| # | Gate | EA file:line | Config key=value (scalper_config.json) | Status | Notes |
-|---|------|-------------|---------------------------------------|--------|-------|
-| 1 | Previous close above upper BB | `ea/FORGE.mq5:7234-7237` | no config key | PASS | Implemented as `prev_close > m5_bb_u + breakout_buffer`. |
-| 2 | RSI BUY floor | `ea/FORGE.mq5:7235-7237` | `bb_breakout.rsi_buy_min=40` at `config/scalper_config.json:36`; sync `FORGE_BREAKOUT_ADX_MIN`/RSI mappings include breakout keys at `scripts/sync_scalper_config_from_env.py:95-106`; `.env.example` documents breakout RSI keys at `.env.example:313-321` | PASS | `rsi_buy_min` is loaded from JSON at `ea/FORGE.mq5:3332`. |
-| 3 | RSI BUY ceiling | `ea/FORGE.mq5:7257-7264` | `bb_breakout.rsi_buy_ceil=78` at `config/scalper_config.json:63`; mapping `FORGE_BREAKOUT_RSI_BUY_CEIL` at `scripts/sync_scalper_config_from_env.py:103`; `.env.example:313-314` | PASS | SKIP code is `entry_quality_rsi_buy_ceil`. |
-| 4 | M5 bullish trend | `ea/FORGE.mq5:7218` and `ea/FORGE.mq5:7236-7237` | threshold from runtime `trend_thr_eff` | PASS | Exact threshold source is outside this section; gate expression is present. |
-| 5 | M15 flat/bullish agreement | `ea/FORGE.mq5:7220-7224` and `ea/FORGE.mq5:7236-7237` | `bb_breakout.require_m15_agree=true` at `config/scalper_config.json:38` | PASS | BUY uses `m15_ok_buy`. |
-| 6 | H1/H4 BUY alignment | `ea/FORGE.mq5:7225` and `ea/FORGE.mq5:7236-7237` | high-vol alignment keys at `config/scalper_config.json:195-201` | PASS | Doc says H1 not strongly bearish; EA also includes H4/high-vol alignment. |
-| 7 | H1 DI BUY at weak ADX | `ea/FORGE.mq5:7267-7277` | `require_h1_di_buy=1`, `counter_buy_adx_threshold=28.0` at `config/scalper_config.json:74-75`; mapping at `scripts/sync_scalper_config_from_env.py:115` and `scripts/sync_scalper_config_from_env.py:133`; docs at `.env.example:335-357` | PASS | Gate applies only when `m5_adx < threshold`. |
-| 8 | OsMA BUY Q0 | `ea/FORGE.mq5:7280-7299` | `require_macd_buy=1`, `macd_fast=3`, `macd_slow=10`, `macd_signal=16` at `config/scalper_config.json:91-94`; mapping at `scripts/sync_scalper_config_from_env.py:143-147`; docs at `.env.example:530-538` | PASS | Non-Q0 logs Q1/Q2/Q3 gate reasons. |
-| 9 | Re-entry ATR extension | `ea/FORGE.mq5:8109-8117` and BUY log path `ea/FORGE.mq5:8129` | `max_reentry_atr_ext=2` at `config/scalper_config.json:86`; mapping at `scripts/sync_scalper_config_from_env.py:135`; docs at `.env.example:555-561` | PASS | Blocks entries too far from first entry. |
+### Resolution Log (post-review fixes, 2026-05-14)
+- **FAIL 1 — defaults JSON missing v2.7.86-v2.7.94 knobs**: RESOLVED. Added 16 `safety` keys (UMCG/CVCSM/bb_breakout_min_break*) and 14 `composites` keys (bb_exhaustion_reversal*) to `config/scalper_config.defaults.json`. Verified: `safety` 181 keys, `composites` 30 keys; all 30 v2.7.86-v2.7.94 keys present.
+- **FAIL 2 — 31 sync-mapped keys missing from `.env.example`**: RESOLVED. Added backfill block at `.env.example:1924-1971` covering BREAKOUT_BUY_SCORE_VELOCITY (2), BB_PULLBACK_BUY velocity (2), CONVICTION_DECAY (7), REVERSE_SELL_IN_BULL (10), GRINDING_SELL (10). Re-audit reports 0 missing.
+- **FAIL 3 — PEMCG architecture stale line cites**: RESOLVED (pre-fix). `docs/FORGE_PEMCG_ARCHITECTURE.md` §3 cites refreshed to UMCG `12456-12492`, CVCSM state `6725-6777` + enforcement `12472-12482`, Layer 3 `12494-12624`.
 
-## Section 2 — BB_BREAKOUT SELL Gates
-| # | Gate | EA file:line | Config key=value (scalper_config.json) | Status | Notes |
-|---|------|-------------|---------------------------------------|--------|-------|
-| 1 | Previous close below lower BB | `ea/FORGE.mq5:7463-7468` | no config key | PASS | Implemented as `prev_close < m5_bb_l - breakout_buffer`. |
-| 2 | RSI SELL ceiling | `ea/FORGE.mq5:7467` | `bb_breakout.rsi_sell_max=60` at `config/scalper_config.json:37` | PASS | SELL only enters below ceiling. |
-| 3 | RSI SELL floor | `ea/FORGE.mq5:7568-7581` | `rsi_sell_floor=33`, `rsi_sell_floor_weak_adx=36`, `adx_sell_floor_threshold=35` at `config/scalper_config.json:64-66`; mappings at `scripts/sync_scalper_config_from_env.py:104-106`; docs at `.env.example:315-323` | WARNING | Intent doc says `rsi_sell_floor=30` at `docs/FORGE_ENTRY_CONDITIONS.md:132`; active config is 33. Per repo instruction, doc drift is warning max. |
-| 4 | ADX SELL floor | `ea/FORGE.mq5:7517-7522` | `adx_min_sell=25.0` at `config/scalper_config.json:72`; mapping at `scripts/sync_scalper_config_from_env.py:111`; docs at `.env.example:302-306` | PASS | SKIP code `entry_quality_adx_min_sell`. |
-| 5 | ADX duration/spike gate | `ea/FORGE.mq5:7587-7599` | `adx_min_sell_lookback_bars=6` at `config/scalper_config.json:73`; mapping at `scripts/sync_scalper_config_from_env.py:113`; docs at `.env.example:329-334` | PASS | Skipped when crash-sell bypass is active. |
-| 6 | ADX extreme SELL block | `ea/FORGE.mq5:7505-7515` | `breakout_adx_sell_block_threshold=55` at `config/scalper_config.json:258`; mapping at `scripts/sync_scalper_config_from_env.py:159`; docs at `.env.example:551-552` | PASS | Uses M15 ADX when available. |
-| 7 | H1 DI SELL | `ea/FORGE.mq5:7533-7545` | `require_h1_di_sell=1` at `config/scalper_config.json:76`; mapping at `scripts/sync_scalper_config_from_env.py:117`; docs at `.env.example:341-344` | PASS | No ADX bypass in the EA lines cited. |
-| 8 | M5/M15/H1/H4 trend filters | `ea/FORGE.mq5:7218-7226` and `ea/FORGE.mq5:7467-7470` | `require_m15_agree=true`, `min_h1_bear_strength=0.2` at `config/scalper_config.json:38` and `config/scalper_config.json:87` | PASS | SELL also enforces H4/high-vol alignment when configured. |
-| 9 | OsMA SELL Q2 | `ea/FORGE.mq5:7635-7655` | `require_macd_sell=1` at `config/scalper_config.json:90`; mapping at `scripts/sync_scalper_config_from_env.py:143`; docs at `.env.example:530-538` | PASS | PASS only when histogram is negative and falling. |
-| 10 | M30 bearish EMA confirmation | `ea/FORGE.mq5:7678-7697` | `require_m30_bear_sell=1`, `m30_bear_adx_min=25` at `config/scalper_config.json:88-89`; mappings at `scripts/sync_scalper_config_from_env.py:137` and `scripts/sync_scalper_config_from_env.py:141`; docs at `.env.example:524-528` | PASS | Enforced at ADX >= configured floor. |
-| 11 | RSI declining SELL | `ea/FORGE.mq5:7602-7618` | `require_rsi_declining_sell=1`, `rsi_decl_sell_adx_threshold=40` at `config/scalper_config.json:124` and `config/scalper_config.json:69`; mapping at `scripts/sync_scalper_config_from_env.py:138-140`; docs at `.env.example:324-328` | PASS | Bypassed when H1 is strongly bearish. |
-| 12 | H1 MACD SELL | `ea/FORGE.mq5:7658-7675` | `require_h1_macd_sell=0` at `config/scalper_config.json:77`; mapping at `scripts/sync_scalper_config_from_env.py:119`; docs at `.env.example:346-350` | PASS | Code exists but active config disables it. |
-| 13 | HID_BULL divergence block | `ea/FORGE.mq5:7620-7633` | `bb_breakout.block_hid_bull_sell=1` at `config/scalper_config.json:125`; mapping at `scripts/sync_scalper_config_from_env.py:139` | PASS | Note duplicate inactive safety key `safety.block_hid_bull_sell=0` at `config/scalper_config.json:259`; EA uses `bb_breakout` key. |
-| 14 | SELL session cutoff | `ea/FORGE.mq5:7492-7502` | `session_ny_sell_cutoff_utc=0` at `config/scalper_config.json:251`; mapping at `scripts/sync_scalper_config_from_env.py:210`; docs at `.env.example:636-643` | PASS | Active config disables cutoff. |
+## Mandatory Check A — Dead `FORGE_*` Env Vars
+**Status**: PASS
 
-## Section 3 — Full Lot Path
-| Factor | BUY ADX=38 | SELL ADX=38 | EA line | Status |
-|--------|-----------|-----------|---------|--------|
-| `fixed_lot` | 0.25 base | 0.25 base | `ea/FORGE.mq5:8410-8414` | PASS |
-| `inside_band_factor` | 1.0 | 0.25 only if SELL is back inside band | `ea/FORGE.mq5:8318-8325`; active value `config/scalper_config.json:126` | PASS |
-| `near_floor_factor` | 1.0 | 0.25 only in crash-bypass RSI 20-25 zone | `ea/FORGE.mq5:8326-8335`; active value `config/scalper_config.json:249` | PASS |
-| `stack_factor` | 0.25 on second same-direction group | 0.25 on second same-direction group | `ea/FORGE.mq5:8336-8343`; active value `config/scalper_config.json:250` | PASS |
-| `adx_lot_factor` | 1.0 | 1.0 at M15 ADX 35-44, 0.5 at >=45 | `ea/FORGE.mq5:8344-8359`; active values `config/scalper_config.json:253-257` | FAIL |
-| `bounce_factor` | 0.25 for non-breakout bounce | 0.25 for non-breakout bounce | `ea/FORGE.mq5:8361-8363`; active value `config/scalper_config.json:8` | PASS |
-| Combined factor | multiplicative floor 0.125 | multiplicative floor 0.125 | `ea/FORGE.mq5:8399-8408` | PASS |
+| Check | Evidence | Status | Notes |
+|---|---|---:|---|
+| `.env` `FORGE_*` keys | 366 active `FORGE_*` keys enumerated from `.env`; all either map in `scripts/sync_scalper_config_from_env.py` or are whitelisted. The whitelist currently contains `FORGE_SCALPER_MODE` at `tests/api/test_forge_27x_gates.py:323-325`. | PASS | No unmapped/unwhitelisted active `FORGE_*` key found. |
+| Lowercase config-looking keys | No lowercase config-looking keys found. Non-`FORGE_` uppercase session/diagnostic keys are present, e.g. `SESSION_ASIAN_START` in `.env`, but they are not lowercase bypasses. | PASS | The required lowercase bypass class was empty. |
 
-FAIL detail: `.env` says "ADX lot reduction DISABLED" at `.env:298-300`, sets mid to 1.0 at `.env:301`, but sets `FORGE_BREAKOUT_ADX_LOT_FACTOR_HIGH=0.5` at `.env:302`. The known re-check requirement says high ADX SELL reduction must be 1.0; active config is 0.5 at `config/scalper_config.json:257`.
+## Mandatory Check B — Gate Legend Completeness
+**Status**: PASS
 
-## Section 4 — ADX-Conditional Leg Count
-PASS. ADX changes `base_n` before `ForgeResolveNumTrades`: ADX < 25 subtracts one; ADX 35 through below sell-block threshold adds two at `ea/FORGE.mq5:8253-8264`. `ForgeResolveNumTrades` then adds a breakout bonus for setup names containing `BREAKOUT` at `ea/FORGE.mq5:9397-9400`, clamps to env min/max at `ea/FORGE.mq5:9409-9413`, and cap logic applies when HTF is unclear at `ea/FORGE.mq5:8301-8307`. Active config has `min_num_trades=2`, `max_num_trades=30`, `staged_initial_legs=1`, `native_legs_max_when_unclear=5`, `gold_native_max_sell_legs=10` at `config/scalper_config.json:312-323`.
+| EA gate class | Evidence | Status | Notes |
+|---|---|---:|---|
+| Literal SKIP codes | `JournalRecordSignal("SKIP", "...")` literals in `ea/FORGE.mq5` produced 77 codes. | PASS | All matched `config/gate_legend.json` or a `_patterns` wildcard. |
+| Runtime-constructed `Filter_*` codes | `Filter_AdxFloor`, `Filter_Cooldown`, and `Filter_M15TrendAligned` setup-lower arguments produced 26 additional codes per the skill rule. | PASS | All matched `config/gate_legend.json` or a `_patterns` wildcard. |
+| New v2.7.93 side gates | `bb_breakout_buy_below_band` is emitted at `ea/FORGE.mq5:10813`; legend entry exists at `config/gate_legend.json:213-217`. `bb_breakout_sell_above_band` is emitted at `ea/FORGE.mq5:11174`; legend entry exists at `config/gate_legend.json:218-222`. | PASS | Required new codes are present. |
+| Existing PEMCG/CVCSM gates | `pemcg_buy_reversal_block` / `pemcg_sell_reversal_block` are assigned at `ea/FORGE.mq5:12466-12470`; `cvcsm_cooldown_block_buy` / `_sell` are assigned at `ea/FORGE.mq5:12472-12477`. Legend entries exist at `config/gate_legend.json:543-560`. | PASS | See warning below for stale default text in legend explanations. |
 
-WARNING: The intent doc still says all legs fire simultaneously with `staged_initial_legs=8` at `docs/FORGE_ENTRY_CONDITIONS.md:112-113`; active config is `staged_initial_legs=1` at `config/scalper_config.json:315`, and `.env` explicitly comments that forced 10-leg initial staging was removed at `.env:208-220`.
+## Mandatory Check C — Sync Mapping ↔ `.env.example` Parity
+**Status**: FAIL
 
-## Section 5 — TP3 Live Staging
-PASS. The group structure has `tp3`, `tp2_hit`, and `tp3_hit` fields at `ea/FORGE.mq5:887-895`. TP3 is registered for breakout groups from `breakout_tp3_atr_mult` at `ea/FORGE.mq5:8512-8518`. The live staging pass waits for TP1, then TP2, then modifies remaining positions to TP3 and marks `tp2_hit=true` at `ea/FORGE.mq5:1994-2048`. Active `tp3_atr_mult=2.5` is at `config/scalper_config.json:54`; mapping is `FORGE_BREAKOUT_TP3_ATR_MULT` at `scripts/sync_scalper_config_from_env.py:273`; docs are at `.env.example:517-522`.
+| Check | Evidence | Status | Notes |
+|---|---|---:|---|
+| Sync mappings missing from `.env.example` | The sync script maps 604 `FORGE_*` keys; `.env.example` documents 578. 31 mapped keys have no `# FORGE_...=` or `FORGE_...=` line. Examples: `FORGE_GATE_BB_PULLBACK_BUY_BLOCK_ON_FALLING_VELOCITY`, `FORGE_GATE_BREAKOUT_BUY_SCORE_VELOCITY_THRESHOLD`, `FORGE_SETUP_GRINDING_SELL_ENABLED`, `FORGE_SETUP_REVERSE_SELL_IN_BULL_ENABLED`, and `FORGE_TIMING_REVERSE_SELL_IN_BULL_COOLDOWN_SEC` are mapped in `scripts/sync_scalper_config_from_env.py` but absent from `.env.example`. | FAIL | Operators cannot discover these knobs from `.env.example`. |
+| `.env.example` keys without sync mapping | `.env.example` documents `FORGE_MAGIC_NUMBER` / `FORGE_MAGIC_MAX` at `.env.example:70-74`, `FORGE_SCALPER_MODE` at `.env.example:198-203`, and queue knobs at `.env.example:1138-1142`; these are not sync mappings. | WARNING | They are consumed directly by Python/MT5 paths: magic in `python/bridge.py:121-122`, `python/reconciler.py:41-42`, `python/athena_api.py:545`; scalper mode in `python/bridge.py:159`; queue knobs in `python/bridge.py:330-331`. |
 
-## Section 6 — Direction-Split TP1
-PASS. BUY TP1 uses `breakout_tp1_buy_atr_mult` fallback to shared `breakout_tp1_atr_mult` at `ea/FORGE.mq5:7440-7442`; SELL TP1 uses `breakout_tp1_sell_atr_mult` fallback at `ea/FORGE.mq5:7767-7769`. Active values are shared `0.4`, BUY `0.5`, SELL `0.4` at `config/scalper_config.json:50-52`. Sync mappings are at `scripts/sync_scalper_config_from_env.py:268-270`; `.env.example` documents fallback and direction-specific keys at `.env.example:502-515`.
+## Mandatory Check D — `forge_signals` Placeholder Count
+**Status**: PASS
 
-## Section 7 — Crash-Sell Bypass
-PASS. The bypass requires `h1_bear`, `h4_bear`, RSI above crash minimum, ADX at/below max, and M15 ADX confirmation at `ea/FORGE.mq5:7548-7561`. It skips only the RSI floor and ADX spike sections guarded by `if(!crash_sell_bypass)` at `ea/FORGE.mq5:7568-7585` and `ea/FORGE.mq5:7587-7599`; H1 DI SELL runs before the bypass at `ea/FORGE.mq5:7533-7547`. Active values are `h1h4_crash_sell=1`, `h1h4_crash_sell_rsi_min=20`, `h1h4_crash_sell_adx_max=40`, and `h1h4_crash_sell_min_m15_adx=25.0` at `config/scalper_config.json:67-72`.
+| Check | Evidence | Status | Notes |
+|---|---|---:|---|
+| INSERT column count vs placeholders | `python/scribe.py` inserts `forge_signals` columns at `python/scribe.py:1269-1299`; placeholder expression is `41 + 24 + 45` at `python/scribe.py:1300-1303`. Count is 110 columns and 110 placeholders. | PASS | No `106 values for 110 columns` regression found. |
+| v2.7.45/v2.7.47 columns | `killzone`, `minutes_into_kz`, `htf_h1_strong`, `intraday_label`, and `intraday_counter_htf` are selected at `python/scribe.py:1202-1206`, indexed at `python/scribe.py:1244-1250`, and inserted at `python/scribe.py:1276-1278`. | PASS | Column-index comments match current layout. |
 
-## Section 8 — Variable Integrity
-| FORGE_ Variable / config key | In sync script | In .env.example | Config value (active) | Default value | Status |
-|----------------|---------------|----------------|----------------------|--------------|--------|
-| Active config version | stamp code `scripts/sync_scalper_config_from_env.py:502-511` | n/a | `2.7.41` at `config/scalper_config.json:2`; EA constant `ea/FORGE.mq5:63` | `0.0.0` at `config/scalper_config.defaults.json:2` | PASS |
-| All 87 active `.env` `FORGE_*` vars | mapping loop `scripts/sync_scalper_config_from_env.py:464-485`; whitelist `tests/api/test_forge_27x_gates.py:302-307` | audited against `.env.example` | no unmapped active vars | n/a | PASS |
-| 251 sync mapping keys | mapping declared at `scripts/sync_scalper_config_from_env.py:27-329` | no missing doc keys from audit; `.env.example` FORGE block begins `.env.example:190-196` | n/a | n/a | PASS |
-| Reverse `.env.example` keys | bridge consumes magic/mode/queue keys at `python/bridge.py:119-120`, `python/bridge.py:157-160`, `python/bridge.py:328-329` | `FORGE_MAGIC_NUMBER`, `FORGE_MAGIC_MAX`, `FORGE_SCALPER_MODE`, `FORGE_QUEUE_ACK_TIMEOUT_SEC`, `FORGE_QUEUE_MAX_RETRIES` | not sync-mapped | n/a | WARNING |
-| `bb_breakout.block_hid_bull_sell` | `scripts/sync_scalper_config_from_env.py:139` | `.env:237-239`; no separate `.env.example` line found by direct key name in loaded snippet, but audit found key documented | active 1 at `config/scalper_config.json:125` | absent in defaults section before later safety duplicate | PASS |
-| `safety.block_hid_bull_sell` duplicate | no active EA read found; EA reads `g_sc.breakout_block_hid_bull_sell` | no operator knob needed | active 0 at `config/scalper_config.json:259` | 0 at `config/scalper_config.defaults.json:258` | WARNING |
-| `breakout_adx_lot_factor_high` | `scripts/sync_scalper_config_from_env.py:281` | `.env.example:547-550` | 0.5 at `config/scalper_config.json:257` | 0.125 at `config/scalper_config.defaults.json:256` | FAIL |
+## Section 1 — PEMCG / UMCG / CVCSM / Layer-3 Wiring
 
-All active FORGE-backed config diffs found between active/defaults are mapped or intentionally outside sync. Notable active diffs include lot sizing (`config/scalper_config.json:310-330` vs defaults `config/scalper_config.defaults.json:276-278`), breakout gates (`config/scalper_config.json:63-127` vs defaults `config/scalper_config.defaults.json:63-123`), safety thresholds (`config/scalper_config.json:249-291` vs defaults `config/scalper_config.defaults.json:248-277`), and bounce sizing (`config/scalper_config.json:7-30` vs defaults `config/scalper_config.defaults.json:7-30`).
+| Knob | Struct field | EA default | JSON loader | Sync mapping | `.env` | `.env.example` | Active config | Status |
+|---|---|---|---|---|---|---|---|---:|
+| `umcg_buy_block_threshold` | `ea/FORGE.mq5:1248` | `5` at `ea/FORGE.mq5:4472` | `ea/FORGE.mq5:5412` | `scripts/sync_scalper_config_from_env.py:209` | `.env:585` | `.env.example:1867` | `config/scalper_config.json:378` | PASS |
+| `umcg_sell_block_threshold` | `ea/FORGE.mq5:1249` | `5` at `ea/FORGE.mq5:4473` | `ea/FORGE.mq5:5413` | `scripts/sync_scalper_config_from_env.py:210` | `.env:586` | `.env.example:1868` | `config/scalper_config.json:379` | PASS |
+| `umcg_pemcg_rsi_overbought` | `ea/FORGE.mq5:1250` | `65` at `ea/FORGE.mq5:4474` | `ea/FORGE.mq5:5414` | `scripts/sync_scalper_config_from_env.py:211` | `.env:591` | `.env.example:1869` | `config/scalper_config.json:380` | PASS |
+| `umcg_pemcg_rsi_oversold` | `ea/FORGE.mq5:1251` | `35` at `ea/FORGE.mq5:4475` | `ea/FORGE.mq5:5415` | `scripts/sync_scalper_config_from_env.py:212` | `.env:592` | `.env.example:1870` | `config/scalper_config.json:381` | PASS |
+| `umcg_pemcg_bb_dist_atr_threshold` | `ea/FORGE.mq5:1254` | `0.3` at `ea/FORGE.mq5:4478` | `ea/FORGE.mq5:5418` | `scripts/sync_scalper_config_from_env.py:215` | `.env:595` | `.env.example:1873` | `config/scalper_config.json:384` | PASS |
+| `bb_exhaustion_reversal_lot_amplifier` | `ea/FORGE.mq5:1284` | `1.5` at `ea/FORGE.mq5:4499` | `ea/FORGE.mq5:5434` | `scripts/sync_scalper_config_from_env.py:231` | `.env:615` | `.env.example:1896` | `config/scalper_config.json:535` | WARNING |
+| `bb_exhaustion_reversal_high_conviction_warnings` | `ea/FORGE.mq5:1285` | `6` at `ea/FORGE.mq5:4500` | `ea/FORGE.mq5:5435` | `scripts/sync_scalper_config_from_env.py:232` | `.env:616` | `.env.example:1897` | `config/scalper_config.json:536` | PASS |
+| `bb_exhaustion_reversal_high_conviction_lot_factor` | `ea/FORGE.mq5:1286` | `2.0` at `ea/FORGE.mq5:4501` | `ea/FORGE.mq5:5436` | `scripts/sync_scalper_config_from_env.py:233` | `.env:617` | `.env.example:1898` | `config/scalper_config.json:537` | PASS |
+| `bb_exhaustion_reversal_legs_high_conviction` | `ea/FORGE.mq5:1287` | `4` at `ea/FORGE.mq5:4502` | `ea/FORGE.mq5:5437` | `scripts/sync_scalper_config_from_env.py:234` | `.env:618` | `.env.example:1899` | `config/scalper_config.json:538` | WARNING |
+| `bb_exhaustion_reversal_cooldown_sec` | `ea/FORGE.mq5:1274` | `0` at `ea/FORGE.mq5:4496` | `ea/FORGE.mq5:5431` | `scripts/sync_scalper_config_from_env.py:228` | `.env:608` | `.env.example:1889` | `config/scalper_config.json:533` | WARNING |
+| `bb_exhaustion_reversal_max_adx` | `ea/FORGE.mq5:1292` | `35` at `ea/FORGE.mq5:4503` | `ea/FORGE.mq5:5438` | `scripts/sync_scalper_config_from_env.py:236` | `.env:623` | `.env.example:1904` | `config/scalper_config.json:539` | PASS |
+| `bb_exhaustion_reversal_max_prev_bar_range_atr_mult` | `ea/FORGE.mq5:1299` | `2.0` at `ea/FORGE.mq5:4504` | `ea/FORGE.mq5:5439` | `scripts/sync_scalper_config_from_env.py:238` | `.env:630` | `.env.example:1908` | `config/scalper_config.json:540` | PASS |
+| `bb_breakout_min_breakout_atr_mult` | `ea/FORGE.mq5:1054` | `0.1` at `ea/FORGE.mq5:4253` | `ea/FORGE.mq5:5108` | `scripts/sync_scalper_config_from_env.py:153` | `.env:636` | `.env.example:1913` | `config/scalper_config.json:362` | PASS |
+| `bb_breakout_min_breakdown_atr_mult` | `ea/FORGE.mq5:1055` | `0.1` at `ea/FORGE.mq5:4254` | `ea/FORGE.mq5:5109` | `scripts/sync_scalper_config_from_env.py:154` | `.env:637` | `.env.example:1914` | `config/scalper_config.json:363` | PASS |
 
-## Section 9 — scribe.py / regime.py / schemas/ Cross-Check
-| Check | File:line | Status | Notes |
-|-------|-----------|--------|-------|
-| `forge_signals` base table | `python/scribe.py:119-225` | PASS | Includes 107-column Layer-4 telemetry shape in current CREATE. |
-| `forge_journal_trades` includes `volume` | `python/scribe.py:225-246` and tester table `python/scribe.py:750-792` | PASS | Required by Athena lot-per-leg math. |
-| `aurum_run_id` migrations | `python/scribe.py:570-650` and `python/scribe.py:828-830` | PASS | Signals and trades both migrated. |
-| SIGNALS sync inserts Layer-4 columns | `python/scribe.py:1043-1048` and `python/scribe.py:1239-1244` | PASS | Atom telemetry is synced when present. |
-| Regime labels | `python/regime.py:320`, `python/regime.py:336-345`, `python/regime.py:530-549`; EA resolver uses `VOLATILE`/`RANGE` at `ea/FORGE.mq5:9392-9395` and TP staging uses all three trend labels at `ea/FORGE.mq5:2057-2063` | PASS | Labels align: `TREND_BULL`, `TREND_BEAR`, `VOLATILE`, `RANGE`. |
-| schemas/ SQL alignment | `schemas/openapi.yaml:970-977`; repo schema inventory from `schemas/manifest.json` | UNVERIFIED | No DB `.sql` schema files were found under `schemas/`; DB alignment is therefore based on `scribe.py` CREATE/ALTER code, not independent SQL. |
+Warnings in this table are documentation/default-text drift only: the executable defaults and active config are wired.
 
-## Section 10 — Dashboard / API Consistency
+## Section 2 — Layer-3 Trigger Path
+
+| Check | Evidence | Status | Notes |
+|---|---|---:|---|
+| SELL fires from BUY-trap PEMCG | SELL reversal requires `g_pemcg_buy_warning_count >= g_sc.bb_exhaustion_reversal_min_warnings` at `ea/FORGE.mq5:12517-12519`. | PASS | Matches architecture intent. |
+| SELL v2.7.90 directional opposite-side gate | SELL path blocks only when RSI is oversold and price is near BB lower: `ea/FORGE.mq5:12519-12520`. | PASS | Uses `umcg_pemcg_rsi_oversold` and `umcg_pemcg_bb_dist_atr_threshold`. |
+| SELL v2.7.92 ADX gate | SELL path requires disabled gate or `m5_adx < bb_exhaustion_reversal_max_adx`: `ea/FORGE.mq5:12521-12522`. | PASS | Active config is 35 at `config/scalper_config.json:539`. |
+| SELL v2.7.94 WRB gate | `_wrb_block` is computed from prior M5 range at `ea/FORGE.mq5:12513-12516`; SELL requires `!_wrb_block` at `ea/FORGE.mq5:12523`. | PASS | Active config is 2.0 at `config/scalper_config.json:540`. |
+| BUY mirror | BUY path requires `g_pemcg_sell_warning_count`, overbought + BB upper opposite-side check, ADX ceiling, `!_wrb_block`, and open BUY CVCSM state at `ea/FORGE.mq5:12575-12582`. | PASS | Mirrors SELL path. |
+| Conviction lot and leg use | Lot pin uses amplifier/high factor at `ea/FORGE.mq5:13181-13194`; high-conviction leg override uses `bb_exhaustion_reversal_legs_high_conviction` at `ea/FORGE.mq5:13259-13264`. | PASS | Executable logic uses current knobs. |
+
+## Section 3 — Architecture Doc Cross-Check
+
+| Claim | Doc cite | Current code cite | Status | Notes |
+|---|---|---|---:|---|
+| §3.1 UMCG line cite | `docs/FORGE_PEMCG_ARCHITECTURE.md:67-70` says `ea/FORGE.mq5:12362-12404`. | Current UMCG enforcement is `ea/FORGE.mq5:12456-12492`. | FAIL | Behavior matches, file:line cite is stale. |
+| §3.2 CVCSM line cite | `docs/FORGE_PEMCG_ARCHITECTURE.md:90-92` says state update `6668-6709` and enforcement `12378-12384`. | State update is `ea/FORGE.mq5:6725-6777`; enforcement is `ea/FORGE.mq5:12472-12482`. | FAIL | Behavior matches, file:line cite is stale. |
+| §3.3 Layer-3 line cite | `docs/FORGE_PEMCG_ARCHITECTURE.md:130-132` says SELL `12427-12477`, BUY `12480-12557`. | SELL block is `ea/FORGE.mq5:12494-12568`; BUY mirror is `ea/FORGE.mq5:12570-12624`. | FAIL | Behavior matches, file:line cite is stale. |
+| §4 side-gate line cite | `docs/FORGE_PEMCG_ARCHITECTURE.md:173-176` cites BUY `10781-10798` and SELL `11156-11173`. | BUY gate is `ea/FORGE.mq5:10801-10817`; SELL gate is `ea/FORGE.mq5:11164-11178`. | WARNING | Outside requested §3, but the new source-of-truth doc has stale cites here too. |
+
+## Section 4 — Configuration Pipeline
+
+| Check | Evidence | Status | Notes |
+|---|---|---:|---|
+| Active config contains all v2.7.86-2.7.94 focus knobs | Active keys are present at `config/scalper_config.json:362-363`, `config/scalper_config.json:378-384`, and `config/scalper_config.json:533-540`. | PASS | Runtime active config is complete. |
+| Sync script maps all focus knobs | Mappings exist at `scripts/sync_scalper_config_from_env.py:153-154`, `scripts/sync_scalper_config_from_env.py:209-215`, and `scripts/sync_scalper_config_from_env.py:228-238`. | PASS | Env-to-active sync path is present. |
+| `.env` has active overrides for all focus knobs | Overrides exist at `.env:585-595`, `.env:608-630`, and `.env:636-637`. | PASS | Active config can be regenerated from current `.env`. |
+| Defaults JSON contains the focus defaults | `config/scalper_config.defaults.json` safety section spans `config/scalper_config.defaults.json:184-349`, composites section spans `config/scalper_config.defaults.json:390-410`, and timing section spans `config/scalper_config.defaults.json:551-566`; the focus keys are absent from the defaults file. | FAIL | A clean sync without `.env` overrides would not carry these defaults from the defaults JSON. |
+| `.env.example` values match current defaults | `.env.example:1889` still documents `FORGE_TIMING_BB_EXHAUSTION_REVERSAL_COOLDOWN_SEC=1800`, while EA default is 0 at `ea/FORGE.mq5:4496`; `.env.example:1896` documents lot amplifier 1.0 while EA default is 1.5 at `ea/FORGE.mq5:4499`; `.env.example:1899` documents high-conviction legs 3 while EA default is 4 at `ea/FORGE.mq5:4502`. | WARNING | Presence parity passes for these keys, but the sample values are stale. |
+| Struct/default comments match executable defaults | Struct comments still say UMCG thresholds default 3 and RSI 70/30 at `ea/FORGE.mq5:1248-1251`; executable defaults are 5 and 65/35 at `ea/FORGE.mq5:4472-4475`. Comments still say cooldown 1800, lot amp 1.0, legs 3 at `ea/FORGE.mq5:1274` and `ea/FORGE.mq5:1284-1287`; executable defaults are 0, 1.5, 4 at `ea/FORGE.mq5:4496-4502`. | WARNING | Code is correct; inline documentation is stale. |
+| Gate legend default text | Legend explanations for `pemcg_buy_reversal_block` and `pemcg_sell_reversal_block` still say threshold default 3 at `config/gate_legend.json:543-550`; current defaults are 5 at `ea/FORGE.mq5:4472-4473`. | WARNING | Monitoring explanation text can mislead operators. |
+
+## Section 5 — PEMCG Composite
+
+| Atom / layer | Evidence | Status | Notes |
+|---|---|---:|---|
+| PEMCG computes two 0-7 counts | Computation resets and fills `buy_w` / `sell_w`, then assigns `g_pemcg_buy_warning_count` and `g_pemcg_sell_warning_count` at `ea/FORGE.mq5:6699-6719`. | PASS | Matches `docs/FORGE_PEMCG_ARCHITECTURE.md:27-35`. |
+| A5 absolute BB-distance fix | Absolute BB upper/lower distance is computed at `ea/FORGE.mq5:6689-6696`; BUY A5 and SELL A5 consume it at `ea/FORGE.mq5:6705` and `ea/FORGE.mq5:6716`. | PASS | v2.7.87 sign bug is fixed in code. |
+| CVCSM bar-close state update | BUY state transitions are at `ea/FORGE.mq5:6733-6753`; SELL mirror is at `ea/FORGE.mq5:6756-6776`. | PASS | Matches architecture behavior, not architecture line cites. |
+| Pending-order cancellation on UMCG flip | FORGE-owned pending orders are scanned and cancelled when matching-direction PEMCG warnings exceed threshold at `ea/FORGE.mq5:6779-6809`. | PASS | Additional protection is wired. |
+
+## Section 6 — Dashboard / API Consistency
+
 | Check | dashboard:line | api:line | Status | Notes |
-|-------|---------------|----------|--------|-------|
-| Run detail guarded by selected run ID | `dashboard/app.js:1483-1489` | `python/athena_api.py:1705-1716` | PASS | UI only renders detail when `btSelRun===btDetail.meta.aurum_run_id`. |
-| Loading run indicator | `dashboard/app.js:1483-1486` | n/a | PASS | Shows `Loading run #N…`. |
-| Run ID shown in header | `dashboard/app.js:1497-1503` | `python/athena_api.py:1948-1954` | PASS | API returns `meta`; UI displays `Run #`. |
-| Run isolation on queries | n/a | `python/athena_api.py:1728-1730`, `python/athena_api.py:1741-1746`, `python/athena_api.py:1751-1759`, `python/athena_api.py:1763-1768`, `python/athena_api.py:1771-1778`, `python/athena_api.py:1782-1786`, `python/athena_api.py:1937-1941` | PASS | `aurum_run_id=?` appears on every run-detail SIGNALS/TRADES query. |
-| TAKEN legs from TP1 markers | `dashboard/app.js:1703-1708` | `python/athena_api.py:1903-1907` | PASS | API computes from `|TP1` comments; UI renders legs x lot. |
-| `lot_per_leg` uses volume | `dashboard/app.js:1703-1708` | `python/athena_api.py:1780-1786` and `python/athena_api.py:1909-1911` | PASS | `ROUND(volume,3) as volume` is selected. |
-| P&L includes cascades +20000..+20009 | `dashboard/app.js:1724-1731` | `python/athena_api.py:1830-1843`, `python/athena_api.py:1870-1892` | PASS | Cascade owner map includes offsets 20000..20009. |
-| `cascade_pnl` surfaced | `dashboard/app.js:1724-1731` | `python/athena_api.py:1891-1892`, `python/athena_api.py:1924-1934` | PASS | UI tooltip shows cascade breakdown when non-zero. |
-| `trade_outcome` field | `dashboard/app.js:1681-1686` | `python/athena_api.py:1913-1927` | PASS | Field names match. |
+|---|---|---|---:|---|
+| `/api/backtest/run/:id` run isolation | UI selects `/api/backtest/run/${btSelRun}` at `dashboard/app.js:644-649`. | API filters meta, signals, trades, gates, taken rows, and P&L curve by `aurum_run_id=?` at `python/athena_api.py:1731-1736`, `python/athena_api.py:1740-1750`, `python/athena_api.py:1761-1766`, `python/athena_api.py:1783-1788`, `python/athena_api.py:1794-1801`, `python/athena_api.py:1805-1809`, and `python/athena_api.py:1960-1964`. | PASS | No cross-run leakage found in these queries. |
+| Run ID guard and loading state | `dashboard/app.js:1522-1528` shows Loading when selected run differs from loaded detail and renders detail only when IDs match. | API returns `meta` at `python/athena_api.py:1971-1977`; meta comes from the selected `aurum_run_id` query at `python/athena_api.py:1731-1736`. | PASS | Guard is present. |
+| TAKEN entry fields | UI reads `trade_outcome`, `pnl`, `cascade_pnl`, `legs`, and `lot_per_leg` at `dashboard/app.js:1720-1770`. | API emits those fields at `python/athena_api.py:1947-1957`. | PASS | Field names match. |
+| `lot_per_leg` source | UI renders legs × lot at `dashboard/app.js:1743-1747`. | API selects `ROUND(volume,3) as volume` at `python/athena_api.py:1805-1807` and derives `lot_per_leg` at `python/athena_api.py:1932-1934`. | PASS | Prior missing-volume bug is not present. |
+| Legs count | UI renders `legs` at `dashboard/app.js:1743-1747`. | API counts `|TP1` markers from group trades with SL/nonzero fallback at `python/athena_api.py:1926-1930`. | PASS | Matches required source. |
+| Cascade P&L | UI tooltip includes cascade split at `dashboard/app.js:1763-1770`. | API maps cascade offsets `20000..20009` at `python/athena_api.py:1853-1866`, sums cascade P&L at `python/athena_api.py:1911-1915`, and emits `cascade_pnl` at `python/athena_api.py:1951-1952`. | PASS | Cascade contribution is included. |
+| Live session/killzone authority | Dashboard prefers EA-backed `D.session || D.session_local_check` and `D.killzone || D.killzone_local_check` at `dashboard/app.js:825-852`. | API returns local-check fields at `python/athena_api.py:557-568`. | PASS | UI/API names align. |
 
-## Section 11 — Scripts / Tests Consistency
-| Check | File:line | Status | Notes |
-|-------|-----------|--------|-------|
-| VERSION/config parity test | `tests/api/test_forge_27x_gates.py:75-80`; active version `config/scalper_config.json:2`; EA constant `ea/FORGE.mq5:63` | PASS | Version is 2.7.41 in config and EA. |
-| Dead env var test | `tests/api/test_forge_27x_gates.py:310-325` | PASS | Matches Mandatory Check A. |
-| Lowercase env leak test | `tests/api/test_forge_27x_gates.py:279-299` | PASS | No lowercase config-looking keys found in `.env`. |
-| ADX high lot test | `tests/api/test_forge_27x_gates.py:106-120` | FAIL | Test allows `breakout_adx_lot_factor_high=0.5`; known re-check requires 1.0. |
-| Gate legend stale codes | `config/gate_legend.json:19-204`, `config/gate_legend.json:294-346`; EA emitted gates audited from `ea/FORGE.mq5` | PASS | No missing legend entries. |
-| Stale slot comments | `ea/FORGE.mq5:1290`, `ea/FORGE.mq5:3048-3056`, `ea/FORGE.mq5:9048-9051` | WARNING | Comments still say "all 5 slots"; loops correctly use `< 10`. |
+## Section 7 — scribe.py / regime.py / schemas Cross-Check
 
-## Mandatory Check A — Dead FORGE_* env vars
-PASS. Audit enumerated 87 active `.env` `FORGE_*` keys; each is sync-mapped by `scripts/sync_scalper_config_from_env.py:27-329` or whitelisted in `tests/api/test_forge_27x_gates.py:302-307`. No lowercase config-looking keys were found; the test pattern is defined at `tests/api/test_forge_27x_gates.py:274-299`. Accepted plaintext-secret assumptions are intact: `.env` is gitignored at `.gitignore:1-7`, rendered plists are gitignored at `.gitignore:62-63`, and `git ls-files .env services/macos/rendered` returned no tracked paths.
+| Check | Evidence | Status | Notes |
+|---|---|---:|---|
+| `forge_signals` schema includes recent columns | Base CREATE TABLE includes `killzone`, `minutes_into_kz`, and RegimeState trio at `python/scribe.py:149-154`; migration table create also includes them at `python/scribe.py:599-611`; ALTER migrations exist at `python/scribe.py:670-690`. | PASS | Schema/migration path is complete. |
+| MACD/M15/lot migrations | ALTER migrations for `macd_histogram`, `m15_adx`, and `lot_factor` are at `python/scribe.py:658-669`. | PASS | Known historical gap remains covered. |
+| Regime label compatibility | `forge_signals` persists `regime_label` and `regime_confidence` in the INSERT column list at `python/scribe.py:1273-1275`; the EA passes those as journal fields through `JournalRecordSignal` calls including `ea/FORGE.mq5:12481-12482` and `ea/FORGE.mq5:12667-12669`. | PASS | No missing field found in the reviewed path. |
 
-## Mandatory Check B — Gate legend completeness
-PASS. EA emits 90 SKIP call sites and 62 unique SKIP codes via `JournalRecordSignal("SKIP",...)`; all codes have explicit keys or wildcard coverage in `config/gate_legend.json`. The legend includes core entry gates at `config/gate_legend.json:19-204`, daily/dump gates at `config/gate_legend.json:294-346`, and wildcard/pattern coverage for dynamic codes in the same file. No missing code was found.
+## Section 8 — Scripts / Tests Consistency
 
-## Mandatory Check C — Sync mapping ↔ .env.example parity
-PASS. The one-liner audit found `missing_doc=[]`: every one of 251 sync mapping keys from `scripts/sync_scalper_config_from_env.py:27-329` appears in `.env.example`. Reverse keys not in sync are `FORGE_MAGIC_NUMBER`, `FORGE_MAGIC_MAX`, `FORGE_SCALPER_MODE`, `FORGE_QUEUE_ACK_TIMEOUT_SEC`, and `FORGE_QUEUE_MAX_RETRIES`; these are consumed directly by bridge code at `python/bridge.py:119-120`, `python/bridge.py:157-160`, and `python/bridge.py:328-329`, so they are warnings, not failures.
+| Check | Evidence | Status | Notes |
+|---|---|---:|---|
+| Tests reference new gate/config names | `rg` across `tests/` found no references to `bb_breakout_buy_below_band`, `bb_breakout_sell_above_band`, `pemcg_*`, `cvcsm_*`, `umcg_*`, or `bb_exhaustion_reversal*`. | PASS | No stale test reference was found for the focus stack. |
+| Env dead-var guard exists | `tests/api/test_forge_27x_gates.py:328-343` asserts active `.env` `FORGE_*` vars must map or be whitelisted. | PASS | This protects Mandatory Check A. |
+| Sync parity test coverage | No test was found that enforces Mandatory Check C’s `.env.example` documentation parity. | WARNING | The current 31 missing-doc failures can recur unless covered. |
 
 ## Issues Found (Consolidated)
-1. FAIL: Active high-ADX SELL lot factor is still reducing lots. Active `breakout_adx_lot_factor_high=0.5` at `config/scalper_config.json:257` and `.env:302`, while `.env:298-300` states ADX lot reduction is disabled and the known re-check requires high factor 1.0.
-2. FAIL: Tests do not enforce the no-reduction invariant. `tests/api/test_forge_27x_gates.py:106-120` only checks `(0,1]` and high <= mid, so `0.5` passes.
-3. WARNING: Entry intent doc is stale on version and some values: it says v2.7.37 at `docs/FORGE_ENTRY_CONDITIONS.md:1-6`, while active config and EA are v2.7.41 at `config/scalper_config.json:2` and `ea/FORGE.mq5:63`.
-4. WARNING: Intent doc says `rsi_sell_floor=30` at `docs/FORGE_ENTRY_CONDITIONS.md:132`; active config is 33 at `config/scalper_config.json:64`.
-5. WARNING: Intent doc says simultaneous initial legs via `staged_initial_legs=8` at `docs/FORGE_ENTRY_CONDITIONS.md:112-113`; active config is `staged_initial_legs=1` at `config/scalper_config.json:315`.
-6. WARNING: `schemas/` has API/file schemas but no DB SQL schema to cross-check independently; DB validation relies on `python/scribe.py` CREATE/ALTER migrations.
-7. WARNING: Slot comments still say "all 5 slots" at `ea/FORGE.mq5:1290`, `ea/FORGE.mq5:3055`, and `ea/FORGE.mq5:9049`; executable loops use `< 10` at `ea/FORGE.mq5:1292`, `ea/FORGE.mq5:3056`, and `ea/FORGE.mq5:9051`.
+
+| # | Severity | Section | Description | Action |
+|---|---|---|---|---|
+| 1 | FAIL | Config pipeline | `config/scalper_config.defaults.json` does not contain the 14 focus v2.7.86-v2.7.94 knobs, while active config does. | Add defaults under the same sections used by sync mappings: safety/composites/timing. |
+| 2 | FAIL | Mandatory C | 31 sync-mapped `FORGE_*` variables are missing from `.env.example`. | Add discoverability lines to `.env.example` for every sync mapping. |
+| 3 | FAIL | Architecture doc | `docs/FORGE_PEMCG_ARCHITECTURE.md` §3 file:line cites do not match current `ea/FORGE.mq5`. | Refresh cite ranges for UMCG, CVCSM, and Layer 3. |
+| 4 | WARNING | Docs/comments | Struct comments, `.env.example`, and gate legend text contain stale default values for several v2.7.86-v2.7.94 knobs. | Update text to match executable defaults. |
+| 5 | WARNING | Tests | No test enforces sync mapping ↔ `.env.example` parity. | Add a test based on the skill’s Mandatory Check C one-liner. |
 
 ## Recommendations & Proposed Fixes
-1. Set `FORGE_BREAKOUT_ADX_LOT_FACTOR_HIGH=1.0` in `.env` and regenerate `config/scalper_config.json` via `make scalper-env-sync`.
-2. Update `tests/api/test_forge_27x_gates.py` with an explicit assertion that mid and high ADX lot factors are both 1.0 when the operator policy is "ADX lot reduction disabled."
-3. Refresh `docs/FORGE_ENTRY_CONDITIONS.md` or add a top warning that current active details moved to `docs/FORGE_DECISION_STACK_INVENTORY.md`; do not treat value drift in that intent doc as a runtime failure.
-4. Either add DB schema SQL under `schemas/` or document that `python/scribe.py` is the authoritative DB migration source.
-5. Update stale "all 5 slots" comments to "all 10 slots" to match executable slot loops.
+
+This was requested as read-only validation, so no repo files were changed except this report. The fixes are local config/docs/test maintenance, not MQL5 execution-pattern changes.
+
+1. Add the missing focus keys to `config/scalper_config.defaults.json` under the sync-mapped sections shown in `scripts/sync_scalper_config_from_env.py:153-154`, `scripts/sync_scalper_config_from_env.py:209-215`, and `scripts/sync_scalper_config_from_env.py:228-238`.
+2. Add `.env.example` entries for the 31 sync-mapped but undocumented keys found by Mandatory Check C.
+3. Refresh `docs/FORGE_PEMCG_ARCHITECTURE.md` cite ranges to current code: UMCG `ea/FORGE.mq5:12456-12492`, CVCSM update `ea/FORGE.mq5:6725-6777`, CVCSM enforcement `ea/FORGE.mq5:12472-12482`, Layer-3 SELL `ea/FORGE.mq5:12494-12568`, Layer-3 BUY `ea/FORGE.mq5:12570-12624`.
+4. Update stale default text at `ea/FORGE.mq5:1248-1251`, `ea/FORGE.mq5:1274`, `ea/FORGE.mq5:1284-1287`, `.env.example:1889`, `.env.example:1896`, `.env.example:1899`, and `config/gate_legend.json:543-550`.
 
 ## Overall Verdict
-WARNING with 2 actionable FAIL items. Core BUY/SELL gate logic, crash-sell bypass, TP3 staging, direction-split TP1, cascade slot expansion, SCRIBE sync, and Athena TAKEN-entry math are implemented and line-verified. Operator attention is required for the active high-ADX SELL lot reduction and the test gap that lets it pass.
+
+The executable v2.7.94 entry logic is wired correctly for the reviewed PEMCG/UMCG/CVCSM/Layer-3 stack: the PEMCG composite uses absolute BB distance, UMCG/CVCSM enforcement is present, Layer-3 has the v2.7.90 directional opposite-side checks, v2.7.92 ADX gate, and v2.7.94 WRB gate, and the new BB breakout side-gate codes are emitted and present in the legend.
+
+The main risk is pipeline/documentation drift: the active runtime config is complete, but `scalper_config.defaults.json` lacks the new knobs, `.env.example` is missing 31 sync-mapped knobs and has stale sample values for three Layer-3 settings, and the newly created architecture doc’s §3 line citations are stale against current `ea/FORGE.mq5`.

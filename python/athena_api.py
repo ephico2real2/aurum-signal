@@ -20,7 +20,7 @@ from aeb_executor import execute_action, execute_scribe_query
 
 from scribe import get_scribe, get_tester_scribe
 from status_report import KNOWN_COMPONENTS
-from market_data import MT5_STALE_SEC, build_execution_quote, enrich_mt5_for_stale_check, safe_float
+from market_data import MT5_STALE_SEC, build_execution_quote, enrich_mt5_for_stale_check, safe_float, stabilize_mt5_tester_overlay
 from autoscalper_condition_service import build_autoscalper_condition_report
 from trading_session import (
     get_trading_session_utc,
@@ -470,6 +470,8 @@ def api_live():
     mt5 = _read_json(MARKET_FILE)
     if isinstance(mt5, dict):
         mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+        # v2.7.53 — Stabilize account/positions against tester+live contention.
+        mt5 = stabilize_mt5_tester_overlay(mt5)
     status    = _read_json(STATUS_FILE)
     lens_raw  = _read_json(LENS_FILE)
     execution = build_execution_quote(mt5)
@@ -555,7 +557,8 @@ def api_live():
         # session_local_check is bridge's own UTC-clock compute, kept for divergence
         # detection in the dashboard. Mirrors the v2.7.49 killzone pattern.
         "session":              status.get("session", "OFF_HOURS"),
-        "session_local_check":  get_trading_session_utc(),
+        "session_utc":          get_trading_session_utc(),  # UTC-clock-computed session label — one of SYDNEY|ASIAN|LONDON|LONDON_NY|NEW_YORK|OFF_HOURS (matches v2.7.50 EA-anchored design; consumed by tests/api/test_live.py)
+        "session_local_check":  get_trading_session_utc(),  # alias of session_utc — kept for backward-compat dashboard divergence display
         # v2.7.49 — killzone is now EA-anchored. status["killzone"] is bridge's
         # mirror of the EA's broker-clock-anchored label (read from market_data.json
         # via _killzone() — see bridge.py). killzone_local_check is bridge's OWN
@@ -655,6 +658,8 @@ def api_live_mt5():
     mt5 = _read_json(MARKET_FILE)
     if isinstance(mt5, dict):
         mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+        # v2.7.53 — Stabilize account/positions against tester+live contention.
+        mt5 = stabilize_mt5_tester_overlay(mt5)
     broker = _read_json(BROKER_FILE)
     execution = build_execution_quote(mt5)
     return jsonify({
@@ -686,6 +691,8 @@ def api_live_tradingview():
     mt5 = _read_json(MARKET_FILE)
     if isinstance(mt5, dict):
         mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+        # v2.7.53 — Stabilize account/positions against tester+live contention.
+        mt5 = stabilize_mt5_tester_overlay(mt5)
     lens_raw = _read_json(LENS_FILE)
     execution = build_execution_quote(mt5)
     tradingview = _build_tradingview_panel(lens_raw)
@@ -722,6 +729,8 @@ def api_live_positions():
     mt5 = _read_json(MARKET_FILE)
     if isinstance(mt5, dict):
         mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+        # v2.7.53 — Stabilize account/positions against tester+live contention.
+        mt5 = stabilize_mt5_tester_overlay(mt5)
     scribe = get_scribe()
     scribe_open_all = scribe.get_open_groups()
     _forge_magic = int(os.environ.get("FORGE_MAGIC_NUMBER", str(FORGE_MAGIC_NUMBER_DEFAULT)))
@@ -746,6 +755,8 @@ def api_live_scalper_gates():
     mt5 = _read_json(MARKET_FILE)
     if isinstance(mt5, dict):
         mt5 = enrich_mt5_for_stale_check(mt5, MARKET_FILE)
+        # v2.7.53 — Stabilize account/positions against tester+live contention.
+        mt5 = stabilize_mt5_tester_overlay(mt5)
     return jsonify({
         "timestamp":    datetime.now(timezone.utc).isoformat(),
         "scalper_gates": _build_scalper_gates(mt5),

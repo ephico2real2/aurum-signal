@@ -260,19 +260,29 @@ def test_pending_timeout_skips_signal_groups(monkeypatch):
 
 
 @pytest.mark.unit
-def test_calc_pips_xau_uses_cent_pip():
+def test_calc_pips_xau_uses_whole_number_broker_pip():
+    """Operator-broker convention (2026-05-14 confirmation): each whole-number
+    XAUUSD price move = 10 pips. 1 pip = $0.10. Operator's TP1 = 40 pips = $4.00 move.
+
+    Test name was previously `test_calc_pips_xau_uses_cent_pip` and asserted
+    industry convention ($0.01/pip) — that was inconsistent with operator's
+    actual usage and is corrected here. See docs/FORGE_CORE_LOGIC_DESIGN.md §9
+    changelog 2026-05-14 for the convention conflict + resolution.
+    """
     import bridge as bm
-    # 1.5 USD move on XAU -> 150.0 pips when 1 pip = 0.01
-    assert bm._calc_pips("XAUUSD", "BUY", 3300.0, 3301.5) == 150.0
+    # 3300.00 → 3301.50: int(3301) - int(3300) = 1 × 10 = 10 pips (intentional integer truncation)
+    assert bm._calc_pips("XAUUSD", "BUY", 3300.0, 3301.5) == 10.0
     # SELL should invert move sign
-    assert bm._calc_pips("XAUUSD", "SELL", 3301.5, 3300.0) == 150.0
+    assert bm._calc_pips("XAUUSD", "SELL", 3301.5, 3300.0) == 10.0
+    # 4700.00 → 4715.75: int(4715) - int(4700) = 15 × 10 = 150 pips
+    assert bm._calc_pips("XAUUSD", "BUY", 4700.0, 4715.75) == 150.0
 
 
 @pytest.mark.unit
 def test_calc_pips_forex_conventions():
     import bridge as bm
 
-    # EURUSD: pip = 0.0001
+    # EURUSD: 4-decimal pair, 1 pip = 0.0001 (unchanged — broker convention here matches industry)
     assert bm._calc_pips("EURUSD", "BUY", 1.1000, 1.1015) == 15.0
-    # USDJPY: pip = 0.01
+    # USDJPY: 2-decimal pair, 1 pip = 0.01 (broker convention — same as industry for JPY pairs)
     assert bm._calc_pips("USDJPY", "BUY", 150.00, 150.35) == 35.0
