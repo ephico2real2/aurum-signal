@@ -454,6 +454,18 @@ int      g_pemcg_sell_warning_count  = 0;   // 0-7, mirror — counts SELL-rever
 bool     g_dtc_bear_day_intraday    = false; // VWAP_dist + M15_ADX + H1 DI dominance confirm bear continuation
 bool     g_dtc_bull_day_intraday    = false; // mirror
 double   g_eval_vwap_dist_atr       = 0.0;   // (m5_close - vwap_price) / m5_atr — signed; negative = below VWAP
+// v2.7.107 — DTC 5-state classifier (ICT-canonical). Computed each tick from intraday + H4 axes.
+//   0 = NEUTRAL              (intraday triad does not agree)
+//   1 = BULL_TREND_ALIGNED   (intraday bull AND h4_trend ≥ +threshold)
+//   2 = BEAR_TREND_ALIGNED   (intraday bear AND h4_trend ≤ −threshold)
+//   3 = COUNTER_TREND_BULL   (intraday bull AND h4_trend ≤ −threshold = corrective bounce inside bear macro)
+//   4 = COUNTER_TREND_BEAR   (intraday bear AND h4_trend ≥ +threshold = corrective dip inside bull macro = OTE setup)
+#define DTC_STATE_NEUTRAL              0
+#define DTC_STATE_BULL_TREND_ALIGNED   1
+#define DTC_STATE_BEAR_TREND_ALIGNED   2
+#define DTC_STATE_COUNTER_TREND_BULL   3
+#define DTC_STATE_COUNTER_TREND_BEAR   4
+int      g_dtc_state                = DTC_STATE_NEUTRAL;
 int      g_cvcsm_state_buy           = 0;   // 0=OPEN, 1=COOLDOWN, 2=RETRYING (BUY direction)
 int      g_cvcsm_state_sell          = 0;   // 0=OPEN, 1=COOLDOWN, 2=RETRYING (SELL direction)
 datetime g_cvcsm_cooldown_start_buy  = 0;   // timestamp BUY cooldown began (safety timeout reference)
@@ -1405,6 +1417,22 @@ struct ScalperConfig {
    int    dtc_pemcg_bypass_atoms;                     // default 2 — subtract from warning count when day-type matches direction
    string dtc_exempt_buy_setups;                      // comma-list — BUY setups exempt from bear_day_buy_block (default "BB_EXHAUSTION_REVERSAL_BUY")
    string dtc_exempt_sell_setups;                     // comma-list — SELL setups exempt from bull_day_sell_block (default "FRACTIONAL_SELL_IN_BULL,BB_EXHAUSTION_REVERSAL_SELL")
+   // v2.7.107 — DTC 5-state classifier (ICT-canonical: trend-aligned + counter-trend + neutral)
+   //   Adds H4 trend agreement as a fourth confluence axis. Without H4 agreement,
+   //   the v2.7.105 binary day-type detector cannot distinguish:
+   //     - "intraday bear inside bear H4 = trend-aligned bear day" (block BUYs, amplify SELLs)
+   //     - "intraday bear inside bull H4 = corrective dip = OTE setup" (allow BUYs at H4 demand)
+   //     - "intraday bull inside bear H4 = corrective bounce = SELL setup" (block BUYs — G5021 case)
+   //     - "intraday bull inside bull H4 = trend-aligned bull day" (block SELLs, amplify BUYs)
+   //   These are the 4 active states + NEUTRAL = ICT's canonical 5-state framework.
+   //   Origin: Run 36 v2.7.102 G5021 -$498.60 + G5026 -$399.00 losses. Both were
+   //   counter-H4 BUYs that v2.7.105's binary intraday detector couldn't catch
+   //   (M15 ADX was 22.2 — just below v2.7.105's 25 threshold) but H4 disagreement
+   //   makes them obvious. See docs/FORGE_PEMCG_ARCHITECTURE.md §3.5.
+   bool   dtc_5state_enabled;                         // v2.7.107 master — when 1, use 5-state classifier (replaces binary g_dtc_bear/bull_day_intraday)
+   double dtc_h4_trend_min_agreement;                 // default 0.5 — |h4_trend_strength| ≥ this for H4 bias to count as "decided"
+   bool   dtc_block_counter_trend_buys;               // default 0 — block BUYs in COUNTER_TREND_BULL state (intraday bull inside bear H4)
+   bool   dtc_block_counter_trend_sells;              // default 0 — block SELLs in COUNTER_TREND_BEAR state (intraday bear inside bull H4)
    // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
    //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
    //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
@@ -4839,6 +4867,11 @@ void InitScalperConfig() {
    g_sc.dtc_pemcg_bypass_atoms                = 2;     // when day-type matches direction, subtract from warnings
    g_sc.dtc_exempt_buy_setups                 = "BB_EXHAUSTION_REVERSAL_BUY";  // exempt from bear_day_buy_block
    g_sc.dtc_exempt_sell_setups                = "FRACTIONAL_SELL_IN_BULL,BB_EXHAUSTION_REVERSAL_SELL";  // exempt from bull_day_sell_block
+   // v2.7.107 5-state DTC defaults (all OFF; flip dtc_5state_enabled + sub-flags to activate)
+   g_sc.dtc_5state_enabled                    = false;
+   g_sc.dtc_h4_trend_min_agreement            = 0.5;   // |h4_trend| ≥ this for H4 bias to be "decided"
+   g_sc.dtc_block_counter_trend_buys          = false; // block BUYs in COUNTER_TREND_BULL (G5021-class catch)
+   g_sc.dtc_block_counter_trend_sells         = false; // block SELLs in COUNTER_TREND_BEAR (mirror)
    g_sc.cvcsm_enabled                         = true;
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
@@ -5904,6 +5937,11 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "dtc_pemcg_bypass_atoms"))                 { v=JsonGetDouble(content,"dtc_pemcg_bypass_atoms");                 if(v>=0&&v<=7)      g_sc.dtc_pemcg_bypass_atoms=(int)v; }
    if(JsonHasKey(content, "dtc_exempt_buy_setups"))                  { g_sc.dtc_exempt_buy_setups  = JsonGetString(content, "dtc_exempt_buy_setups"); }
    if(JsonHasKey(content, "dtc_exempt_sell_setups"))                 { g_sc.dtc_exempt_sell_setups = JsonGetString(content, "dtc_exempt_sell_setups"); }
+   // v2.7.107 5-state DTC knobs
+   if(JsonHasKey(content, "dtc_5state_enabled"))                     { v=JsonGetDouble(content,"dtc_5state_enabled");                     g_sc.dtc_5state_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "dtc_h4_trend_min_agreement"))             { v=JsonGetDouble(content,"dtc_h4_trend_min_agreement");             if(v>=0.0&&v<=10.0) g_sc.dtc_h4_trend_min_agreement=v; }
+   if(JsonHasKey(content, "dtc_block_counter_trend_buys"))           { v=JsonGetDouble(content,"dtc_block_counter_trend_buys");           g_sc.dtc_block_counter_trend_buys=(v>=0.5); }
+   if(JsonHasKey(content, "dtc_block_counter_trend_sells"))          { v=JsonGetDouble(content,"dtc_block_counter_trend_sells");          g_sc.dtc_block_counter_trend_sells=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
    if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
@@ -7274,13 +7312,59 @@ void ForgeEvalAtoms() {
          && (_dtc_m15_adx >= g_sc.dtc_m15_adx_min)
          && (_dtc_di_balance >=  g_sc.dtc_h1_di_dominance_min)
          && (!g_daily_bear_bias);
-      // PEMCG modifier — de-weight matching-direction warnings when day-type confirms continuation
+      // ─── v2.7.107 5-state classifier — combines intraday bias × H4 trend bias ───
+      // Five states (NEUTRAL + 2 trend-aligned + 2 counter-trend). Maps to ICT canonical
+      // entry-class framework: trend-aligned trades (full size), OTE re-entries at H4
+      // demand/supply (allowed in counter-trend states), and counter-bias knife-catches
+      // (blocked or fractional).
+      //
+      // H4 bias decision uses g_eval_h4_trend (existing global, computed from H4 EMA20−EMA50/ATR).
+      // |h4_trend| ≥ dtc_h4_trend_min_agreement (default 0.5) qualifies as "decided".
+      // Threshold logic mirrors h1_trend usage in existing trend_continuation_buy/sell setups.
+      //
+      // STATE → DECISION mapping (operator-validated against Run 36 G5016/G5021/G5026):
+      //   BULL_TREND_ALIGNED    intraday+H4 both bull   block SELLs (v2.7.105 bull_day_sell_block)
+      //   BEAR_TREND_ALIGNED    intraday+H4 both bear   block BUYs  (v2.7.105 bear_day_buy_block)
+      //   COUNTER_TREND_BULL    intraday bull, H4 bear  block BUYs IF dtc_block_counter_trend_buys
+      //                                                  (catches G5021 -$498 case)
+      //   COUNTER_TREND_BEAR    intraday bear, H4 bull  block SELLs IF dtc_block_counter_trend_sells
+      //                                                  (OTE buy setups at H4 demand still pass)
+      //   NEUTRAL               no triad agreement      pre-DTC behaviour (no DTC block)
+      if(g_sc.dtc_5state_enabled) {
+         double _h4_trend = g_eval_h4_trend;
+         bool   _h4_bull  = (_h4_trend >=  g_sc.dtc_h4_trend_min_agreement);
+         bool   _h4_bear  = (_h4_trend <= -g_sc.dtc_h4_trend_min_agreement);
+         if(g_dtc_bull_day_intraday && _h4_bull) {
+            g_dtc_state = DTC_STATE_BULL_TREND_ALIGNED;
+         } else if(g_dtc_bear_day_intraday && _h4_bear) {
+            g_dtc_state = DTC_STATE_BEAR_TREND_ALIGNED;
+         } else if(g_dtc_bull_day_intraday && _h4_bear) {
+            g_dtc_state = DTC_STATE_COUNTER_TREND_BULL;
+         } else if(g_dtc_bear_day_intraday && _h4_bull) {
+            g_dtc_state = DTC_STATE_COUNTER_TREND_BEAR;
+         } else {
+            g_dtc_state = DTC_STATE_NEUTRAL;
+         }
+      } else {
+         g_dtc_state = DTC_STATE_NEUTRAL;  // 5-state OFF — pre-DTC behaviour
+      }
+      // PEMCG modifier — de-weight matching-direction warnings when day-type confirms continuation.
+      // v2.7.107: ONLY de-weight on TREND_ALIGNED states. NEVER de-weight on COUNTER_TREND states
+      //   — counter-trend retracements are HIGH risk of failure (H4 macro will likely re-assert),
+      //   so PEMCG should stay fully strict to filter trap entries. Operator-validated.
+      // When 5-state is OFF, fall back to v2.7.105 binary behaviour (de-weight on either bear/bull intraday).
       if(g_sc.dtc_pemcg_modifier_enabled && g_sc.dtc_pemcg_bypass_atoms > 0) {
-         if(g_dtc_bear_day_intraday) {
+         bool _bear_deweight = g_sc.dtc_5state_enabled
+                               ? (g_dtc_state == DTC_STATE_BEAR_TREND_ALIGNED)
+                               : g_dtc_bear_day_intraday;
+         bool _bull_deweight = g_sc.dtc_5state_enabled
+                               ? (g_dtc_state == DTC_STATE_BULL_TREND_ALIGNED)
+                               : g_dtc_bull_day_intraday;
+         if(_bear_deweight) {
             int _newsell = g_pemcg_sell_warning_count - g_sc.dtc_pemcg_bypass_atoms;
             g_pemcg_sell_warning_count = (_newsell < 0) ? 0 : _newsell;
          }
-         if(g_dtc_bull_day_intraday) {
+         if(_bull_deweight) {
             int _newbuy = g_pemcg_buy_warning_count - g_sc.dtc_pemcg_bypass_atoms;
             g_pemcg_buy_warning_count = (_newbuy < 0) ? 0 : _newbuy;
          }
@@ -13091,17 +13175,48 @@ void CheckNativeScalperSetups() {
       //   Exempt-list check uses StringFind on the comma-separated knob value.
       bool dtc_day_bias_blocked = false;
       if(!umcg_blocked && !cvcsm_blocked && !dirlock_blocked && g_sc.dtc_enabled && g_sc.dtc_day_bias_block_enabled) {
-         if(direction == "BUY" && g_dtc_bear_day_intraday) {
-            // BUY into a bear day — block unless setup is in exempt list
-            if(StringFind(g_sc.dtc_exempt_buy_setups, setup_type) < 0) {
-               dtc_day_bias_blocked = true;
-               block_reason = "bear_day_buy_block";
+         if(g_sc.dtc_5state_enabled) {
+            // v2.7.107 5-state — block based on state + direction + optional counter-trend flags
+            if(direction == "BUY" && g_dtc_state == DTC_STATE_BEAR_TREND_ALIGNED) {
+               if(StringFind(g_sc.dtc_exempt_buy_setups, setup_type) < 0) {
+                  dtc_day_bias_blocked = true;
+                  block_reason = "bear_day_buy_block";  // v2.7.105 — trend-aligned bear
+               }
+            } else if(direction == "SELL" && g_dtc_state == DTC_STATE_BULL_TREND_ALIGNED) {
+               if(StringFind(g_sc.dtc_exempt_sell_setups, setup_type) < 0) {
+                  dtc_day_bias_blocked = true;
+                  block_reason = "bull_day_sell_block";  // v2.7.105 — trend-aligned bull
+               }
+            } else if(direction == "BUY" && g_dtc_state == DTC_STATE_COUNTER_TREND_BULL
+                      && g_sc.dtc_block_counter_trend_buys) {
+               // intraday bull bounce inside bear H4 macro — BUYs are counter-H4 knife-catches.
+               // This is the G5021 -$498 case: MOMENTUM_DUMP BUY @ 4697 during a corrective bounce
+               // in the multi-day bear from 4780 → 4630. H4 macro was bear; bounce got crushed.
+               if(StringFind(g_sc.dtc_exempt_buy_setups, setup_type) < 0) {
+                  dtc_day_bias_blocked = true;
+                  block_reason = "counter_bull_day_buy_block";  // v2.7.107 NEW
+               }
+            } else if(direction == "SELL" && g_dtc_state == DTC_STATE_COUNTER_TREND_BEAR
+                      && g_sc.dtc_block_counter_trend_sells) {
+               // intraday bear dip inside bull H4 macro — SELLs are counter-H4 knife-catches.
+               // Mirror of counter_bull case. BUYs at deep oversold here = OTE setup (allowed).
+               if(StringFind(g_sc.dtc_exempt_sell_setups, setup_type) < 0) {
+                  dtc_day_bias_blocked = true;
+                  block_reason = "counter_bear_day_sell_block";  // v2.7.107 NEW
+               }
             }
-         } else if(direction == "SELL" && g_dtc_bull_day_intraday) {
-            // SELL into a bull day — block unless setup is in exempt list
-            if(StringFind(g_sc.dtc_exempt_sell_setups, setup_type) < 0) {
-               dtc_day_bias_blocked = true;
-               block_reason = "bull_day_sell_block";
+         } else {
+            // v2.7.105 binary behaviour (preserved when 5-state OFF)
+            if(direction == "BUY" && g_dtc_bear_day_intraday) {
+               if(StringFind(g_sc.dtc_exempt_buy_setups, setup_type) < 0) {
+                  dtc_day_bias_blocked = true;
+                  block_reason = "bear_day_buy_block";
+               }
+            } else if(direction == "SELL" && g_dtc_bull_day_intraday) {
+               if(StringFind(g_sc.dtc_exempt_sell_setups, setup_type) < 0) {
+                  dtc_day_bias_blocked = true;
+                  block_reason = "bull_day_sell_block";
+               }
             }
          }
       }

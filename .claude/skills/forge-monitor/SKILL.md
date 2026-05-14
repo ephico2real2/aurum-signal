@@ -1042,6 +1042,63 @@ conn.execute("""
 
 ---
 
+### MANDATORY: H4 trend agreement check on every counter-direction setup loss
+
+**Operator mandate** (2026-05-14, Run 36 G5021 −$498.60 + G5026 −$399.00 audit): "you did not consider H4 in your analysis — why?" → root cause: v2.7.105 DTC used intraday triad only. **H4 trend is the ICT-canonical bias-setting timeframe** and must be checked separately from the intraday triad.
+
+**Key insight surfaced**:
+> **The intraday triad (VWAP + M15 ADX + H1 DI) alone cannot distinguish trend-continuation from corrective-retracement.** Both look "bear" or "bull" on intraday data. Only H4 agreement (or disagreement) lets the system classify a move as:
+> - TREND_ALIGNED — H4 + intraday agree → full DTC behaviour (block opposite-direction, amplify same-direction)
+> - COUNTER_TREND — H4 + intraday disagree → block KNIFE-CATCH entries in the intraday direction (G5021 case); allow OTE setups (deep retracement BUYs in bull H4 = G5016-class OTE pattern)
+> - NEUTRAL — no triad agreement → pre-DTC behaviour
+
+**When this mandate fires** (every loss review):
+
+For EVERY loss group where the entry was direction-aligned-with-intraday-but-counter-H4:
+1. Pull `h4_trend_strength` at entry time (from `g_eval_h4_trend` cached global)
+2. Compare against intraday triad direction
+3. If H4 disagrees → flag as **"counter-H4 knife-catch — v2.7.107 5-state DTC would block"**
+
+**Canonical 5-state mapping**:
+
+| Intraday triad | H4 trend | State name | What this catches |
+|---|---|---|---|
+| bull | ≥ +0.5 | `BULL_TREND_ALIGNED` | Normal bull day. Block SELLs (v2.7.105 `bull_day_sell_block`). |
+| bear | ≤ −0.5 | `BEAR_TREND_ALIGNED` | Normal bear day. Block BUYs (v2.7.105 `bear_day_buy_block`). |
+| bull | ≤ −0.5 | `COUNTER_TREND_BULL` | **Corrective bounce inside bear H4 — G5021 case.** Block BUYs via `counter_bull_day_buy_block` if `dtc_block_counter_trend_buys=1`. |
+| bear | ≥ +0.5 | `COUNTER_TREND_BEAR` | Corrective dip inside bull H4 = **canonical OTE setup** at H4 demand. BUYs at deep oversold REMAIN ALLOWED. Block SELLs via `counter_bear_day_sell_block` if `dtc_block_counter_trend_sells=1`. |
+| not confirmed | any | `NEUTRAL` | Pre-DTC behaviour (no day-type block). |
+
+**Why counter-trend states DON'T trigger PEMCG modifier** (asymmetric design — operator-validated):
+- TREND_ALIGNED: macro + intraday agree → trend-continuation entries are high-probability → de-weight PEMCG warnings (they'd be false alarms)
+- COUNTER_TREND: macro disagrees with intraday → retracement is likely a temporary correction → PEMCG warnings should stay strict to filter the higher-failure-rate setups
+
+**Reporting format** in tick + analysis doc:
+
+> "Loss G5021 −$498.60: MOMENTUM_DUMP BUY @ 4697 with intraday VWAP_dist +1.60 (mildly bull) + M15 ADX 22.2 (below 25 threshold) + h4_trend likely ≤ −0.5 (clear bear macro after 4-day decline 4780→4630). State classification: **COUNTER_TREND_BULL**. v2.7.105 binary intraday DOES NOT catch (M15 ADX < 25). v2.7.107 5-state with `dtc_block_counter_trend_buys=1` blocks as `counter_bull_day_buy_block`. **Recommended fix: enable v2.7.107 5-state on next backtest restart.**"
+
+**Anti-pattern**: classifying a loss as "trend-failure" without checking H4 alignment. The same setup can be:
+- Trend-aligned and high-probability (BB_LOWER_REVERSION_BUY at H4 demand inside bull macro)
+- Counter-trend and low-probability (same setup at the same RSI inside bear macro)
+
+The intraday atoms look identical. H4 is the differentiator.
+
+**ICT framework citation** (per [tradeciety multi-TF guide](https://tradeciety.com/multiple-time-frame-analysis)):
+> "Trade only in direction of HTF bias unless confirmed MSS. Counter-bias trades at most fractional sizing. OTE re-entries at HTF premium/discount levels are the canonical setup."
+
+The 5-state design is the direct implementation of this rule.
+
+**Cross-references**:
+- v2.7.107 ship notes: `docs/FORGE_PEMCG_ARCHITECTURE.md` §3.5
+- Gate codes: `counter_bull_day_buy_block`, `counter_bear_day_sell_block`
+- Knob discovery: `.env.example` block under "v2.7.107 — DTC 5-state"
+- Industry citations:
+  - [tradeciety — Multi-Timeframe Trading](https://tradeciety.com/multiple-time-frame-analysis)
+  - [babypips — Multiple Time Frame Analysis](https://www.babypips.com/learn/forex/learn-multiple-time-frame-analysis)
+  - [tradethepool — ICT MSS](https://tradethepool.com/technical-skill/ict-market-structure-shift/)
+
+---
+
 ### MANDATORY: case study file for date-range / multi-day pattern analyses
 
 Whenever the analysis spans **2 or more trading days** (e.g. day-typing, cross-day composite
