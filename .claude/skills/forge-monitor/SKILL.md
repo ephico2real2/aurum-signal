@@ -869,6 +869,87 @@ When PEMCG_BUY warnings ≥ 4 (high reversal-warning), a `BB_EXHAUSTION_REVERSAL
 
 ---
 
+### MANDATORY: Protective-close audit — separate SLs from PEMCG defensive exits, flag session-aware over-exits
+
+**Operator mandate** (2026-05-14, Run-on-v2.7.102): "i see Significant changes since prior tick — 9 new losses appeared" → after deeper investigation: 8 of those 9 were NOT SL hits, they were v2.7.84 PEMCG protective-close partial exits booked at base magic. Misclassifying them as SL losses produced an alarmist report that misrepresented what the EA actually did.
+
+**Why this matters**: in a single tick a cluster of `profit < 0` deals at base magic with empty comments and round M5 timestamps will appear in W/L counts and dashboards as **losses**, but they are *defensive mechanism outputs*, not structural failures. Confusing the two distorts the operator's mental model of system health and pushes toward wrong fixes (e.g., "widen SL" when the actual issue is "protective threshold too aggressive at the wrong session").
+
+**When this audit fires** (run on every tick that has new `profit < 0` deals):
+
+For every loss deal in the current tick window:
+
+```python
+import sqlite3
+conn = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+for r in conn.execute('''
+    SELECT deal_ticket, magic, ROUND(profit,2), comment, datetime(time,'unixepoch'), volume, price
+    FROM TRADES WHERE run_id=(SELECT MAX(id) FROM TESTER_RUNS) AND profit < 0
+      AND deal_ticket > <last_seen_deal_ticket>
+    ORDER BY time
+'''):
+    deal, magic, profit, comment, t, vol, price = r
+    base_magic = MAGIC_BASE  # 202401 in current run
+    # Classification
+    if magic == base_magic and not comment:
+        cls = "PROTECTIVE_CLOSE"          # v2.7.84 PEMCG / CVCSM partial exit
+    elif comment.startswith('sl '):
+        cls = "TRUE_SL"                   # broker SL hit
+    elif comment.startswith('SCALP'):
+        cls = "STAGED_PARTIAL"            # TP1/TP2 partial at loss (rare)
+    elif magic >= base_magic + 20000:
+        cls = "CASCADE_SLOT_SL"           # SELL_LIMIT_RECOV / BUY_STOP_CONT slot SL
+    else:
+        cls = "UNKNOWN_INVESTIGATE"       # flag for inspection
+    print(f"  {cls:20s} deal={deal} magic={magic} profit={profit} vol={vol} t={t}")
+```
+
+**Reporting rule** in every tick + analysis doc:
+
+| Category | What it is | Should be reported as |
+|----------|------------|----------------------|
+| `TRUE_SL` (comment `sl <price>`) | broker stop fired at SL price | **Loss** (real structural failure) |
+| `CASCADE_SLOT_SL` (magic ≥ base+20000, comment `sl <price>`) | cascade/recovery slot SL | **Loss** (intentional small SL on recovery leg) |
+| `PROTECTIVE_CLOSE` (magic = base, empty comment, M5 timestamp) | v2.7.84 / CVCSM defensive partial close | **Defensive exit** — NOT a loss (system working as designed) |
+| `STAGED_PARTIAL` (comment starts `SCALP`) | TP-tier partial close at loss (rare) | Investigate — should always be 0 or positive |
+| `UNKNOWN_INVESTIGATE` | doesn't match above patterns | Flag and grep the EA + bridge log |
+
+**Tick report format** (correct framing):
+
+> "+5 new TAKENs, **2 SL deals (−$X), 8 protective closes (−$Y)**. Cluster net: −$Z (full group included both protective exits and the subsequent TP wins on the surviving positions)."
+
+NOT:
+> "9 new losses appeared." (this is dashboard-accurate but semantically wrong — it conflates two different mechanisms)
+
+**Cross-cluster cost audit** (mandatory when protective-close cluster cost > $200):
+
+After the cluster recovers to a TP win or another tick completes the group lifecycle, compute:
+1. **Sum of protective-close P&L** across the cluster (negative number)
+2. **Sum of group-magic TP P&L** for the same groups (positive number)
+3. **Cluster net** = (1) + (2)
+4. **Closed-at-bottom check** — what was the PRICE during the largest protective close vs the eventual recovery high? If the protective close was within 2 ATR of the local bottom, flag as **"closed at the bottom — over-exit candidate"**.
+
+If protective-close P&L exceeds the cluster's recovery TP P&L by > 30%, surface as a recommendation candidate (next section).
+
+**Session-aware threshold investigation** (operator-mandated 2026-05-14):
+
+When you see a protective-close cluster, ALWAYS check the SESSION column of the originating TAKEN signal AND the session at the protective-close timestamps. If both are ASIAN, flag for review:
+
+> "ASIAN-session protective closes during PEMCG_buy_warnings spike. Run 36 case: G5011/G5012 BUYs opened 22:39-22:40 ASIAN @ 4775; PEMCG protective closes at 23:00/23:05/23:45 took out 0.56 lots cumulative at avg price 4763 (worst slice 0.13 × 2 = $430 at 23:45 price 4759, which was within 2pts of the local bottom 4757); price recovered to 4780 by 01:35 producing TP wins +$155 across surviving positions. Net cluster: −$319. ASIAN-session PEMCG threshold may need to be 6/7 (vs current 5/7) to avoid closing the biggest slice during normal Asian drift."
+
+Hypothesis to test in a follow-up backtest (queue as Recommendation): **session-aware PEMCG_buy_threshold** — `5` during LONDON+NY (active sessions, faster reversals matter), `6` during ASIAN (chop drift more common than true reversals, biggest-slice-at-bottom risk higher).
+
+Industry citation framework (WebSearch mandate applies):
+- Search: "MQL5 session-aware filter ASIAN London NY threshold scalping protective close"
+- Search: "ICT killzone PEMCG threshold session differentiation XAUUSD <year>"
+- Reference: ICT killzone literature already establishes ASIAN as the "accumulation/distribution" window with more chop and fewer true reversals — supports a more conservative protective-close threshold there.
+
+**Anti-pattern**: reporting protective closes as SL hits without checking the comment + magic + timestamp signature. Always classify first, then report.
+
+**Cross-reference**: this mandate originated from the Run 36 v2.7.102 monitoring session 2026-05-14 G5011-G5015 cluster analysis. The operator question that triggered it: "what is the current mode for forge - analyze the lost in Trades: 36 → 55 (+19); W/L: 35/1 → 45/10". The initial answer treated the 9 deals as SLs; the corrected analysis separated 1 SL from 8 protective closes.
+
+---
+
 ### MANDATORY: case study file for date-range / multi-day pattern analyses
 
 Whenever the analysis spans **2 or more trading days** (e.g. day-typing, cross-day composite
