@@ -86,34 +86,180 @@ No code changes required — Option A is fully scaffolded in v2.7.110.
 
 ---
 
-## §6 Backtest validation plan
+## §6 Backtest validation plan — full statistical pipeline
 
-After v2.7.110 ships and accumulates ≥ 100 TAKEN entries with `ces_score > 0`, run:
+The bucket query below is a useful starting point, but it's too crude as the sole decision rule. This section lays out the rigorous statistical stack — what's sound, what the simple bucket misses, and the decision matrix for activating Option A.
+
+### §6.1 The starter query (calibration sanity check)
+
+After v2.7.110 ships and accumulates ≥ 100 TAKEN entries with `ces_score > 0`:
 
 ```sql
 -- Win rate by CES score bucket
-SELECT s.ces_score,
-       COUNT(*)                                        AS taken,
-       SUM(CASE WHEN t.profit > 0 THEN 1 ELSE 0 END)   AS wins,
-       ROUND(SUM(t.profit), 2)                         AS net_pnl,
-       ROUND(AVG(t.profit), 2)                         AS avg_pnl
+SELECT
+  CASE
+    WHEN s.ces_score < 4 THEN 'low_confidence'
+    WHEN s.ces_score < 6 THEN 'mid_confidence'
+    WHEN s.ces_score < 8 THEN 'high_confidence'
+    ELSE 'extreme_confidence'
+  END AS ces_bucket,
+  COUNT(*) AS n,
+  ROUND(AVG(t.profit), 2) AS avg_pnl,
+  SUM(CASE WHEN t.profit > 0 THEN 1 ELSE 0 END) AS wins,
+  SUM(CASE WHEN t.profit < 0 THEN 1 ELSE 0 END) AS losses
 FROM SIGNALS s
 JOIN TRADES t ON t.magic = s.magic AND t.run_id = s.run_id
 WHERE s.outcome='TAKEN' AND s.ces_score > 0
-GROUP BY s.ces_score
-ORDER BY s.ces_score;
+GROUP BY ces_bucket
+ORDER BY 1;
 ```
 
-**Decision matrix**:
+**What the bucket query gets RIGHT**: it's a **non-parametric calibration check**. Categorizing by score and computing win rate per bucket tests whether CES is monotonic with expected profit without assuming any functional form. If win rate rises monotonically with score, CES has signal. If it's flat or non-monotonic, the score is noise.
 
-| Pattern in results | Decision |
+### §6.2 What the bucket query gets WRONG (5 statistical gaps)
+
+**Gap 1 — No sample-size threshold → bucket totals can lie.** A bucket with 5 trades at 80% win rate looks identical to one with 500 trades at 80% — but the first has a 95% confidence interval of (28%, 99%) while the second has (76%, 84%). The "win rate" is dramatically less informative for small N.
+
+Fix: add Wilson score confidence interval to every bucket. Only treat the bucket as informative if `ci_high - ci_low < 0.20` (CI tighter than 20pp).
+
+```python
+import statsmodels.stats.proportion as smp
+ci_low, ci_high = smp.proportion_confint(wins, n, alpha=0.05, method='wilson')
+```
+
+**Gap 2 — Win rate ignores expectancy.** A bucket with 80% win rate but tiny wins and huge losses is unprofitable. The right metric is **expectancy per signal**:
+```
+expectancy = (win_rate × avg_win) + ((1 − win_rate) × avg_loss)
+```
+Or even better, **profit factor** = `sum(wins) / |sum(losses)|`. PF > 1.5 = robust edge.
+
+**Gap 3 — Bucket boundaries are arbitrary (4/6/8) → overfitting risk.** Hand-picking thresholds tunes them to the historical data. Better: report **per-score-level statistics** (0, 1, 2, ..., 10) and let the data show natural break points, OR use a **single continuous AUC metric** rather than bucketing.
+
+**Gap 4 — Independence assumption violated.** Cascade legs of the same group share fate — the 5 G5024 legs all SL'd together = 5 "independent" losses that are actually 1 correlated event. The query counts them as 5 separate observations, inflating apparent sample size.
+
+Fix: aggregate to **group-level outcome** before any statistical test:
+```sql
+WITH group_outcomes AS (
+  SELECT s.magic,
+         MAX(s.ces_score) AS ces_score,
+         SUM(t.profit)    AS group_pnl
+  FROM SIGNALS s
+  JOIN TRADES t ON t.magic = s.magic
+  WHERE s.outcome='TAKEN'
+  GROUP BY s.magic
+)
+SELECT * FROM group_outcomes;
+```
+
+**Gap 5 — No ROC/AUC analysis.** CES is implicitly a **binary classifier** — "high score → trade, low score → skip". The standard evaluation is ROC curve sweeping thresholds with **AUC ≥ 0.65 = useful, ≥ 0.75 = strong, < 0.55 = noise**. The bucket query doesn't reveal this.
+
+### §6.3 The full analysis pipeline (6 steps)
+
+```python
+import pandas as pd, numpy as np
+from statsmodels.stats.proportion import proportion_confint
+from scipy.stats import spearmanr
+from sklearn.metrics import roc_auc_score, roc_curve
+import statsmodels.api as sm
+import sqlite3
+
+# Step 1: Pull group-aggregated data (Gap 4 fix)
+conn = sqlite3.connect('file:<active source DB>?mode=ro', uri=True)
+query = """
+  SELECT s.magic,
+         MAX(s.ces_score)     AS ces_score,
+         MAX(s.ces_dtc)       AS ces_dtc,
+         MAX(s.ces_pemcg)     AS ces_pemcg,
+         MAX(s.ces_momentum)  AS ces_momentum,
+         MAX(s.ces_rsi)       AS ces_rsi,
+         MAX(s.ces_vwap)      AS ces_vwap,
+         MAX(s.ces_di)        AS ces_di,
+         SUM(t.profit)        AS group_pnl,
+         CASE WHEN SUM(t.profit) > 0 THEN 1 ELSE 0 END AS won
+  FROM SIGNALS s
+  JOIN TRADES t ON t.magic = s.magic
+  WHERE s.outcome='TAKEN' AND s.ces_score > 0
+  GROUP BY s.magic
+"""
+df = pd.read_sql(query, conn)
+
+# Step 2: Calibration plot — per-score win rate + Wilson CI + expectancy
+calib = df.groupby('ces_score').agg(
+    n=('won', 'count'),
+    wins=('won', 'sum'),
+    avg_pnl=('group_pnl', 'mean'),
+    total_pnl=('group_pnl', 'sum')
+)
+calib['win_rate'] = calib['wins'] / calib['n']
+calib['ci_low'], calib['ci_high'] = zip(*[
+    proportion_confint(w, n, alpha=0.05, method='wilson')
+    for w, n in zip(calib['wins'], calib['n'])
+])
+# Profit factor per bucket
+df['win_pnl']  = df.apply(lambda r: r['group_pnl'] if r['won'] else 0, axis=1)
+df['loss_pnl'] = df.apply(lambda r: abs(r['group_pnl']) if not r['won'] else 0, axis=1)
+pf = df.groupby('ces_score').apply(
+    lambda g: g['win_pnl'].sum() / max(g['loss_pnl'].sum(), 1e-9)
+)
+
+# Step 3: Monotonicity test (Spearman rank correlation)
+rho, pval = spearmanr(df['ces_score'], df['won'])
+# rho > 0.3 AND p < 0.05 → CES is monotonically related to outcome
+
+# Step 4: ROC / AUC — treat CES as binary classifier
+auc = roc_auc_score(df['won'], df['ces_score'])
+# auc ≥ 0.65 useful ; ≥ 0.75 strong ; < 0.55 noise
+
+# Step 5: Optimal threshold via F1 (balanced precision/recall)
+fpr, tpr, thresholds = roc_curve(df['won'], df['ces_score'])
+# F1 from FPR+TPR (handles divide-by-zero in tpr=0 regions)
+denom = (1 + fpr + tpr - fpr)
+f1 = np.divide(2 * tpr, denom, out=np.zeros_like(tpr), where=denom>0)
+optimal_threshold = thresholds[np.argmax(f1)]
+
+# Step 6: Logistic regression — fit per-atom weights from data
+X = df[['ces_dtc', 'ces_pemcg', 'ces_momentum', 'ces_rsi', 'ces_vwap', 'ces_di']]
+y = df['won']
+model = sm.Logit(y, sm.add_constant(X)).fit(disp=0)
+# Coefficients with p < 0.05 AND positive sign → keep weight or boost
+# Non-significant or wrong-sign coefficients → reduce weight to 0 in next version
+print(model.summary())
+```
+
+### §6.4 Decision matrix
+
+| Statistical signal | Interpretation | Action |
+|---|---|---|
+| AUC < 0.55 | CES is noise | Re-tune atoms — current formulation doesn't separate winners from losers |
+| AUC 0.55–0.65 | Weak signal | Keep instrumentation; do NOT activate Option A gate yet |
+| **AUC ≥ 0.65 + monotonic calibration (Spearman ρ > 0.3, p < 0.05)** | **Useful classifier** | **Activate Option A** with `ces_min_threshold = optimal_threshold` from F1 |
+| AUC ≥ 0.75 | Strong classifier | Activate Option A + consider higher threshold to capture only premium signals |
+| Monotonic but CI overlap is wide | Insufficient data | Wait for more signals (N ≥ 500 for stable stats) |
+| Logistic regression shows some atoms non-significant | Some atoms are noise | Drop their weight to 0 in a follow-up version; re-fit; re-test |
+| Logistic regression shows wrong-sign coefficient | Atom is anti-predictive | INVERT the atom polarity OR drop it |
+| Winners cluster at LOW score | Atom signs are flipped | Inspect per-component columns in losing rows; fix polarity globally |
+
+### §6.5 Sample-size requirements (statistical power)
+
+For a base 50% win rate, detecting whether CES moves it to 60% with 80% power and α=0.05 requires:
+
+| Population | What it unlocks |
 |---|---|
-| Net P&L positive ABOVE some `N` AND negative BELOW `N`, monotone | Ship Option A with `ces_min_threshold = N` |
-| Monotone P&L curve but no clear bucket inflection | Re-weight atoms (operator-tunable knobs) before deciding |
-| Flat P&L across all buckets | CES atoms are uncorrelated with outcome — re-design atoms (rare given each was hand-picked) |
-| Winners cluster at LOW score | Atom signs are flipped — inspect each component column in losing rows |
+| **N ≈ 100** signals per atom | Logistic regression coefficients become meaningful |
+| **N ≈ 200** signals total | ROC/AUC stabilizes (curve flattens above 200 in most empirical work) |
+| **N ≈ 500** signals total | Bucket query and per-score breakdowns reach narrow CIs |
 
-**Component-level diagnostic** (which atom is doing the work?):
+Current FORGE pace ≈ **45 TAKEN signals per 10 sim-days** (Run 36 benchmark):
+
+| Sim window | Approx signal population | Analysis confidence |
+|---|---|---|
+| 2 weeks (~63 signals) | Too small — Spearman only | Calibration sanity check only; no AUC decision |
+| **6 weeks (~200 signals)** | **ROC/AUC reliable** | Provisional Option A activation decision |
+| 12 weeks (~500 signals) | Full statistical confidence | Production Option A activation |
+
+### §6.6 Component-level diagnostic (which atom is doing the work?)
+
+The Step 6 logistic-regression output already answers this rigorously, but a quick SQL look at component means by outcome gives an at-a-glance view:
 
 ```sql
 SELECT
@@ -121,12 +267,35 @@ SELECT
   AVG(CASE WHEN profit < 0 THEN ces_dtc      END) AS dtc_l_avg,
   AVG(CASE WHEN profit > 0 THEN ces_pemcg    END) AS pemcg_w_avg,
   AVG(CASE WHEN profit < 0 THEN ces_pemcg    END) AS pemcg_l_avg,
-  -- ... mirror for momentum/rsi/vwap/di
+  AVG(CASE WHEN profit > 0 THEN ces_momentum END) AS momentum_w_avg,
+  AVG(CASE WHEN profit < 0 THEN ces_momentum END) AS momentum_l_avg,
+  AVG(CASE WHEN profit > 0 THEN ces_rsi      END) AS rsi_w_avg,
+  AVG(CASE WHEN profit < 0 THEN ces_rsi      END) AS rsi_l_avg,
+  AVG(CASE WHEN profit > 0 THEN ces_vwap     END) AS vwap_w_avg,
+  AVG(CASE WHEN profit < 0 THEN ces_vwap     END) AS vwap_l_avg,
+  AVG(CASE WHEN profit > 0 THEN ces_di       END) AS di_w_avg,
+  AVG(CASE WHEN profit < 0 THEN ces_di       END) AS di_l_avg
 FROM SIGNALS s JOIN TRADES t ON t.magic=s.magic AND t.run_id=s.run_id
 WHERE s.outcome='TAKEN' AND s.ces_score > 0;
 ```
 
 Atoms where `winner avg` ≫ `loser avg` are predictive; atoms where they're equal are noise and can be removed in a future version.
+
+### §6.7 Operational integration — proposed `make ces-analyze`
+
+Wire this as a Makefile target so analysis runs anywhere after a CES-instrumented backtest:
+
+```bash
+make ces-analyze    # runs scripts/analyze_ces.py against the latest run
+```
+
+Output artifacts:
+- **`reports/ces_calibration.png`** — score 0-10 on X-axis, win rate + Wilson CI band on Y; expectancy line overlay
+- **`reports/ces_roc.png`** — ROC curve with AUC annotated; F1-optimal threshold marked
+- **`reports/ces_logit.txt`** — logistic regression summary (coefficients, p-values, confidence intervals)
+- **`reports/ces_decision.md`** — verdict: which row of §6.4 decision matrix applies; recommended action
+
+Status: **not yet wired** — pending operator decision to bundle in a follow-up commit on the v2.7.110 line.
 
 ---
 
@@ -146,8 +315,15 @@ Atoms where `winner avg` ≫ `loser avg` are predictive; atoms where they're equ
 - tradeciety.com/multiple-time-frame-analysis/ — H4 bias mandate (atom 1)
 - Wilder DMI canon — DI dominance threshold (atom 6)
 
+### Statistical methodology
+- statsmodels — Wilson Score Confidence Interval: https://www.statsmodels.org/stable/generated/statsmodels.stats.proportion.proportion_confint.html (proper CIs for proportions)
+- scikit-learn — ROC / AUC: https://scikit-learn.org/stable/modules/model_evaluation.html#roc-metrics (canonical binary classifier evaluation)
+- statsmodels — Logit / Logistic regression: https://www.statsmodels.org/stable/generated/statsmodels.discrete.discrete_model.Logit.html (MLE coefficient fitting with significance tests)
+- scipy.stats — Spearman rank correlation: https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.spearmanr.html (non-parametric monotonicity test)
+
 ---
 
 ## §8 Changelog
 
 - 2026-05-14 — **doc created** + v2.7.110 Option C shipped (instrumentation-only). Operator decision: ship Option C first; flip Option A after backtest correlation analysis.
+- 2026-05-14 — **§6 Backtest validation plan rewritten** with full statistical pipeline: 5 named gaps in the naive bucket query (sample size, expectancy, bucket overfitting, independence violation from cascade legs, missing ROC/AUC), 6-step rigorous analysis pipeline (group-aggregated pull → calibration with Wilson CI → Spearman monotonicity → AUC → F1-optimal threshold → logistic regression for per-atom weights), explicit decision matrix mapping statistical-signal-tier to action, sample-size power table (N≈100/200/500), and proposed `make ces-analyze` target with 4 output artifacts. Added Statistical methodology section to §7 References (statsmodels Wilson CI + Logit, scikit-learn ROC, scipy Spearman).
