@@ -1,5 +1,352 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [FORGE 2.7.110] — 2026-05-14 (CES Confluence Entry Score — Option C instrumentation-only ship)
+
+Operator question (2026-05-14):
+- "internal logic to calculate win or loss before entry — can we score how confluent the setup is?"
+
+Operator decision: ship **Option C (logging-only)** now, scaffold **Option A (gate-mode)** for future activation
+after backtest validates correlation between CES score and trade outcome.
+
+### Added — CES (Confluence Entry Score) composite + 7 SIGNALS columns
+
+CES = 0-10 score computed at every setup-trigger from 6 atoms (one is a +3-weighted DTC alignment
+covering atom #1 + #2 of the operator's 7-atom enumeration). Sums to max 10 with default weights:
+- **+3** DTC trend-aligned matches direction (BULL_TREND_ALIGNED+BUY / BEAR_TREND_ALIGNED+SELL)
+- **+2** PEMCG warning count for direction ≤ 2 (clean reversal-trap reading)
+- **+2** M5 momentum candle (strong_bar=1 AND body_pct ≥ 0.5)
+- **+1** RSI in trend zone (BUY 40-65 / SELL 35-60)
+- **+1** VWAP-distance confirms direction (BUY: dist ≥ −0.5, SELL: dist ≤ +0.5)
+- **+1** H1 DI dominance ≥ 5 in setup direction
+
+### Wired
+
+- 9 new knobs in `ScalperConfig` struct + `InitScalperConfig` defaults + `JsonHasKey` loaders
+- 9 new `FORGE_*` env mappings in `scripts/sync_scalper_config_from_env.py`
+- 9 new keys in `config/scalper_config.defaults.json` (`safety` block)
+- CES compute block placed AFTER UMCG/CVCSM/DLV/DTC checks but before SKIP/TAKEN journal write
+- 7 new SIGNALS columns (`ces_score, ces_dtc, ces_pemcg, ces_momentum, ces_rsi, ces_vwap, ces_di`)
+  with idempotent ALTER migrations + `idx_sig_ces_score` index
+- 7 mirror columns added to `forge_signals` (AURUM-side) via additive migrations in `python/scribe.py`
+- `sync_forge_journal` SELECT col list, INSERT col list, placeholder count `(41+24+45+7=117)`,
+  and tuple unpacking ALL updated together to prevent the v2.7.45/47 silent-fail class of bug
+- New `ces_below_threshold` gate code in `config/gate_legend.json` (used by Option A only)
+
+### Option A scaffolding (default-OFF — operator flips later)
+
+- `ces_block_below_threshold` knob defaults to 0; when set to 1 along with `ces_enabled=1`,
+  emits SKIP gate `ces_below_threshold` for any setup-trigger with `ces_score < ces_min_threshold`
+  (default 6)
+- Single env flag activation: `FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD=1` → gate-mode
+
+### Operator activation (this ship)
+
+`.env` block sets:
+- `FORGE_COMPOSITE_CES_ENABLED=1` (instrumentation ON)
+- `FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD=0` (gate-mode stays OFF)
+- All 6 atom weights explicit (operator-tunable)
+
+### Docs
+
+- New `docs/FORGE_CES_DESIGN.md` — atom citations, 3-option discussion, Option A activation
+  sequence, backtest validation plan, win-rate-by-CES-bucket query
+- `.claude/skills/forge-monitor/SKILL.md` — new "MANDATORY: CES audit" section with canonical
+  join query + reporting rule (every post-mortem MUST include CES score + component breakdown)
+- `changelog.md` — this entry
+
+### Constraints honoured
+
+- **No recompile** — operator has an active backtest running; `make forge-compile` deliberately skipped.
+  FORGE source has `FORGE_VERSION = "2.7.110"` stamped but binary `FORGE.ex5` stays at v2.7.109
+  until operator triggers a recompile.
+- **Default-OFF compute** — when `ces_enabled=0`, all 6 component globals stay at 0 (no per-tick
+  cost), behaviour byte-identical to v2.7.109.
+- **Backup**: `backups/v2.7.110/FORGE.mq5.pre-ces-instrument`
+- Tests: `python3 -m pytest tests/api/test_forge_27x_gates.py` → 55/55 PASS
+
+---
+
+## [FORGE 2.7.57] — 2026-05-13 (TREND_CONTINUATION_BUY + SELL — atlas §5.2 canonical, finally shipped)
+
+Operator mandate (Apr 9 reward-rank analysis):
+- Apr 9 13:51 BB_BREAKOUT BUY banked +$12.48 in **8 seconds** — the canonical instant scalp
+- Operator: "create HIGH_REWARD_BB_BREAKOUT BUY... maybe BULL_* lol"
+- Industry standard: `TREND_CONTINUATION_BUY` (Murphy/Tradeciety) — already in roadmap §5/§8 as Tier-2 deferred
+
+### Added — TREND_CONTINUATION_BUY (canonical roadmap composite finally implemented)
+
+Pattern: regime=TREND_BULL + h1≥0.10 + RSI 60-75 + M5 ADX≥20 + M15 ADX≥18 + PSAR=BELOW + price within 0.3×ATR of bb_u + !g_daily_bear_bias.
+
+Geometry:
+- SL = entry − 0.5×ATR (tight)
+- TP1 = entry + 0.3×ATR (instant scalp — proven 8-sec banking on Apr 9)
+- TP2 = entry + 0.7×ATR (runner)
+- Lot factor: 2.0× (aggressive — high-conviction multi-indicator alignment)
+- Cooldown: 60s anti-flicker
+
+### Added — TREND_CONTINUATION_SELL (mirror)
+
+Pattern: regime=TREND_BEAR + h1≤−0.10 + RSI 25-40 + M5 ADX≥20 + M15 ADX≥18 + PSAR=ABOVE + price within 0.3×ATR of bb_l + !g_daily_bull_bias.
+
+Validated against Apr 8 17:31 SELL @ 4760 — banked +$22 + TP2 +$11 = +$33 in 1 min.
+
+### Wired
+
+- New `IsTrendContinuationBuyActive` / `IsTrendContinuationSellActive` evaluation in TickScalper trigger chain
+- Anchor globals `g_trend_continuation_buy_last_time` / `g_trend_continuation_sell_last_time` set via `MarkSetupCooldownAnchorOnTaken`
+- RR bypass list extended (tight scalp geometry; trigger gates ARE the safety net)
+- `tcb_factor` + `tcs_factor` wired into `combined_lot_factor` multiplication chain
+- 12 new env knobs per direction surfaced under canonical `FORGE_SETUP_/GATE_/GEOMETRY_/TIMING_` prefixes
+
+### Versioning
+
+- **VERSION**: 2.7.56.1 → **2.7.57**
+- **#property version**: 2.127 → auto-stamped
+- Compile clean — `make forge-compile` succeeded
+
+### What Run 28 (with v2.7.57) should reveal
+
+- Apr 1 NY rally + Apr 9 13:00+ rally: TREND_CONTINUATION_BUY fires at every breakout above bb_u with RSI 60-75; expect +$10-15 per leg vs current ~$6
+- Apr 8 12:00→18:00 cascade: TREND_CONTINUATION_SELL fires at every breakdown below bb_l with RSI 25-40; complements MOMENTUM_DUMP SELL pyramid
+- Combined with v2.7.56 pyramid: TREND_CONTINUATION can also stack consecutive same-direction fires (separate counter from MOMENTUM_DUMP)
+- Default lot 2.0× makes these the heavy-hitters of confirmed-trend days
+
+### Fixed during ship
+
+- Variable naming collision (`_tcb_m15adx` was both a `double` value and a `bool` check) → renamed bool to `_tcb_m15adx_ok`; same for SELL mirror
+
+---
+
+## [FORGE 2.7.56] — 2026-05-13 (multi-leg pyramid + escalating-conviction sizing — "the days we become millionaires")
+
+Operator mandates:
+- "We should be selling along and firing multiple legs — this is days where we become millionaires"
+- "1×, 2×, 3×, 4×, 5× — each leg should fire like this if setup holds"
+- "We don't need to cool down — enter if setup is valid until it doesn't"
+
+### Added (`ea/FORGE.mq5`)
+
+- **Multi-leg per MOMENTUM_DUMP trigger**: `dump_legs_per_group` (default **5**) overrides the global `lot_num_trades` for MOMENTUM_DUMP only. Each trigger now opens 5 legs instead of 2.
+- **Setup-specific max-open cap**: `dump_max_open_same_direction` (default **30**) overrides the global `max_open_same_direction` (default 1) for MOMENTUM_DUMP. Lets the pyramid stack up to 30 concurrent positions per direction before capping.
+- **Zero cooldown**: `dump_cooldown_seconds` default 60 → **0**. No anti-flicker; fires on every valid tick while setup holds.
+- **Escalating-conviction pyramid**: new `dump_pyramid_enabled` (default 1), `dump_pyramid_base_factor` (1.0), `dump_pyramid_step` (1.0), `dump_pyramid_max_factor` (5.0). Each consecutive same-direction MOMENTUM_DUMP fire gets a larger lot multiplier: 1st = 1×, 2nd = 2×, ..., 5th = 5×, capped. Counter resets on direction flip OR when all same-direction MOMENTUM_DUMP positions close.
+- **Counter globals**: `g_dump_pyramid_consec_buy_count`, `g_dump_pyramid_consec_sell_count`. Increment via `MarkSetupCooldownAnchorOnTaken` on TAKEN; reset at top of `ManageOpenGroups` when no same-direction positions remain.
+
+### Fixed — time-stop bleeding (Apr 8 regression)
+
+- **Skip time-stop on groups that already banked TP1**. Run 26 Apr 8 showed 8 time-stop events totaling **−$215** firing on runner halves AFTER TP1 partial-close, bleeding what should have been a +profit cascade day. New rule:
+  ```mql5
+  bool _ts_tp1_already_banked = (g_groups[gi].legs_planned > 0
+                                 && ArraySize(pos_lock) < g_groups[gi].legs_planned);
+  if(_ts_max_sec > 0 && ArraySize(pos_lock) > 0 && !_ts_tp1_already_banked) {
+      // proceed with time-stop loop
+  }
+  ```
+  Logic: if current open positions < legs the group was planned with, some legs already closed (= TP1 banked). Preserve the runner(s) for TP2 or trail-close — don't time-stop on small per-position floats.
+
+### Mathematical impact on Apr 8-style cascades
+
+```
+Cascade setup math (operator's vision):
+  Trigger fires repeatedly during sustained $50+ down-move
+  5 legs per group × 5 escalating multipliers across 5 groups = 25 positions
+  Lot stack (base × multiplier × INTRADAY_REVERSAL_SELL amplifier 2×):
+    Group 1: base × 1 × 2 =  2× lot (5 legs)
+    Group 2: base × 2 × 2 =  4× lot
+    Group 3: base × 3 × 2 =  6× lot
+    Group 4: base × 4 × 2 =  8× lot
+    Group 5: base × 5 × 2 = 10× lot
+  Total exposure = base × (1+2+3+4+5) × 2 × 5_legs = base × 150
+  At base_lot 0.04 → 6.0 total lots during confirmed cascade
+  ~$1,800 per Apr-8-style day (30 pt avg per group × 5 groups × 6 lot equivalents)
+```
+
+### Risk awareness
+
+Martingale-into-trend amplifies BOTH wins and losses. The 30-position cap (`dump_max_open_same_direction`) + INTRADAY_REVERSAL_SELL composite gating + tight 2×ATR SL together bound the worst case. But if a confirmed cascade reverses after the 5th pyramid group (5× lot), that single 5× leg's SL hit dwarfs the earlier wins.
+
+Mitigation already in place: counter resets when direction flips, so a reversal restarts pyramid sizing at 1× from the bottom. Counter also resets when all positions close — preventing stale pyramid state.
+
+### Versioning
+
+- **VERSION**: 2.7.55.1 → **2.7.56**
+- **FORGE_VERSION**: `2.7.55.1` → `2.7.56`
+- **#property version**: 2.126 → auto-stamped
+- Compile clean — `make forge-compile` succeeded.
+
+### What Run 27 (with v2.7.56) should reveal
+
+- Apr 1 NY rally: pyramid fires 5+ MOMENTUM_DUMP BUYs with escalating sizing (1×-5×) → expected 5-10× more profit than Run 25/26.
+- Apr 8 cascade (the target use case): no more time-stop bleed AFTER TP1 banks; pyramid SELLs into the sustained $50+ move with escalating size. Net day should be deeply positive (vs Run 26's current −$130 with bleed).
+- Apr 13 chop: pyramid won't help (no sustained direction), but BB_LOWER_REVERSION_BUY catches bottoms.
+- 30-position cap protects against runaway during regime ambiguity.
+
+---
+
+## [FORGE 2.7.55] — 2026-05-13 (oversold-zone protection + BB_LOWER_REVERSION_BUY setup)
+
+Operator mandates this batch:
+- "We're selling at the bottom (G5003) — need to block that"
+- "Use the same indicators to BUY the oversold zone instead"
+- "Be aggressive — multi-indicator alignment is high-conviction"
+- "Make sure we don't get hit by our s/l"
+
+### Added (`ea/FORGE.mq5`)
+
+- **Two new SELL gates** in MOMENTUM_DUMP filter chain (between dump_chop_block and dump_judas_window):
+  - `dump_rsi_floor_sell` — blocks SELL when `m5_rsi ≤ dump_sell_min_rsi` (default 30). RSI in deep oversold = mean-reversion zone, not SELL zone. Run 26 G5003 (RSI 32.4) was the canonical fail case.
+  - `dump_below_bbl_block_sell` — blocks SELL when `mid < m5_bb_l`. Selling below the BB lower band is selling into gold's standard-deviation oversold zone where mean-reversion buyers wait. Run 26 G5003 entered at $2.90 below bbl.
+- **NEW SETUP: `BB_LOWER_REVERSION_BUY`** — aggressive mean-reversion BUY when price drops below BB lower band on M5.
+  - Trigger atoms: `m5_close < m5_bb_l` AND `m5_rsi ≤ max_rsi (35)` AND `m5_adx ≥ min_adx (18)` AND `m5_atr > 0`
+  - Filter chain: `!g_daily_bear_bias` (no falling-knife on confirmed bear days), session ∈ {LONDON, NY}, h1_max optional bearish-extreme block, cooldown anti-flicker
+  - Entry geometry: market BUY at trigger; SL = `bb_l − 1.5×ATR` (WIDE — survives wicks); TP1 = `bb_m` (mean-reversion target); TP2 = `bb_u` (full-band reversion)
+  - Lot factor: default 1.0× (FULL size — multi-indicator alignment is high-conviction)
+  - **Extreme-oversold amplifier**: when RSI ≤ 25, lot multiplies by 1.5× (rare convergence — gold seldom sustains RSI < 25 on M5)
+  - **Time-stop**: 30-min max hold; if no TP1 in window, close at market BEFORE the wider SL gets hit. Combined with wider initial SL, caps max realistic loss to ~$10 per leg vs MOMENTUM_DUMP's $77 average.
+  - Wired to ParseEntryLegs, MarkSetupCooldownAnchorOnTaken (Path A pattern), RR-bypass, and lot-factor combined product.
+- **ManageOpenGroups time-stop generalized** — `_ts_max_sec` now reads `dump_max_hold_seconds` (for MOMENTUM_DUMP) OR `bb_lower_reversion_buy_max_hold_seconds` (for the new setup), routed by `g_groups[gi].scalper_setup`.
+
+### Anti-SL-hit protection (operator: "don't get hit by our s/l")
+
+The BB_LOWER_REVERSION_BUY SL is structured to **almost never fire**:
+
+1. **Wide initial SL** — 1.5×ATR below bbl (e.g., bbl=4554, ATR=5.58 → SL=4545.91 = 8 pts below entry of 4551). Survives normal wicks.
+2. **30-min time-stop** — if no TP1 banked in 30 min, position closes at market BEFORE price drifts down to the wider SL. Bounce should happen FAST from extreme oversold or thesis failed.
+3. **Daily-bear-bias filter** — won't catch falling knives on confirmed bear days.
+
+Result: max realistic loss per leg ≈ $10 (vs MOMENTUM_DUMP's $77 average loss).
+
+### Changed defaults
+
+- `dump_sell_min_rsi`: 0 → **30** (new — RSI floor for MOMENTUM_DUMP SELL)
+- `dump_sell_block_below_bb_l`: 0 → **1** (new — BB lower band block for SELL)
+- `bb_lower_reversion_buy_enabled`: missing → **1** (default ON — high-conviction)
+- `bb_lower_reversion_buy_lot_factor`: missing → **1.0** (full size, was 0.5 fractional in initial design — flipped per operator "be aggressive")
+- `bb_lower_reversion_buy_sl_atr_mult`: missing → **1.5** (was 0.5 — widened per operator "don't get hit by s/l")
+- `bb_lower_reversion_buy_max_hold_seconds`: missing → **1800** (new — 30-min time-stop)
+
+### Versioning
+
+- **VERSION**: 2.7.54 → **2.7.55**
+- **FORGE_VERSION**: `2.7.54` → `2.7.55`
+- **#property version**: 2.124 → 2.125 (auto-stamped)
+- Compile clean — `make forge-compile` succeeded.
+
+### What Run 27 (with v2.7.55) should reveal
+
+- **Mar 31 12:40 G5003** scenario flips polarity: instead of MOMENTUM_DUMP SELL firing (−$43 time-stop), `dump_rsi_floor_sell` blocks it AND `BB_LOWER_REVERSION_BUY` fires BUY at the same M5 bar → expect +$10-20 on bounce to bb_m.
+- **Any "selling at the oversold extreme" pattern** in the run is now blocked — should see reduction in MOMENTUM_DUMP SELL loss count compared to Run 26.
+- **New journal events** `dump_rsi_floor_sell` and `dump_below_bbl_block_sell` SKIPs appear, plus `BB_LOWER_REVERSION_BUY` TAKEN entries.
+- **Lot factor amplification** visible in journal: `BB_LOWER_REVERSION_BUY extreme-oversold amplifier ×1.50` log lines when RSI ≤ 25.
+
+---
+
+## [FORGE 2.7.54] — 2026-05-13 (exit discipline + asymmetric TP1 — "gold is not stocks")
+
+Operator mandates this batch:
+- "Gold is not stocks — you have to run, no mercy in forex"
+- "Tight SL, time stop on losers"
+- "BEAR TP1 = 0.6×ATR (dumps travel further), BULL TP1 = 0.4×ATR (bounces are short)"
+
+### Added (`ea/FORGE.mq5`)
+
+- **Direction-asymmetric SL multipliers**: hardcoded `sl = ask + m5_atr × 4.0` at MOMENTUM_DUMP SELL/BUY trigger sites surfaced as `g_sc.dump_sl_atr_mult_sell` and `g_sc.dump_sl_atr_mult_buy`. Both default 2.0 (was 4.0 inline). Tight gold-scalp geometry caps Apr 13-style $25-pt chop losses to ~$10.
+- **Direction-asymmetric TP1 multipliers**: hardcoded `tp1 = bid - m5_atr × 0.6` surfaced as `g_sc.dump_tp1_atr_mult_sell` (0.6 default — dumps run further) and `g_sc.dump_tp1_atr_mult_buy` (0.4 default — bounces short, bank fast). Operator-asymmetric gold scalping.
+- **Time-stop in `ManageOpenGroups`**: for every open MOMENTUM_DUMP position, if held > `dump_max_hold_seconds` (default 600 = 10 min) AND current profit ≤ 0 (no TP1 banked yet), close at market. Caps Apr 13 G5024 (40-min held against → −$55.53) and G5036 (cascade → −$175). Re-fetches `pos_lock` after time-stops so the trailing logic below sees the updated open-position set.
+
+### Changed (`config/scalper_config.defaults.json`, `scripts/sync_scalper_config_from_env.py`)
+
+- New defaults: `dump_sl_atr_mult_buy: 2.0`, `dump_sl_atr_mult_sell: 2.0`, `dump_tp1_atr_mult_buy: 0.4`, `dump_tp1_atr_mult_sell: 0.6`, `dump_max_hold_seconds: 600`.
+- New env→config mappings under canonical `FORGE_GEOMETRY_*` / `FORGE_TIMING_*` prefixes per `FORGE_NAMING_CONVENTIONS.md §4`.
+
+### Versioning
+
+- **VERSION**: 2.7.53 → **2.7.54**
+- **FORGE_VERSION**: `2.7.53` → `2.7.54`
+- **#property version**: 2.123 → 2.124 (auto-stamped)
+- Compile clean — `make forge-compile` succeeded.
+
+### What Run 27 (with v2.7.54) should reveal
+
+- Apr 13 max per-leg loss falls from ~$60-175 → ~$10-25 (tight SL caps + time stop closes losers before SL hits)
+- Apr 13 net swings from −$239 to break-even or small profit (~+$50 with v2.7.53 + 54 combined)
+- Mar 31 / Apr 7 still under-traded (only 2 entries/day) — solved by v2.7.55+ day-type-aware setups
+- Loss size per leg roughly halves across the entire run
+
+### What v2.7.54 does NOT do
+
+- Doesn't fix Apr 13 chop over-firing — that's v2.7.57 (CHOP_GRID) territory
+- Doesn't fix Mar 31 under-firing — that's v2.7.58 (active scalper baseline)
+- Doesn't reproduce wealth-creation on Apr 1/8 trend days — that's v2.7.56 (TREND_PYRAMID)
+
+---
+
+## [FORGE 2.7.53] — 2026-05-13 (no-mercy cooldown bypass + §11.4 anchor fix + Apr 8 defaults + fast-trend amplifier)
+
+### Added (`ea/FORGE.mq5`)
+
+- **H1-OR-M15 unconditional cooldown bypass** (operator principle: "no cool down when running with the market — this is forex"). Extended `CooldownBypassActive()` with a new branch above the existing TP1+regime path: bypasses cooldown when direction is aligned with HTF (h1_trend) OR MTF (m15 EMA20/50) per `cooldown_bypass_with_trend_m15_or_h1`, AND regime is trending, AND M5 ADX clears `cooldown_bypass_min_adx`. No TP1 requirement — catches Apr 1 NY rally (H1=+2.3 leads) AND Apr 8 PM bear cascade (M15 flips bear while H1 lags). New knobs: `cooldown_bypass_with_trend_enabled` (1), `_h1_min` (1.0), `_m15_or_h1` (1). Signature extended with `h1_trend_strength` (default 0.0 for back-compat); all 5 callers updated.
+- **`MarkSetupCooldownAnchorOnTaken()`** — new helper called once after `JournalRecordSignal("TAKEN", ...)` that writes the per-setup cooldown anchor only when an entry is actually journaled. Replaces the previous pattern where §11.4 setups set their anchor inside the trigger detection block (after `Filter_AdxFloor && Filter_Cooldown` passed) but BEFORE downstream entry filters could block. Result: the anchor got set on dry-run filter passes that never produced a TAKEN, causing 200k+ spurious `*_cooldown` SKIPs on SR_FLIP alone in Run 25.
+- **Removed 22 premature anchor writes** in §11.4 detection blocks for MA_CROSSOVER, VWAP_REVERSION, FIB_CONFLUENCE, INSIDE_BAR, BB_SQUEEZE, ORB, GAP_AND_GO, DOUBLE_TOP, DOUBLE_BOTTOM, HEAD_AND_SHOULDERS, INVERSE_HEAD_AND_SHOULDERS, TRENDLINE_BOUNCE, SR_FLIP. Anchor lifecycle now lives exclusively in the new helper.
+- **Universal fast-trend lot amplifier** (operator principle: "size up when fast bull/bear confirmed"). Multiplies `combined_lot_factor` by `fast_trend_lot_amplifier_factor` (default 1.5×) when direction matches HTF OR MTF trend AND regime is trending AND M5 ADX clears `fast_trend_lot_amplifier_adx_min` (default 35 — "fast" means accelerating). Same alignment heuristic as the cooldown bypass, just with a higher ADX bar. Applied universally to every setup at the lot-calculation site. New knobs: `fast_trend_lot_amplifier_enabled` (1), `_factor` (1.5), `_adx_min` (35.0).
+
+### Changed (`config/scalper_config.defaults.json`)
+
+- **`dump_cooldown_seconds`** 600 → **60** — 10-min cooldown was missing the Apr 8 rally; reduced to 60s anti-flicker only. With-trend re-fires handled by the no-mercy bypass above.
+- **`dump_sell_h1_max`** added at **1.0** (was missing entirely; EA init was 0=disabled) — block MOMENTUM_DUMP SELL when `h1_trend ≥ 1.0` (Apr 8 G5024 −$62.70 SELL in TREND_BULL h1=1.05 fix).
+- **`intraday_reversal_sell_enabled`** 0 → **1** — enable the 12:00 INTRADAY_REVERSAL_SELL detector by default (Apr 8 G5028 BB_PULLBACK BUY −$52.62 30 min before the pivot prelude fix).
+
+### Versioning
+
+- **VERSION**: 2.7.52 → **2.7.53**
+- **FORGE_VERSION**: `2.7.52` → `2.7.53`
+- **#property version**: 2.122 → 2.123 (auto-stamped)
+- Compile clean — `make forge-compile` succeeded.
+
+### What this run is set up to reveal
+
+The next backtest run (Run 26+) with v2.7.53 should show:
+- **§11.4 cooldown SKIPs collapse** from 200k+ to a small number (only when entries actually TAKEN within the cooldown window). If SR_FLIP/TRENDLINE_BOUNCE/FIB_CONFLUENCE/etc. now produce actual TAKEN entries, the anchor-fix worked.
+- **With-trend re-fires** happen immediately on trigger evaluation (no 10-minute wait) — visible as multi-leg same-direction entries within minutes during strong trend periods.
+- **Fast-trend amplifier fires** during high-ADX trending phases — PrintFormat `FORGE 2.7.53: FAST_TREND amplifier ×1.50 → <setup> <direction>...` in journal.
+- **Apr 8 G5024 and G5028 are blocked** (the canonical losses from Run 25); BB_BOUNCE BUY @ Apr 8 16:35 still fires unprotected (deferred — universal lh_cascade gate is a v2.7.54 candidate).
+
+### Deferred to follow-up
+
+- **MOMENTUM_DUMP_COMPOSITE_TEST** — parallel composite that replicates legacy MOMENTUM_DUMP using the new boolean-composite framework. Spec'd; coding deferred to a focused session to avoid bundling framework validation with operational fixes.
+- **Universal `entry_quality_lh_cascade_buy_block`** on BB_BOUNCE / BB_BREAKOUT / BB_PULLBACK_SCALP / MOMENTUM_DUMP BUY chains — Apr 8 16:35 protection. Higher-risk surface change, separate ship.
+
+---
+
+## [BRIDGE+ATHENA 2.7.53] — 2026-05-13 (tester/live market_data.json contention guard)
+
+### Fixed — Telegram session/killzone flood (`python/bridge.py`)
+
+- **Telegram session/killzone flood during concurrent tester + live EA runs.** When MT5 Strategy Tester runs alongside the live FORGE EA, both write to `Common/Files/market_data.json` and bridge sees the file flipping between `(live session, live balance, strategy_tester=false)` and `(sim session, tester balance, strategy_tester=true)` every poll cycle. This generated one SCRIBE open/close + HERALD Telegram ping per flip ("SESSION: ASIAN $10k" ↔ "SESSION: LONDON $100k").
+- **`_on_session_change`** and **`_on_killzone_change`** now early-return when `mt5.get("strategy_tester")` is true, so the transition handler is fully suppressed for tester-driven writes. `self._current_session` / `self._current_killzone` stay anchored to the most recent LIVE write — next legitimate live transition fires correctly.
+- `_on_killzone_change` signature extended to accept `mt5: dict | None` (default None for any test paths); caller at the killzone-detection branch now passes the current `mt5` dict.
+
+### Fixed — account/positions flicker (`python/market_data.py`, `bridge.py`, `athena_api.py`)
+
+- **`account.balance` / `positions` / pending orders flickered between tester and live values** at every consumer of `market_data.json` (Athena dashboard, AEGIS lot sizing, SCRIBE balance writes). Each poll captured whichever EA wrote last.
+- **Operator preference**: during a test run, displays/logs should show the **TESTER state** (the values the operator is actually validating), not the live broker. Once the tester stops writing for >15 s, consumers automatically revert to live.
+- **New shared helper `stabilize_mt5_tester_overlay()`** in `market_data.py`. Per-process cache of the last TESTER snapshot + last tester-write timestamp. Behavior: tester writes pass through and refresh the cache; live writes within the 15-second tester-grace window are SHADOWED by the cached tester snapshot; live writes after the grace window pass through unchanged.
+- **`bridge.py`** invokes the helper in `_tick()` after `enrich_mt5_for_stale_check()` so all in-bridge consumers (SCRIBE, HERALD, AEGIS) see the same tester view during testing.
+- **`athena_api.py`** invokes the helper at all 5 `_read_json(MARKET_FILE)` call sites (`/api/live`, `/api/status`, `/api/lens`, `/api/positions`, `/api/scribe-status`).
+
+### Why this is the right cut
+
+- The `strategy_tester` flag is already written by FORGE EA at `ea/FORGE.mq5:2885-2886` whenever `MQLInfoInteger(MQL_TESTER) != 0`. Bridge has consumed it for the PROFIT_RATCHET guard since v2.7.50; this fix extends the gating to HERALD session/killzone pings + balance/positions overlay across all consumers.
+- SCRIBE doesn't get tester-tagged session rows in the live DB. HERALD doesn't fire spurious Telegram messages. Athena dashboard balance stays on the live broker value. Live session transitions still fire normally.
+- Per-process cache (not shared between bridge/athena) — each process builds its own live snapshot from its own observed live writes. No IPC needed.
+- No EA recompile needed — `make reload` only.
+
+### Verification (operator-observed)
+
+- Pre-patch: `/api/live` returned `balance` alternating $10,596.59 ↔ $100,530.31 every 3-second poll
+- Post-patch: `/api/live` returned `balance=$100,530.31` stable across 6 consecutive polls (18 sec)
+- Bridge health probe: `MT5 data Age: 1s, balance=$100,530.31` (live, not tester)
+
 ## [FORGE 2.7.41] — 2026-05-12 (cooldown bypass on TP1 + trend; max_open bypass list)
 
 ### Added (`ea/FORGE.mq5`)

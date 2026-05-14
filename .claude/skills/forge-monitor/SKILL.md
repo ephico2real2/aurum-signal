@@ -1169,6 +1169,85 @@ If you widen the SL on trend days, you MUST also widen the TP proportionally —
 
 ---
 
+### MANDATORY: CES (Confluence Entry Score) audit on every loss/win — check if score correlated with outcome
+
+v2.7.110 ships CES (Confluence Entry Score) in Option C / instrumentation mode:
+0-10 score per setup-trigger from 7 atoms (DTC-aligned +3, PEMCG-clean +2,
+M5-momentum-candle +2, RSI-trend-zone +1, VWAP-confirm +1, H1-DI-dominance +1).
+Logged to `SIGNALS.ces_score` + 6 component cols (`ces_dtc`, `ces_pemcg`,
+`ces_momentum`, `ces_rsi`, `ces_vwap`, `ces_di`).
+
+**Why this audit is mandatory**: CES is the operator-requested "internal logic to
+calculate win or loss before entry". The whole point of Option C is to validate
+the score's predictive power *before* enabling Option A (block-below-threshold
+gate, `FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD=1`). Every loss + every win you
+analyse during monitoring MUST log its CES score + component breakdown.
+
+**Canonical join query** — pulls every TAKEN entry's CES total + component split
+joined with its closing P&L from TRADES (matched by magic + run):
+
+```bash
+sqlite3 -readonly "$DB" "
+SELECT s.magic,
+       s.setup_type, s.direction,
+       s.ces_score, s.ces_dtc, s.ces_pemcg, s.ces_momentum,
+       s.ces_rsi, s.ces_vwap, s.ces_di,
+       ROUND(SUM(t.profit), 2) AS net_pnl,
+       COUNT(t.deal_ticket)    AS deals
+FROM SIGNALS s
+LEFT JOIN TRADES t ON t.magic = s.magic AND t.run_id = s.run_id AND t.direction IN (1,2,3)
+WHERE s.outcome = 'TAKEN'
+  AND s.run_id = (SELECT MAX(id) FROM TESTER_RUNS)
+  AND s.ces_score > 0
+GROUP BY s.magic
+ORDER BY net_pnl ASC;
+"
+```
+
+**Aggregate query** — win rate + net P&L by CES bucket (run at end-of-monitoring):
+
+```bash
+sqlite3 -readonly "$DB" "
+SELECT s.ces_score,
+       COUNT(*)                                        AS taken,
+       SUM(CASE WHEN t.profit > 0 THEN 1 ELSE 0 END)   AS wins,
+       ROUND(SUM(t.profit), 2)                         AS net_pnl,
+       ROUND(AVG(t.profit), 2)                         AS avg_pnl
+FROM SIGNALS s
+JOIN TRADES t ON t.magic = s.magic AND t.run_id = s.run_id
+WHERE s.outcome='TAKEN' AND s.ces_score > 0
+  AND s.run_id = (SELECT MAX(id) FROM TESTER_RUNS)
+GROUP BY s.ces_score
+ORDER BY s.ces_score;
+"
+```
+
+**Reporting rule**: every per-trade post-mortem section (loss decision table,
+win celebration, missed-opportunity) MUST include a CES line:
+`CES score: 7/10 (DTC +3, PEMCG +2, Momentum +0, RSI +1, VWAP +1, DI +0)`.
+
+If `ces_score = 0` across all rows: `FORGE_COMPOSITE_CES_ENABLED` is OFF or the
+EA hasn't been recompiled since v2.7.110 — flag this at the start of the
+monitoring session, do NOT silently skip the audit.
+
+**Activation check** (run once at the start of each monitoring session):
+
+```bash
+grep -E "^FORGE_COMPOSITE_CES_ENABLED|^FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD" \
+     /Users/olasumbo/signal_system/.env
+```
+
+Expected: `FORGE_COMPOSITE_CES_ENABLED=1` (instrumentation ON) AND
+`FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD=0` (gate OFF — Option C ship).
+
+If both are `1` the operator has flipped Option A on and CES is now a hard
+gate — log `ces_below_threshold` SKIP count separately in tick output.
+
+See `docs/FORGE_CES_DESIGN.md` for atom citations + scoring rationale +
+decision matrix for promoting to Option A.
+
+---
+
 ### MANDATORY: case study file for date-range / multi-day pattern analyses
 
 Whenever the analysis spans **2 or more trading days** (e.g. day-typing, cross-day composite

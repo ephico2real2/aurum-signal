@@ -244,6 +244,18 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_DTC_EXEMPT_OVERRIDE_BUY_RSI_MAX":                ("safety",    "dtc_exempt_override_buy_rsi_max",               "float",  10.0,  50.0),
     "FORGE_GATE_DTC_EXEMPT_OVERRIDE_BUY_SETUPS":                 ("safety",    "dtc_exempt_override_buy_setups",                "string", None,  None),
     "FORGE_GATE_DTC_EXEMPT_OVERRIDE_SELL_SETUPS":                ("safety",    "dtc_exempt_override_sell_setups",               "string", None,  None),
+    # v2.7.110 — CES (Confluence Entry Score) — Option C instrumentation + Option A gate scaffolding.
+    # All default-OFF. Operator activation: ces_enabled=1 enables logging; ces_block_below_threshold=1
+    # additionally engages the gate. See docs/FORGE_CES_DESIGN.md.
+    "FORGE_COMPOSITE_CES_ENABLED":                               ("safety",    "ces_enabled",                                   "bool01", None,  None),
+    "FORGE_GATE_CES_MIN_THRESHOLD":                              ("safety",    "ces_min_threshold",                             "int",    0,     10),
+    "FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD":                      ("safety",    "ces_block_below_threshold",                     "bool01", None,  None),
+    "FORGE_GATE_CES_WEIGHT_DTC_ALIGNED":                         ("safety",    "ces_weight_dtc_aligned",                        "int",    0,     10),
+    "FORGE_GATE_CES_WEIGHT_PEMCG_CLEAN":                         ("safety",    "ces_weight_pemcg_clean",                        "int",    0,     10),
+    "FORGE_GATE_CES_WEIGHT_MOMENTUM_CANDLE":                     ("safety",    "ces_weight_momentum_candle",                    "int",    0,     10),
+    "FORGE_GATE_CES_WEIGHT_RSI_TREND_ZONE":                      ("safety",    "ces_weight_rsi_trend_zone",                     "int",    0,     10),
+    "FORGE_GATE_CES_WEIGHT_VWAP_CONFIRM":                        ("safety",    "ces_weight_vwap_confirm",                       "int",    0,     10),
+    "FORGE_GATE_CES_WEIGHT_DI_DOMINANCE":                        ("safety",    "ces_weight_di_dominance",                       "int",    0,     10),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),

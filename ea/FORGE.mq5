@@ -60,7 +60,7 @@
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.103";
+const string FORGE_VERSION = "2.7.110";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -504,6 +504,29 @@ datetime g_dirlock_last_eval_bar    = 0;   // last M5 bar time at which UpdateDi
 #define DLV_INVALID       1
 #define DLV_NEUTRAL       2
 #define DLV_PROFIT_TARGET 3
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.7.110 — CES (Confluence Entry Score) — Option C (instrumentation-only).
+// Computed at every setup-trigger fire from 7 existing FORGE atoms. Score 0-10.
+// Default-OFF: when ces_enabled=0, components stay 0 (no compute, byte-identical
+// to v2.7.109). Default-ON behaviour is logging-only — Option A gate is also
+// default-OFF behind ces_block_below_threshold. See docs/FORGE_CES_DESIGN.md.
+// Atoms (per-direction):
+//   1. DTC state matches direction (BULL_TREND_ALIGNED + BUY / BEAR_TREND_ALIGNED + SELL): +3
+//   2. PEMCG warning count for direction ≤ 2 (clean reversal-trap reading):                +2
+//   3. M5 momentum candle (strong_bar=1 AND body_pct ≥ 0.5):                                +2
+//   4. RSI in trend zone (BUY: 40-65, SELL: 35-60 — not extreme, not divergence):           +1
+//   5. VWAP-distance confirms direction (BUY: dist ≥ −0.5, SELL: dist ≤ +0.5):              +1
+//   6. H1 DI dominance confirms direction (BUY: DI+ > DI− + 5; SELL: DI− > DI+ + 5):        +1
+// All values & component-zero-fill semantics validated against existing PEMCG/UMCG/DTC.
+// ─────────────────────────────────────────────────────────────────────────────
+int      g_ces_score              = 0;   // 0-10 total at most recent setup-trigger fire
+int      g_ces_component_dtc      = 0;   // per-component contributions (for debugging / Option-A tuning)
+int      g_ces_component_pemcg    = 0;
+int      g_ces_component_momentum = 0;
+int      g_ces_component_rsi      = 0;
+int      g_ces_component_vwap     = 0;
+int      g_ces_component_di       = 0;
 
 datetime g_last_intraday_reversal_log_bar  = 0; // throttle entry_quality_intraday_reversal_buy_block log
 datetime g_last_chop_block_sell_log_bar    = 0; // throttle entry_quality_chop_block_sell log
@@ -1463,6 +1486,24 @@ struct ScalperConfig {
    double dtc_exempt_override_buy_rsi_max;            // when bear-day + BUY setup is exempt + m5_rsi ≤ this → override exemption (default 25)
    string dtc_exempt_override_buy_setups;             // comma-list of BUY exempt setups subject to override (default "BB_EXHAUSTION_REVERSAL_BUY")
    string dtc_exempt_override_sell_setups;            // comma-list of SELL exempt setups subject to override (default "BB_EXHAUSTION_REVERSAL_SELL")
+   // v2.7.110 — CES (Confluence Entry Score) instrumentation + Option-A scaffolding.
+   //   Option C (this ship): compute g_ces_score at every setup-trigger from 7 atoms,
+   //   log to SIGNALS (7 new columns), do NOT block. Default-ON master is the
+   //   instrumentation half; when ces_enabled=0 components stay 0 (byte-identical
+   //   to v2.7.109).
+   //   Option A (default-OFF, scaffolded): when ces_block_below_threshold=1 AND
+   //   g_ces_score < ces_min_threshold → emit gate_reason="ces_below_threshold".
+   //   See docs/FORGE_CES_DESIGN.md for atom citations + scoring rationale.
+   bool   ces_enabled;                                // master flag — compute + log CES. Default false (byte-identical to pre-v2.7.110).
+   int    ces_min_threshold;                          // default 6 — score below this is "low confidence"; consumed by Option A only.
+   bool   ces_block_below_threshold;                  // Option A gate. Default false. Operator must explicitly enable BOTH this AND ces_enabled.
+   // Per-atom weights (operator-tunable, defaults sum to 10):
+   int    ces_weight_dtc_aligned;                     // default 3 — DTC TREND_ALIGNED matches direction
+   int    ces_weight_pemcg_clean;                     // default 2 — PEMCG warning count for this direction ≤ 2
+   int    ces_weight_momentum_candle;                 // default 2 — M5 strong_bar=1 AND body_pct ≥ 0.5
+   int    ces_weight_rsi_trend_zone;                  // default 1 — RSI in trend-zone band (BUY 40-65 / SELL 35-60)
+   int    ces_weight_vwap_confirm;                    // default 1 — VWAP-distance confirms direction
+   int    ces_weight_di_dominance;                    // default 1 — H1 DI dominance ≥ 5 in setup direction
    // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
    //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
    //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
@@ -4912,6 +4953,18 @@ void InitScalperConfig() {
    g_sc.dtc_exempt_override_buy_rsi_max       = 25.0;  // RSI≤25 in bear-aligned = momentum not exhaustion (mirror)
    g_sc.dtc_exempt_override_buy_setups        = "BB_EXHAUSTION_REVERSAL_BUY";
    g_sc.dtc_exempt_override_sell_setups       = "BB_EXHAUSTION_REVERSAL_SELL";
+   // v2.7.110 CES (Confluence Entry Score) defaults — Option C instrumentation-only.
+   //   ces_enabled=false → no compute, no log change (byte-identical to v2.7.109).
+   //   ces_block_below_threshold=false → no gate (Option A scaffolded but disengaged).
+   g_sc.ces_enabled                           = false;
+   g_sc.ces_min_threshold                     = 6;     // default high-confidence cutoff
+   g_sc.ces_block_below_threshold             = false; // Option A — flip both flags to engage gate
+   g_sc.ces_weight_dtc_aligned                = 3;
+   g_sc.ces_weight_pemcg_clean                = 2;
+   g_sc.ces_weight_momentum_candle            = 2;
+   g_sc.ces_weight_rsi_trend_zone             = 1;
+   g_sc.ces_weight_vwap_confirm               = 1;
+   g_sc.ces_weight_di_dominance               = 1;
    g_sc.cvcsm_enabled                         = true;
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
@@ -5992,6 +6045,16 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "dtc_exempt_override_buy_rsi_max"))        { v=JsonGetDouble(content,"dtc_exempt_override_buy_rsi_max");        if(v>=10.0&&v<=50.0) g_sc.dtc_exempt_override_buy_rsi_max=v; }
    if(JsonHasKey(content, "dtc_exempt_override_buy_setups"))         { g_sc.dtc_exempt_override_buy_setups  = JsonGetString(content, "dtc_exempt_override_buy_setups"); }
    if(JsonHasKey(content, "dtc_exempt_override_sell_setups"))        { g_sc.dtc_exempt_override_sell_setups = JsonGetString(content, "dtc_exempt_override_sell_setups"); }
+   // v2.7.110 CES (Confluence Entry Score) — instrumentation + Option-A scaffolding (default-OFF).
+   if(JsonHasKey(content, "ces_enabled"))                            { v=JsonGetDouble(content,"ces_enabled");                            g_sc.ces_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "ces_min_threshold"))                      { v=JsonGetDouble(content,"ces_min_threshold");                      if(v>=0.0&&v<=10.0) g_sc.ces_min_threshold=(int)v; }
+   if(JsonHasKey(content, "ces_block_below_threshold"))              { v=JsonGetDouble(content,"ces_block_below_threshold");              g_sc.ces_block_below_threshold=(v>=0.5); }
+   if(JsonHasKey(content, "ces_weight_dtc_aligned"))                 { v=JsonGetDouble(content,"ces_weight_dtc_aligned");                 if(v>=0.0&&v<=10.0) g_sc.ces_weight_dtc_aligned=(int)v; }
+   if(JsonHasKey(content, "ces_weight_pemcg_clean"))                 { v=JsonGetDouble(content,"ces_weight_pemcg_clean");                 if(v>=0.0&&v<=10.0) g_sc.ces_weight_pemcg_clean=(int)v; }
+   if(JsonHasKey(content, "ces_weight_momentum_candle"))             { v=JsonGetDouble(content,"ces_weight_momentum_candle");             if(v>=0.0&&v<=10.0) g_sc.ces_weight_momentum_candle=(int)v; }
+   if(JsonHasKey(content, "ces_weight_rsi_trend_zone"))              { v=JsonGetDouble(content,"ces_weight_rsi_trend_zone");              if(v>=0.0&&v<=10.0) g_sc.ces_weight_rsi_trend_zone=(int)v; }
+   if(JsonHasKey(content, "ces_weight_vwap_confirm"))                { v=JsonGetDouble(content,"ces_weight_vwap_confirm");                if(v>=0.0&&v<=10.0) g_sc.ces_weight_vwap_confirm=(int)v; }
+   if(JsonHasKey(content, "ces_weight_di_dominance"))                { v=JsonGetDouble(content,"ces_weight_di_dominance");                if(v>=0.0&&v<=10.0) g_sc.ces_weight_di_dominance=(int)v; }
    if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
    if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
@@ -9157,7 +9220,15 @@ bool JournalInit() {
       "m5_inside_bar INTEGER DEFAULT 0, m5_outside_bar INTEGER DEFAULT 0, "
       "m5_doji INTEGER DEFAULT 0, m5_strong_bar INTEGER DEFAULT 0, "
       "long_lower_wick INTEGER DEFAULT 0, long_upper_wick INTEGER DEFAULT 0, "
-      "m5_range_expanding INTEGER DEFAULT 0"
+      "m5_range_expanding INTEGER DEFAULT 0, "
+      // v2.7.110 — CES (Confluence Entry Score) — Option C instrumentation columns
+      "ces_score INTEGER DEFAULT 0, "
+      "ces_dtc INTEGER DEFAULT 0, "
+      "ces_pemcg INTEGER DEFAULT 0, "
+      "ces_momentum INTEGER DEFAULT 0, "
+      "ces_rsi INTEGER DEFAULT 0, "
+      "ces_vwap INTEGER DEFAULT 0, "
+      "ces_di INTEGER DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -9301,6 +9372,17 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN long_lower_wick INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN long_upper_wick INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m5_range_expanding INTEGER DEFAULT 0;");
+   // v2.7.110 — CES (Confluence Entry Score) instrumentation columns (7 INTEGERs).
+   //   Each migration is idempotent — silently ignored when column already exists.
+   //   Default 0 keeps pre-v2.7.110 rows valid (no NULLs in numeric columns).
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ces_score INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ces_dtc INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ces_pemcg INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ces_momentum INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ces_rsi INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ces_vwap INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ces_di INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_ces_score ON SIGNALS(ces_score);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
@@ -9516,7 +9598,9 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "h1_open, h1_high, h1_low, h1_close, "
       "h4_open, h4_high, h4_low, h4_close, "
       "m5_inside_bar, m5_outside_bar, m5_doji, m5_strong_bar, "
-      "long_lower_wick, long_upper_wick, m5_range_expanding"
+      "long_lower_wick, long_upper_wick, m5_range_expanding, "
+      // v2.7.110 — CES (Confluence Entry Score) — 7 component cols (Option C instrumentation)
+      "ces_score, ces_dtc, ces_pemcg, ces_momentum, ces_rsi, ces_vwap, ces_di"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -9628,7 +9712,15 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_eval_m5_strong_bar)  + ", "
       + IntegerToString(g_eval_long_lower_wick) + ", "
       + IntegerToString(g_eval_long_upper_wick) + ", "
-      + IntegerToString(g_eval_m5_range_expanding)
+      + IntegerToString(g_eval_m5_range_expanding) + ", "
+      // v2.7.110 — CES values (zeroed when ces_enabled=0, see compute block in UMCG enforcement)
+      + IntegerToString(g_ces_score)              + ", "
+      + IntegerToString(g_ces_component_dtc)      + ", "
+      + IntegerToString(g_ces_component_pemcg)    + ", "
+      + IntegerToString(g_ces_component_momentum) + ", "
+      + IntegerToString(g_ces_component_rsi)      + ", "
+      + IntegerToString(g_ces_component_vwap)     + ", "
+      + IntegerToString(g_ces_component_di)
       + ")";
 
    if(!DatabaseExecute(g_journal_db, sql)) {
@@ -13292,7 +13384,73 @@ void CheckNativeScalperSetups() {
             }
          }
       }
-      if(umcg_blocked || cvcsm_blocked || dirlock_blocked || dtc_day_bias_blocked) {
+      // v2.7.110 — CES (Confluence Entry Score) compute + Option-A gate.
+      //   Two modes (independent flags):
+      //     Option C (instrumentation):     ces_enabled=1, ces_block_below_threshold=0
+      //                                     → compute score, log to SIGNALS, do NOT block.
+      //     Option A (gate, future use):    ces_enabled=1 AND ces_block_below_threshold=1
+      //                                     → also emit ces_below_threshold SKIP when score < min.
+      //   Both default-OFF — when ces_enabled=0, all 7 component globals stay 0 and behaviour
+      //   is byte-identical to v2.7.109. Computed AFTER UMCG/CVCSM/DirLock/DTC so the score
+      //   reflects what would-have-been-taken state. See docs/FORGE_CES_DESIGN.md.
+      bool ces_blocked = false;
+      if(g_sc.ces_enabled) {
+         int _ces_dtc = 0, _ces_pemcg = 0, _ces_mom = 0;
+         int _ces_rsi = 0, _ces_vwap = 0, _ces_di = 0;
+         bool _is_buy  = (direction == "BUY");
+         bool _is_sell = (direction == "SELL");
+         // Atom 1: DTC trend-aligned matches direction (uses 5-state if enabled, else binary fallback).
+         //   Without 5-state we still credit when intraday triad agrees with direction.
+         bool _dtc_match_buy  = g_sc.dtc_5state_enabled
+                                  ? (g_dtc_state == DTC_STATE_BULL_TREND_ALIGNED)
+                                  : g_dtc_bull_day_intraday;
+         bool _dtc_match_sell = g_sc.dtc_5state_enabled
+                                  ? (g_dtc_state == DTC_STATE_BEAR_TREND_ALIGNED)
+                                  : g_dtc_bear_day_intraday;
+         if((_is_buy && _dtc_match_buy) || (_is_sell && _dtc_match_sell))
+            _ces_dtc = g_sc.ces_weight_dtc_aligned;
+         // Atom 2: PEMCG warning count for setup direction ≤ 2 (clean reversal-trap reading)
+         int _pemcg_dir = _is_buy ? g_pemcg_buy_warning_count : g_pemcg_sell_warning_count;
+         if(_pemcg_dir <= 2) _ces_pemcg = g_sc.ces_weight_pemcg_clean;
+         // Atom 3: M5 momentum candle (strong-bar AND body ≥ 50%)
+         if(g_eval_m5_strong_bar == 1 && g_eval_m5_body_pct >= 0.5)
+            _ces_mom = g_sc.ces_weight_momentum_candle;
+         // Atom 4: RSI in trend zone (BUY 40-65 / SELL 35-60 — not extreme, not divergence)
+         if(_is_buy  && m5_rsi >= 40.0 && m5_rsi <= 65.0) _ces_rsi = g_sc.ces_weight_rsi_trend_zone;
+         if(_is_sell && m5_rsi >= 35.0 && m5_rsi <= 60.0) _ces_rsi = g_sc.ces_weight_rsi_trend_zone;
+         // Atom 5: VWAP-distance confirms direction (BUY: dist ≥ −0.5, SELL: dist ≤ +0.5)
+         if(_is_buy  && g_eval_vwap_dist_atr >= -0.5) _ces_vwap = g_sc.ces_weight_vwap_confirm;
+         if(_is_sell && g_eval_vwap_dist_atr <=  0.5) _ces_vwap = g_sc.ces_weight_vwap_confirm;
+         // Atom 6: H1 DI dominance (BUY: DI+ > DI− + 5; SELL: DI− > DI+ + 5)
+         double _di_balance = g_eval_h1_di_plus - g_eval_h1_di_minus;
+         if(_is_buy  && _di_balance >=  5.0) _ces_di = g_sc.ces_weight_di_dominance;
+         if(_is_sell && _di_balance <= -5.0) _ces_di = g_sc.ces_weight_di_dominance;
+         // Persist component breakdown + total into globals (consumed by JournalRecordSignal).
+         g_ces_component_dtc      = _ces_dtc;
+         g_ces_component_pemcg    = _ces_pemcg;
+         g_ces_component_momentum = _ces_mom;
+         g_ces_component_rsi      = _ces_rsi;
+         g_ces_component_vwap     = _ces_vwap;
+         g_ces_component_di       = _ces_di;
+         g_ces_score              = _ces_dtc + _ces_pemcg + _ces_mom + _ces_rsi + _ces_vwap + _ces_di;
+         // Option A — block when below threshold (default-OFF — operator must opt in).
+         if(g_sc.ces_block_below_threshold
+            && !umcg_blocked && !cvcsm_blocked && !dirlock_blocked && !dtc_day_bias_blocked
+            && g_ces_score < g_sc.ces_min_threshold) {
+            ces_blocked = true;
+            block_reason = "ces_below_threshold";
+         }
+      } else {
+         // Master OFF — zero components so SIGNALS columns log 0 (no spurious data).
+         g_ces_score              = 0;
+         g_ces_component_dtc      = 0;
+         g_ces_component_pemcg    = 0;
+         g_ces_component_momentum = 0;
+         g_ces_component_rsi      = 0;
+         g_ces_component_vwap     = 0;
+         g_ces_component_di       = 0;
+      }
+      if(umcg_blocked || cvcsm_blocked || dirlock_blocked || dtc_day_bias_blocked || ces_blocked) {
          double _gate_mid_px = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
          JournalRecordSignal("SKIP", block_reason, setup_type, direction,
             _gate_mid_px, spread, m5_atr, m5_rsi, m5_adx, m5_bb_u, m5_bb_l, m5_bb_m, 0, h1_trend_strength, 0);
