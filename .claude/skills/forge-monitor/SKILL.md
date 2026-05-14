@@ -636,6 +636,105 @@ FROM base GROUP BY day, sess ORDER BY day, sess;
 
 ---
 
+### MANDATORY: Acronym discipline — every old + new acronym fully defined
+
+**Operator mandate** (2026-05-14): "all old and newly created acronyms need to be well defined and sources cited and relationship defined etc"
+
+Every acronym used in FORGE code, docs, gate-reasons, or operator-facing output MUST satisfy three rules:
+
+1. **Defined** in `docs/FORGE_PEMCG_ARCHITECTURE.md §1A.1` (the acronym dictionary). Each entry must include:
+   - Full expansion of every letter (e.g., **D**irection **L**ock **V**erdict — not just "DLV").
+   - Type (computed integer / enum / boolean / state machine / etc).
+   - Role in one sentence.
+   - Origin attribution: operator-coined (with date + originating discussion) vs introduced-by-redesign (with version + session date + AI-assisted note where applicable).
+
+2. **Sourced** when influenced by industry literature. The `§9 References` block of `FORGE_PEMCG_ARCHITECTURE.md` must include the cited article(s) with verbatim quote + URL. If you introduce an acronym based on a WebSearch finding, the source goes into §9 in the same edit that adds the acronym to §1A — never in a later commit.
+
+3. **Related**: an acronym is never standalone — `§1A.3` (layer-fire sequence) and `§1A.4` (indicator → threshold → atom → count → verdict grouping) must show how this acronym slots into the existing system. Show:
+   - What inputs it consumes (other acronyms / raw indicators).
+   - What it outputs (boolean? verdict enum? state transition?).
+   - Which other layer/acronym consumes its output.
+
+**When this mandate fires**:
+- ANY new gate code added to `config/gate_legend.json`.
+- ANY new enum / state-machine / verdict type added to `ea/FORGE.mq5`.
+- ANY new acronym surfaced in operator conversation (e.g., the operator coins a new term in a design discussion).
+- ANY refactor that renames or supersedes an existing acronym.
+
+**Anti-patterns**:
+- Adding a new enum (e.g., `DLV_VALID`) to the EA without adding the acronym to `§1A.1` in the SAME commit.
+- Citing "industry pattern" in a code comment without the corresponding URL in `§9 References`.
+- Defining a new acronym without specifying what existing acronym(s) it relates to — orphan acronyms are forbidden.
+
+**Origin attribution convention** (FORGE acronyms to date):
+
+| Acronym | Origin | When |
+|---|---|---|
+| PEMCG, UMCG, CVCSM | operator-coined | v2.7.84, 2026-05-13 |
+| DLV, DLS | introduced this session, AI-assisted, operator-approved | v2.7.97, 2026-05-14 |
+
+Any FUTURE acronyms must follow this attribution pattern.
+
+**Document path for the dictionary**: `/Users/olasumbo/signal_system/docs/FORGE_PEMCG_ARCHITECTURE.md §1A`
+
+---
+
+### MANDATORY: Trade-flow analysis standard + living doc
+
+**Operator mandate** (2026-05-14): "when I asked questions about how a trade flow, I expect analysis similar to docs/FORGE_TRADE_FLOW_BUY_SELL.md — well breakdown and also this must be updated as I improved the system with comments below on why it was updated etc"
+
+When the operator asks ANY question about how trades flow / fire / progress / exit, the response must match the depth and structure of `docs/FORGE_TRADE_FLOW_BUY_SELL.md`:
+
+**Required structure for trade-flow answers**:
+
+1. **Direct answer to the framing question** (1-2 sentences). Don't bury the verdict.
+2. **Execution-model table** — Order class × When placed × Order type × Fills when. Clarifies whether the operator's question involves market orders, pendings, or both.
+3. **ASCII lifecycle diagram** for the asked direction (BUY or SELL). Must include:
+   - Timeline markers (T=0, T+N, T+M, T+P, T+Q).
+   - All gate chain stops (UMCG / CVCSM / DirLock) with file:line cites.
+   - Per-leg execution (PlaceMarketBatch when batch_size > 1).
+   - Parallel M5-close re-evaluator thread.
+   - TP1 close + cascade arm + arm-time gates.
+   - TP2 banking close + SL ratchet.
+   - TP3 dynamic extension (when tp3_mode=1).
+   - DISCARDED → IDLE flow with bilateral cooldown.
+4. **Mirror analysis** for the OPPOSITE direction — never answer for only one direction. Either inline a second ASCII block OR include the side-by-side BUY/SELL mirror table from `FORGE_TRADE_FLOW_BUY_SELL.md §3`.
+5. **Activation state callout** — list the relevant `.env` knobs and their current values (read from `config/scalper_config.json`). Make clear what's ON vs OFF.
+6. **Code line cites** — every claim about EA behavior must include `ea/FORGE.mq5:<line>` cite.
+
+**Anti-patterns**:
+- Answering only one direction (e.g., explaining BUY without the SELL mirror).
+- Vague prose without ASCII lifecycle.
+- "It depends" answers without the file:line cite that explains the dependency.
+- Skipping the activation-state callout when knobs may be OFF.
+
+### Living doc requirement
+
+`docs/FORGE_TRADE_FLOW_BUY_SELL.md` is a **living document**. It MUST be updated when:
+
+- Any new gate is added that fires during entry decision (changes the ASCII chain).
+- Any new state machine transition is introduced (e.g., new DLS state).
+- Any new cascade slot or recovery slot is added.
+- Any TP-tier semantic changes (close %, pip floor, dynamic mode).
+- A new setup type ships (must be reachable through the same chain — confirm it is).
+- A new acronym appears in the chain (see Acronym Discipline mandate above).
+- Default-OFF behavior of any §5 activation knob changes.
+
+Each update MUST include in `§8 Changelog`:
+- Date
+- What changed in the flow
+- **Why it was updated** (the operator change / new ship / data observation that motivated it)
+- Forward link to the corresponding `FORGE_CORE_LOGIC_DESIGN.md §9` entry if part of a numbered Set.
+- Forward link to the version commit (vX.Y.Z) that delivered the change.
+
+**Anti-pattern**: editing the §1 BUY flow or §2 SELL flow without adding the matching §3 mirror-table update + §8 changelog entry. Asymmetric updates leave the doc internally inconsistent.
+
+**Cross-reference rule**: every per-Set update in `FORGE_CORE_LOGIC_DESIGN.md` that touches entry chain / cascade / TP-tier / SL-trail MUST also trigger an update to `FORGE_TRADE_FLOW_BUY_SELL.md`. Reciprocal: every change to the flow doc must reference the originating tracker Set.
+
+**Document path**: `/Users/olasumbo/signal_system/docs/FORGE_TRADE_FLOW_BUY_SELL.md`
+
+---
+
 ### MANDATORY: WebSearch industry validation BEFORE proposing any composite, atom, or gate
 
 **Operator mandate** (2026-05-13): "I also need you to a google search on any plan you wanna do to make sure that it conforms with Gold and taking advantage."
