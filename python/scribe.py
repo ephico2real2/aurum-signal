@@ -455,9 +455,14 @@ class Scribe:
     # ── Internal ───────────────────────────────────────────────────
     @contextmanager
     def _conn(self):
-        conn = sqlite3.connect(self.db_path)
+        # busy_timeout=5000: read connections wait up to 5s for write locks
+        # to clear (BRIDGE batch-sync transactions can hold the lock briefly).
+        # WAL mode is applied once at init below — connection-level setting here
+        # is the per-call backstop that avoids instant "database is locked" errors.
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA busy_timeout=5000")
             yield conn
             conn.commit()
         except Exception as e:
@@ -468,7 +473,15 @@ class Scribe:
             conn.close()
 
     def _init_db(self):
+        # Apply WAL mode + relaxed sync ONCE at startup. These are persistent
+        # SQLite settings — they survive across connections after first set.
+        # WAL allows concurrent reads while writes happen (BRIDGE syncs + Athena
+        # reads coexist without "database is locked" errors). synchronous=NORMAL
+        # relaxes fsync (still ACID with WAL). Per mql5.com/articles/22009 pattern
+        # (same fix as v2.7.111 on the source FORGE_journal_*.db).
         with self._conn() as c:
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=NORMAL")
             c.executescript(DDL)
             self._migrate(c)
 
