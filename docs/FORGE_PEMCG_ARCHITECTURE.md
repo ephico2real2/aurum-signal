@@ -26,7 +26,271 @@ All four are related by sharing the same PEMCG composite as input — they're di
 
 ---
 
-## §2 The composite — PEMCG (Pre-Entry Market Condition Gate)
+## §1A Acronym dictionary + how the layers relate (v2.7.97 update)
+
+### §1A.1 Acronyms and what they actually mean
+
+| Acronym | Expansion | Type | Role |
+|---|---|---|---|
+| **PEMCG** | **P**re-**E**ntry **M**arket **C**ondition **G**ate | computed integer pair (0-7 each) | The SIGNAL — counts how many reversal-warning atoms are firing per direction |
+| **UMCG** | **U**niversal **M**arket **C**ondition **G**ate | layer-1 boolean check at setup-trigger time | The BLOCKER — if PEMCG ≥ threshold, refuses to fire the setup |
+| **CVCSM** | **C**onditional **V**olatility **C**ooldown **S**tate **M**achine | layer-2 per-direction state (OPEN/COOLDOWN/RETRYING) | The COOLDOWN — locks out same direction after an SL hit, releases when PEMCG clears for N M5 bars |
+| **DLV** | **D**irection **L**ock **V**erdict | enum (VALID/INVALID/NEUTRAL/PROFIT_TARGET) | The VERDICT — what `EvaluateDirectionLock()` returns per group every M5 close (v2.7.97 NEW) |
+| **DLS** | **D**irection **L**ock **S**tate | per-direction enum (IDLE/ARMED/COOLDOWN_REEVAL/DISCARDED) | The STATE — what direction is currently committed; managed by `UpdateDirLockState()` (v2.7.97 NEW) |
+
+**Why three operator-coined acronyms and two AI-created ones?** The first three (PEMCG/UMCG/CVCSM) were operator-coined during the v2.7.84 design conversation on 2026-05-13 — see `docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md` for the original framing. DLV and DLS were introduced in v2.7.97 (this session, 2026-05-14) as part of Sets 6+7+8 — the operator-mandated direction-lock layer that complements (but does NOT replace) the CVCSM cooldown. Naming follows the existing PEMCG/UMCG/CVCSM 4-5-letter pattern + the operator-mandated `<setup_or_composite>_<gate_concept>_<direction?>` rule from `FORGE_NAMING_CONVENTIONS.md §4.7`.
+
+### §1A.2 What each acronym holds (indicator values, thresholds, booleans grouped together)
+
+#### PEMCG — the SIGNAL
+
+```
+INDICATORS (raw inputs, per-tick)
+   m5_rsi              RSI (14) on M5
+   m5_body_pct         (|close - open|) / (high - low) of the latest M5 bar
+   m5_strong_bar       boolean: high-volatility + body% > threshold + direction-agnostic
+   m5_range_expanding  boolean: ATR rising past prior 5-bar avg
+   bb_upper / bb_lower BB ±2σ on M5
+   m5_atr / m5_atr_5bar M5 ATR + 5-bar ratio
+   macd_histogram      MACD(3,10,16) histogram on M5
+   m5_close vs m5_close_1  current bar close vs prior bar close
+
+THRESHOLDS (knobs that turn indicator values → boolean atoms)
+   umcg_pemcg_rsi_overbought = 65.0     ← A1 BUY-trap threshold
+   umcg_pemcg_rsi_oversold   = 35.0     ← A1 SELL-trap threshold
+   umcg_pemcg_body_pct_max_weak = 0.5   ← A2 threshold
+   umcg_pemcg_atr_ratio_max_contract = 1.0  ← A6 threshold
+   umcg_pemcg_bb_dist_atr_threshold = 0.3   ← A5 threshold
+
+BOOLEAN ATOMS (one bit each, summed 0..7)
+   A1 = (BUY: rsi ≥ ob)  / (SELL: rsi ≤ os)        ← directional, NOT mirrored
+   A2 = body_pct < weak                              ← direction-agnostic
+   A3 = strong_bar == 0                              ← direction-agnostic
+   A4 = range_expanding == 0                         ← direction-agnostic
+   A5 = (BUY: close − bb_upper) / atr < 0.3          ← directional
+        (SELL: bb_lower − close) / atr < 0.3
+   A6 = atr_5bar ratio < contract                    ← direction-agnostic
+   A7 = (BUY: macd_hist < 0 AND close < close_1)     ← directional (divergence)
+        (SELL: macd_hist > 0 AND close > close_1)
+
+OUTPUTS (the SIGNAL — consumed by every layer below)
+   g_pemcg_buy_warning_count  ∈ [0..7]
+   g_pemcg_sell_warning_count ∈ [0..7]
+```
+
+#### UMCG — the BLOCKER (layer 1)
+
+```
+INDICATORS — uses PEMCG outputs directly (not raw atoms)
+
+THRESHOLDS
+   umcg_buy_block_threshold  = 5       ← BUY blocked if pemcg_buy_warning ≥ this
+   umcg_sell_block_threshold = 5       ← SELL blocked if pemcg_sell_warning ≥ this
+   umcg_enabled              = bool    ← master flag
+
+BOOLEAN OUTPUT
+   per-direction: "block this setup-trigger fire" (bool)
+
+CODE LOCATION
+   ea/FORGE.mq5:~12734  setup-trigger chokepoint
+   Emits SKIP gate_reason: pemcg_buy_reversal_block / pemcg_sell_reversal_block
+```
+
+#### CVCSM — the COOLDOWN STATE MACHINE (layer 2)
+
+```
+TRIGGER (state transition into COOLDOWN)
+   SL hit on a group in this direction → state = COOLDOWN
+   (TP firing does NOT trigger — operator-mandated)
+
+INDICATORS — uses PEMCG outputs to decide release
+
+THRESHOLDS
+   cvcsm_release_threshold      = 2    ← PEMCG warnings < this allows transition to RETRYING
+   cvcsm_required_clean_bars    = 2    ← N M5 bars in RETRYING with clean PEMCG → OPEN
+   cvcsm_max_cooldown_sec       = 1800 ← safety hard timeout (30 min) regardless of PEMCG state
+   cvcsm_trigger_on_sl          = 1    ← bool master: SL events trigger cooldown
+   cvcsm_trigger_on_regime_flip = 1    ← bool optional: regime flip also triggers
+   cvcsm_enabled                = bool ← master flag
+
+PER-DIRECTION STATE
+   g_cvcsm_state_buy   ∈ {0=OPEN, 1=COOLDOWN, 2=RETRYING}
+   g_cvcsm_state_sell  (mirror)
+   g_cvcsm_cooldown_start_buy/sell    (timestamps for safety timeout)
+   g_cvcsm_clean_bars_buy/sell        (counter for RETRYING → OPEN)
+
+BOOLEAN OUTPUT
+   per-direction: "block this setup-trigger fire" (bool, when state != OPEN)
+
+CODE LOCATION
+   ea/FORGE.mq5:~6951  M5-bar-close evaluator
+   Emits SKIP gate_reason: cvcsm_cooldown_block_buy / cvcsm_cooldown_block_sell
+```
+
+#### Direction Lock (DLV + DLS) — the DIRECTION COMMITMENT (layer 1B — v2.7.97 NEW)
+
+This is a NEW layer added in v2.7.97. It is **independent from CVCSM** (which is post-SL-only). Direction Lock activates at every Leg 1 placement and re-evaluates every M5 close.
+
+```
+PER-GROUP STATE (added in v2.7.97)
+   g_groups[gi].direction_lock_broken  ∈ {false, true}
+   g_groups[gi].entry_swing_high       (computed at entry, last N M5 bars high)
+   g_groups[gi].entry_swing_low        (computed at entry, last N M5 bars low)
+
+PER-DIRECTION STATE MACHINE (DLS = Direction Lock State)
+   g_dirlock_state_buy   ∈ {0=IDLE, 1=ARMED, 2=COOLDOWN_REEVAL, 3=DISCARDED}
+   g_dirlock_state_sell  (mirror)
+   g_dirlock_armed_time_buy/sell        (timestamps)
+   g_dirlock_active_group_buy/sell      (group index that armed this direction)
+   g_dirlock_last_break_time            (timestamp of last lock break)
+
+INDICATORS (per-tick, all pre-existing)
+   m5_close   (latest CLOSED M5 bar, NOT current bar)
+   atr        (M5 ATR via h_atr handle)
+   pemcg_buy_warning_count, pemcg_sell_warning_count
+   g_eval_h1_trend        (cached h1 trend strength)
+
+THRESHOLDS (4 + 1 swing-lookback)
+   dirlock_struct_break_atr_mult = 0.5   ← body-close beyond entry_swing ± atr × this → INVALID
+   dirlock_flip_threshold        = 5     ← opposite-direction PEMCG ≥ this → INVALID
+   dirlock_neutral_threshold     = 3     ← bilateral PEMCG ≥ this on both sides → NEUTRAL
+   dirlock_h1_disagreement       = 0.5   ← |h1_trend| disagrees with locked dir by ≥ this → INVALID
+   dirlock_swing_lookback_bars   = 5     ← bars to scan for entry_swing high/low
+   dirlock_break_bilateral_cooldown_bars = 2  ← M5 bars to block BOTH dirs after break
+   direction_lock_enabled        = bool ← master flag
+
+VERDICT ENUM (DLV = Direction Lock Verdict)
+   DLV_VALID         = 0    ← keep ARMED, continue trading
+   DLV_INVALID       = 1    ← structural break or PEMCG flip or HTF disagreement
+   DLV_NEUTRAL       = 2    ← bilateral PEMCG high — both directions look chopped
+   DLV_PROFIT_TARGET = 3    ← group's TP3 hit or all positions closed (clean exit)
+
+BOOLEAN OUTPUTS
+   IsDirLockBlocked(direction) — used at setup-trigger fire
+   CancelPendingOnStructureFlip() — used at every M5 close (kills cascade pendings on break)
+
+CODE LOCATION
+   ea/FORGE.mq5:~14213  EvaluateDirectionLock()
+   ea/FORGE.mq5:~14282  CancelPendingOnStructureFlip()
+   ea/FORGE.mq5:~14310  UpdateDirLockState()
+   Emits SKIP gate_reason: dirlock_block_buy / dirlock_block_sell
+```
+
+### §1A.3 How the layers fire in sequence (single setup-trigger tick)
+
+```
+                Setup composite fires (e.g., BB_BREAKOUT BUY)
+                                  │
+                                  ▼
+       ┌──────────────────────────────────────────────────┐
+       │  Layer 1 — UMCG (BLOCKER, PEMCG-driven)          │
+       │   pemcg_<dir>_warning_count ≥ umcg_threshold?    │
+       └──────────────────────┬───────────────────────────┘
+                              │  No
+                              ▼
+       ┌──────────────────────────────────────────────────┐
+       │  Layer 2 — CVCSM (BLOCKER, SL-cooldown)          │
+       │   g_cvcsm_state_<dir> != 0 (OPEN)?               │
+       └──────────────────────┬───────────────────────────┘
+                              │  No
+                              ▼
+       ┌──────────────────────────────────────────────────┐
+       │  Layer 1B — Direction Lock (BLOCKER, bilateral)  │  v2.7.97 NEW
+       │   IsDirLockBlocked(dir)?                         │
+       │   = state == DISCARDED?                          │
+       │   OR bilateral cooldown active (since last break)│
+       └──────────────────────┬───────────────────────────┘
+                              │  No
+                              ▼
+       ┌──────────────────────────────────────────────────┐
+       │  Layer 3 — entry execution                       │
+       │   PlaceOpenGroupLeg / PlaceMarketBatch           │
+       │   → 4 market positions (v2.7.99 batch)           │
+       │   → dirlock_state_<dir> IDLE → ARMED             │
+       └──────────────────────────────────────────────────┘
+
+                Then every M5 close, in parallel:
+       ┌──────────────────────────────────────────────────┐
+       │  Layer 0 — PEMCG (the SIGNAL)                    │
+       │   Recompute g_pemcg_<dir>_warning_count          │
+       │   from 7 atoms (RSI, body, strong bar, range,    │
+       │   BB-prox, ATR-contract, MACD divergence)        │
+       │   These outputs feed UMCG/CVCSM/DirLock above    │
+       └──────────────────────────────────────────────────┘
+       ┌──────────────────────────────────────────────────┐
+       │  Layer 1B — UpdateDirLockState (for each dir)    │
+       │   for each ARMED group:                          │
+       │     verdict = EvaluateDirectionLock(dir, gi)     │
+       │     if verdict == DLV_VALID: keep ARMED          │
+       │     else: state → DISCARDED                      │
+       │           bilateral cooldown engages             │
+       │   CancelPendingOnStructureFlip() — kills stale   │
+       │   cascade pendings whose group's lock broke      │
+       └──────────────────────────────────────────────────┘
+       ┌──────────────────────────────────────────────────┐
+       │  Layer 2 — CVCSM eval (post-SL cooldown)         │
+       │   COOLDOWN → RETRYING when pemcg_<dir> clears    │
+       │   RETRYING → OPEN after N clean bars             │
+       └──────────────────────────────────────────────────┘
+```
+
+### §1A.4 What "indicator values, thresholds, booleans grouped together" means
+
+The system is **layered**, where each layer takes the lower layer's output as input:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  RAW INDICATORS (per-tick)                                     │
+│   M5: rsi, atr, body_pct, strong_bar, range_expanding,         │
+│       bb_upper/lower, macd_hist, close vs close_1              │
+│   H1: di+ / di- / h1_trend_strength                            │
+│   Regime: g_regime_label (TREND_BULL / TREND_BEAR / RANGE / …) │
+└────────────────────────────────┬───────────────────────────────┘
+                                 │
+                       (compared to thresholds)
+                                 │
+                                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│  ATOMS (boolean per atom, computed every M5 close)             │
+│   PEMCG 7 atoms ×2 directions = 14 booleans                    │
+│   Direction-lock atoms (M5 close vs swing, h1_trend, …)        │
+└────────────────────────────────┬───────────────────────────────┘
+                                 │
+                       (summed into counts)
+                                 │
+                                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│  PEMCG COUNTS (the SIGNAL — 2 integers per tick)               │
+│   g_pemcg_buy_warning_count  ∈ [0..7]                          │
+│   g_pemcg_sell_warning_count ∈ [0..7]                          │
+└────────────────────────────────┬───────────────────────────────┘
+                                 │
+                  (compared to LAYER-level thresholds)
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        ▼                        ▼                        ▼
+   UMCG (layer 1)         CVCSM (layer 2)        Direction Lock (1B)
+   block at trigger       cooldown after SL      lock at Leg 1 fire
+   threshold ≥ 5/7        threshold < 2/7        threshold ≥ 5/7
+   gate: pemcg_*_block    gate: cvcsm_cooldown_  gate: dirlock_block_
+                            block_*                *
+
+                                 ▼
+              ALL three feed the same setup-trigger chokepoint;
+              ANY ONE returning "block" = SKIP this entry.
+```
+
+The grouping is:
+- **Indicators** = raw numeric values from MT5 (RSI, ATR, prices).
+- **Thresholds** = config knobs (`umcg_pemcg_rsi_overbought=65`, `dirlock_struct_break_atr_mult=0.5`, etc.) that turn numeric values into binary tests.
+- **Atoms** = booleans produced by `indicator ⊕ threshold` (e.g., `rsi ≥ 65` is one atom).
+- **Counts** = sum of atom booleans for the direction (PEMCG_BUY = sum of 7 BUY-trap atoms).
+- **Layer verdicts** = a boolean per layer (UMCG, CVCSM, DirLock) decided by comparing counts to LAYER-thresholds (e.g., `pemcg_buy ≥ umcg_buy_block_threshold` → block).
+- **Final entry decision** = any-layer-blocks logical OR.
+
+---
+
+
 
 PEMCG is **two integers** computed in `ForgeEvalAtoms()` once per M5 bar close:
 
@@ -433,14 +697,41 @@ This document MUST be updated when:
 
 ## §9 References
 
+### Internal docs
 - `docs/FORGE_CASE_STUDY_G5006_INFLECTION_POINT.md` — origin case study (G5006 -$1,793 loss that motivated PEMCG + UMCG)
 - `docs/FORGE_DECISION_STACK.md` — 5-layer decision architecture
 - `docs/FORGE_NAMING_CONVENTIONS.md` — knob naming policy
+- `docs/FORGE_CORE_LOGIC_DESIGN.md` — v2.7.95-2.7.102 multi-leg cool-period redesign tracker (where DLV/DLS were defined)
+- `docs/FORGE_v2.7.95-2.7.102_ROLLOUT_PLAN.md` — phase-by-phase activation guide
+- `docs/FORGE_TRADE_FLOW_BUY_SELL.md` — BUY + SELL full-lifecycle ASCII walkthrough
+
+### Code locations
 - `ea/FORGE.mq5:6621-6663` — PEMCG computation
-- `ea/FORGE.mq5:12362-12557` — Layer 1/2/3 enforcement
+- `ea/FORGE.mq5:12362-12557` — Layer 1/2/3 enforcement (UMCG + CVCSM at chokepoint, plus v2.7.97 DirLock check)
 - `ea/FORGE.mq5:10781-10798` + `:11156-11173` — v2.7.93 anti-retest gates
+- `ea/FORGE.mq5:~14213` — `EvaluateDirectionLock()` (DLV producer, v2.7.97)
+- `ea/FORGE.mq5:~14282` — `CancelPendingOnStructureFlip()` (DLV consumer for pendings, v2.7.101)
+- `ea/FORGE.mq5:~14310` — `UpdateDirLockState()` (DLS transitions, v2.7.97)
 - `config/scalper_config.json` — runtime knob values
 - `.env` — operator overrides
+
+### Industry articles used in the v2.7.95-2.7.102 redesign (cited verbatim where applicable)
+
+The new acronyms (DLV / DLS) and the layered re-evaluation pattern were informed by these external sources surfaced during WebSearch on 2026-05-14:
+
+| Topic | Source |
+|---|---|
+| ICT Market Structure Shift (MSS) — body-close validation pattern feeding **Trigger 1** of `EvaluateDirectionLock` | [tradethepool: Market Structure Shift](https://tradethepool.com/technical-skill/ict-market-structure-shift/) |
+| ICT validation by ATR — "checks whether price closes beyond the deviation range defined by a 17-period ATR" → calibration of `dirlock_struct_break_atr_mult` | [LuxAlgo: ICT Anchored Market Structures with Validation](https://www.luxalgo.com/library/indicator/ict-anchored-market-structures-with-validation/) |
+| Post-SL re-entry rule — "previous closed candle must make a new higher high (BUY) / lower low (SELL) compared to all candles since original signal" → the *fresh signal* requirement after DLS DISCARDED → IDLE | [Triple MA EA Strategy (Dec 30 2025)](https://www.mql5.com/en/blogs/post/766574) |
+| MT5 hedge mode + magic-number convention — "each order can have different magic numbers... hedging system opens new position per deal" → DLS state per-direction independence + DLV per-group | [MQL5 forum 446630](https://www.mql5.com/en/forum/446630), [forum 431285](https://www.mql5.com/en/forum/431285) |
+| Pending order cancel pattern via OnTradeTransaction / per-cycle status check → `CancelPendingOnStructureFlip()` design | [MQL5 docs OnTradeTransaction](https://www.mql5.com/en/docs/event_handlers/ontradetransaction), [forum 388433](https://www.mql5.com/en/forum/388433) |
+| Adaptive risk management with context-aware stop placement and zone-flip detection | [MQL5 Article 21759: Adaptive Risk Management for Liquidity Strategies](https://www.mql5.com/en/articles/21759) |
+| Trade-discipline state persistence ("global variables and file operations to persist risk states across restarts") | [MQL5 Article 20587: Automating Trade Discipline with Risk Enforcement EA](https://www.mql5.com/en/articles/20587) |
+| Pyramid spacing — "0.5×ATR, max 4 pyramid positions; each position independent" → `batch_max_legs` cap + spacing knob | [MSX AI SuperTrend v3.90 (May 2026)](https://www.mql5.com/en/blogs/post/769821), [Pyramid MT5 EA](https://www.mql5.com/en/market/product/103169) |
+| TP tier semantics — Triple-Scale Method "TP1 50% / TP2 25% / TP3 25%" → operator's spec, validated industry-canonical | [eazypips: What Are TP1, TP2, and TP3](https://www.eazypips.com/what-are-tp1-tp2-and-tp3-and-how-to-trade-them/) |
+| XAUUSD pip convention — confirmed broker convention (1 pip = $0.10, 10 points on 2-digit) | [defcofx XAUUSD Pips and Lot Size](https://www.defcofx.com/xauusd-pips-and-lot-size/), [tradersunion XAUUSD pip guide](https://tradersunion.com/trading-glossary/what-is-xauusd/how-to-calculate-pips/) |
+| XAUUSD scalping ATR-based SL + trailing stop on first +10 pips | [FXNX XAUUSD Scalping](https://fxnx.com/en/blog/master-xauusd-scalping-for-quick-gold-gains), [The Best way to Scalp Gold XAUUSD M1](https://www.mql5.com/en/blogs/post/764883) |
 
 ---
 
@@ -461,4 +752,6 @@ When `/forge-monitor` runs:
 - 2026-05-14 — v2.7.88 recorded: A1 RSI thresholds 70→65 / 30→35 (§2.1)
 - 2026-05-14 — v2.7.89/90/91/92/94 recorded: Layer 3 enhancements (§3.3)
 - 2026-05-14 — v2.7.93 recorded as independent side gate (§4)
+- 2026-05-14 — **§1A added** — acronym dictionary (PEMCG / UMCG / CVCSM + new DLV / DLS introduced in v2.7.97), layer relationship diagram, and explicit grouping of *indicators → thresholds → atoms → counts → layer verdicts*. Operator request after asking "add meaning of PEMCG, UMCG and CVCSM how they all related together how indicators values, thresholds, bool are groups". DLV (Direction Lock Verdict) + DLS (Direction Lock State) are new in v2.7.97 — naming follows the existing 4-5 letter pattern + FORGE_NAMING_CONVENTIONS §4.7.
+- 2026-05-14 — **§9 References expanded** — added 12 industry article citations used during the v2.7.95-2.7.102 redesign (ICT MSS, LuxAlgo validation, Triple MA EA re-entry rule, MQL5 hedge-mode docs, OnTradeTransaction patterns, MQL5 Articles 21759 + 20587, pyramid systems, Triple-Scale TP method, XAUUSD pip convention sources). These informed Sets 1/4/6/7/8 design.
 - 2026-05-14 — Live evidence §7 first populated: Run 9 v2.7.94, sim Apr 1 19:44, 4,234 v2.7.93 blocks confirming G5006 retest trap caught
