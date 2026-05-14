@@ -1297,7 +1297,10 @@ class Scribe:
                         "m5_inside_bar, m5_outside_bar, m5_doji, m5_strong_bar, "
                         "long_lower_wick, long_upper_wick, m5_range_expanding"
                         ") "
-                        "VALUES (" + ",".join(["?"] * (37 + 24 + 45)) + ")",
+                        # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
+                        # + 3 v2.7.47 RegimeState trio). Was (37+24+45)=106 — caused
+                        # "106 values for 110 columns" sync errors and infinite recovery loop.
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)

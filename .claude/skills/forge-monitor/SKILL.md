@@ -768,10 +768,34 @@ print(f"MISSING GATES: {sorted(missing) if missing else 'none — PASS'}")
 EOF
 ```
 
+### Check C — Bridge → scribe forge_signals sync health
+```bash
+# Fast smoke test: any "X values for Y columns" errors in the last hour means
+# the scribe.py INSERT placeholder count is out of sync with the column list.
+# When this fires, bridge silently loops on sync-recovery and `forge_signals`
+# stops accumulating — Athena UI "TAKEN ENTRIES" panel disappears even though
+# trades keep syncing (separate INSERT path).
+grep -E "SCRIBE sync_forge_journal error:|sync-recovery.*reset [0-9]+ missing" \
+     python/logs/bridge.log 2>/dev/null \
+   | awk -v cutoff="$(date -u -v-1H +%Y-%m-%dT%H:%M)" '$1 > cutoff' \
+   | tail -10
+```
+
+If you see repeated lines like `SCRIBE sync_forge_journal error: 106 values for 110 columns`, that's the symptom. **Root cause**: a column was added to `JournalRecordSignal` in `ea/FORGE.mq5` and mirrored into `forge_signals` schema, but the placeholder count in `python/scribe.py::sync_forge_journal` (look for `",".join(["?"] * (N + 24 + 45))`) was NOT bumped to match. Three files must update together:
+
+1. `ea/FORGE.mq5` — `SIGNALS` schema + `JournalRecordSignal` INSERT
+2. `schemas/aurum_tester.sql` (or scribe `CREATE TABLE` in `python/scribe.py`) — mirror schema
+3. `python/scribe.py::sync_forge_journal` — INSERT column list AND placeholder count
+
+Historical case (2026-05-13): v2.7.45 + v2.7.47 added 5 columns (`killzone`, `minutes_into_kz`, `htf_h1_strong`, `intraday_label`, `intraday_counter_htf`). Schema + tuple were updated, placeholder count was not — every INSERT silently failed, dashboard's TAKEN ENTRIES panel went dark, took 12 hours to diagnose.
+
+The `/forge-ea-review` skill's **Mandatory Check D** validates this parity statically. The monitor's job is to catch it at runtime if it slips through.
+
 If either check fails:
 - **Dead env**: fix by adding the mapping to `sync_scalper_config_from_env.py` OR adding the var to `tests/api/test_forge_27x_gates.py::FORGE_ENV_VARS_NOT_IN_SYNC` with rationale
 - **Missing gate**: add an entry to `config/gate_legend.json` with label/explanation/category
-- Either way, report in the monitoring log so the next analysis doc captures it
+- **Sync errors**: fix `python/scribe.py::sync_forge_journal` placeholder count to match column list, then `make reload-bridge`
+- Report any of the above in the monitoring log so the next analysis doc captures it
 
 ---
 
