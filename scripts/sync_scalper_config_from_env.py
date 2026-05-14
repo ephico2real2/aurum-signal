@@ -237,6 +237,13 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_COMPOSITE_DTC_GEOMETRY_WIDEN_ENABLED":                ("safety",    "dtc_geometry_widen_enabled",                    "bool01", None,  None),
     "FORGE_GEOMETRY_DTC_TREND_ALIGNED_SL_WIDEN_FACTOR":          ("safety",    "dtc_trend_aligned_sl_widen_factor",             "float",  0.5,   5.0),
     "FORGE_GEOMETRY_DTC_TREND_ALIGNED_TP_WIDEN_FACTOR":          ("safety",    "dtc_trend_aligned_tp_widen_factor",             "float",  0.5,   5.0),
+    # v2.7.109 — Exempt-list conditional override (momentum-vs-exhaustion RSI override on TREND_ALIGNED days).
+    # Catches the G5028 -$2,488 case: BB_EXHAUSTION_REVERSAL_SELL at RSI 75-80 during a bull rally is fighting momentum, not catching exhaustion.
+    "FORGE_COMPOSITE_DTC_EXEMPT_OVERRIDE_ENABLED":               ("safety",    "dtc_exempt_override_enabled",                   "bool01", None,  None),
+    "FORGE_GATE_DTC_EXEMPT_OVERRIDE_SELL_RSI_MIN":               ("safety",    "dtc_exempt_override_sell_rsi_min",              "float",  50.0,  90.0),
+    "FORGE_GATE_DTC_EXEMPT_OVERRIDE_BUY_RSI_MAX":                ("safety",    "dtc_exempt_override_buy_rsi_max",               "float",  10.0,  50.0),
+    "FORGE_GATE_DTC_EXEMPT_OVERRIDE_BUY_SETUPS":                 ("safety",    "dtc_exempt_override_buy_setups",                "string", None,  None),
+    "FORGE_GATE_DTC_EXEMPT_OVERRIDE_SELL_SETUPS":                ("safety",    "dtc_exempt_override_sell_setups",               "string", None,  None),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),
