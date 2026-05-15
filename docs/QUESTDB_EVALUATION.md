@@ -35,6 +35,7 @@
 | 117-column schema drift across versions | ❌ | Column drift is a Python codegen problem, not a storage problem |
 | Multi-month backtest cross-comparison | ✅ (future) | ASOF JOIN + `LATEST ON` queries are native; SQLite needs subqueries |
 | Tick-level OHLC capture (not yet built) | ✅ (future) | Designed for this — ILP at line-rate, no INSERT-per-row overhead |
+| **High-cardinality diagnostic columns** (30+ lot factors, 50+ atom snapshots, state-machine breakdowns) | ✅ | **Column-oriented storage = unused / always-1.0 columns are effectively free (compressed delta-encoding).** SQLite is row-oriented → every column adds bytes to every row even when constant. This is the structural reason for the operator-mandated "selective-column 12-of-30" tradeoff (codified in `.claude/skills/forge-monitor/SKILL.md`). QuestDB removes the tradeoff entirely. |
 
 ## §4 QuestDB facts relevant to FORGE
 
@@ -158,6 +159,7 @@ Cost: ~1 week. Eliminates the recurring "X values for Y columns" bug class entir
 
 - **2026-05-14** — Initial evaluation. Verdict: not adopted; trip-wire thresholds set at 10× current volume + tick-capture / multi-symbol exceptions. Short-term recurring scribe-drift bug is better fixed by single-source schema codegen (§9), not migration.
 - **2026-05-14** — **Verdict flipped to ADOPT** after operator surfaced the MT5 Python module + Parquet pattern from [mql5.com article 19065](https://www.mql5.com/en/articles/19065) and the working reference at `~/Downloads/ai-signal-generator/market_ai_engine.py`. The constraint that killed adoption in §3 ("MT5 EA cannot write to QuestDB") is removed by inserting a Python ingress layer that uses the official `MetaTrader5` package. New architecture in §12.
+- **2026-05-15** — **High-cardinality diagnostic argument added** (§3 + §12.7a). Operator surfaced during v2.7.121 ship: the just-codified "selective-column 12-of-30" lot-factor rule (in `.claude/skills/forge-monitor/SKILL.md`) is a SQLite-row-storage workaround, not a methodological preference. QuestDB's column-oriented storage makes always-1.0 columns effectively free (delta + run-length compression), removing the tradeoff. Strengthens the adopt verdict for the analytics layer (`forge_signals` + future per-atom/per-factor breakdowns); EA-side SQLite journal still constrained by Wine + MQL5 sqlite3.mqh.
 
 ---
 
@@ -287,6 +289,38 @@ The reference `market_ai_engine.py` notes `MetaTrader5 is Windows-only. Import l
 - **Schema drift solved differently**: Parquet column-by-name + QuestDB column-add API both tolerate adding columns without breaking existing data. The 117-column drift bug in scribe.py would not have a parallel here.
 - **Training data is a first-class output**: Parquet daily partitions are exactly what scikit-learn / PyTorch / catboost want. No CSV exports needed.
 - **No EA changes required for Phase 1**: the SQLite journal stays. SCRIBE may even stay (initially). Risk surface is small.
+- **High-cardinality diagnostic columns become free**: see §12.7a below.
+
+### §12.7a The high-cardinality diagnostic columns argument (operator-surfaced 2026-05-15)
+
+**Why this matters for FORGE specifically**: as ICT atoms and lot-factor breakdowns scale, the EA has many state values worth persisting per-signal. Examples surfaced in this session:
+
+| Data class | Underlying values | "Should be queryable" cut |
+|---|---:|---:|
+| Lot factor breakdown (v2.7.121) | 30 factors | 12 columns under selective-column rule |
+| ICT atoms (Phase 1-5, full design) | ~50 atoms across MSS/FVG/ChoCH/OB/Breaker/Unicorn/CRT/Venom | 14 columns shipped so far (v2.7.119+120) |
+| PEMCG composite atoms | 7 atoms × 2 directions = 14 | 0 columns today; would be valuable |
+| DTC state breakdown (intraday + H4) | ~10 derived values | 0 columns today |
+| Composite-score breakdowns (CES retired, future ISS-C, future Unicorn-score) | 5-7 components each | varies |
+
+**Total potential diagnostic columns**: ~80-120 across the full FORGE state. SQLite can technically handle it, but:
+
+1. **Storage cost** — every signal row carries every column. With ~200k signals per tester run, 80 REAL columns × 8 bytes = 640 bytes/row × 200k = 128 MB additional storage per run. Compounds across runs.
+2. **Schema-parity ship cost** — every new diagnostic column requires the 5-layer touch (CREATE + ALTER + JournalRecordSignal + scribe CREATE/ALTER/SELECT/INSERT/placeholder count + sql file). Mechanical but error-prone (historical drift incidents in v2.7.45/47/112 cited above).
+3. **Dashboard query latency** — every column adds to SELECT * footprint and JOIN cost.
+4. **The operator-mandated "selective-column" tradeoff** — the 12-of-30 cut codified today in `.claude/skills/forge-monitor/SKILL.md` exists ENTIRELY because of these SQLite-row-storage constraints. It is not a methodological preference; it is a storage-cost workaround.
+
+**Why QuestDB resolves this structurally**:
+
+- **Column-oriented storage**: each column is stored independently in its own file. An always-1.0 column compresses to a near-zero footprint (delta + run-length encoding). Adding 18 always-1.0 columns to QuestDB's `forge_signals` table costs ~kilobytes total, not megabytes per run.
+- **Schema add API**: `ALTER TABLE forge_signals ADD COLUMN lot_dump_pyramid_factor DOUBLE` is non-blocking, takes <1 sec, doesn't rewrite existing rows. No `CREATE TABLE IF NOT EXISTS` semantics to drift against.
+- **Selective queries are free**: `SELECT lot_stack_factor, lot_dump_pyramid_factor FROM forge_signals WHERE ...` only reads the 2 column files, not the whole row. SQLite must scan every row's storage page.
+
+**Practical impact**:
+
+Under QuestDB, the operator-mandated selective-column rule **becomes obsolete for the analytical layer**. The text-log + 12-columns + grep-only-for-the-rest tradeoff was a SQLite tax. QuestDB removes it — log all 30+ factors as columns, query whichever subset matters per analysis, pay nothing in storage for the always-1.0 ones.
+
+The selective-column rule **still applies to the source EA SIGNALS journal** (SQLite written by MQL5, can't be replaced — see §12.5 Wine constraints). But Python-side analytics + dashboard live in QuestDB and lose the constraint.
 
 ### §12.8 Open questions
 
