@@ -55,12 +55,12 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.182"
+#property version "2.187"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
 
-const string FORGE_VERSION = "2.7.112";
+const string FORGE_VERSION = "2.7.117";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1072,6 +1072,19 @@ struct ScalperConfig {
    double sell_limit_recovery_lot_factor;// lot factor (default 0.25, mirror)
    int    sell_limit_recovery_expiry_bars;// cancel if not filled within N M5 bars (default 4 = 20 min, mirror)
    double sell_limit_recovery_sl_atr_mult;// SL = TP1 + ATR × this above the rally high (default 1.0, mirror)
+   // ─────────────────────────────────────────────────────────────────────────────
+   // v2.7.117 — Cascade-recovery safety TP (live-broker requirement).
+   // Previously BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY placed pendings with tp=0
+   // ("trail manually or RSI cancellation"). On live broker ticket 1303664415 a
+   // SELL_LIMIT fill stayed open with no TP until operator manually closed (+$23.16).
+   // Fix: place a default 2×ATR broker-side safety TP on cascade-recovery legs so
+   // that even if EA loses connectivity, the broker can take profit. Same default
+   // applied to BUY_STOP_CONT fallback when buy_stop_cont_tp_atr_mult <= 0.
+   // Mapping:
+   //   BUY_LIMIT_RECOV (BUY)        : tp = entry + atr × mult  (must move UP)
+   //   SELL_LIMIT_RECOVERY (SELL)   : tp = entry − atr × mult  (must move DOWN)
+   //   BUY_STOP_CONT  (BUY fallback): tp = entry + atr × mult
+   double cascade_recovery_tp_atr_mult;  // safety TP distance in ATR multiples (default 2.0, mirrors operator spec)
    // H4 supplemental gates — disabled by default (2.7.10)
    // Enable via .env: FORGE_H4_RSI_GATE_ENABLED=1, FORGE_H4_ADX_GATE_ENABLED=1
    // Rationale: H4 RSI identifies structural HH/LL exhaustion zones (Cardwell Bear Resistance ≥60 / Bull Support ≤40)
@@ -4837,6 +4850,8 @@ void InitScalperConfig() {
    g_sc.sell_limit_recovery_lot_factor   = 0.25;  // mirror
    g_sc.sell_limit_recovery_expiry_bars  = 4;     // mirror — 20 min
    g_sc.sell_limit_recovery_sl_atr_mult  = 1.0;   // mirror — SL above rally high by 1 ATR
+   // v2.7.117 — cascade-recovery safety TP default (broker-side TP on recovery legs)
+   g_sc.cascade_recovery_tp_atr_mult     = 2.0;   // 2×ATR safety TP — operator-spec default for live broker safety
    // ─────────────────────────────────────────────────────────────────────────────
    // H4 supplemental gates — off by default; enable via .env + scalper_config.json
    g_sc.h4_rsi_gate_enabled  = false;
@@ -5538,6 +5553,8 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_limit_recovery_lot_factor")) { v = JsonGetDouble(breakout_json,"sell_limit_recovery_lot_factor"); if(v > 0 && v <= 1.0) g_sc.sell_limit_recovery_lot_factor = v; }
       if(JsonHasKey(breakout_json, "sell_limit_recovery_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_limit_recovery_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_limit_recovery_expiry_bars = (int)v; }
       if(JsonHasKey(breakout_json, "sell_limit_recovery_sl_atr_mult")){ v = JsonGetDouble(breakout_json,"sell_limit_recovery_sl_atr_mult"); if(v > 0 && v <= 5.0) g_sc.sell_limit_recovery_sl_atr_mult = v; }
+      // v2.7.117 — cascade-recovery safety TP (BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY / BUY_STOP_CONT fallback)
+      if(JsonHasKey(breakout_json, "cascade_recovery_tp_atr_mult")){ v = JsonGetDouble(breakout_json,"cascade_recovery_tp_atr_mult"); if(v > 0 && v <= 10.0) g_sc.cascade_recovery_tp_atr_mult = v; }
       // ─────────────────────────────────────────────────────────────────────────
       // H4 supplemental gates (2.7.10) — disabled by default
       if(JsonHasKey(breakout_json, "h4_rsi_gate_enabled"))  { v = JsonGetDouble(breakout_json,"h4_rsi_gate_enabled");  g_sc.h4_rsi_gate_enabled  = (v >= 0.5); }
@@ -14912,9 +14929,23 @@ void ArmPostTP1Ladder(const int gi) {
          double ss_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                                                 g_sc.lot_fixed * g_sc.sell_stop_cont_lot_factor));
          datetime ss_exp = TimeCurrent() + (datetime)(g_sc.sell_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));
+         // v2.7.117 — when sell_stop_cont_tp_atr_mult<=0 (legacy "no TP"), fall back to
+         // the cascade-recovery safety TP (default 2×ATR) instead of tp=0. Live-broker
+         // safety: never place a stop-pending without a broker-side TP.
          double ss_tp    = (_ss_tp_mult > 0.0)
                            ? NormalizeDouble(ss_price - entry_atr * _ss_tp_mult, _Digits)
-                           : 0.0;
+                           : NormalizeDouble(ss_price - entry_atr * g_sc.cascade_recovery_tp_atr_mult, _Digits);
+         {
+            double _ss_pt = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            int    _ss_sl_lv = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double _ss_md = MathMax(_ss_sl_lv * _ss_pt, _ss_pt);
+            if(!ValidateStops(ss_price, ss_sl, ss_tp, ORDER_TYPE_SELL_STOP)) {
+               double _ss_min_tp = NormalizeDouble(ss_price - (_ss_md + _ss_pt), _Digits);
+               PrintFormat("FORGE: SELL STOP CONT G%d safety-TP %.2f rejected by ValidateStops — falling back to min-stop TP %.2f",
+                           grp_id, ss_tp, _ss_min_tp);
+               ss_tp = _ss_min_tp;
+            }
+         }
          int legs_placed = 0;
          int legs_target = MathMin(g_sc.sell_stop_cont_legs, 7); // max 7 legs — slots [2..8]
          for(int _s = 2; _s <= 8 && legs_placed < legs_target; _s++) {
@@ -14990,6 +15021,17 @@ void ArmPostTP1Ladder(const int gi) {
             double bl_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                                                    g_sc.lot_fixed * g_sc.buy_limit_recovery_lot_factor));
             datetime bl_exp = TimeCurrent() + (datetime)(g_sc.buy_limit_recovery_expiry_bars * PeriodSeconds(PERIOD_M5));
+            // v2.7.117 — broker-side safety TP (live-broker requirement). Replaces tp=0.
+            //   BUY direction → TP must be ABOVE entry. Distance = entry_atr × cascade_recovery_tp_atr_mult (default 2.0).
+            //   Validate via ValidateStops(); fall back to min-stop-distance + 1pt buffer if rejected
+            //   (better a tight broker-side TP than no TP at all — root cause of ticket 1303664415).
+            double _br_tp = NormalizeDouble(bl_price + entry_atr * g_sc.cascade_recovery_tp_atr_mult, _Digits);
+            if(!ValidateStops(bl_price, bl_sl, _br_tp, ORDER_TYPE_BUY_LIMIT)) {
+               double _br_min_tp = NormalizeDouble(bl_price + (min_dist + _pt), _Digits);
+               PrintFormat("FORGE: BUY LIMIT RECOV G%d safety-TP %.2f rejected by ValidateStops — falling back to min-stop TP %.2f",
+                           grp_id, _br_tp, _br_min_tp);
+               _br_tp = _br_min_tp;
+            }
             MqlTradeRequest _blr = {}; MqlTradeResult _blres = {};
             _blr.action       = TRADE_ACTION_PENDING;
             _blr.type         = ORDER_TYPE_BUY_LIMIT;
@@ -14997,7 +15039,7 @@ void ArmPostTP1Ladder(const int gi) {
             _blr.volume       = bl_lot;
             _blr.price        = bl_price;
             _blr.sl           = bl_sl;
-            _blr.tp           = 0;    // no TP — trail manually or let RSI cancellation handle exit
+            _blr.tp           = _br_tp;    // v2.7.117 — broker-side safety TP (2×ATR default)
             _blr.type_time    = ORDER_TIME_SPECIFIED;
             _blr.expiration   = bl_exp;
             _blr.type_filling = ORDER_FILLING_RETURN;
@@ -15010,8 +15052,8 @@ void ArmPostTP1Ladder(const int gi) {
                g_sell_limit_stack[9].mkt_magic = (ulong)grp_magic;
                g_sell_limit_stack[9].expiry    = bl_exp;
                g_sell_limit_stack[9].active    = true;
-               PrintFormat("FORGE: BUY LIMIT RECOV placed G%d slot[9] ticket=%d price=%.2f SL=%.2f lot=%.2f RSI=%.1f exp=%s",
-                           grp_id, _blres.order, bl_price, bl_sl, bl_lot, cur_rsi_buy,
+               PrintFormat("FORGE: BUY LIMIT RECOV placed G%d slot[9] ticket=%d price=%.2f SL=%.2f TP=%.2f lot=%.2f RSI=%.1f exp=%s",
+                           grp_id, _blres.order, bl_price, bl_sl, _br_tp, bl_lot, cur_rsi_buy,
                            TimeToString(bl_exp, TIME_DATE|TIME_SECONDS));
             } else {
                PrintFormat("FORGE: BUY LIMIT RECOV placement FAILED G%d retcode=%d", grp_id, _blres.retcode);
@@ -15093,9 +15135,22 @@ void ArmPostTP1Ladder(const int gi) {
                                                 g_sc.lot_fixed * g_sc.buy_stop_cont_lot_factor));
          datetime bs_exp = TimeCurrent() + (datetime)(g_sc.buy_stop_cont_expiry_bars * PeriodSeconds(PERIOD_M5));
          // TP ABOVE cascade entry (mirror).
+         // v2.7.117 — when buy_stop_cont_tp_atr_mult<=0 (legacy "no TP"), fall back to
+         // cascade-recovery safety TP (default 2×ATR) instead of tp=0. Live-broker safety.
          double bs_tp    = (_bs_tp_mult > 0.0)
                            ? NormalizeDouble(bs_price + entry_atr * _bs_tp_mult, _Digits)
-                           : 0.0;
+                           : NormalizeDouble(bs_price + entry_atr * g_sc.cascade_recovery_tp_atr_mult, _Digits);
+         {
+            double _bs_pt = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            int    _bs_sl_lv = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double _bs_md = MathMax(_bs_sl_lv * _bs_pt, _bs_pt);
+            if(!ValidateStops(bs_price, bs_sl, bs_tp, ORDER_TYPE_BUY_STOP)) {
+               double _bs_min_tp = NormalizeDouble(bs_price + (_bs_md + _bs_pt), _Digits);
+               PrintFormat("FORGE: BUY STOP CONT G%d safety-TP %.2f rejected by ValidateStops — falling back to min-stop TP %.2f",
+                           grp_id, bs_tp, _bs_min_tp);
+               bs_tp = _bs_min_tp;
+            }
+         }
          int legs_placed_b = 0;
          int legs_target_b = MathMin(g_sc.buy_stop_cont_legs, 7);
          for(int _sb = 2; _sb <= 8 && legs_placed_b < legs_target_b; _sb++) {
@@ -15170,6 +15225,16 @@ void ArmPostTP1Ladder(const int gi) {
                double sl_lot   = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
                                                       g_sc.lot_fixed * g_sc.sell_limit_recovery_lot_factor));
                datetime sl_exp = TimeCurrent() + (datetime)(g_sc.sell_limit_recovery_expiry_bars * PeriodSeconds(PERIOD_M5));
+               // v2.7.117 — broker-side safety TP (live-broker requirement). Replaces tp=0.
+               //   SELL direction → TP must be BELOW entry. Distance = entry_atr × cascade_recovery_tp_atr_mult (default 2.0).
+               //   Root cause: live ticket 1303664415 — SELL_LIMIT fill sat open with no TP until manual close.
+               double _sr_tp = NormalizeDouble(sl_price - entry_atr * g_sc.cascade_recovery_tp_atr_mult, _Digits);
+               if(!ValidateStops(sl_price, sl_sl, _sr_tp, ORDER_TYPE_SELL_LIMIT)) {
+                  double _sr_min_tp = NormalizeDouble(sl_price - (min_dist_b + _pt_b), _Digits);
+                  PrintFormat("FORGE: SELL LIMIT RECOV G%d safety-TP %.2f rejected by ValidateStops — falling back to min-stop TP %.2f",
+                              grp_id, _sr_tp, _sr_min_tp);
+                  _sr_tp = _sr_min_tp;
+               }
                MqlTradeRequest _slr = {}; MqlTradeResult _slres = {};
                _slr.action       = TRADE_ACTION_PENDING;
                _slr.type         = ORDER_TYPE_SELL_LIMIT;
@@ -15177,7 +15242,7 @@ void ArmPostTP1Ladder(const int gi) {
                _slr.volume       = sl_lot;
                _slr.price        = sl_price;
                _slr.sl           = sl_sl;
-               _slr.tp           = 0;    // no TP — trail manually or let RSI cancellation handle exit (mirror)
+               _slr.tp           = _sr_tp;    // v2.7.117 — broker-side safety TP (2×ATR default, mirror)
                _slr.type_time    = ORDER_TIME_SPECIFIED;
                _slr.expiration   = sl_exp;
                _slr.type_filling = ORDER_FILLING_RETURN;
@@ -15190,8 +15255,8 @@ void ArmPostTP1Ladder(const int gi) {
                   g_buy_stop_stack[9].mkt_magic = (ulong)grp_magic;
                   g_buy_stop_stack[9].expiry    = sl_exp;
                   g_buy_stop_stack[9].active    = true;
-                  PrintFormat("FORGE: SELL LIMIT RECOV placed G%d slot[9] ticket=%d price=%.2f SL=%.2f lot=%.2f RSI=%.1f exp=%s",
-                              grp_id, _slres.order, sl_price, sl_sl, sl_lot, cur_rsi_sell,
+                  PrintFormat("FORGE: SELL LIMIT RECOV placed G%d slot[9] ticket=%d price=%.2f SL=%.2f TP=%.2f lot=%.2f RSI=%.1f exp=%s",
+                              grp_id, _slres.order, sl_price, sl_sl, _sr_tp, sl_lot, cur_rsi_sell,
                               TimeToString(sl_exp, TIME_DATE|TIME_SECONDS));
                } else {
                   PrintFormat("FORGE: SELL LIMIT RECOV placement FAILED G%d retcode=%d", grp_id, _slres.retcode);

@@ -472,6 +472,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_SELL_LIMIT_RECOVERY_LOT_FACTOR":   ("bb_breakout", "sell_limit_recovery_lot_factor",   "float", 0.0, 1.0),
     "FORGE_SELL_LIMIT_RECOVERY_EXPIRY_BARS":  ("bb_breakout", "sell_limit_recovery_expiry_bars",  "int",   1.0, 20.0),
     "FORGE_SELL_LIMIT_RECOVERY_SL_ATR_MULT":  ("bb_breakout", "sell_limit_recovery_sl_atr_mult",  "float", 0.1, 5.0),
+    # v2.7.117 — cascade-recovery safety TP. Default 2.0× ATR. Applied to BUY_LIMIT_RECOV,
+    # SELL_LIMIT_RECOVERY, and (fallback) BUY_STOP_CONT / SELL_STOP_CONT when their own
+    # tp_atr_mult <= 0. Live-broker requirement: never leave cascade fills open without
+    # a broker-side TP (root cause of ticket 1303664415 — SELL_LIMIT fill held open with
+    # no TP until manual close).
+    "FORGE_GEOMETRY_CASCADE_RECOVERY_TP_ATR_MULT": ("bb_breakout", "cascade_recovery_tp_atr_mult", "float", 0.1, 10.0),
     # ─────────────────────────────────────────────────────────────────────────
     # H4 supplemental gates (2.7.10) — disabled by default in .defaults.json; enable per run for testing
     # H4 RSI gate: block SELL when H4 RSI >= h4_rsi_sell_max (Cardwell Bear Resistance exhaustion on H4)

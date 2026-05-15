@@ -265,6 +265,80 @@ To make Apr 1 fully tradeable in both directions, three ships are needed:
 
 ---
 
-## §11 Changelog
+## §11 Live Trading Analysis — Run #2 (v2.7.111) gate bottleneck
+
+**Context**: monitoring tick at 2026-05-14 ~20:10 local, sim time 2026-04-02 09:10 (~57h covered), FORGE v2.7.111, aurum_run_id=43, source_run_id=2. **11 TAKEN** signals out of 197,354 evaluated. 56 trades closed: 45W / 11L, total P&L **+$3,196.62**. The win rate is high but the take rate (0.0056%) is structurally low.
+
+### §11.1 Gate breakdown (top filters, full run)
+
+Pulled from source DB SIGNALS table (Q3 standard query):
+
+| Gate | Count | Layer | Direction | Action |
+|---|---:|---|---|---|
+| `pemcg_buy_reversal_block` | 72,800 | UMCG (L1) | BUY | Reversal-trap filter — 4× SELL ratio = BUY-heavy |
+| `pemcg_sell_reversal_block` | 18,194 | UMCG (L1) | SELL | Mirror, less aggressive |
+| `orb_adx_below_min` | 17,231 | Setup gate | both | ORB requires ADX > min |
+| `asia_capitulation_buy_cooldown` | 15,160 | Timing | BUY | 30-min cooldown between Asia capitulations |
+| `dirlock_block_buy` | 14,826 | DirLock (L7/8) | BUY | Direction-locked into SELL after early SELL groups |
+| `bear_day_buy_block` | 11,008 | DTC (L4) | BUY | v2.7.105 classifying days as bear |
+| `asia_capitulation_buy_atoms_below_min` | 5,374 | Atom-count | BUY | (already widened in `.env` v2.7.116 for next run) |
+| `ma_crossover_m15_misalign` | 11,239 | Setup gate | both | MA_CROSSOVER M15 confirmation |
+| `inside_bar_adx_below_min` | 9,245 | Setup gate | both | INSIDE_BAR ADX gate |
+| `ma_crossover_adx_below_min` | 7,236 | Setup gate | both | MA_CROSSOVER ADX gate |
+
+### §11.2 PEMCG asymmetry — 4× BUY-heavy
+
+```
+pemcg_buy_reversal_block:  72,800
+pemcg_sell_reversal_block: 18,194
+ratio:                     4.00×   (BUY-heavy)
+```
+
+Per the `/forge-monitor` PEMCG-asymmetry rule, the ≥5× threshold flags as "PEMCG over-filtering candidate". This run is at 4.0× — just below the flag threshold but trending that way. The Apr 1-2 window included a confirmed bull thrust (Apr 1 LONDON ramp 4664 → 4724 captured by G5005 BB_BREAKOUT BUY @ 4700 +$270.56) AND a confirmed bear move (Apr 1 evening 4724 → 4630 missed entirely on the SELL side per §3 missed-legs audit). Both directions had real continuation moves; PEMCG_BUY blocked the BUY side at ~4× the rate it blocked SELLs.
+
+Worth running the DAY-TYPE VERIFICATION query (`/forge-monitor` PEMCG asymmetry audit §) on the windows where PEMCG_BUY spiked to confirm whether the 72,800 blocks were:
+
+1. **Direction-correct continuation BUYs during bull legs** (over-filter — same class as Run 36 evidence) → de-weight PEMCG warnings during `BULL_TREND_ALIGNED` DTC state
+2. **Genuine reversal-trap BUYs at the top** (correct filter) → no action
+
+### §11.3 Stacked-gate structural issue
+
+Four separate gates are blocking BUYs:
+
+1. `pemcg_buy_reversal_block` (UMCG / L1) — 72,800
+2. `dirlock_block_buy` (DirLock / L7/8) — 14,826
+3. `bear_day_buy_block` (DTC / L4) — 11,008
+4. `asia_capitulation_buy_cooldown` (timing) — 15,160
+
+They stack independently. A BUY setup trigger has to clear all four to fire. **Even when 3 of 4 clear, the 4th still blocks.** Total BUY-side block fires across these four: ~113,794 — about 58% of all SKIP volume in the run.
+
+The 11,008 `bear_day_buy_block` is the most suspicious filter. Apr 1 was a confirmed bull day (G5005 BB_BREAKOUT BUY @ 4700 won +$270.56 — see §2 captured-trades), yet DTC may have classified parts of the day as bear due to mid-day pullbacks (the 14:39-16:00 correction). DTC re-classifies every M5 close; transient bear flips during a bull-day correction would block legitimate dip-buys for the duration of the flip.
+
+### §11.4 Forward-config implication
+
+The v2.7.116 ASIA_CAPITULATION_BUY widening (`MIN_ATOMS` 3→2, `DISPLACEMENT_MIN_ATR` 1.5→1.0, `ATR_RATIO_MIN` 1.3→1.1 in `.env:578-581`) is **already synced into `config/scalper_config.json`** but only takes effect on **EA restart**. This in-progress run is still on the pre-widening config. The 5,374 `asia_capitulation_buy_atoms_below_min` blocks would have been ~50% lower under v2.7.116 — estimate based on Run 36 evidence where similar widening released ~50% of `atoms_below_min` blocks.
+
+### §11.5 Action candidates (queued, not shipped)
+
+| # | Diagnostic | Fix candidate | Defer-until |
+|---|---|---|---|
+| 1 | Trace `bear_day_buy_block` distribution by sim-hour | If >60% of blocks fired during known bull-day windows (Apr 1 09:00-13:00 + 20:00-22:00), DTC needs intra-bar hysteresis OR a "bull-day-flips" upgrade | v2.7.118 — next ship |
+| 2 | PEMCG_BUY day-type verification at the 72k spike windows | If avg VWAP-dist + M15 ADX + h1_trend confirm bull, PEMCG modifier should de-weight during `BULL_TREND_ALIGNED` state | v2.7.119 |
+| 3 | `dirlock_block_buy` 14,826 — release-on-ISS rule | If ISS_score ≥ 8 in opposite direction, DirLock should DISCARDED → IDLE bypass the bilateral cooldown (operator's "DLS-defers-to-ISS" rule per §8) | v2.7.116 (already queued — see §10 Q1 Forward link) |
+
+### §11.6 Data citation
+
+```
+Source: /Users/olasumbo/Library/Application Support/.../Agent-127.0.0.1-3000/MQL5/Files/FORGE_journal_XAUUSD_tester.db
+Run:    TESTER_RUNS.id=2, wall_time=134104435, forge_version=2.7.111, magic_base=202401
+Sim:    2026-03-31 01:25 → 2026-04-02 09:10 (in progress, ~57h)
+Query:  SELECT gate_reason, COUNT(*) FROM SIGNALS WHERE outcome='SKIP' AND run_id=2 GROUP BY gate_reason ORDER BY 2 DESC LIMIT 15
+Tick:   2026-05-14 20:10 local
+```
+
+---
+
+## §12 Changelog
 
 - **2026-05-14** — Initial case study. Apr 1 day structure (5 legs, +124 pt intraday range), captured trades ($2,546 / 35W-1L), missed SELL legs (~$300-700 foregone), structural gap analysis (no MSS-driven SELL setup), ISS replay for each missed leg, implementation roadmap v2.7.113-117.
+- **2026-05-14** — Added §11 Live Trading Analysis — Run #2 (v2.7.111) gate bottleneck. Captures multi-layer BUY-side over-blocking (113,794 BUY-blocking gate fires across PEMCG_BUY + DirLock + DTC + ASIA cooldown), PEMCG 4.0× BUY/SELL asymmetry, and three queued v2.7.118-119 fix candidates. §11 Changelog renumbered to §12.

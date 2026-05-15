@@ -1234,6 +1234,61 @@ class Scribe:
             self._fj_wall_time_cache[cache_key]  = wall_time_map
             self._fj_aurum_run_cache[cache_key]  = aurum_run_id_map
 
+            # ── 2b. Fast-forward dedup hits in bulk ──────────────────────────
+            # MT5 never clears SIGNALS between runs. After bridge restart or
+            # SCRIBE re-init, the destination forge_signals can already contain
+            # rows whose source SIGNALS.synced was never advanced past them
+            # (e.g. crash mid-cycle). The row-by-row dedup loop below would
+            # crawl through these at batch_size/cycle (5000 rows = 60s) —
+            # at ~656k stale rows that's ~131 minutes before reaching truly-new
+            # signals on a fresh run.
+            #
+            # Fast-forward: in one UPDATE, mark synced=1 in source for any row
+            # whose (id, wall_time-for-that-run_id) already exists in destination
+            # forge_signals. This collapses hours of dedup-crawl into one SQL.
+            #
+            # ATTACH is required because src is the journal DB and we need to
+            # join against the destination forge_signals table.
+            try:
+                # Build a list of (source_run_id, wall_time) we know about.
+                run_wt_pairs = [
+                    (rid, wt) for rid, wt in wall_time_map.items()
+                    if rid > 0 and wt > 0
+                ]
+                if run_wt_pairs:
+                    dst_path = self.db_path
+                    src.execute("ATTACH DATABASE ? AS dst", (dst_path,))
+                    try:
+                        ff_total = 0
+                        for rid, wt in run_wt_pairs:
+                            # Mark synced=1 in source for any row whose
+                            # (id == dst.forge_id) and (wall_time matches) and
+                            # not already synced. Limit per run to keep one
+                            # transaction small.
+                            cur = src.execute(
+                                "UPDATE SIGNALS SET synced=1 "
+                                "WHERE run_id=? AND synced=0 AND id IN ("
+                                "  SELECT forge_id FROM dst.forge_signals "
+                                "  WHERE journal_source=? AND wall_time=?"
+                                ")",
+                                (rid, source, wt),
+                            )
+                            ff_total += cur.rowcount
+                        if ff_total:
+                            src.commit()
+                            log.info(
+                                "SCRIBE fast-forward: marked %d source SIGNALS "
+                                "as synced=1 (already present in destination, "
+                                "source=%s)", ff_total, source,
+                            )
+                    finally:
+                        try:
+                            src.execute("DETACH DATABASE dst")
+                        except Exception:
+                            pass
+            except Exception as _e:
+                log.debug("SCRIBE fast-forward skipped: %s", _e)
+
             # ── 3. Fetch unsynced rows (large batch) ─────────────────────────
             select_sql = (
                 "SELECT id, time, symbol, setup_type, direction, outcome, gate_reason, "

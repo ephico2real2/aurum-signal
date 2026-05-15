@@ -29,6 +29,18 @@ can verify and trust your conclusions.
 
 ---
 
+## Markdown style — GFM mandatory
+
+All `docs/RESEARCH_NOTES_<topic>.md` files created or edited by this skill MUST follow the GitHub-flavored markdown standard codified in `.claude/skills/forge-monitor/SKILL.md` → "MANDATORY: GitHub-flavored markdown for all docs and guides" (the canonical reference for this repo).
+
+Key points (full rules in the forge-monitor doc):
+- Pipe tables only — never unicode box-drawing
+- Fenced code blocks with language tags (`mql5` / `python` / `bash` / `sql` / `json`)
+- Markdown emphasis, ATX headings, em-dash for em-dash
+- **Retroactive normalization on touch (2026-05-14 mandate)**: any time this skill edits an existing research doc (appending findings, updating a citation, adding a §-section), normalize the rest of that doc to GFM in the same edit. Add a changelog entry: `**YYYY-MM-DD** — GFM normalization pass. No semantic change.` Do NOT touch unrelated docs.
+
+---
+
 ## Mandatory output format
 
 Every research session produces or updates a doc at `docs/RESEARCH_NOTES_<topic>.md`
