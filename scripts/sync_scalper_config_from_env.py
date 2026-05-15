@@ -95,21 +95,22 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # generated scalper_config.json; EA's JsonGetDouble returns the FIRST match (safety),
     # so composites overrides were silently ignored. Section flipped composites→safety
     # so .env overrides land where the EA actually reads them.
-    "FORGE_SETUP_MOMENTUM_DUMP_COMPOSITE_TEST_ENABLED":           ("safety",     "momentum_dump_composite_test_enabled",           "bool01", None, None),
-    "FORGE_SETUP_MOMENTUM_DUMP_COMPOSITE_TEST_LOOKBACK_BARS":     ("composites", "momentum_dump_composite_test_lookback_bars",     "int",    1.0,   20.0),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_ATR_MULT":           ("composites", "momentum_dump_composite_test_atr_mult",          "float",  0.1,   10.0),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_MAX_RSI":            ("composites", "momentum_dump_composite_test_max_rsi",           "float",  0.0,   100.0),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_MAX_RSI_BUY":        ("composites", "momentum_dump_composite_test_max_rsi_buy",       "float",  0.0,   100.0),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_MIN_ADX":            ("composites", "momentum_dump_composite_test_min_adx",           "float",  0.0,   80.0),
-    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TEST_SL_ATR_MULT":    ("composites", "momentum_dump_composite_test_sl_atr_mult",       "float",  0.3,   10.0),
-    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TEST_TP1_ATR_MULT":   ("composites", "momentum_dump_composite_test_tp1_atr_mult",      "float",  0.1,   5.0),
-    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TEST_TP2_ATR_MULT":   ("composites", "momentum_dump_composite_test_tp2_atr_mult",      "float",  0.1,   5.0),
-    "FORGE_TIMING_MOMENTUM_DUMP_COMPOSITE_TEST_COOLDOWN_SECONDS": ("safety",     "momentum_dump_composite_test_cooldown_seconds",  "int",    0.0,   7200.0),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_CHOP_BLOCK":         ("composites", "momentum_dump_composite_test_chop_block",        "bool01", None,  None),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_REQUIRE_PSAR":       ("composites", "momentum_dump_composite_test_require_psar",      "bool01", None,  None),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_REQUIRE_D1_BIAS":    ("composites", "momentum_dump_composite_test_require_d1_bias",   "bool01", None,  None),
-    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_TEST_SELL_H1_MAX":        ("composites", "momentum_dump_composite_test_sell_h1_max",       "float",  0.0,   10.0),
-    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TEST_LOT_FACTOR":     ("composites", "momentum_dump_composite_test_lot_factor",        "float",  0.1,   2.0),
+    # 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix). Lot factor default 0.7→1.0.
+    "FORGE_SETUP_MOMENTUM_DUMP_COMPOSITE_ENABLED":           ("safety",     "momentum_dump_composite_enabled",           "bool01", None, None),
+    "FORGE_SETUP_MOMENTUM_DUMP_COMPOSITE_LOOKBACK_BARS":     ("composites", "momentum_dump_composite_lookback_bars",     "int",    1.0,   20.0),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_ATR_MULT":           ("composites", "momentum_dump_composite_atr_mult",          "float",  0.1,   10.0),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_MAX_RSI":            ("composites", "momentum_dump_composite_max_rsi",           "float",  0.0,   100.0),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_MAX_RSI_BUY":        ("composites", "momentum_dump_composite_max_rsi_buy",       "float",  0.0,   100.0),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_MIN_ADX":            ("composites", "momentum_dump_composite_min_adx",           "float",  0.0,   80.0),
+    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_SL_ATR_MULT":    ("composites", "momentum_dump_composite_sl_atr_mult",       "float",  0.3,   10.0),
+    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TP1_ATR_MULT":   ("composites", "momentum_dump_composite_tp1_atr_mult",      "float",  0.1,   5.0),
+    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_TP2_ATR_MULT":   ("composites", "momentum_dump_composite_tp2_atr_mult",      "float",  0.1,   5.0),
+    "FORGE_TIMING_MOMENTUM_DUMP_COMPOSITE_COOLDOWN_SECONDS": ("safety",     "momentum_dump_composite_cooldown_seconds",  "int",    0.0,   7200.0),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_CHOP_BLOCK":         ("composites", "momentum_dump_composite_chop_block",        "bool01", None,  None),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_REQUIRE_PSAR":       ("composites", "momentum_dump_composite_require_psar",      "bool01", None,  None),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_REQUIRE_D1_BIAS":    ("composites", "momentum_dump_composite_require_d1_bias",   "bool01", None,  None),
+    "FORGE_GATE_MOMENTUM_DUMP_COMPOSITE_SELL_H1_MAX":        ("composites", "momentum_dump_composite_sell_h1_max",       "float",  0.0,   10.0),
+    "FORGE_GEOMETRY_MOMENTUM_DUMP_COMPOSITE_LOT_FACTOR":     ("composites", "momentum_dump_composite_lot_factor",        "float",  0.1,   2.0),
     # 2.7.55 — BB_LOWER_REVERSION_BUY: aggressive mean-reversion BUY at gold's BB-lower oversold zone.
     # Pairs with dump_below_bbl_block_sell — turn the same SELL-blocking condition into a BUY entry.
     # Default ON (multi-indicator high-conviction setup per operator).
