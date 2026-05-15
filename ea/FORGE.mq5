@@ -306,6 +306,10 @@ double   g_eval_m5_close_1       = 0.0;
 int      g_eval_m5_lh_cascade    = 0;
 int      g_eval_m5_hl_cascade    = 0;
 double   g_eval_m5_body_pct      = 0.0;
+// v2.7.122 — Pre-TP1 recovery tracking (parallel arrays indexed by group_index gi)
+int      g_pre_tp1_recov_legs[64];       // per-group leg count (cleared on group cleanup)
+datetime g_pre_tp1_recov_last_arm[64];   // per-group last arm time (for cooldown enforcement)
+int      g_pre_tp1_recov_armed_this_tick = 0;  // SIGNALS column flag, cleared at top of ManageOpenGroups
 double   g_eval_h1_atr           = 0.0;
 double   g_eval_h4_atr           = 0.0;
 double   g_eval_m15_atr          = 0.0;
@@ -1083,6 +1087,16 @@ struct ScalperConfig {
    double sell_limit_recovery_lot_factor;// lot factor (default 0.25, mirror)
    int    sell_limit_recovery_expiry_bars;// cancel if not filled within N M5 bars (default 4 = 20 min, mirror)
    double sell_limit_recovery_sl_atr_mult;// SL = TP1 + ATR × this above the rally high (default 1.0, mirror)
+   // ─────────────────────────────────────────────────────────────────────────────
+   // v2.7.122 — Pre-TP1 recovery arm (Track A fix per docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md §15.2)
+   // Closes the post-TP1 dependency gap surfaced in 2026-05-15 audit. When primary is in bad-trade
+   // state (MFE ≤ 0 AND adverse ≥ min_adverse_atr × ATR) and TP1 not yet hit, arms a single
+   // counter-trend LIMIT at the current adverse swing extreme. Same SL/lot geometry as
+   // post-TP1 recoveries but with new price anchor.
+   bool   recovery_pre_tp1_enabled;            // master toggle (default false — opt-in)
+   double recovery_pre_tp1_min_adverse_atr;    // bad-state threshold (default 1.5 × entry_atr)
+   int    recovery_pre_tp1_max_legs_per_group; // hard cap, never more than this many arms per primary (default 1)
+   int    recovery_pre_tp1_cooldown_seconds;   // cooldown between arms on same group (default 600 = 10 min)
    // ─────────────────────────────────────────────────────────────────────────────
    // v2.7.117 — Cascade-recovery safety TP (live-broker requirement).
    // Previously BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY placed pendings with tp=0
@@ -3024,6 +3038,10 @@ void ManageConvictionDecay() {
 //| Manage open groups: TP1 partial close + BE move                   |
 //+------------------------------------------------------------------+
 void ManageOpenGroups() {
+   // v2.7.122 — clear pre-TP1 recovery armed-this-tick flag at top of each tick's
+   // ManageOpenGroups pass. Set inside ArmPreTP1Recovery on successful OrderSend.
+   // Read by JournalRecordSignal for pre_tp1_recovery_armed SIGNALS column.
+   g_pre_tp1_recov_armed_this_tick = 0;
    // v2.7.77 — Conviction-decay partial close runs before TP/SL logic so partials happen first.
    ManageConvictionDecay();
    // 2.7.56 — Reset MOMENTUM_DUMP pyramid counter when ALL same-direction groups close.
@@ -3235,6 +3253,12 @@ void ManageOpenGroups() {
       }
       if(ratchet_updates > 0) {
          PrintFormat("FORGE SCALPER: group %d fast-lock SL ratchet updated=%d", g_groups[gi].id, ratchet_updates);
+      }
+
+      // v2.7.122 — Pre-TP1 recovery arm (P1 per docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md §15.3)
+      // Function self-guards on tp1_hit + master toggle; cheap to call unconditionally.
+      if(!g_groups[gi].tp1_hit && g_sc.recovery_pre_tp1_enabled) {
+         ArmPreTP1Recovery(gi);
       }
 
       if(g_groups[gi].tp1_hit) continue;  // already processed TP1
@@ -4884,6 +4908,11 @@ void InitScalperConfig() {
    g_sc.sell_limit_recovery_lot_factor   = 0.25;  // mirror
    g_sc.sell_limit_recovery_expiry_bars  = 4;     // mirror — 20 min
    g_sc.sell_limit_recovery_sl_atr_mult  = 1.0;   // mirror — SL above rally high by 1 ATR
+   // v2.7.122 — Pre-TP1 recovery defaults (master OFF; opt-in via FORGE_RECOVERY_PRE_TP1_ENABLED=1)
+   g_sc.recovery_pre_tp1_enabled            = false;
+   g_sc.recovery_pre_tp1_min_adverse_atr    = 1.5;
+   g_sc.recovery_pre_tp1_max_legs_per_group = 1;
+   g_sc.recovery_pre_tp1_cooldown_seconds   = 600;
    // v2.7.117 — cascade-recovery safety TP default (broker-side TP on recovery legs)
    g_sc.cascade_recovery_tp_atr_mult     = 2.0;   // 2×ATR safety TP — operator-spec default for live broker safety
    // ─────────────────────────────────────────────────────────────────────────────
@@ -5600,6 +5629,11 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "sell_limit_recovery_lot_factor")) { v = JsonGetDouble(breakout_json,"sell_limit_recovery_lot_factor"); if(v > 0 && v <= 1.0) g_sc.sell_limit_recovery_lot_factor = v; }
       if(JsonHasKey(breakout_json, "sell_limit_recovery_expiry_bars")){ v = JsonGetDouble(breakout_json,"sell_limit_recovery_expiry_bars"); if(v >= 1 && v <= 50) g_sc.sell_limit_recovery_expiry_bars = (int)v; }
       if(JsonHasKey(breakout_json, "sell_limit_recovery_sl_atr_mult")){ v = JsonGetDouble(breakout_json,"sell_limit_recovery_sl_atr_mult"); if(v > 0 && v <= 5.0) g_sc.sell_limit_recovery_sl_atr_mult = v; }
+      // v2.7.122 — Pre-TP1 recovery JsonHasKey loaders
+      if(JsonHasKey(breakout_json, "recovery_pre_tp1_enabled"))            { v = JsonGetDouble(breakout_json,"recovery_pre_tp1_enabled");            g_sc.recovery_pre_tp1_enabled            = (v >= 0.5); }
+      if(JsonHasKey(breakout_json, "recovery_pre_tp1_min_adverse_atr"))    { v = JsonGetDouble(breakout_json,"recovery_pre_tp1_min_adverse_atr");    if(v > 0.5 && v <= 10.0) g_sc.recovery_pre_tp1_min_adverse_atr    = v; }
+      if(JsonHasKey(breakout_json, "recovery_pre_tp1_max_legs_per_group")) { v = JsonGetDouble(breakout_json,"recovery_pre_tp1_max_legs_per_group"); if(v >= 1 && v <= 5) g_sc.recovery_pre_tp1_max_legs_per_group = (int)v; }
+      if(JsonHasKey(breakout_json, "recovery_pre_tp1_cooldown_seconds"))   { v = JsonGetDouble(breakout_json,"recovery_pre_tp1_cooldown_seconds");   if(v >= 60 && v <= 7200) g_sc.recovery_pre_tp1_cooldown_seconds = (int)v; }
       // v2.7.117 — cascade-recovery safety TP (BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY / BUY_STOP_CONT fallback)
       if(JsonHasKey(breakout_json, "cascade_recovery_tp_atr_mult")){ v = JsonGetDouble(breakout_json,"cascade_recovery_tp_atr_mult"); if(v > 0 && v <= 10.0) g_sc.cascade_recovery_tp_atr_mult = v; }
       // ─────────────────────────────────────────────────────────────────────────
@@ -9359,6 +9393,10 @@ bool JournalInit() {
       "iss_fvg INTEGER DEFAULT 0, "
       "iss_choch_support INTEGER DEFAULT 0, "
       "iss_choch_against INTEGER DEFAULT 0, "
+      // v2.7.122 — Pre-TP1 recovery armed flag (1 = this tick armed a pre-TP1 recovery
+      // limit per ArmPreTP1Recovery; 0 = no arm). Set inside ArmPreTP1Recovery, cleared
+      // at top of ManageOpenGroups.
+      "pre_tp1_recovery_armed INTEGER DEFAULT 0, "
       // v2.7.119 — ICT Phase-1 atom context (9 cols). Captured at the setup-trigger
       //   chokepoint by FORGE.mq5 + read inline by JournalRecordSignal via the
       //   g_ict_last_* globals exported from Forge\IctStructure.mqh. LOG-ONLY:
@@ -9579,6 +9617,8 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_equal_highs_count INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_equal_lows_count INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_killzone_active INTEGER DEFAULT 0;");
+   // v2.7.122 — Pre-TP1 recovery armed flag (idempotent, no-op if column already exists)
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN pre_tp1_recovery_armed INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
@@ -9807,7 +9847,9 @@ void JournalRecordSignal(string outcome, string gate_reason,
       //   exported by Forge\IctLiquidity.mqh). LOG-ONLY — no gate behaviour change.
       "ict_choch_buy_count, ict_choch_sell_count, ict_choch_level, "
       "ict_liquidity_sweep_recent, ict_sweep_level, "
-      "ict_equal_highs_count, ict_equal_lows_count, ict_killzone_active"
+      "ict_equal_highs_count, ict_equal_lows_count, ict_killzone_active, "
+      // v2.7.122 — Pre-TP1 recovery armed flag (1 = this tick armed a pre-TP1 recovery)
+      "pre_tp1_recovery_armed"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -9949,7 +9991,10 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + DoubleToString(g_ict_last_sweep_level,           _Digits) + ", "
       + IntegerToString(g_ict_last_equal_highs_count)             + ", "
       + IntegerToString(g_ict_last_equal_lows_count)              + ", "
-      + IntegerToString(g_ict_last_killzone_active)
+      + IntegerToString(g_ict_last_killzone_active)               + ", "
+      // v2.7.122 — Pre-TP1 recovery armed flag (cleared each tick in ManageOpenGroups,
+      // set in ArmPreTP1Recovery on successful OrderSend)
+      + IntegerToString(g_pre_tp1_recov_armed_this_tick)
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
@@ -15757,6 +15802,155 @@ void ArmPostTP1Ladder(const int gi) {
       }
    }  // end SELL LIMIT recovery
    // ─────────────────────────────────────────────────────────────────────────────
+}
+
+//+------------------------------------------------------------------+
+//| ArmPreTP1Recovery — v2.7.122 P1                                  |
+//| Called per-tick from ManageOpenGroups for each open group WITHOUT|
+//| tp1_hit. Arms a single counter-trend LIMIT at the current adverse|
+//| swing extreme when primary is in bad-trade-state.                |
+//|                                                                  |
+//| Bad-trade state:                                                 |
+//|   SELL: trough_price >= entry (no MFE down) AND                  |
+//|         current_ask >= entry + min_adverse_atr × entry_atr       |
+//|   BUY:  peak_price <= entry (no MFE up) AND                      |
+//|         current_bid <= entry − min_adverse_atr × entry_atr       |
+//|                                                                  |
+//| Anchor (swing extreme in adverse direction):                     |
+//|   SELL bad-state: current_ask (the rally high) → SELL_LIMIT      |
+//|     placed slightly above current_ask (catches further rally)    |
+//|   BUY  bad-state: current_bid (the dump low) → BUY_LIMIT         |
+//|     placed slightly below current_bid (catches further dump)     |
+//|                                                                  |
+//| Important semantic: this is SAME-direction averaging-down at the |
+//| adverse extreme (not opposite-direction hedge). The new LIMIT    |
+//| fills if the adverse move continues, lowering the group's avg    |
+//| entry. When price retraces, the averaged-down legs profit faster.|
+//+------------------------------------------------------------------+
+void ArmPreTP1Recovery(const int gi) {
+   if(!g_sc.recovery_pre_tp1_enabled) return;
+   if(gi < 0 || gi >= ArraySize(g_groups)) return;
+   if(g_groups[gi].tp1_hit) return;          // post-TP1 path is ArmPostTP1Ladder
+   if(g_groups[gi].entry_atr <= 0) return;   // BRIDGE group; can't compute thresholds
+   if(g_groups[gi].crash_low <= 0) return;   // no entry anchor
+
+   int grp_id = g_groups[gi].id;
+   string direction = g_groups[gi].direction;
+   double entry   = g_groups[gi].crash_low;
+   double e_atr   = g_groups[gi].entry_atr;
+   double thresh  = g_sc.recovery_pre_tp1_min_adverse_atr * e_atr;
+
+   // Bounds-check tracking arrays (gi must fit in our 64-slot parallel arrays)
+   if(gi >= 64) {
+      static datetime _warn_gi_bounds = 0;
+      if(TimeCurrent() - _warn_gi_bounds > 600) {
+         _warn_gi_bounds = TimeCurrent();
+         PrintFormat("FORGE 2.7.122 WARN: ArmPreTP1Recovery gi=%d exceeds tracking array bound 64 — skipped", gi);
+      }
+      return;
+   }
+
+   // Per-group leg cap
+   if(g_pre_tp1_recov_legs[gi] >= g_sc.recovery_pre_tp1_max_legs_per_group) return;
+   // Cooldown
+   if(g_pre_tp1_recov_last_arm[gi] > 0 &&
+      (TimeCurrent() - g_pre_tp1_recov_last_arm[gi]) < g_sc.recovery_pre_tp1_cooldown_seconds) return;
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double pt  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int    stoplv = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double min_dist = MathMax(stoplv * pt, pt);
+
+   bool is_sell = (direction == "SELL");
+   bool is_buy  = (direction == "BUY");
+   if(!is_sell && !is_buy) return;
+
+   // Bad-state detection
+   double mfe_check = is_sell ? g_groups[gi].trough_price : g_groups[gi].peak_price;
+   double current_adverse = is_sell ? ask : bid;
+   double adverse_dist    = is_sell ? (current_adverse - entry) : (entry - current_adverse);
+
+   // For SELL: trough_price >= entry means price never dipped below entry (no MFE down)
+   // For BUY:  peak_price <= entry means price never rose above entry (no MFE up)
+   // Edge case: if MFE tracking hasn't initialized (== 0), treat as "no MFE"
+   bool no_mfe = is_sell ? (mfe_check <= 0 || mfe_check >= entry)
+                         : (mfe_check <= 0 || mfe_check <= entry);
+   bool adverse_breach = (adverse_dist >= thresh);
+
+   if(!(no_mfe && adverse_breach)) return;
+
+   // Compute LIMIT price + SL + TP + lot
+   // SAME direction as primary; placed at adverse extreme + small offset so the LIMIT
+   // catches further adverse extension. SL is 1×ATR beyond the LIMIT in the adverse
+   // direction. TP is 1×ATR back toward primary's profit zone.
+   double lim_price, sl_price, tp_price;
+   ENUM_ORDER_TYPE order_type;
+
+   if(is_sell) {
+      // Adverse = price went UP. New SELL_LIMIT placed ABOVE current ask.
+      lim_price = NormalizeDouble(MathMax(current_adverse + 0.3 * e_atr, ask + min_dist), _Digits);
+      sl_price  = NormalizeDouble(lim_price + 1.0 * e_atr, _Digits);
+      tp_price  = NormalizeDouble(lim_price - 1.0 * e_atr, _Digits);
+      order_type = ORDER_TYPE_SELL_LIMIT;
+   } else {
+      // Adverse = price went DOWN. New BUY_LIMIT placed BELOW current bid.
+      lim_price = NormalizeDouble(MathMin(current_adverse - 0.3 * e_atr, bid - min_dist), _Digits);
+      sl_price  = NormalizeDouble(lim_price - 1.0 * e_atr, _Digits);
+      tp_price  = NormalizeDouble(lim_price + 1.0 * e_atr, _Digits);
+      order_type = ORDER_TYPE_BUY_LIMIT;
+   }
+
+   // Validate
+   if(lim_price <= 0 || sl_price <= 0 || tp_price <= 0) {
+      PrintFormat("FORGE 2.7.122: ArmPreTP1Recovery G%d invalid prices (lim=%.2f sl=%.2f tp=%.2f) — skip",
+                  grp_id, lim_price, sl_price, tp_price);
+      return;
+   }
+   if(!ValidateStops(lim_price, sl_price, tp_price, order_type)) {
+      PrintFormat("FORGE 2.7.122: ArmPreTP1Recovery G%d ValidateStops rejected — skip", grp_id);
+      return;
+   }
+
+   // Lot: 0.5 × lot_fixed, floored at broker min
+   double lot_factor = 0.5;
+   double pre_lot = NormalizeLot(MathMax(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                                          g_sc.lot_fixed * lot_factor));
+
+   // Expiry: 8 M5 bars (40 min — matches updated recovery expiry default)
+   datetime expiry = TimeCurrent() + (datetime)(8 * PeriodSeconds(PERIOD_M5));
+
+   // Magic offset: +30009 (well clear of cascade slots 20000-20009 + cascade recovery slot 20009)
+   ulong grp_magic = (ulong)g_groups[gi].magic_offset;
+
+   MqlTradeRequest req = {}; MqlTradeResult res = {};
+   req.action       = TRADE_ACTION_PENDING;
+   req.type         = order_type;
+   req.symbol       = _Symbol;
+   req.volume       = pre_lot;
+   req.price        = lim_price;
+   req.sl           = sl_price;
+   req.tp           = tp_price;
+   req.type_time    = ORDER_TIME_SPECIFIED;
+   req.expiration   = expiry;
+   req.type_filling = ORDER_FILLING_RETURN;
+   req.magic        = grp_magic + 30009;
+   req.comment      = (is_sell ? "SCALP_PRE_TP1_RECOV_SELL|G" : "SCALP_PRE_TP1_RECOV_BUY|G") + IntegerToString(grp_id);
+
+   g_trade.SetExpertMagicNumber(req.magic);
+   if(OrderSend(req, res) && res.order > 0) {
+      g_pre_tp1_recov_legs[gi]++;
+      g_pre_tp1_recov_last_arm[gi] = TimeCurrent();
+      g_pre_tp1_recov_armed_this_tick = 1;
+      PrintFormat("FORGE 2.7.122: PRE-TP1 RECOV %s G%d ticket=%d price=%.2f SL=%.2f TP=%.2f lot=%.2f adverse_atr=%.2f exp=%s",
+                  is_sell ? "SELL_LIMIT" : "BUY_LIMIT",
+                  grp_id, res.order, lim_price, sl_price, tp_price, pre_lot,
+                  adverse_dist / e_atr,
+                  TimeToString(expiry, TIME_DATE|TIME_SECONDS));
+   } else {
+      PrintFormat("FORGE 2.7.122: PRE-TP1 RECOV placement FAILED G%d retcode=%d", grp_id, res.retcode);
+   }
+   g_trade.SetExpertMagicNumber(MagicNumber);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

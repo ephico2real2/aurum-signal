@@ -318,7 +318,48 @@ Is the work...
         BUT when proposing a new gate / setup, route through §I.3 / §I.4 above.
 ```
 
-### §I.7 Stale-reference flag
+### §I.7 Recovery + Fast-Market Sweep Rescue (FMSR) — active design surface
+
+**Mandate**: FORGE's recovery / bad-trade-state-rescue features are part of the ICT refactoring. All work in this area follows the **software-engineering discipline** below, not ad-hoc patches.
+
+**Canonical living doc**: `docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md` — the technical + logical spec surface. §1-§13 are canonical specs; §15 is the living design surface where new ideas accumulate before promotion to spec.
+
+**What ships under FMSR umbrella (multi-version roadmap)**:
+
+| Ship | Scope | Status |
+|---|---|---|
+| **v2.7.122 — P1 Minimal pre-TP1 arm** | Same-direction LIMIT at adverse swing extreme when primary in bad-trade-state. 4 config knobs + 1 SIGNALS column. Hard cap 1 leg/group + cooldown. | ✅ Shipped 2026-05-15 |
+| **v2.7.123 — FMSR Mode A (log-only)** | Full sweep detection + composite score + arming computation, but no live order placement. Validates math under production conditions. Per `FORGE_FAST_MARKET_SWEEP_RESCUE.md §3-§13`. | Designed; pending operator scope approval |
+| **v2.7.123/124 — FMSR Mode B (live arms)** | Real OTE-band L1/L2 LIMITs with §6 risk caps (max legs, daily DD kill, loss-streak kill, cooldown). | Designed; promote from Mode A with evidence |
+| **v2.7.124+ — Continuation leg** | STOP orders in adverse direction (catch continuation). Mirror of FMSR reversal leg. Per `FMSR §15.1`. | Backlog |
+| **Track C — DD-aware lot taper** | Cumulative DD reduces recovery + primary lot factor. Per `FMSR §15.2` + Appendix A M13 (lot engine restructure). | Backlog |
+
+**Mandatory software-engineering discipline for FMSR / recovery work**:
+
+1. **Technical spec first** — every new feature lands in `FORGE_FAST_MARKET_SWEEP_RESCUE.md` §15 (backlog) → promoted to §1-§13 (canonical) only when scope is opened. Tech spec includes: data model (struct fields), function signatures, config knobs (with ranges + defaults), schema columns, magic offsets, comment-tag conventions for analytics grep.
+2. **Logical spec first** — decision flow / state machine described in prose + diagrams before code. Bad-trade-state detection logic, anchor computation, gate evaluation, risk-cap escalation order must be specified explicitly. No "we'll figure it out in code".
+3. **Mandatory WebSearch research** — before any new recovery / rescue mechanism designs, run WebSearch on the canonical pattern. Topics to research:
+   - "ICT smart money recovery patterns" / "ICT bad trade rescue" / "drawdown recovery forex"
+   - "averaging down vs hedging in algo trading" / "zone recovery strategy MT5"
+   - "stop hunt reversal entry models" / "liquidity sweep recovery"
+   - "martingale boundary" / "anti-martingale position sizing"
+   - "MQL5 pending order recovery cascade"
+   - Cite findings in the relevant FMSR doc §15.2 entry + the §B.6 atom catalog
+4. **5-layer schema-parity ship** — per `§I.5` rule 4. Every new data point goes through EA CREATE TABLE + ALTER TABLE migration + JournalRecordSignal + scribe.py forge_signals + .env wiring. No data added to runtime-only state.
+5. **No dead env vars** — per `feedback_no_dead_env_vars` memory. Every FORGE_FMSR_* env var must be fully wired (sync mapping + .env.example + defaults.json + EA JsonHasKey).
+6. **Risk caps are non-negotiable** — any recovery / rescue mechanism that adds positions during loss must include: per-leg cap, per-day DD cap, loss-streak cap, cooldown. These are documented in FMSR §6 as the martingale boundary. Code reviews reject anything without all four.
+7. **Mode A → B → C promotion** — per `§B.8.3`. Ship log-only first (Mode A), promote to warning de-rate (Mode B) only after composite-score histograms validate against winners/losers, promote to hard-block (Mode C) only with strong empirical edge. Per `feedback_supermajority_composite_threshold` memory.
+8. **Modular** — per `§I.2`. FMSR core logic lives in `ea/include/Forge/IctLiquidity.mqh` (Phase 2 module). The chokepoint `FORGE.mq5` calls into the module but does not host new FMSR logic bodies. P1 lives in chokepoint as a legacy-pattern bug fix; v2.7.123+ FMSR goes modular.
+
+**When to update this section**: when a new FMSR / recovery feature ships, lands in design, or gets promoted between modes. Append entries to the ship table; do not remove rows (historical record).
+
+**Cross-references**:
+- `docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md` — canonical FMSR design doc
+- `docs/FORGE_SETUP_ICT_MAP.md §B.8` — atom catalog (FMSR uses Category 3 LIQUIDITY_SWEEP_REVERSAL atoms)
+- `docs/FORGE_LOT_SIZING_PRE_ICT.md` — lot engine (FMSR plugs into the existing pipeline; M13 restructure will rework it)
+- `docs/research/ICT_KILLZONES.md` — killzone canon (FMSR honors `g_regime.killzone` per `§B.7` single source of truth)
+
+### §I.8 Stale-reference flag
 
 The skill (below) historically references `FORGE_REGIME_TAXONOMY.md §11` as the killzone atom's authoritative home. That file is no longer in the repo — its content is absorbed into `FORGE_SETUP_ICT_MAP.md §B.2 + §B.7` and `docs/research/ICT_KILLZONES.md`. When you encounter that reference in the body of this skill, redirect to those two docs. Cleanup of the stale references is a follow-up housekeeping ship — do not block forward work on it.
 
