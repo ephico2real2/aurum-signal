@@ -231,6 +231,19 @@ Write findings to `/Users/olasumbo/signal_system/docs/FORGE_ENTRY_CONDITIONS_COD
 
 ---
 
+## Markdown style — GFM mandatory
+
+All docs this skill creates or edits MUST follow the GitHub-flavored markdown standard codified in `.claude/skills/forge-monitor/SKILL.md` → "MANDATORY: GitHub-flavored markdown for all docs and guides" (the canonical reference for this repo).
+
+Key points (full rules in the forge-monitor doc):
+- Pipe tables only — never unicode box-drawing (`┌`, `─`, `│`, etc.)
+- Fenced code blocks with language tags (`mql5` / `python` / `bash` / `sql` / `json`)
+- Markdown emphasis (`**bold**`, `*italic*`, `` `code` `` ) — not HTML tags
+- ATX headings (`## Title`) — not Setext (`==` underline)
+- **Retroactive normalization on touch (2026-05-14 mandate)**: any time this skill edits an existing doc (appending a finding, updating a row, fixing a typo), normalize the rest of that doc to GFM in the same edit. Convert box-drawing tables to pipes, add language tags to bare code blocks, fix HTML emphasis, etc. Add a changelog line: `**YYYY-MM-DD** — GFM normalization pass. No semantic change.` Do NOT touch unrelated docs in the same pass.
+
+---
+
 ## OUTPUT FORMAT
 
 The report must follow this exact structure:

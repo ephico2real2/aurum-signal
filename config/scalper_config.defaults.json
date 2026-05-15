@@ -135,6 +135,7 @@
     "sell_limit_recovery_lot_factor": 0.25,
     "sell_limit_recovery_expiry_bars": 4,
     "sell_limit_recovery_sl_atr_mult": 1.0,
+    "cascade_recovery_tp_atr_mult": 2.0,
     "tp2_close_enabled": 0,
     "direction_lock_enabled": 0,
     "dirlock_struct_break_atr_mult": 0.5,

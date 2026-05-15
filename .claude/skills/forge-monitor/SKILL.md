@@ -2188,6 +2188,120 @@ If you discover a table/column not in `FORGE_TESTER_JOURNAL_QUERIES.md`:
 
 ---
 
+## MANDATORY: GitHub-flavored markdown for all docs and guides
+
+**Operator mandate** (2026-05-14): "all documents or guide being created all be git markup". Every new doc, case study, analysis, run report, recommendation file, or onboarding guide MUST be written in GitHub-flavored markdown (GFM) so it renders correctly on GitHub, in IDE previewers, and in dashboard markdown viewers.
+
+### What "GitHub-flavored markdown" means in practice
+
+| Use | Don't use |
+|---|---|
+| Pipe tables: `\| col \| col \|` with `\|---\|---\|` separator | Unicode box-drawing tables (`┌`, `─`, `┐`, `│`, `└`, `┘`) — they render as monospace blob in GitHub |
+| Fenced code blocks with language: ` ```mql5 ` / ` ```python ` / ` ```bash ` | Indented 4-space code blocks (ambiguous with list items) |
+| `**bold**`, `*italic*`, `` `inline code` `` | HTML tags like `<b>`, `<i>`, `<code>` |
+| Standard ATX headings: `## §11 Section` | Setext underlined headings (`==` / `--`) — fragile with renumbering |
+| Sentence-case headings | ALL CAPS HEADINGS (unless the section IS literally an acronym) |
+| Pipe-separated row alignment: `\|---:\|` (right), `\|:---:\|` (center), `\|:---\|` (left) | Hand-spacing columns with extra whitespace |
+| Numbered references (`§1.2`, `§11.3`) with anchor link if needed: `[§11.3](#§113-...)` | Page-number references — markdown is not paginated |
+| GFM task lists when applicable: `- [ ]` / `- [x]` | Custom checkbox glyphs |
+| Em-dash `—` and en-dash `–` (UTF-8) — these render fine in GFM | Triple-hyphen `---` for em-dash (collides with horizontal-rule syntax) |
+| Horizontal rule: blank line, then `---`, then blank line | `***` or `___` (technically valid but visually noisy) |
+
+### Tables — the most common failure mode
+
+When generating analysis output you may be tempted to use the unicode box-drawing tables that terminals render nicely. Those DO NOT render in GitHub or in most markdown previewers — they collapse to a monospace blob without column structure. Always use pipe syntax:
+
+```markdown
+| Gate | Count | Layer |
+|---|---:|---|
+| `pemcg_buy_reversal_block` | 72,800 | UMCG (L1) |
+| `dirlock_block_buy` | 14,826 | DirLock (L7/8) |
+```
+
+Renders as a proper table in GitHub, VS Code preview, dashboard markdown viewers, and `gh pr view`.
+
+### Code blocks
+
+Always specify the language tag — it drives syntax highlighting AND makes the block grep-able by language:
+
+```markdown
+```mql5
+double tp = entry + (m5_atr * cascade_recovery_tp_atr_mult);
+```
+```
+
+```markdown
+```python
+conn.execute("SELECT COUNT(*) FROM forge_signals WHERE aurum_run_id=43")
+```
+```
+
+```markdown
+```bash
+make scalper-env-sync && make forge-compile
+```
+```
+
+### File paths, line numbers, env knobs
+
+- File:line cites: `ea/FORGE.mq5:14991` (no link — keeps it grep-able and copy-paste-friendly)
+- Env knobs: `` `FORGE_GEOMETRY_CASCADE_RECOVERY_TP_ATR_MULT` `` (always backtick-quoted)
+- Config JSON keys: `` `cascade_recovery_tp_atr_mult` `` (backtick-quoted)
+- Function names: `` `EvaluateDirectionLock()` `` (backtick + parens to disambiguate from variables)
+
+### Sections, anchors, cross-references
+
+When you add a new section to an existing doc, **don't renumber other sections** unless the document explicitly says it's renumberable (most case studies have stable §-references; renumbering breaks `See §8 implementation requirements` cross-links inside the same doc).
+
+If the new section forces renumbering of a tail section (e.g., Changelog moves from §11 to §12), add a changelog entry that **explicitly logs the renumbering** so future readers can follow the migration.
+
+### Output for analysis tables in this skill
+
+When `/forge-monitor` produces a gate-breakdown table, a TAKEN-signals table, a P&L-per-magic table, or any tabular tick output, use pipe syntax even in chat — the operator may paste it into a doc later. Don't make the operator translate from box-drawing back to pipes.
+
+### Anti-patterns
+
+- Unicode box-drawing tables in any doc, case study, or chat output that might end up in a doc
+- Triple-hyphens or em-dashes used inconsistently in the same doc
+- Missing language tag on code blocks (loses syntax highlighting + makes grep harder)
+- HTML tags for emphasis (`<b>`, `<i>`) — markdown handles these natively
+- Inline `# comments` after env values in `.env` snippets — the sync parser breaks on them (see `## MANDATORY: .env comment placement` in this skill)
+- Renumbering stable §-references mid-doc without logging the shift in the changelog
+
+### Onboarding guides and root-level docs
+
+For onboarding guides (root `ONBOARDING.md`, anything in `docs/` that's user-facing rather than analysis-internal), additionally:
+- Lead with a one-paragraph "What this is" summary
+- TOC or section-index near the top when doc exceeds ~200 lines
+- Every code block must be runnable (no pseudo-code mixed with real commands without labeling)
+- Cross-link related docs explicitly: `See also: [FORGE_NAMING_CONVENTIONS.md](FORGE_NAMING_CONVENTIONS.md)`
+
+### Enforcement during /forge-monitor sessions
+
+When you (the monitoring agent) create or extend a doc during a session:
+1. If you generate a table for a tick report, write it in pipe syntax — never box-drawing
+2. If the operator pastes a box-drawing table back at you and asks you to put it in a doc, convert to pipe syntax BEFORE writing — do not store the box-drawing form
+3. **Retroactive normalization rule (operator-mandated 2026-05-14)**: any time you touch an existing doc — appending a section, editing a row, fixing a typo, adding a changelog entry — you MUST also normalize the rest of that doc to GFM as part of the same edit. This is not "flag and ask" — it is "fix on touch". Specifically:
+   - Convert any unicode box-drawing tables (`┌`, `─`, `┐`, `│`, `└`, `┘`, etc.) in that doc to pipe-syntax tables
+   - Add language tags to any unlabeled fenced code blocks (`mql5` / `python` / `bash` / `sql` / `json`)
+   - Convert any 4-space indented code blocks to fenced blocks with language tags
+   - Replace HTML emphasis tags (`<b>`, `<i>`, `<code>`) with markdown equivalents (`**`, `*`, `` ` ``)
+   - Fix Setext underlined headings (`==` / `--`) to ATX headings (`#`, `##`, etc.)
+   - Preserve all content, section numbering, and cross-references — normalization is presentation-only, not semantic
+   - Add a changelog entry: `**YYYY-MM-DD** — GFM normalization pass (box-drawing→pipe tables, code-block language tags). No semantic change.`
+4. Do NOT spawn a separate "convert all docs" pass — only fix the doc you're already editing. The mandate is "the next time it touches any of the existing doc", not "audit the whole tree".
+5. Do NOT touch docs you weren't already going to edit. Drive-by normalization across unrelated files creates noisy diffs and slows operator review.
+
+### Cross-skill propagation
+
+This GFM mandate applies to all skills that create or edit docs in this repo — not just `/forge-monitor`. When you (any skill) touch a doc:
+- New doc → write in GFM from the start (see "MANDATORY: GitHub-flavored markdown" section above for the rules)
+- Existing doc → normalize as part of the edit per the retroactive rule above
+
+Skills currently in scope: `/forge-monitor`, `/forge-ea-review`, `/research`. If a skill not listed here is invoked and creates/touches a doc, the same rule applies — the GFM standard lives in this SKILL.md as the canonical reference, and other skills should cross-reference it rather than re-state it.
+
+---
+
 ## ANALYSIS DOC TEMPLATE
 
 ```markdown
