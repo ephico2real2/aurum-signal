@@ -415,8 +415,9 @@ datetime g_sr_flip_last_buy_time  = 0;
 datetime g_sr_flip_last_sell_time = 0;
 // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST anchor (parallel composite that replicates
 // legacy MOMENTUM_DUMP using the new boolean-composite framework; default-OFF).
-datetime g_momentum_dump_composite_test_last_buy_time  = 0;
-datetime g_momentum_dump_composite_test_last_sell_time = 0;
+// 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix; promoted from test to canonical).
+datetime g_momentum_dump_composite_last_buy_time  = 0;
+datetime g_momentum_dump_composite_last_sell_time = 0;
 // 2.7.55 — BB_LOWER_REVERSION_BUY anchor (mean-reversion BUY when price < BB lower band).
 // Pairs with dump_below_bbl_block_sell (Run 26 G5003 was a textbook SELL-block case;
 // this setup turns the same condition into a BUY entry signal).
@@ -1145,21 +1146,22 @@ struct ScalperConfig {
    //   that the boolean-composite pattern can produce identical TAKEN behavior to the
    //   legacy filter-chain pattern. Default OFF — enable for a tester run with legacy
    //   MOMENTUM_DUMP also enabled; compare TAKEN counts/timestamps; should be ~1:1.
-   bool   momentum_dump_composite_test_enabled;
-   int    momentum_dump_composite_test_lookback_bars;     // M5 close-to-close lookback (default 3)
-   double momentum_dump_composite_test_atr_mult;          // move threshold = atr_mult × ATR (default 1.5)
-   double momentum_dump_composite_test_max_rsi;           // SELL: RSI < max; BUY: RSI > 100-max (default 50)
-   double momentum_dump_composite_test_max_rsi_buy;       // BUY overbought ceiling (default 70, 0=disable)
-   double momentum_dump_composite_test_min_adx;           // ADX floor (default 25)
-   double momentum_dump_composite_test_sl_atr_mult;       // SL = atr × this (default 4.0)
-   double momentum_dump_composite_test_tp1_atr_mult;      // TP1 = atr × this (default 0.6)
-   double momentum_dump_composite_test_tp2_atr_mult;      // TP2 = atr × this (default 1.0)
-   int    momentum_dump_composite_test_cooldown_seconds;  // anti-flicker (default 60 — bypass handles trend)
-   bool   momentum_dump_composite_test_chop_block;        // block when regime is RANGE (default 1)
-   bool   momentum_dump_composite_test_require_psar;      // require PSAR alignment (default 1)
-   bool   momentum_dump_composite_test_require_d1_bias;   // require daily slope alignment (default 1)
-   double momentum_dump_composite_test_sell_h1_max;       // block SELL when h1 ≥ this (default 1.0; 0=off)
-   double momentum_dump_composite_test_lot_factor;        // per-leg lot multiplier (default 0.7)
+   // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix). Lot factor default 0.7→1.0.
+   bool   momentum_dump_composite_enabled;
+   int    momentum_dump_composite_lookback_bars;     // M5 close-to-close lookback (default 3)
+   double momentum_dump_composite_atr_mult;          // move threshold = atr_mult × ATR (default 1.5)
+   double momentum_dump_composite_max_rsi;           // SELL: RSI < max; BUY: RSI > 100-max (default 50)
+   double momentum_dump_composite_max_rsi_buy;       // BUY overbought ceiling (default 70, 0=disable)
+   double momentum_dump_composite_min_adx;           // ADX floor (default 25)
+   double momentum_dump_composite_sl_atr_mult;       // SL = atr × this (default 4.0)
+   double momentum_dump_composite_tp1_atr_mult;      // TP1 = atr × this (default 0.6)
+   double momentum_dump_composite_tp2_atr_mult;      // TP2 = atr × this (default 1.0)
+   int    momentum_dump_composite_cooldown_seconds;  // anti-flicker (default 60 — bypass handles trend)
+   bool   momentum_dump_composite_chop_block;        // block when regime is RANGE (default 1)
+   bool   momentum_dump_composite_require_psar;      // require PSAR alignment (default 1)
+   bool   momentum_dump_composite_require_d1_bias;   // require daily slope alignment (default 1)
+   double momentum_dump_composite_sell_h1_max;       // block SELL when h1 ≥ this (default 1.0; 0=off)
+   double momentum_dump_composite_lot_factor;        // per-leg lot multiplier (default 1.0; was 0.7 pre-v2.7.121)
    // 2.7.55 — BB_LOWER_REVERSION_BUY: mean-reversion BUY at gold's BB-lower oversold zone.
    //   Trigger atoms: m5_close ≤ m5_bb_l AND m5_rsi ≤ max_rsi AND m5_atr > 0.
    //   Filter chain: !g_daily_bear_bias (don't catch falling knives on confirmed bear days),
@@ -3031,7 +3033,7 @@ void ManageOpenGroups() {
       bool any_buy = false, any_sell = false;
       for(int _pg = 0; _pg < ArraySize(g_groups); _pg++) {
          if(g_groups[_pg].scalper_setup != "MOMENTUM_DUMP"
-            && g_groups[_pg].scalper_setup != "MOMENTUM_DUMP_COMPOSITE_TEST") continue;
+            && g_groups[_pg].scalper_setup != "MOMENTUM_DUMP_COMPOSITE") continue;
          int _pg_pos[];
          GetGroupPositions(g_groups[_pg].magic_offset, _pg_pos);
          if(ArraySize(_pg_pos) == 0) continue;
@@ -4684,21 +4686,22 @@ void InitScalperConfig() {
    g_sc.fast_trend_lot_amplifier_factor       = 1.5;
    g_sc.fast_trend_lot_amplifier_adx_min      = 35.0;
    // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST (parallel composite, default OFF; mirrors legacy MOMENTUM_DUMP atoms)
-   g_sc.momentum_dump_composite_test_enabled           = false;
-   g_sc.momentum_dump_composite_test_lookback_bars     = 3;
-   g_sc.momentum_dump_composite_test_atr_mult          = 1.5;
-   g_sc.momentum_dump_composite_test_max_rsi           = 50.0;
-   g_sc.momentum_dump_composite_test_max_rsi_buy       = 70.0;
-   g_sc.momentum_dump_composite_test_min_adx           = 25.0;
-   g_sc.momentum_dump_composite_test_sl_atr_mult       = 4.0;
-   g_sc.momentum_dump_composite_test_tp1_atr_mult      = 0.6;
-   g_sc.momentum_dump_composite_test_tp2_atr_mult      = 1.0;
-   g_sc.momentum_dump_composite_test_cooldown_seconds  = 60;
-   g_sc.momentum_dump_composite_test_chop_block        = true;
-   g_sc.momentum_dump_composite_test_require_psar      = true;
-   g_sc.momentum_dump_composite_test_require_d1_bias   = true;
-   g_sc.momentum_dump_composite_test_sell_h1_max       = 1.0;
-   g_sc.momentum_dump_composite_test_lot_factor        = 0.7;
+   // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix). Lot factor default 0.7→1.0.
+   g_sc.momentum_dump_composite_enabled           = false;
+   g_sc.momentum_dump_composite_lookback_bars     = 3;
+   g_sc.momentum_dump_composite_atr_mult          = 1.5;
+   g_sc.momentum_dump_composite_max_rsi           = 50.0;
+   g_sc.momentum_dump_composite_max_rsi_buy       = 70.0;
+   g_sc.momentum_dump_composite_min_adx           = 25.0;
+   g_sc.momentum_dump_composite_sl_atr_mult       = 4.0;
+   g_sc.momentum_dump_composite_tp1_atr_mult      = 0.6;
+   g_sc.momentum_dump_composite_tp2_atr_mult      = 1.0;
+   g_sc.momentum_dump_composite_cooldown_seconds  = 60;
+   g_sc.momentum_dump_composite_chop_block        = true;
+   g_sc.momentum_dump_composite_require_psar      = true;
+   g_sc.momentum_dump_composite_require_d1_bias   = true;
+   g_sc.momentum_dump_composite_sell_h1_max       = 1.0;
+   g_sc.momentum_dump_composite_lot_factor        = 1.0;
    // 2.7.55 — BB_LOWER_REVERSION_BUY init (AGGRESSIVE defaults — operator: "good catch due to indicator alignment")
    g_sc.bb_lower_reversion_buy_enabled                 = true;   // ON by default — multi-indicator high-conviction
    g_sc.bb_lower_reversion_buy_max_rsi                 = 35.0;
@@ -5743,21 +5746,22 @@ void ReadScalperConfig() {
       if(v >= 0.0 && v <= 80.0) g_sc.fast_trend_lot_amplifier_adx_min = v;
    }
    // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST loaders
-   if(JsonHasKey(content,"momentum_dump_composite_test_enabled"))          { v=JsonGetDouble(content,"momentum_dump_composite_test_enabled");          g_sc.momentum_dump_composite_test_enabled=(v>=0.5); }
-   if(JsonHasKey(content,"momentum_dump_composite_test_lookback_bars"))    { v=JsonGetDouble(content,"momentum_dump_composite_test_lookback_bars");    if(v>=1 && v<=20)  g_sc.momentum_dump_composite_test_lookback_bars=(int)v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_atr_mult"))         { v=JsonGetDouble(content,"momentum_dump_composite_test_atr_mult");         if(v>=0.1 && v<=10.0) g_sc.momentum_dump_composite_test_atr_mult=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_max_rsi"))          { v=JsonGetDouble(content,"momentum_dump_composite_test_max_rsi");          if(v>=0 && v<=100) g_sc.momentum_dump_composite_test_max_rsi=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_max_rsi_buy"))      { v=JsonGetDouble(content,"momentum_dump_composite_test_max_rsi_buy");      if(v>=0 && v<=100) g_sc.momentum_dump_composite_test_max_rsi_buy=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_min_adx"))          { v=JsonGetDouble(content,"momentum_dump_composite_test_min_adx");          if(v>=0 && v<=80)  g_sc.momentum_dump_composite_test_min_adx=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_sl_atr_mult"))      { v=JsonGetDouble(content,"momentum_dump_composite_test_sl_atr_mult");      if(v>=0.3 && v<=10.0) g_sc.momentum_dump_composite_test_sl_atr_mult=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_tp1_atr_mult"))     { v=JsonGetDouble(content,"momentum_dump_composite_test_tp1_atr_mult");     if(v>=0.1 && v<=5.0)  g_sc.momentum_dump_composite_test_tp1_atr_mult=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_tp2_atr_mult"))     { v=JsonGetDouble(content,"momentum_dump_composite_test_tp2_atr_mult");     if(v>=0.1 && v<=5.0)  g_sc.momentum_dump_composite_test_tp2_atr_mult=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_cooldown_seconds")) { v=JsonGetDouble(content,"momentum_dump_composite_test_cooldown_seconds"); if(v>=0 && v<=7200) g_sc.momentum_dump_composite_test_cooldown_seconds=(int)v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_chop_block"))       { v=JsonGetDouble(content,"momentum_dump_composite_test_chop_block");       g_sc.momentum_dump_composite_test_chop_block=(v>=0.5); }
-   if(JsonHasKey(content,"momentum_dump_composite_test_require_psar"))     { v=JsonGetDouble(content,"momentum_dump_composite_test_require_psar");     g_sc.momentum_dump_composite_test_require_psar=(v>=0.5); }
-   if(JsonHasKey(content,"momentum_dump_composite_test_require_d1_bias")) { v=JsonGetDouble(content,"momentum_dump_composite_test_require_d1_bias"); g_sc.momentum_dump_composite_test_require_d1_bias=(v>=0.5); }
-   if(JsonHasKey(content,"momentum_dump_composite_test_sell_h1_max"))      { v=JsonGetDouble(content,"momentum_dump_composite_test_sell_h1_max");      if(v>=0 && v<=10.0) g_sc.momentum_dump_composite_test_sell_h1_max=v; }
-   if(JsonHasKey(content,"momentum_dump_composite_test_lot_factor"))       { v=JsonGetDouble(content,"momentum_dump_composite_test_lot_factor");       if(v>=0.1 && v<=2.0) g_sc.momentum_dump_composite_test_lot_factor=v; }
+   // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix in JSON keys).
+   if(JsonHasKey(content,"momentum_dump_composite_enabled"))          { v=JsonGetDouble(content,"momentum_dump_composite_enabled");          g_sc.momentum_dump_composite_enabled=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_lookback_bars"))    { v=JsonGetDouble(content,"momentum_dump_composite_lookback_bars");    if(v>=1 && v<=20)  g_sc.momentum_dump_composite_lookback_bars=(int)v; }
+   if(JsonHasKey(content,"momentum_dump_composite_atr_mult"))         { v=JsonGetDouble(content,"momentum_dump_composite_atr_mult");         if(v>=0.1 && v<=10.0) g_sc.momentum_dump_composite_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_max_rsi"))          { v=JsonGetDouble(content,"momentum_dump_composite_max_rsi");          if(v>=0 && v<=100) g_sc.momentum_dump_composite_max_rsi=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_max_rsi_buy"))      { v=JsonGetDouble(content,"momentum_dump_composite_max_rsi_buy");      if(v>=0 && v<=100) g_sc.momentum_dump_composite_max_rsi_buy=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_min_adx"))          { v=JsonGetDouble(content,"momentum_dump_composite_min_adx");          if(v>=0 && v<=80)  g_sc.momentum_dump_composite_min_adx=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_sl_atr_mult"))      { v=JsonGetDouble(content,"momentum_dump_composite_sl_atr_mult");      if(v>=0.3 && v<=10.0) g_sc.momentum_dump_composite_sl_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_tp1_atr_mult"))     { v=JsonGetDouble(content,"momentum_dump_composite_tp1_atr_mult");     if(v>=0.1 && v<=5.0)  g_sc.momentum_dump_composite_tp1_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_tp2_atr_mult"))     { v=JsonGetDouble(content,"momentum_dump_composite_tp2_atr_mult");     if(v>=0.1 && v<=5.0)  g_sc.momentum_dump_composite_tp2_atr_mult=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_cooldown_seconds")) { v=JsonGetDouble(content,"momentum_dump_composite_cooldown_seconds"); if(v>=0 && v<=7200) g_sc.momentum_dump_composite_cooldown_seconds=(int)v; }
+   if(JsonHasKey(content,"momentum_dump_composite_chop_block"))       { v=JsonGetDouble(content,"momentum_dump_composite_chop_block");       g_sc.momentum_dump_composite_chop_block=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_require_psar"))     { v=JsonGetDouble(content,"momentum_dump_composite_require_psar");     g_sc.momentum_dump_composite_require_psar=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_require_d1_bias")) { v=JsonGetDouble(content,"momentum_dump_composite_require_d1_bias"); g_sc.momentum_dump_composite_require_d1_bias=(v>=0.5); }
+   if(JsonHasKey(content,"momentum_dump_composite_sell_h1_max"))      { v=JsonGetDouble(content,"momentum_dump_composite_sell_h1_max");      if(v>=0 && v<=10.0) g_sc.momentum_dump_composite_sell_h1_max=v; }
+   if(JsonHasKey(content,"momentum_dump_composite_lot_factor"))       { v=JsonGetDouble(content,"momentum_dump_composite_lot_factor");       if(v>=0.1 && v<=2.0) g_sc.momentum_dump_composite_lot_factor=v; }
    // 2.7.55 — BB_LOWER_REVERSION_BUY loaders
    if(JsonHasKey(content,"bb_lower_reversion_buy_enabled"))             { v=JsonGetDouble(content,"bb_lower_reversion_buy_enabled");             g_sc.bb_lower_reversion_buy_enabled=(v>=0.5); }
    if(JsonHasKey(content,"bb_lower_reversion_buy_max_rsi"))             { v=JsonGetDouble(content,"bb_lower_reversion_buy_max_rsi");             if(v>=0 && v<=100)   g_sc.bb_lower_reversion_buy_max_rsi=v; }
@@ -8429,7 +8433,7 @@ bool IsBullDayDipBuyActive(const double h1_trend_strength) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MOMENTUM_DUMP_COMPOSITE_TEST — boolean-composite replication of legacy MOMENTUM_DUMP
+// MOMENTUM_DUMP_COMPOSITE — boolean-composite replication of legacy MOMENTUM_DUMP
 //
 // PURPOSE: Validate the new layered-composite framework (used by §11.4 setups SR_FLIP,
 // TRENDLINE_BOUNCE, INSIDE_BAR, etc.) by replicating the proven legacy MOMENTUM_DUMP
@@ -8451,45 +8455,46 @@ bool IsBullDayDipBuyActive(const double h1_trend_strength) {
 //   3. BUY branch: mirror with INTRADAY_REVERSAL_SELL BUY-block at slot 0
 //
 // CHANGELOG:
-//   2026-05-13  Initial v2.7.53 implementation (parallel to legacy MOMENTUM_DUMP).
+//   2026-05-13  Initial v2.7.53 implementation as MOMENTUM_DUMP_COMPOSITE_TEST (parallel to legacy MOMENTUM_DUMP).
+//   2026-05-15  v2.7.121 — Renamed from MOMENTUM_DUMP_COMPOSITE_TEST (drop _TEST suffix); promoted from test to canonical composite.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// DetectMomentumDumpCompositeTestEvent — trigger atom layer.
+// DetectMomentumDumpCompositeEvent — trigger atom layer.
 // Returns +1 = BUY trigger, -1 = SELL trigger, 0 = no trigger.
-int DetectMomentumDumpCompositeTestEvent(const double m5_atr) {
-   if(!g_sc.momentum_dump_composite_test_enabled) return 0;
+int DetectMomentumDumpCompositeEvent(const double m5_atr) {
+   if(!g_sc.momentum_dump_composite_enabled) return 0;
    if(m5_atr <= 0.0) return 0;
-   int lb = MathMax(1, g_sc.momentum_dump_composite_test_lookback_bars);
+   int lb = MathMax(1, g_sc.momentum_dump_composite_lookback_bars);
    double c0 = iClose(_Symbol, PERIOD_M5, 0);
    double cN = iClose(_Symbol, PERIOD_M5, lb);
    if(c0 <= 0.0 || cN <= 0.0) return 0;
    double move = c0 - cN;
-   double thresh = g_sc.momentum_dump_composite_test_atr_mult * m5_atr;
+   double thresh = g_sc.momentum_dump_composite_atr_mult * m5_atr;
    if(move < -thresh) return -1;  // SELL trigger
    if(move >  thresh) return +1;  // BUY trigger
    return 0;
 }
 
-// IsMomentumDumpCompositeTestActive — composite filter layer.
+// IsMomentumDumpCompositeActive — composite filter layer.
 // Returns true when the trigger should fire a real entry; false when any
 // filter blocks. Caller passes the trigger direction sign + per-tick atoms.
 // SKIP-logging is intentionally delegated to the caller (so the composite
 // stays pure-boolean — caller logs whichever rung it sees fail first).
-bool IsMomentumDumpCompositeTestActive(const int dir_sign,
+bool IsMomentumDumpCompositeActive(const int dir_sign,
                                        const double m5_rsi, const double m5_adx,
                                        const double h1_trend_strength) {
-   if(!g_sc.momentum_dump_composite_test_enabled) return false;
+   if(!g_sc.momentum_dump_composite_enabled) return false;
    if(dir_sign == 0) return false;
    if(dir_sign < 0) {
       // SELL branch
-      if(g_sc.momentum_dump_composite_test_sell_h1_max > 0.0
-         && h1_trend_strength >= g_sc.momentum_dump_composite_test_sell_h1_max)
+      if(g_sc.momentum_dump_composite_sell_h1_max > 0.0
+         && h1_trend_strength >= g_sc.momentum_dump_composite_sell_h1_max)
          return false;
-      if(m5_rsi >= g_sc.momentum_dump_composite_test_max_rsi) return false;
-      if(m5_adx < g_sc.momentum_dump_composite_test_min_adx)  return false;
-      if(g_sc.momentum_dump_composite_test_require_psar && g_sc.psar_enabled
+      if(m5_rsi >= g_sc.momentum_dump_composite_max_rsi) return false;
+      if(m5_adx < g_sc.momentum_dump_composite_min_adx)  return false;
+      if(g_sc.momentum_dump_composite_require_psar && g_sc.psar_enabled
          && g_psar_state != "ABOVE") return false;
-      if(g_sc.momentum_dump_composite_test_require_d1_bias
+      if(g_sc.momentum_dump_composite_require_d1_bias
          && g_sc.daily_direction_gate_enabled && !g_daily_bear_bias) return false;
       // 2.7.56.1 — G5003-style SELL protections — INDEPENDENT FUNCTION, SHARED MD VARIABLES.
       //   Per operator: "use variables from MD" — function is its own (composite pattern),
@@ -8519,30 +8524,30 @@ bool IsMomentumDumpCompositeTestActive(const int dir_sign,
       double bb_mid    = (CopyBuffer(g_mtf[0].h_bb, 0, 0, 1, buf_bbm) == 1) ? buf_bbm[0] : 0.0;
       if(IsIntradayReversalSellActive(h1_trend_strength, m5_rsi, mid_buy, bb_mid)) return false;
       // BUY overbought ceiling (G5009 fix — parity with dump_rsi_buy_ceil)
-      if(g_sc.momentum_dump_composite_test_max_rsi_buy > 0.0
-         && m5_rsi >= g_sc.momentum_dump_composite_test_max_rsi_buy) return false;
+      if(g_sc.momentum_dump_composite_max_rsi_buy > 0.0
+         && m5_rsi >= g_sc.momentum_dump_composite_max_rsi_buy) return false;
       // Lower bound: mirror of SELL's max_rsi → BUY needs RSI > (100 - max_rsi)
-      double buy_rsi_min = 100.0 - g_sc.momentum_dump_composite_test_max_rsi;
+      double buy_rsi_min = 100.0 - g_sc.momentum_dump_composite_max_rsi;
       if(m5_rsi <= buy_rsi_min) return false;
       // Daily bear bias blocks BUY (parity with entry_quality_daily_bear_block_buy)
       if(g_sc.daily_direction_gate_enabled && g_daily_bear_bias) return false;
-      if(m5_adx < g_sc.momentum_dump_composite_test_min_adx)  return false;
-      if(g_sc.momentum_dump_composite_test_require_psar && g_sc.psar_enabled
+      if(m5_adx < g_sc.momentum_dump_composite_min_adx)  return false;
+      if(g_sc.momentum_dump_composite_require_psar && g_sc.psar_enabled
          && g_psar_state != "BELOW") return false;
-      if(g_sc.momentum_dump_composite_test_require_d1_bias
+      if(g_sc.momentum_dump_composite_require_d1_bias
          && g_sc.daily_direction_gate_enabled && !g_daily_bull_bias) return false;
    }
    // Chop block (both directions)
-   if(g_sc.momentum_dump_composite_test_chop_block && g_regime_label == "RANGE") return false;
+   if(g_sc.momentum_dump_composite_chop_block && g_regime_label == "RANGE") return false;
    // Cooldown — honors CooldownBypassActive (no-mercy with-trend bypass + setup whitelist)
    datetime now = TimeCurrent();
-   datetime last = (dir_sign > 0) ? g_momentum_dump_composite_test_last_buy_time
-                                  : g_momentum_dump_composite_test_last_sell_time;
-   if(g_sc.momentum_dump_composite_test_cooldown_seconds > 0
+   datetime last = (dir_sign > 0) ? g_momentum_dump_composite_last_buy_time
+                                  : g_momentum_dump_composite_last_sell_time;
+   if(g_sc.momentum_dump_composite_cooldown_seconds > 0
       && last > 0
-      && (now - last) < g_sc.momentum_dump_composite_test_cooldown_seconds
+      && (now - last) < g_sc.momentum_dump_composite_cooldown_seconds
       && !CooldownBypassActive(dir_sign > 0 ? "BUY" : "SELL",
-                               "MOMENTUM_DUMP_COMPOSITE_TEST", m5_adx, h1_trend_strength))
+                               "MOMENTUM_DUMP_COMPOSITE", m5_adx, h1_trend_strength))
       return false;
    return true;
 }
@@ -10653,7 +10658,7 @@ bool CheckEntryQuality(const string direction, const double atr,
       //   global (default 1) so pyramid into confirmed cascade isn't capped early.
       // 2.7.56.1 — MDCT shares this cap with MD (per operator: "use variables from MD").
       int dir_cap_eff = g_sc.max_open_same_direction;
-      if((setup_type == "MOMENTUM_DUMP" || setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST")
+      if((setup_type == "MOMENTUM_DUMP" || setup_type == "MOMENTUM_DUMP_COMPOSITE")
          && g_sc.dump_max_open_same_direction > 0) {
          dir_cap_eff = g_sc.dump_max_open_same_direction;
       }
@@ -12667,24 +12672,25 @@ void CheckNativeScalperSetups() {
    //   match ~1:1 — validates the new framework before retiring legacy code.
    //   Anchor write deferred to MarkSetupCooldownAnchorOnTaken() at TAKEN time
    //   (Path A pattern — avoids dry-run cooldown bug that hit §11.4 setups).
-   if(direction == "" && g_sc.momentum_dump_composite_test_enabled && m5_atr > 0.0) {
-      int mdct_event = DetectMomentumDumpCompositeTestEvent(m5_atr);
+   // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix).
+   if(direction == "" && g_sc.momentum_dump_composite_enabled && m5_atr > 0.0) {
+      int mdct_event = DetectMomentumDumpCompositeEvent(m5_atr);
       if(mdct_event != 0
-         && IsMomentumDumpCompositeTestActive(mdct_event, m5_rsi, m5_adx, h1_trend_strength)) {
+         && IsMomentumDumpCompositeActive(mdct_event, m5_rsi, m5_adx, h1_trend_strength)) {
          direction  = (mdct_event > 0) ? "BUY" : "SELL";
-         setup_type = "MOMENTUM_DUMP_COMPOSITE_TEST";
+         setup_type = "MOMENTUM_DUMP_COMPOSITE";
          double mdct_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
          double mdct_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          if(mdct_event > 0) {
-            sl  = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_test_sl_atr_mult, _Digits);
-            tp1 = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_test_tp1_atr_mult, _Digits);
-            tp2 = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_test_tp2_atr_mult, _Digits);
+            sl  = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_tp2_atr_mult, _Digits);
          } else {
-            sl  = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_test_sl_atr_mult, _Digits);
-            tp1 = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_test_tp1_atr_mult, _Digits);
-            tp2 = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_test_tp2_atr_mult, _Digits);
+            sl  = NormalizeDouble(mdct_ask + m5_atr * g_sc.momentum_dump_composite_sl_atr_mult, _Digits);
+            tp1 = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_tp1_atr_mult, _Digits);
+            tp2 = NormalizeDouble(mdct_bid - m5_atr * g_sc.momentum_dump_composite_tp2_atr_mult, _Digits);
          }
-         PrintFormat("FORGE 2.7.53: MOMENTUM_DUMP_COMPOSITE_TEST %s fired @ %.2f (ATR=%.2f, RSI=%.1f, ADX=%.1f, h1=%.2f, regime=%s)",
+         PrintFormat("FORGE 2.7.121: MOMENTUM_DUMP_COMPOSITE %s fired @ %.2f (ATR=%.2f, RSI=%.1f, ADX=%.1f, h1=%.2f, regime=%s)",
                      direction, (mdct_event > 0 ? mdct_ask : mdct_bid),
                      m5_atr, m5_rsi, m5_adx, h1_trend_strength, g_regime_label);
       }
@@ -14292,7 +14298,7 @@ void CheckNativeScalperSetups() {
                    || setup_type == "BB_PULLBACK_SCALP"
                    || setup_type == "FRACTIONAL_SELL_IN_BULL"
                    || setup_type == "BULL_DAY_DIP_BUY"
-                   || setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST"   // 2.7.53 — parity with legacy MOMENTUM_DUMP
+                   || setup_type == "MOMENTUM_DUMP_COMPOSITE"   // 2.7.53 — parity with legacy MOMENTUM_DUMP
                    || setup_type == "BB_LOWER_REVERSION_BUY"          // 2.7.55 — tight-SL mean-reversion scalp; geometry-anchored
                    || setup_type == "ASIA_CAPITULATION_BUY"            // 2.7.81 — tight-SL Asia V-flush; geometry-anchored, fixed-lot
                    || setup_type == "TREND_CONTINUATION_BUY"          // 2.7.57 — tight scalp 0.3×ATR TP1; geometry-anchored
@@ -14524,10 +14530,11 @@ void CheckNativeScalperSetups() {
       }
    }
    // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST lot factor (parity with legacy dump_factor).
-   double mdct_factor = (setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST"
-                         && g_sc.momentum_dump_composite_test_lot_factor > 0.0
-                         && g_sc.momentum_dump_composite_test_lot_factor <= 2.0)
-                        ? g_sc.momentum_dump_composite_test_lot_factor : 1.0;
+   // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix). Default 0.7→1.0.
+   double mdct_factor = (setup_type == "MOMENTUM_DUMP_COMPOSITE"
+                         && g_sc.momentum_dump_composite_lot_factor > 0.0
+                         && g_sc.momentum_dump_composite_lot_factor <= 2.0)
+                        ? g_sc.momentum_dump_composite_lot_factor : 1.0;
    // 2.7.55 — BB_LOWER_REVERSION_BUY lot factor + extreme-oversold amplifier.
    //   Aggressive default (1.0 base, 1.5× when RSI ≤ 25) per operator: "be aggressive
    //   here because this is a good catch due to indicator alignment".
@@ -16929,10 +16936,10 @@ void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direct
    } else if(setup_type == "FLAG_PENNANT") {
       if(buy)  g_flag_pennant_last_buy_time  = now;
       if(sell) g_flag_pennant_last_sell_time = now;
-   } else if(setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST") {
+   } else if(setup_type == "MOMENTUM_DUMP_COMPOSITE") {
       // 2.7.53 — parallel composite (parity with legacy MOMENTUM_DUMP).
-      if(buy)  g_momentum_dump_composite_test_last_buy_time  = now;
-      if(sell) g_momentum_dump_composite_test_last_sell_time = now;
+      if(buy)  g_momentum_dump_composite_last_buy_time  = now;
+      if(sell) g_momentum_dump_composite_last_sell_time = now;
    } else if(setup_type == "BB_LOWER_REVERSION_BUY") {
       // 2.7.55 — single-direction BUY (BB lower-band mean-reversion); always buy direction.
       if(buy)  g_bb_lower_reversion_buy_last_time = now;
@@ -16950,8 +16957,9 @@ void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direct
       if(sell) g_ny_session_bearish_sell_last_time = now;
    }
    // 2.7.56 — Pyramid counter increment for MOMENTUM_DUMP (also covers MOMENTUM_DUMP_COMPOSITE_TEST).
+   // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix).
    //   Direction flip resets opposite-direction counter; same-direction increments.
-   if(setup_type == "MOMENTUM_DUMP" || setup_type == "MOMENTUM_DUMP_COMPOSITE_TEST") {
+   if(setup_type == "MOMENTUM_DUMP" || setup_type == "MOMENTUM_DUMP_COMPOSITE") {
       if(buy) {
          g_dump_pyramid_consec_buy_count++;
          g_dump_pyramid_consec_sell_count = 0;   // direction flip resets opposite
