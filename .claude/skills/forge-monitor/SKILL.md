@@ -2432,6 +2432,39 @@ If you discover after-the-fact that a ship landed columns in some layers but not
 
 The v2.7.119 ship is the canonical example of recovery — it fixes v2.7.112's missing migrations + closes the v2.7.118 schema gap in one pass.
 
+#### High-cardinality diagnostic data — selective columns + complete text log
+
+**Operator mandate** (2026-05-15): when adding diagnostic instrumentation that exposes MANY underlying values (e.g., 30 lot factors, 50 indicator atoms, large state breakdowns), do NOT add a column for every value. Apply the **selective-column rule**:
+
+1. **PrintFormat ALL values** to the EA text log (debug-grade, no schema cost). Free instrumentation for per-trade post-mortem via grep.
+2. **Promote 10-12 most-variable values** to SIGNALS columns (analytical-grade, queryable). These are the ones that historically have driven anomalies and that the operator will want to filter / aggregate.
+3. **Reject the rest** for the schema — values that are 1.0 / 0 / unchanged for ≥95% of signals would only bloat the table without adding analytical value.
+
+#### How to identify the "10-12 most-variable" cut
+
+| Criterion | Include as column |
+|---|---|
+| Varies with market state (price, ADX, RSI, regime, session) | ✓ Yes |
+| Varies with EA state (open positions, recent fires, cooldown timers) | ✓ Yes |
+| Has independently broken before (caused a wrong-lot or wrong-skip) | ✓ Yes — must be column for post-mortem |
+| Setup-specific constant (e.g., `dump_lot_factor=0.5` for MOMENTUM_DUMP) | ✗ No — derivable from `setup_type` |
+| Always 1.0 / 0 for ≥95% of signals | ✗ No — text log only |
+| Configuration knob (lives in `g_sc.*`) | ✗ No — derivable from `config/scalper_config.json` at the run's wall_time |
+
+#### Canonical example — lot factors (v2.7.121 → v2.7.122)
+
+- v2.7.121 ships **PrintFormat for ALL 30 lot factors** (`FORGE 2.7.121 LOT-BREAKDOWN:` text line). Grep-able for any single trade's breakdown.
+- v2.7.122 ships **12 most-variable lot factors as SIGNALS columns**: `lot_stack_factor`, `lot_dump_pyramid_factor`, `lot_dump_dist_amplifier`, `lot_dump_kz_amplifier`, `lot_tcb_factor`, `lot_tcs_factor`, `lot_adx_lot_factor`, `lot_fast_trend_factor`, `lot_near_floor_factor`, `lot_inside_band_factor`, `lot_scalper_eff`, `lot_mult`. The other 18 factors (most always 1.0) stay in the PrintFormat.
+
+This pattern is mandatory for any future high-cardinality diagnostic ship — composite atom breakdowns, multi-factor scoring engines, state-machine snapshots, etc.
+
+#### Anti-patterns
+
+- **All-30-columns ship**: bloats schema with redundant 1.0 values; dashboard joins get slower; storage cost on tester DBs (1+ GB) compounds.
+- **PrintFormat-only ship**: insufficient for cross-trade aggregates; "which factor most often reduces lot below 0.5 across all winners?" needs SQL, not grep.
+- **Selective columns WITHOUT the complete PrintFormat**: when a column doesn't surface the anomaly, the analyst has no fallback. Always ship both.
+- **Cherry-picking columns from a recent loss post-mortem**: just because `dump_pyramid` reduced ONE bad trade doesn't make it a column-worthy variable. Use the 3 criteria in the table above, not anecdotes.
+
 ### MANDATORY: `.env` comment placement — never inline after a value
 
 The env-sync parser (`scripts/sync_scalper_config_from_env.py` → `_parse_value()`) calls
