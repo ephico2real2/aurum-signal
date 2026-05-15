@@ -4,6 +4,109 @@
 
 This doc captures the **price-tracking + profit-banking architecture** that fires once a FORGE trade is entered. The ratchet stack is what turns ATR-anchored TPs into actual banked dollars under real retraction patterns. Codified after the G5001 win on 2026-05-15 — where SL ratchet + TP tighten captured +$103.84 in 6 minutes vs an alternative path of either +$12 (no ratchet) or potential $0 (no tighten).
 
+## §0 Why FORGE has a ratchet system (and why it's unique)
+
+The ratchet system is a **FORGE-original design** — not borrowed from any retail EA framework, not a port of an ICT canonical pattern, not a MetaQuotes default. It's the operator's encoded discipline made algorithmic. This section captures the design philosophy + empirical motivation so future contributors understand the **why** before changing the **what**.
+
+### §0.1 The trading problem the ratchet solves
+
+XAUUSD scalp setups on M5 timeframe have a characteristic pattern that doesn't fit any standard EA architecture:
+
+1. **Impulse leg arrives in 3-5 M5 bars** — price moves 5-15 pts in the trade direction quickly
+2. **Multiple retracements follow** — price tries to retrace 30-60% of the leg, often 2-4 times within 10-20 minutes
+3. **Final continuation OR reversal** — either price breaks through prior structure and continues, OR retraces fail and price reverses fully
+
+The trader's question on every winning impulse is: **bank now or hold for more?** Holding risks all the locked gain (next retrace hits SL or BE). Banking too early leaves money on the table. **The decision must be made in seconds, repeatedly, while the trade is live.**
+
+A human operator cannot evaluate this 50× per session across multiple positions. The ratchet system is the algorithmic answer: encode the operator's "bank-vs-hold" decision rule into the EA so it fires deterministically on every retrace + every continuation.
+
+### §0.2 Why standard EAs / canonical patterns don't solve this
+
+| Approach | What it does | Why it fails for XAUUSD scalps |
+|---|---|---|
+| **Fixed TP / SL (off-the-shelf)** | Set TP once at entry; no modification | TP at 2×ATR is reached often, but retracements mean position rarely SURVIVES to TP. Win rate looks ok; banked $/trade is low. |
+| **Trailing SL (classic)** | Move SL toward price as price moves favorably | Reduces drawdown but does nothing about the **TP side**. Position still gives back profit when retracement hits the trailing SL after going far. |
+| **Break-even SL only** | Move SL to entry on first profit | First-order improvement but ignores all subsequent retracement signals. Leaves big TPs unreachable. |
+| **ICT canonical** (set-and-forget at PD-array level) | Place SL beyond OB / FVG / liquidity; let it run to target | Designed for H1/H4 swing trading where retracement patterns are slower. On M5 scalping the retracement velocity is too high. |
+| **Martingale / averaging** | Add to losers on retrace | Catastrophic risk on persistent moves. Operator explicitly bans this per `feedback_chop_grid_no_per_leg_sl`. |
+| **Discretionary "feel"** | Trader manually adjusts each trade | Doesn't scale. Operator can't sit in front of MT5 50× per session. |
+
+None of these match the specific shape of XAUUSD M5 scalps. The ratchet is built **for this exact shape**.
+
+### §0.3 The design hypothesis encoded in the ratchet
+
+FORGE's ratchet system embodies three operator-tested hypotheses about how XAUUSD scalps actually pay out:
+
+**H1 — The first TP is the *banking gate*, not the *take-profit*.**
+
+Most EAs treat TP1 as the goal. FORGE treats it as a checkpoint that triggers **all subsequent risk reduction**. Once TP1 fires:
+- A partial profit is locked (the leg1 close)
+- The remaining position becomes "free to run" (SL ratchets to BE)
+- The geometry has empirically validated direction-correctness — the impulse was real
+
+This is why TP1 is set tight (0.5-0.8×ATR), not aspirational. Hitting it doesn't end the trade; it **enables** the trade to proceed safely.
+
+**H2 — Retracement patterns are a real-time signal, not noise.**
+
+Standard EAs filter retracement out (smooth the price, use trailing SL with wide stops). FORGE reads retracement as **information**:
+- 1 retrace after TP1 → likely continuation (no L3 fire yet)
+- 2-3 retraces within 5 M5 bars → regime is shifting from impulse to chop → **L3 tighten triggers**
+- Continuation through prior swing extreme → regime is confirming impulse → **L5 extend triggers**
+
+The retracement count + magnitude is itself an atom that drives the bank-vs-hold decision. The trail_pts formula in `FORGE.mq5:3224` (`MathMax` over trigger_pts, ATR, fixed floor) is the algorithmic embodiment.
+
+**H3 — Conviction decays continuously and must be tracked continuously.**
+
+L4 conviction-decay (`conviction_decay_l1/l2/l3_ratio`) measures **current MFE vs initial MFE**. When the ratio drops to 75% → 50% → 25%, the position is "decaying" — the original conviction at entry is no longer being validated by price. Partial closes scale down exposure as conviction erodes. This is unique to FORGE — most EAs either hold full size or close all; the **graduated decay** is what lets FORGE survive a partial reversal without giving everything back.
+
+### §0.4 What makes FORGE's ratchet structurally unique
+
+Five architectural choices that aren't found together in any other system:
+
+1. **Four-layer stack with strict ordering** (L1→L2→L3→L4). Each layer has a distinct trigger and a distinct effect. Retail EAs typically have one trailing mechanism that conflates all four into a single SL-trail rule.
+2. **L3 TIGHTENS the TP** (not just trails it). Most "TP trail" implementations only EXTEND TP as price moves favorably. FORGE pulls TP CLOSER to entry on retracement risk — the opposite of conventional thinking. This is what banked the +$65.12 on G5001's leg2 that would otherwise have been $0.
+3. **Multi-leg native architecture**. The ratchet treats a 2-3 leg group as a single risk unit. SL ratchets are computed per-leg but anchored to group events (TP1 fires on leg1 → SL ratchets on leg2 AND leg3). Most retail EAs are single-position per ticket.
+4. **Regime-aware fork between EXTEND (L5) and TIGHTEN (L3)**. Same surviving leg, different decisions depending on whether the post-TP1 price action shows continuation pattern or chop pattern. Few systems have this branch.
+5. **MFE-ratio decay (L4) as a continuous risk-down**. Most systems either hold full position or fully close. The graduated 0.75 → 0.50 → 0.25 thresholds let FORGE bleed exposure gradually as conviction erodes — preserving optionality on a true continuation while protecting locked profit on a fade.
+
+### §0.5 Empirical motivation — what would happen WITHOUT the ratchet
+
+Per §3.3 counter-factual math on G5001:
+
+- **With ratchet stack**: +$103.84 banked (0 downside)
+- **L2 disabled**: leg2 SL stays at original 4559.62; M5 retrace to 4546 would have hit it → leg2 closes at **−$26.50**, net trade = +$12.22
+- **L3 disabled**: leg2 TP stays at original 4538.58; reached around 18:11 BUT the intermediate M5 retrace to 4546 hits the BE-ratcheted SL first → leg2 = **$0**, net = +$38.72
+- **Both disabled**: same as "L2 disabled" → +$12.22
+
+Without the ratchet stack, G5001 is a **+$12 trade, not a +$104 trade**. Multiply that across the 21 wins / 4 losses today (~25 closed deals, net +$108.57 banked pre-G5001) and the ratchet is plausibly responsible for **2-5× the realized P&L** vs the same entry logic with naive exit.
+
+This is the empirical justification for the architectural complexity — without the ratchet, FORGE's entry edge gets eaten by retracement before it can compound.
+
+### §0.6 Design principles to preserve when modifying the ratchet
+
+Future modifications must respect these invariants (encoded as anti-patterns in §7):
+
+1. **Order matters**. L1 must fire before L2; L2 must fire before L3. Reordering breaks the "$0 minimum guarantee" math.
+2. **Direction-only movement**. SL only moves toward entry (BUY: up; SELL: down). TP only tightens toward entry on retrace, only extends away from entry on continuation. Never the reverse.
+3. **Group-aware semantics**. A group of legs is a single risk unit. SL ratchets are anchored to group events, not per-leg events.
+4. **Idempotent broker calls**. Repeated `OrderModify` calls with the same target return "no change" gracefully; they don't spam the broker. This is what the "0 positions modified" log lines mean (§3.4).
+5. **Regime fork explicit**. EXTEND (L5) vs TIGHTEN (L3) is a deliberate regime decision based on retracement count + ADX. Don't let one path silently dominate the other.
+
+If a proposed change violates any of these, it's not a ratchet evolution — it's a different system that should ship under a different name with its own A/B knob.
+
+### §0.7 Naming convention origin
+
+The term "ratchet" is operator-coined. It captures the **one-way nature** of the mechanism: a ratchet (the mechanical kind) only moves in one direction; it can't slip back. SL once ratcheted to BE can never fall back below entry. TP once tightened never widens back to the original target. The mechanical metaphor is exact.
+
+This is distinct from:
+- **Trail** (`stop trail`) — a continuous follow that can also retreat
+- **Cascade** — multi-leg pendings stacked behind entry (different mechanism, lives in FMSR / Track A doc)
+- **Decay** — partial-close on MFE erosion (L4 specifically; subset of ratchet, not a synonym)
+
+When writing code, comments, or future docs, prefer "ratchet" for the one-way locked-direction mechanism. Use the other terms for their specific cousins.
+
+---
+
 ## §1 Why this doc exists
 
 Every winning FORGE trade is the product of two things:
@@ -26,6 +129,172 @@ Once a multi-leg entry fires (e.g. MOMENTUM_DUMP with TP1 + TP2 legs), the stack
 Optional extension layers (Mode-dependent):
 - **L5** TP3 dynamic stretch (`tp3_mode=1`) at `FORGE.mq5:3443` — only fires when a 3rd leg was armed at entry time (currently MOMENTUM_DUMP ships 2 legs, so L5 is dormant for that setup)
 - **L6** Pre-TP1 recovery arm (v2.7.122 P1, FMSR Track A) at `ArmPreTP1Recovery` — fires when MFE ≤ 0 AND adverse ≥ 1.5×ATR AND no TP1 hit (bad-trade-state rescue, not bank-on-retrace)
+
+## §2.5 ASCII flow diagrams
+
+These diagrams show the ratchet stack visually. **BUY direction** is the primary illustration (price climbs from entry upward); SELL is the mirror (see §2.5.5).
+
+### §2.5.1 The level map at entry (state 0)
+
+At the moment the trade fires, all targets and stops are set. Distances are illustrative; real values come from per-setup `tp1/tp2/tp3_atr_mult` and `sl_atr_mult` knobs.
+
+```
+ price
+   ▲
+   │
+   │  TP3_initial  ───────●────── e.g. entry + 3.5×ATR    (3rd-leg target — only if multi-leg ladder armed)
+   │                      │
+   │                      │
+   │  TP2_initial  ───────●────── e.g. entry + 2.0×ATR    (2nd-leg target)
+   │                      │
+   │  TP1_initial  ───────●────── e.g. entry + 0.7×ATR    (1st-leg "scalp bank" target)
+   │                      │
+   │  ENTRY (E)    ━━━━━━━◆━━━━━━ filled price            ◆ = position open
+   │                      │
+   │                      │
+   │  SL_initial   ───────●────── e.g. entry − 1.5..4×ATR (initial stop, ATR-anchored)
+   │
+   ▼
+```
+
+### §2.5.2 The 4 ratchet states (left-to-right time flow)
+
+```
+ state 0                state 1                  state 2                  state 3
+ (entry)                (post-L1 TP1)            (post-TP2 fire)          (continuation break)
+                                                                          ┌─ L3 stretch (TP3 extends)
+─────────────────       ─────────────────         ─────────────────         ─────────────────
+                                                                          ▲
+  TP3 ●                   TP3 ●                    TP3 ●                    TP3_ext ●━━━━━━━━━ ◀── extended
+                                                                            (initial TP3 was here)
+                                                                          │
+  TP2 ●                   TP2 ●                    TP2 ✓ ✗  filled         TP2 ✗ (closed)
+                                                                          │
+  TP1 ●                   TP1 ✓ ✗  filled         TP1 ✗ (closed)          TP1 ✗ (closed)
+                                                                          │
+   E  ◆                    E ◆                     E ◆                      E ◆
+                                                                          │
+                          SL ●  ◀ ratcheted        SL ●  ◀ ratcheted       SL ●  (or trailed up
+  SL ●                          to ENTRY (BE)            to TP1 (locks            with structure)
+   (initial SL)                                          partial profit)
+```
+
+**State 0 → 1**: leg1 hits **TP1 native** (L1 fire). Broker auto-closes leg1 at the TP1 limit. Comment: `[tp <TP1_price>]`.
+
+**State 1 → 2**: within ~6 seconds of L1, the **`move_be_on_tp1` ratchet (L2)** moves SL on every remaining leg to the **ENTRY price** (breakeven). The trade now has **zero downside risk** — worst case all remaining legs close at $0 if price reverses fully.
+
+**State 2 → 3 (good path)**: leg2 hits **TP2 native**. SL ratchets again — this time to **TP1 price** on leg3 (locking in TP1-distance of profit even if leg3 never fires). On a continuation break (price closes above prior swing high, h1 ADX rises, or operator-defined `tp3_mode=1` trigger fires), **TP3 extends** further from entry (L5 / dynamic stretch). Leg3 now chases more profit on the validated trend.
+
+### §2.5.3 The retrace path (what happened on G5001) — TP TIGHTEN, not extend
+
+When the price-action between L1 and L2 shows **multiple retracement attempts** (not a clean continuation), L3 fires instead of L5. TP tightens INWARD toward entry to bank before the next retrace erases it:
+
+```
+                  retrace #1     retrace #2     retrace #3
+                       ▲              ▲              ▲
+                       │              │              │
+  TP3 ●                │              │              │            TP3 ●  (untouched)
+                       │              │              │
+  TP2_initial ●━━━━━━━━┿━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━┿━━━━━━━━━━━ TP2_init ●
+                       │              │              │            ━━━━━━━━━━━━ ◀── L3 tighten
+  TP2_tight   ━━━━━━━━━┿━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━┿━━━━━━━━●━ TP2_tight ●     pulled INWARD
+                       │              │              │            (closer to entry)
+  TP1 ✓ ✗ filled       │              │              │            TP1 ✗ (closed)
+   (leg1 banked +$X)   │              │              │
+                       ▼              ▼              ▼
+                                                                  
+  E ◆                                                              E ◆
+                                                                  
+  SL_at_BE ●  ◀ ratcheted to entry on L1                          SL_at_BE ●  (unchanged)
+```
+
+The L3 calc (`FORGE.mq5:3224`):
+```
+trail_pts = MathMax(12.0,
+              MathMax(trigger_pts × (is_bounce ? 0.95 : 0.80),
+                      m5_atr_pts   × (is_bounce ? 1.20 : 0.90)))
+```
+chooses the **most conservative (widest) tighten** of three sources, so the TP doesn't ratchet on a single volatile bar. G5001's TP2 tightened from 4538.58 → 4543.73 (2.85 pts inward) after the retrace pattern accumulated.
+
+### §2.5.4 The SL ratchet path (BE → TP1 → TP2 → structure trail)
+
+SL is the primary risk-management ratchet. It only moves in the favorable direction (UP for BUY, DOWN for SELL) — never against the trade.
+
+```
+ price
+   ▲
+   │  ┌──────── TP2 fires here   ▶▶▶  SL ratchets to ◀── 4th rung
+   │  │                                                  TP1 price
+   │  ●●●●●  ▶▶▶  SL ratchets to TP1 price (state 2)
+   │  │                                                  
+   │  ●●●●●  ▶▶▶  SL ratchets to ENTRY/BE (state 1)     ◀── 3rd rung
+   │  │                                                  
+   │  ◆ ENTRY                                            ◀── 2nd rung
+   │
+   │
+   │
+   │  ●●●●●  ▶▶▶  SL at initial position (state 0)      ◀── 1st rung (highest risk)
+   │
+   ▼
+                       state 0       state 1       state 2       state 3
+                       (entry)       (post-TP1)    (post-TP2)    (cont. break or
+                                                                  structure trail)
+```
+
+The SL **never goes back down** once ratcheted — even if price retraces, the locked SL holds the worst-case at the ratcheted level. Combined with TP fires, this is what creates the "$0 minimum, +$X locked" math from §3.3.
+
+### §2.5.5 SELL direction (mirror)
+
+For a SELL trade, every level inverts. Price falls from entry; targets are BELOW, SL is ABOVE:
+
+```
+ price
+   ▲
+   │  SL_initial   ───────●────── e.g. entry + 1.5..4×ATR (initial stop, ABOVE entry)
+   │
+   │
+   │  ENTRY (E)    ━━━━━━━◆━━━━━━ filled price
+   │
+   │  TP1_initial  ───────●────── e.g. entry − 0.7×ATR    (1st leg target, BELOW)
+   │
+   │  TP2_initial  ───────●────── e.g. entry − 2.0×ATR
+   │
+   │  TP3_initial  ───────●────── e.g. entry − 3.5×ATR
+   │                      │
+   │  TP3_extended ───────●────── ◀── on continuation DOWN-break, TP3 extends FURTHER below
+   │
+   ▼
+```
+
+Ratchet logic is symmetric: SL ratchets DOWN (toward entry, then toward TP1 price) on L1/L2/L3 events. TP3 extends DOWNWARD on continuation breaks. G5001 (the canonical SELL case study in §3) used exactly this mirror.
+
+### §2.5.6 TP3 extension trigger — when does L5 fire instead of L3?
+
+The fork between **TP3 EXTEND** (L5, more profit) and **TP TIGHTEN** (L3, bank early) depends on the post-TP1 price-action pattern:
+
+```
+ After TP1 fires (state 1), the next 2-5 M5 bars decide:
+
+                   ┌─ price keeps trending favorable WITHOUT
+ STRUCTURE BREAK ──┤  retracing past 0.5×ATR back toward entry      ──▶  L5: TP3 EXTENDS
+ (continuation)    │  + h1 ADX rises OR price closes past prior          (chase more profit)
+                   │  swing extreme (BUY: prior swing high;
+                   │   SELL: prior swing low)
+                   │
+                   └─ tp3_mode=1 ATR-stretch OR tp3_mode=2 structure-anchored
+
+
+                   ┌─ price oscillates back-and-forth between TP1
+ RETRACE PATTERN ──┤  and entry 2+ times within 5 M5 bars            ──▶  L3: TP2/TP3 TIGHTEN
+ (chop)            │                                                       (bank before reversal)
+                   │
+                   └─ trail_pts formula (§2.5.3) computes inward TP
+                      shift; SL stays at BE/TP1 from L2
+```
+
+In practice both can fire on the same trade at different times: L3 may tighten TP2 first, then if a continuation break appears after TP2 fires, L5 can extend TP3 on the surviving leg3. They're not mutually exclusive — they're **regime-aware**.
+
+---
 
 ## §3 The G5001 canonical case study (2026-05-15)
 
@@ -185,3 +454,5 @@ FMSR (Fast-Market Sweep Rescue, `docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md`) handle
 ## §9 Changelog
 
 - **2026-05-15** — initial canonical doc, written in response to operator question "does the price tracking logic work to help bank?" after G5001 (+$103.84). Captures 4-layer ratchet stack (L1 TP1 native + L2 SL ratchet + L3 TP tighten + L4 conviction decay) with code-line cites + canonical case study + counter-factual math + future Mode-B enhancements + anti-patterns. Cross-linked to skill §I.13.3 Pattern P1 + glossary §8 (which now references this doc as the ratchet authority).
+- **2026-05-15** — added §2.5 ASCII flow diagrams (level map at entry, 4-state flow, retrace path showing L3 tighten, SL ratchet path, SELL mirror, L3-vs-L5 fork decision tree) per operator request "add the ASCII of the ratchet system here, illustrate with TP1 and TP2 and potential TP3".
+- **2026-05-15** — added §0 design philosophy + motivation (the trading problem, why standard EAs don't solve it, three operator-tested hypotheses H1/H2/H3, five structural uniqueness traits, empirical motivation via counter-factuals, design invariants to preserve, naming-convention origin) per operator request "define the idea and motivation behind the creation of our ratchet system in forge. This is unique to forge".
