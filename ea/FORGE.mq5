@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.181"
+#property version "2.182"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -9352,6 +9352,15 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN htf_h1_strong INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN intraday_label TEXT DEFAULT '';");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN intraday_counter_htf INTEGER DEFAULT 0;");
+   // v2.7.116 — backfill 3 columns that were added to CREATE TABLE but never had an
+   //   ALTER migration. Discovered 2026-05-14: live FORGE_journal_XAUUSD.db (created
+   //   before these columns existed) silently failed every signal INSERT for 6+ days
+   //   ("database error, table SIGNALS has no column named macd_histogram"). TRADES
+   //   were unaffected because that INSERT doesn't reference these columns. ALTERs
+   //   are idempotent — no-op on DBs that already have them (newer fresh DBs).
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN macd_histogram REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_adx REAL;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN lot_factor REAL;");
    // 2.7.37 — Layer-4 atom telemetry (24 columns; additive ALTERs are no-ops if column exists)
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN h4_trend REAL;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN m15_trend REAL;");
