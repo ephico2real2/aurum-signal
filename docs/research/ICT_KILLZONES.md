@@ -6,6 +6,13 @@
 >
 > **Audience**: FORGE EA (XAUUSD scalper). Forex-pair-only sections kept for completeness
 > but recommendations are tuned for gold.
+>
+> **Canonical FORGE surface**: this doc is the ICT-canon research reference. The
+> **canonical FORGE killzone surface** (5 windows + 3 Silver Bullet sub-windows, with
+> implementation review of `ComputeCurrentKillzoneLabel()` vs. the v2.7.120 `IctLiquidity.mqh`
+> helpers) lives in `docs/FORGE_SETUP_ICT_MAP.md §B.2` + `§B.7`. Use this doc for ICT theory,
+> citations, and the Approach B MQL5 reference; use §B.7 for the FORGE-specific divergence
+> analysis and the v2.7.122 alignment plan.
 
 ---
 
