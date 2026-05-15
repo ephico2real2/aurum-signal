@@ -497,6 +497,13 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_SELL_LIMIT_RECOVERY_LOT_FACTOR":   ("bb_breakout", "sell_limit_recovery_lot_factor",   "float", 0.0, 1.0),
     "FORGE_SELL_LIMIT_RECOVERY_EXPIRY_BARS":  ("bb_breakout", "sell_limit_recovery_expiry_bars",  "int",   1.0, 20.0),
     "FORGE_SELL_LIMIT_RECOVERY_SL_ATR_MULT":  ("bb_breakout", "sell_limit_recovery_sl_atr_mult",  "float", 0.1, 5.0),
+    # v2.7.122 — Pre-TP1 recovery arm (P1 per docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md §15.3).
+    # Same-direction LIMIT placed at adverse swing extreme when primary is in bad-trade-state
+    # (no MFE AND adverse ≥ N×ATR AND TP1 not yet hit). Default-OFF.
+    "FORGE_RECOVERY_PRE_TP1_ENABLED":            ("bb_breakout", "recovery_pre_tp1_enabled",            "bool01", None, None),
+    "FORGE_RECOVERY_PRE_TP1_MIN_ADVERSE_ATR":    ("bb_breakout", "recovery_pre_tp1_min_adverse_atr",    "float",  0.5,  10.0),
+    "FORGE_RECOVERY_PRE_TP1_MAX_LEGS_PER_GROUP": ("bb_breakout", "recovery_pre_tp1_max_legs_per_group", "int",    1.0,  5.0),
+    "FORGE_RECOVERY_PRE_TP1_COOLDOWN_SECONDS":   ("bb_breakout", "recovery_pre_tp1_cooldown_seconds",   "int",    60.0, 7200.0),
     # v2.7.117 — cascade-recovery safety TP. Default 2.0× ATR. Applied to BUY_LIMIT_RECOV,
     # SELL_LIMIT_RECOVERY, and (fallback) BUY_STOP_CONT / SELL_STOP_CONT when their own
     # tp_atr_mult <= 0. Live-broker requirement: never leave cascade fills open without
