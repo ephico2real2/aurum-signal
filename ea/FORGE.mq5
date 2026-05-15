@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.191"
+#property version "2.192"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -70,7 +70,7 @@
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
 
-const string FORGE_VERSION = "2.7.121";
+const string FORGE_VERSION = "2.7.122";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -9422,7 +9422,11 @@ bool JournalInit() {
       "ict_sweep_level REAL DEFAULT 0, "
       "ict_equal_highs_count INTEGER DEFAULT 0, "
       "ict_equal_lows_count INTEGER DEFAULT 0, "
-      "ict_killzone_active INTEGER DEFAULT 0"
+      "ict_killzone_active INTEGER DEFAULT 0, "
+      // v2.7.122 — ict_sweep_rejection_score: 0..1 wick-quality score from
+      //   ScoreLiquiditySweep (Forge\IctLiquidity.mqh). Bound by JournalRecordSignal
+      //   from g_ict_last_sweep_rejection_score. LOG-ONLY — defaults to 0.
+      "ict_sweep_rejection_score REAL DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -9617,6 +9621,10 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_equal_highs_count INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_equal_lows_count INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_killzone_active INTEGER DEFAULT 0;");
+   // v2.7.122 — ict_sweep_rejection_score: 0..1 wick-quality score from ScoreLiquiditySweep.
+   //   Bound by JournalRecordSignal from g_ict_last_sweep_rejection_score (Forge\IctLiquidity.mqh).
+   //   LOG-ONLY; idempotent ALTER (no-op if column already exists).
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_sweep_rejection_score REAL DEFAULT 0;");
    // v2.7.122 — Pre-TP1 recovery armed flag (idempotent, no-op if column already exists)
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN pre_tp1_recovery_armed INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
@@ -9848,6 +9856,9 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "ict_choch_buy_count, ict_choch_sell_count, ict_choch_level, "
       "ict_liquidity_sweep_recent, ict_sweep_level, "
       "ict_equal_highs_count, ict_equal_lows_count, ict_killzone_active, "
+      // v2.7.122 — ict_sweep_rejection_score: 0..1 wick-quality score from
+      //   ScoreLiquiditySweep (Forge\IctLiquidity.mqh). Bound from g_ict_last_*.
+      "ict_sweep_rejection_score, "
       // v2.7.122 — Pre-TP1 recovery armed flag (1 = this tick armed a pre-TP1 recovery)
       "pre_tp1_recovery_armed"
       ") VALUES ("
@@ -9992,6 +10003,8 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_ict_last_equal_highs_count)             + ", "
       + IntegerToString(g_ict_last_equal_lows_count)              + ", "
       + IntegerToString(g_ict_last_killzone_active)               + ", "
+      // v2.7.122 — ict_sweep_rejection_score (0..1 from ScoreLiquiditySweep)
+      + DoubleToString(g_ict_last_sweep_rejection_score, 4)       + ", "
       // v2.7.122 — Pre-TP1 recovery armed flag (cleared each tick in ManageOpenGroups,
       // set in ArmPreTP1Recovery on successful OrderSend)
       + IntegerToString(g_pre_tp1_recov_armed_this_tick)
