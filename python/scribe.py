@@ -250,6 +250,8 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     ict_equal_highs_count      INTEGER DEFAULT 0,
     ict_equal_lows_count       INTEGER DEFAULT 0,
     ict_killzone_active        INTEGER DEFAULT 0,
+    -- v2.7.122 ict_sweep_rejection_score: 0..1 wick-quality score from ScoreLiquiditySweep
+    ict_sweep_rejection_score  REAL    DEFAULT 0,
     -- v2.7.122 Pre-TP1 recovery armed flag (1 = this tick armed a pre-TP1 recovery LIMIT)
     pre_tp1_recovery_armed     INTEGER DEFAULT 0
 );
@@ -704,6 +706,8 @@ class Scribe:
                     ict_equal_highs_count INTEGER DEFAULT 0,
                     ict_equal_lows_count INTEGER DEFAULT 0,
                     ict_killzone_active INTEGER DEFAULT 0,
+                    -- v2.7.122 ict_sweep_rejection_score: 0..1 wick-quality score from ScoreLiquiditySweep
+                    ict_sweep_rejection_score REAL DEFAULT 0,
                     -- v2.7.122 Pre-TP1 recovery armed flag (1 = this tick armed pre-TP1 recovery)
                     pre_tp1_recovery_armed INTEGER DEFAULT 0
                 );
@@ -915,6 +919,17 @@ class Scribe:
                 except sqlite3.OperationalError as _e:
                     if "duplicate column" not in str(_e).lower():
                         raise
+        # v2.7.122 — ict_sweep_rejection_score (1 REAL col; LOG-ONLY).
+        #   0..1 wick-quality score from ScoreLiquiditySweep (Forge\IctLiquidity.mqh).
+        #   Computed at chokepoint into g_ict_last_sweep_rejection_score, bound by
+        #   JournalRecordSignal. Default 0 keeps pre-v2.7.122 rows valid.
+        if "ict_sweep_rejection_score" not in fs_cols:
+            try:
+                conn.execute("ALTER TABLE forge_signals ADD COLUMN ict_sweep_rejection_score REAL DEFAULT 0")
+                log.info("SCRIBE migration: added ict_sweep_rejection_score to forge_signals")
+            except sqlite3.OperationalError as _e:
+                if "duplicate column" not in str(_e).lower():
+                    raise
         # v2.7.122 — Pre-TP1 recovery armed flag (1 INTEGER col; LOG-ONLY).
         #   Set inside ArmPreTP1Recovery (ea/FORGE.mq5) on successful OrderSend, cleared
         #   at top of each tick's ManageOpenGroups. Captured in SIGNALS via
@@ -1291,6 +1306,10 @@ class Scribe:
                 "ict_equal_lows_count", "ict_killzone_active",
             ]
             has_v120_ict_p2 = all(c in src_cols for c in v120_ict_p2_cols)
+            # v2.7.122 — ict_sweep_rejection_score (1 REAL col; LOG-ONLY).
+            #   0..1 wick-quality score from ScoreLiquiditySweep. Wired in v2.7.122
+            #   alongside pre_tp1_recovery_armed.
+            has_ict_sweep_rej = "ict_sweep_rejection_score" in src_cols
             # v2.7.122 — Pre-TP1 recovery armed flag (1 INTEGER col; LOG-ONLY)
             has_pre_tp1_recov = "pre_tp1_recovery_armed" in src_cols
 
@@ -1472,6 +1491,8 @@ class Scribe:
                 + (", " + ", ".join(v119_ict_ctx_cols) if has_v119_ict_ctx else ", " + ", ".join(["0"] * len(v119_ict_ctx_cols)))
                 # 2.7.120 — ICT Phase-2 atom context — 8 cols (REAL/INTEGER mixed), all-or-nothing
                 + (", " + ", ".join(v120_ict_p2_cols) if has_v120_ict_p2 else ", " + ", ".join(["0"] * len(v120_ict_p2_cols)))
+                # v2.7.122 — ict_sweep_rejection_score (1 REAL col; LOG-ONLY)
+                + (", ict_sweep_rejection_score" if has_ict_sweep_rej else ", 0")
                 # v2.7.122 — Pre-TP1 recovery armed flag (1 INTEGER col; LOG-ONLY)
                 + (", pre_tp1_recovery_armed" if has_pre_tp1_recov else ", 0")
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
@@ -1531,14 +1552,17 @@ class Scribe:
                 #   Mix of INTEGERs (counts, killzone enum, sweep-recent flag) and REALs
                 #   (level prices). sqlite3 handles both via the same param binding.
                 v120_ict_p2_vals = tuple(r[127 + i] if len(r) > 127 + i else 0 for i in range(8))
-                # v2.7.122 — Pre-TP1 recovery armed flag at r[135] (1 INTEGER col)
-                pre_tp1_recov_val = r[135] if len(r) > 135 else 0
+                # v2.7.122 — ict_sweep_rejection_score at r[135] (1 REAL col; 0..1 wick quality)
+                ict_sweep_rej_val = r[135] if len(r) > 135 else 0
+                # v2.7.122 — Pre-TP1 recovery armed flag at r[136] (1 INTEGER col)
+                pre_tp1_recov_val = r[136] if len(r) > 136 else 0
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
                     htf_h1_strong_val, intraday_label_val, intraday_counter_htf_v,
                     *v37_vals, *v37g3_vals, *v110_ces_vals,
                     *v112_iss_vals, *v119_ict_ctx_vals, *v120_ict_p2_vals,
+                    ict_sweep_rej_val,
                     pre_tp1_recov_val,
                 ))
                 synced_ids.append(fid)
@@ -1599,6 +1623,10 @@ class Scribe:
                         "ict_choch_buy_count, ict_choch_sell_count, ict_choch_level, "
                         "ict_liquidity_sweep_recent, ict_sweep_level, "
                         "ict_equal_highs_count, ict_equal_lows_count, ict_killzone_active, "
+                        # v2.7.122 — ict_sweep_rejection_score (1 REAL col; LOG-ONLY).
+                        # 0..1 wick-quality score from ScoreLiquiditySweep, bound from
+                        # g_ict_last_sweep_rejection_score (Forge\IctLiquidity.mqh).
+                        "ict_sweep_rejection_score, "
                         # v2.7.122 — Pre-TP1 recovery armed flag (1 INTEGER col; LOG-ONLY)
                         # Set inside ArmPreTP1Recovery (FORGE.mq5) on successful OrderSend,
                         # cleared at top of each tick's ManageOpenGroups.
@@ -1609,12 +1637,13 @@ class Scribe:
                         # v2.7.119 adds 5 ISS (retroactive) + 9 ICT context cols → total now
                         # 41 + 24 + 45 + 7 + 5 + 9 = 131.
                         # v2.7.120 adds 8 ICT Phase-2 context cols → 41 + 24 + 45 + 7 + 5 + 9 + 8 = 139.
-                        # v2.7.122 adds 1 pre_tp1_recovery_armed col → 41+24+45+7+5+9+8+1 = 140.
+                        # v2.7.122 adds 1 pre_tp1_recovery_armed + 1 ict_sweep_rejection_score
+                        #   = 41+24+45+7+5+9+8+2 = 141.
                         # If you add/remove a column in the col list ABOVE, bump both the
                         # count below AND the matching *_vals tuple build above. (See
                         # forge-monitor SKILL.md Check C — v2.7.45/47 historical incident
                         # where this drifted silently.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 1)) + ")",
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 2)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)
