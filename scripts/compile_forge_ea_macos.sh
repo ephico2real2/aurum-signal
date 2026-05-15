@@ -46,6 +46,27 @@ if [[ -f "${ORPHAN_JSON}" ]]; then
 fi
 echo "✓ Synced FORGE.mq5 → Wine Experts/"
 
+# ── v2.7.118 — Sync ea/include/**/*.mqh modules to Wine MQL5/Include/ ──
+# MQL5 #include <Path\foo.mqh> resolves against MQL5/Include/. Modular FORGE
+# (v2.7.118+) splits ICT / utility logic out of the monolithic FORGE.mq5
+# into the Forge/ namespace, referenced via <Forge\IctStructure.mqh> etc.
+# Mirrors the source tree at ea/include/ to <wine>/MQL5/Include/ recursively.
+INCLUDE_SRC_DIR="${ROOT}/ea/include"
+INCLUDE_DST_DIR="${MT5_DIR}/MQL5/Include"
+if [[ -d "${INCLUDE_SRC_DIR}" ]]; then
+  MQH_COUNT=0
+  while IFS= read -r -d '' mqh; do
+    rel="${mqh#${INCLUDE_SRC_DIR}/}"
+    dst="${INCLUDE_DST_DIR}/${rel}"
+    mkdir -p "$(dirname "${dst}")"
+    cp -f "${mqh}" "${dst}"
+    MQH_COUNT=$((MQH_COUNT + 1))
+  done < <(find "${INCLUDE_SRC_DIR}" -type f -name "*.mqh" -print0)
+  if [[ ${MQH_COUNT} -gt 0 ]]; then
+    echo "✓ Synced ${MQH_COUNT} .mqh module(s) → Wine MQL5/Include/ (mirroring source tree)"
+  fi
+fi
+
 # Sync scalper_config.json to Common Files so FORGE reads the latest at runtime.
 COMMON_FILES="${WINE_BASE}/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files"
 SCALPER_CFG="${ROOT}/config/scalper_config.json"
