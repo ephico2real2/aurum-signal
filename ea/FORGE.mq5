@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.190"
+#property version "2.191"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -70,7 +70,7 @@
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
 
-const string FORGE_VERSION = "2.7.120";
+const string FORGE_VERSION = "2.7.121";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -14694,6 +14694,29 @@ void CheckNativeScalperSetups() {
    // Floor ensures no entry falls below 0.01 regardless of how many reducers stack.
    double combined_lot_factor = MathMax(0.125, scalper_lot_factor_eff * inside_band_factor * near_floor_factor * stack_factor * adx_lot_factor * bounce_factor * dump_factor * dump_pyramid_factor * dump_dist_amplifier * dump_kz_amplifier * mdct_factor * bbr_factor * tcb_factor * tcs_factor * pullback_factor * intraday_reversal_factor * fractional_sell_factor * bull_day_dip_factor * ma_crossover_factor * vwap_reversion_factor * fib_confluence_factor * inside_bar_factor * bb_squeeze_factor * orb_factor * gap_and_go_factor * double_pattern_factor * hs_factor * flag_pennant_factor * trendline_bounce_factor * sr_flip_factor * fast_trend_factor);
    g_last_combined_lot_factor = combined_lot_factor;
+   // v2.7.121 — Per-factor lot-breakdown instrumentation (operator-mandated 2026-05-15).
+   //   Logs each factor's value at fire-time so the recurring "G5001=0.469 vs G5002=0.313"
+   //   pattern can be diagnosed by grep (no schema change — text log only). The factors most
+   //   likely to vary between two same-setup signals are listed FIRST. Output format is
+   //   key=value pairs separated by spaces so it can be parsed by awk / split later.
+   //   Fires on every entry-trigger evaluation (both TAKEN and SKIP paths reach this point).
+   PrintFormat(
+      "FORGE 2.7.121 LOT-BREAKDOWN: %s %s combined=%.4f base=%.2f lot_mult=%.3f → lot=%.2f | "
+      "scalper_eff=%.3f stack=%.3f dump=%.3f dump_pyramid=%.3f dump_dist=%.3f dump_kz=%.3f "
+      "mdct=%.3f tcb=%.3f tcs=%.3f bbr=%.3f bounce=%.3f pullback=%.3f intraday_rev=%.3f "
+      "fractional_sell=%.3f bull_day_dip=%.3f fast_trend=%.3f near_floor=%.3f inside_band=%.3f "
+      "adx_lot=%.3f ma_crossover=%.3f vwap_rev=%.3f fib_confluence=%.3f inside_bar=%.3f "
+      "bb_squeeze=%.3f orb=%.3f gap_and_go=%.3f double_pattern=%.3f hs=%.3f flag_pennant=%.3f "
+      "trendline_bounce=%.3f sr_flip=%.3f",
+      setup_type, direction, combined_lot_factor, g_sc.lot_fixed, lot_mult,
+      NormalizeLot(g_sc.lot_fixed * lot_mult * combined_lot_factor),
+      scalper_lot_factor_eff, stack_factor, dump_factor, dump_pyramid_factor, dump_dist_amplifier, dump_kz_amplifier,
+      mdct_factor, tcb_factor, tcs_factor, bbr_factor, bounce_factor, pullback_factor, intraday_reversal_factor,
+      fractional_sell_factor, bull_day_dip_factor, fast_trend_factor, near_floor_factor, inside_band_factor,
+      adx_lot_factor, ma_crossover_factor, vwap_reversion_factor, fib_confluence_factor, inside_bar_factor,
+      bb_squeeze_factor, orb_factor, gap_and_go_factor, double_pattern_factor, hs_factor, flag_pennant_factor,
+      trendline_bounce_factor, sr_flip_factor
+   );
    // 2.7.40 — base_lot is now ALWAYS g_sc.lot_fixed (single absolute source of truth).
    //   The old MT5-input absolute override (ScalperLot) is gone; size-up/down happens via the
    //   ScalperLotFactor multiplier above. INPUTS lot_sizing_source still controls leg count.
