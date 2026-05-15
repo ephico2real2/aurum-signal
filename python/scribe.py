@@ -261,7 +261,23 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     atom_htf_aligned              INTEGER DEFAULT 0,
     atom_pullback_in_ote          INTEGER DEFAULT 0,
     atom_premium_discount_aligned INTEGER DEFAULT 0,
-    atom_fvg_on_reversal_leg      INTEGER DEFAULT 0
+    atom_fvg_on_reversal_leg      INTEGER DEFAULT 0,
+    -- v2.7.124 Phase A expansion (6 INTEGERs) — per-category KZ + per-direction HTF.
+    -- Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2. Reuse existing FORGE_ICT_ATOM_*_ENABLED flags.
+    atom_kz_fav_mss_cont          INTEGER DEFAULT 0,
+    atom_kz_fav_ote               INTEGER DEFAULT 0,
+    atom_kz_fav_liq_sweep         INTEGER DEFAULT 0,
+    atom_kz_fav_breaker           INTEGER DEFAULT 0,
+    atom_htf_aligned_buy          INTEGER DEFAULT 0,
+    atom_htf_aligned_sell         INTEGER DEFAULT 0,
+    -- v2.7.124 Phase B (6 INTEGERs) — composite scores 0-10 per category × direction.
+    -- BREAKER_RETEST deferred until Phase 3 IctOrderBlock.mqh ships.
+    mss_cont_score_buy            INTEGER DEFAULT 0,
+    mss_cont_score_sell           INTEGER DEFAULT 0,
+    ote_retrace_score_buy         INTEGER DEFAULT 0,
+    ote_retrace_score_sell        INTEGER DEFAULT 0,
+    liq_sweep_rev_score_buy       INTEGER DEFAULT 0,
+    liq_sweep_rev_score_sell      INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forge_journal_trades (
@@ -724,7 +740,23 @@ class Scribe:
                     atom_htf_aligned INTEGER DEFAULT 0,
                     atom_pullback_in_ote INTEGER DEFAULT 0,
                     atom_premium_discount_aligned INTEGER DEFAULT 0,
-                    atom_fvg_on_reversal_leg INTEGER DEFAULT 0
+                    atom_fvg_on_reversal_leg INTEGER DEFAULT 0,
+                    -- v2.7.124 Phase A expansion (6 INTEGERs) + Phase B composite scores (6 INTEGERs).
+                    -- Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2. atom_kz_fav_* / atom_htf_aligned_*
+                    -- expand the BUY-context atoms above with all category × direction permutations.
+                    -- *_score_* are the 0-10 weighted composites consumed by Phase B Mode A logging.
+                    atom_kz_fav_mss_cont INTEGER DEFAULT 0,
+                    atom_kz_fav_ote INTEGER DEFAULT 0,
+                    atom_kz_fav_liq_sweep INTEGER DEFAULT 0,
+                    atom_kz_fav_breaker INTEGER DEFAULT 0,
+                    atom_htf_aligned_buy INTEGER DEFAULT 0,
+                    atom_htf_aligned_sell INTEGER DEFAULT 0,
+                    mss_cont_score_buy INTEGER DEFAULT 0,
+                    mss_cont_score_sell INTEGER DEFAULT 0,
+                    ote_retrace_score_buy INTEGER DEFAULT 0,
+                    ote_retrace_score_sell INTEGER DEFAULT 0,
+                    liq_sweep_rev_score_buy INTEGER DEFAULT 0,
+                    liq_sweep_rev_score_sell INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -969,6 +1001,30 @@ class Scribe:
             ("atom_fvg_on_reversal_leg",      "INTEGER DEFAULT 0"),
         ]
         for _col, _decl in _v123_atom_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    if "duplicate column" not in str(_e).lower():
+                        raise
+        # v2.7.124 — Phase A expansion (6 INTEGERs) + Phase B composite scores (6 INTEGERs).
+        #   Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2. Idempotent ALTERs — no-op on existing rows.
+        _v124_atom_score_cols = [
+            ("atom_kz_fav_mss_cont",        "INTEGER DEFAULT 0"),
+            ("atom_kz_fav_ote",             "INTEGER DEFAULT 0"),
+            ("atom_kz_fav_liq_sweep",       "INTEGER DEFAULT 0"),
+            ("atom_kz_fav_breaker",         "INTEGER DEFAULT 0"),
+            ("atom_htf_aligned_buy",        "INTEGER DEFAULT 0"),
+            ("atom_htf_aligned_sell",       "INTEGER DEFAULT 0"),
+            ("mss_cont_score_buy",          "INTEGER DEFAULT 0"),
+            ("mss_cont_score_sell",         "INTEGER DEFAULT 0"),
+            ("ote_retrace_score_buy",       "INTEGER DEFAULT 0"),
+            ("ote_retrace_score_sell",      "INTEGER DEFAULT 0"),
+            ("liq_sweep_rev_score_buy",     "INTEGER DEFAULT 0"),
+            ("liq_sweep_rev_score_sell",    "INTEGER DEFAULT 0"),
+        ]
+        for _col, _decl in _v124_atom_score_cols:
             if _col not in fs_cols:
                 try:
                     conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
@@ -1355,6 +1411,18 @@ class Scribe:
                 "atom_fvg_on_reversal_leg",
             ]
             has_v123_atoms = all(c in src_cols for c in v123_atom_cols)
+            # v2.7.124 — Phase A expansion (6) + Phase B composite scores (6) = 12 INTEGER cols.
+            #   Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2. All-or-nothing presence check; if any
+            #   column is missing on the source we fall back to 0s.
+            v124_atom_score_cols = [
+                "atom_kz_fav_mss_cont", "atom_kz_fav_ote",
+                "atom_kz_fav_liq_sweep", "atom_kz_fav_breaker",
+                "atom_htf_aligned_buy", "atom_htf_aligned_sell",
+                "mss_cont_score_buy", "mss_cont_score_sell",
+                "ote_retrace_score_buy", "ote_retrace_score_sell",
+                "liq_sweep_rev_score_buy", "liq_sweep_rev_score_sell",
+            ]
+            has_v124_atom_scores = all(c in src_cols for c in v124_atom_score_cols)
 
             # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
@@ -1540,6 +1608,8 @@ class Scribe:
                 + (", pre_tp1_recovery_armed" if has_pre_tp1_recov else ", 0")
                 # v2.7.123 — Phase A ICT atom outputs (5 INTEGER cols, all-or-nothing)
                 + (", " + ", ".join(v123_atom_cols) if has_v123_atoms else ", " + ", ".join(["0"] * len(v123_atom_cols)))
+                # v2.7.124 — Phase A expansion (6 cols) + Phase B composite scores (6 cols), all-or-nothing.
+                + (", " + ", ".join(v124_atom_score_cols) if has_v124_atom_scores else ", " + ", ".join(["0"] * len(v124_atom_score_cols)))
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1606,6 +1676,14 @@ class Scribe:
                 #   v123_atom_cols list above: killzone_favorable, htf_aligned,
                 #   pullback_in_ote, premium_discount_aligned, fvg_on_reversal_leg.
                 v123_atom_vals = tuple(r[137 + i] if len(r) > 137 + i else 0 for i in range(5))
+                # v2.7.124 — Phase A expansion (6 INTEGERs) + Phase B composite scores (6
+                #   INTEGERs) at positions r[142]..r[153]. SELECT order fixed by
+                #   v124_atom_score_cols list above: atom_kz_fav_mss_cont,
+                #   atom_kz_fav_ote, atom_kz_fav_liq_sweep, atom_kz_fav_breaker,
+                #   atom_htf_aligned_buy, atom_htf_aligned_sell, mss_cont_score_buy,
+                #   mss_cont_score_sell, ote_retrace_score_buy, ote_retrace_score_sell,
+                #   liq_sweep_rev_score_buy, liq_sweep_rev_score_sell.
+                v124_atom_score_vals = tuple(r[142 + i] if len(r) > 142 + i else 0 for i in range(12))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
@@ -1615,6 +1693,7 @@ class Scribe:
                     ict_sweep_rej_val,
                     pre_tp1_recov_val,
                     *v123_atom_vals,
+                    *v124_atom_score_vals,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1687,7 +1766,17 @@ class Scribe:
                         # Captured by FORGE.mq5 ForgeEvalAtoms() with BUY-direction context
                         # into g_ict_last_atom_* globals; bound by JournalRecordSignal.
                         "atom_killzone_favorable, atom_htf_aligned, atom_pullback_in_ote, "
-                        "atom_premium_discount_aligned, atom_fvg_on_reversal_leg"
+                        "atom_premium_discount_aligned, atom_fvg_on_reversal_leg, "
+                        # v2.7.124 — Phase A expansion (6 INTEGERs) — per-category KZ +
+                        # per-direction HTF. Reuses Phase A enable flags.
+                        "atom_kz_fav_mss_cont, atom_kz_fav_ote, "
+                        "atom_kz_fav_liq_sweep, atom_kz_fav_breaker, "
+                        "atom_htf_aligned_buy, atom_htf_aligned_sell, "
+                        # v2.7.124 — Phase B composite scores (6 INTEGERs; 0-10 weighted sums)
+                        # per docs/FORGE_SETUP_ICT_MAP.md §B.8.2. BREAKER_RETEST deferred.
+                        "mss_cont_score_buy, mss_cont_score_sell, "
+                        "ote_retrace_score_buy, ote_retrace_score_sell, "
+                        "liq_sweep_rev_score_buy, liq_sweep_rev_score_sell"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
                         # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → 117.
@@ -1698,11 +1787,14 @@ class Scribe:
                         #   = 41+24+45+7+5+9+8+2 = 141.
                         # v2.7.123 adds 5 Phase A ICT atom outputs (atom_*_*) cols
                         #   = 41+24+45+7+5+9+8+7 = 146.
+                        # v2.7.124 adds 6 Phase A expansion (per-category KZ + per-direction HTF)
+                        # + 6 Phase B composite scores
+                        #   = 41+24+45+7+5+9+8+19 = 158.
                         # If you add/remove a column in the col list ABOVE, bump both the
                         # count below AND the matching *_vals tuple build above. (See
                         # forge-monitor SKILL.md Check C — v2.7.45/47 historical incident
                         # where this drifted silently.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 7)) + ")",
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 19)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)

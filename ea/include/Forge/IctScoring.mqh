@@ -77,6 +77,25 @@ int g_ict_last_atom_htf_aligned              = 0;
 int g_ict_last_atom_pullback_in_ote          = 0;
 int g_ict_last_atom_premium_discount_aligned = 0;
 int g_ict_last_atom_fvg_on_reversal_leg      = 0;
+// v2.7.124 Phase A expansion — per-category KZ + per-direction HTF atom contexts.
+//   The 2 BUY-context globals above are retained for byte-stable backward compat.
+//   These new globals capture every category × direction permutation the Phase B
+//   composite scorer consumes. Zeroed when the parent *_enabled flag is OFF.
+int g_ict_last_atom_kz_fav_mss_cont    = 0;
+int g_ict_last_atom_kz_fav_ote         = 0;
+int g_ict_last_atom_kz_fav_liq_sweep   = 0;
+int g_ict_last_atom_kz_fav_breaker     = 0;
+int g_ict_last_atom_htf_aligned_buy    = 0;
+int g_ict_last_atom_htf_aligned_sell   = 0;
+// v2.7.124 Phase B — composite scores (0-10 weighted sums per category × direction).
+//   Computed by ComputeCategoryScore(category, direction) per docs/FORGE_SETUP_ICT_MAP.md §B.8.2.
+//   BREAKER_RETEST (category 4) deferred until Phase 3 IctOrderBlock.mqh ships.
+int g_ict_last_mss_cont_score_buy       = 0;
+int g_ict_last_mss_cont_score_sell      = 0;
+int g_ict_last_ote_retrace_score_buy    = 0;
+int g_ict_last_ote_retrace_score_sell   = 0;
+int g_ict_last_liq_sweep_rev_score_buy  = 0;
+int g_ict_last_liq_sweep_rev_score_sell = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Atom_KillzoneFavorable — shared across all 4 ICT setup categories.
@@ -225,6 +244,99 @@ bool Atom_FVGOnReversalLeg(int direction)
    if(px <= 0.0) return false;
    FVGZone out;
    return Forge_GetActiveFVGAlignedWith(dir_str, px, out);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ComputeCategoryScore — v2.7.124 Phase B
+//
+// PURPOSE: Weighted composite scoring per FORGE_SETUP_ICT_MAP.md §B.8.2.
+//   One unified function (NOT branched per category — anti-overfit principle
+//   per §I.8). Variants = parameter sets (category enum + direction).
+//
+// PARAMETERS:
+//   category — 1=MSS_CONT, 2=OTE_RETRACE, 3=LIQ_SWEEP_REV, 4=BREAKER_RETEST
+//   direction — 1=BUY, -1=SELL
+//
+// RETURNS: int 0-10. Higher = more confluence aligned with direction.
+//   Mode A — pure compute + log, no gating. Mode B/C promotion in future ship
+//   with empirical calibration per feedback_supermajority_composite_threshold.
+//
+// CHANGELOG:
+//
+// IMPLEMENTATION NOTES:
+//   - displacement: g_eval_m5_velocity_5bar_signed is ATR-normalized at the source
+//     (see ForgeEvalAtoms — `(close[0]-close[5]) / m5_atr_now`). Threshold = 1.5
+//     compares the normalized magnitude, not raw price-points.
+//   - FVG_unfilled uses g_fvg_ring_count (active FVGs in ring per IctStructure.mqh).
+//     No separate "active count" global — ring counter is the source of truth.
+//   - Atom_PullbackInOTE / Atom_PremiumDiscountAligned live in IctStructure.mqh; the
+//     #include order in FORGE.mq5 brings them in before IctScoring.mqh.
+//
+// CHANGELOG:
+//   2026-05-15 v2.7.124 — Phase B initial ship.
+//     Citations:
+//       MSS_CONT atoms: innercircletrader.net/tutorials/master-ict-kill-zones
+//       OTE atoms: innercircletrader.net/tutorials/ict-optimal-trade-entry-ote-pattern
+//       Premium/Discount: arongroups.co/technical-analyze/ict-equilibrium-zones
+//       HTF alignment: tradeciety.com/multiple-time-frame-analysis
+//       Sweep+ChoCH+FVG: threads.com/@ict_smc_chartist/post/DH-UJkhsf3p
+//     BREAKER_RETEST (category 4) returns 0 until Phase 3 OB module ships.
+// ─────────────────────────────────────────────────────────────────────────────
+int ComputeCategoryScore(int category, int direction)
+{
+   int score = 0;
+
+   if(category == 1) {
+      // MSS_CONTINUATION: MSS(3) + displacement(2) + FVG_aligned(2) +
+      //                   FVG_unfilled(1) + KZ_favorable(1) + HTF_aligned(1)
+      if(g_iss_mss > 0) score += 3;
+      // displacement = velocity_5bar in direction ≥ 1.5×ATR. g_eval_m5_velocity_5bar_signed
+      // is already ATR-normalized in ForgeEvalAtoms ((close[0]-close[5]) / atr), so the
+      // threshold is the raw multiplier (1.5) — not multiplied by ATR again.
+      double v = g_eval_m5_velocity_5bar_signed;
+      if((direction == 1 && v >= 1.5) || (direction == -1 && v <= -1.5))
+         score += 2;
+      // FVG aligned with direction
+      FVGZone fvg_z;
+      double current_price = (direction == 1) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      if(Forge_GetActiveFVGAlignedWith(direction == 1 ? "BUY" : "SELL", current_price, fvg_z)) score += 2;
+      // FVG_unfilled — at least one active FVG in the ring buffer (any direction).
+      // g_fvg_ring_count is the canonical active-count from IctStructure.mqh.
+      if(g_fvg_ring_count > 0) score += 1;
+      if(Atom_KillzoneFavorable(1, direction)) score += 1;
+      if(Atom_HTFAligned(direction)) score += 1;
+   }
+   else if(category == 2) {
+      // OTE_RETRACEMENT: pullback_in_ote(3) + premium_discount(2) + FVG_confluence(2) +
+      //                  OB_confluence(1, Phase3) + KZ_favorable(1) + HTF_aligned(1)
+      if(Atom_PullbackInOTE(direction)) score += 3;
+      if(Atom_PremiumDiscountAligned(direction)) score += 2;
+      FVGZone fvg_z;
+      double current_price = (direction == 1) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      if(Forge_GetActiveFVGAlignedWith(direction == 1 ? "BUY" : "SELL", current_price, fvg_z)) score += 2;
+      // OB_confluence — Phase 3 stub (IctOrderBlock.mqh module not yet shipped)
+      score += 0;
+      if(Atom_KillzoneFavorable(2, direction)) score += 1;
+      if(Atom_HTFAligned(direction)) score += 1;
+   }
+   else if(category == 3) {
+      // LIQ_SWEEP_REV: sweep_detected(3) + sweep_wick_quality(2) + choch_confirmed(2) +
+      //                FVG_on_reversal(2) + KZ_favorable(1)
+      if(g_ict_last_liquidity_sweep_recent > 0) score += 3;
+      if(g_ict_last_sweep_rejection_score >= 0.5) score += 2;
+      // choch direction-specific
+      if((direction == 1 && g_ict_last_choch_buy_count > 0) ||
+         (direction == -1 && g_ict_last_choch_sell_count > 0))
+         score += 2;
+      if(Atom_FVGOnReversalLeg(direction)) score += 2;
+      if(Atom_KillzoneFavorable(3, direction)) score += 1;
+   }
+   else if(category == 4) {
+      // BREAKER_RETEST — deferred until Phase 3 IctOrderBlock.mqh ships
+      return 0;
+   }
+
+   return score;
 }
 
 #endif // __FORGE_ICT_SCORING_MQH__

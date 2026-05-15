@@ -1107,6 +1107,12 @@ struct ScalperConfig {
    bool   ict_atom_pullback_in_ote_enabled;
    bool   ict_atom_premium_discount_aligned_enabled;
    bool   ict_atom_fvg_on_reversal_leg_enabled;
+   // v2.7.124 Phase B — ICT composite scoring (Mode A, log only)
+   //   Each composite returns 0-10 weighted sum per docs/FORGE_SETUP_ICT_MAP.md §B.8.2.
+   //   With all 3 flags OFF (defaults), every score column logs 0 — byte-stable vs v2.7.123.
+   bool composite_mss_cont_score_enabled;
+   bool composite_ote_retrace_score_enabled;
+   bool composite_liq_sweep_rev_score_enabled;
    // ─────────────────────────────────────────────────────────────────────────────
    // v2.7.117 — Cascade-recovery safety TP (live-broker requirement).
    // Previously BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY placed pendings with tp=0
@@ -4941,6 +4947,10 @@ void InitScalperConfig() {
    g_sc.ict_atom_pullback_in_ote_enabled          = false;
    g_sc.ict_atom_premium_discount_aligned_enabled = false;
    g_sc.ict_atom_fvg_on_reversal_leg_enabled      = false;
+   // v2.7.124 Phase B — composite scoring defaults OFF (Mode A, log only)
+   g_sc.composite_mss_cont_score_enabled       = false;
+   g_sc.composite_ote_retrace_score_enabled    = false;
+   g_sc.composite_liq_sweep_rev_score_enabled  = false;
    // v2.7.117 — cascade-recovery safety TP default (broker-side TP on recovery legs)
    g_sc.cascade_recovery_tp_atr_mult     = 2.0;   // 2×ATR safety TP — operator-spec default for live broker safety
    // ─────────────────────────────────────────────────────────────────────────────
@@ -5669,6 +5679,10 @@ void ReadScalperConfig() {
       if(JsonHasKey(content, "ict_atom_pullback_in_ote_enabled"))          { v = JsonGetDouble(content,"ict_atom_pullback_in_ote_enabled");          g_sc.ict_atom_pullback_in_ote_enabled    = (v >= 0.5); }
       if(JsonHasKey(content, "ict_atom_premium_discount_aligned_enabled")) { v = JsonGetDouble(content,"ict_atom_premium_discount_aligned_enabled"); g_sc.ict_atom_premium_discount_aligned_enabled = (v >= 0.5); }
       if(JsonHasKey(content, "ict_atom_fvg_on_reversal_leg_enabled"))      { v = JsonGetDouble(content,"ict_atom_fvg_on_reversal_leg_enabled");      g_sc.ict_atom_fvg_on_reversal_leg_enabled = (v >= 0.5); }
+      // v2.7.124 Phase B — composite scoring loaders (Mode A, log only)
+      if(JsonHasKey(content, "composite_mss_cont_score_enabled"))       { v = JsonGetDouble(content,"composite_mss_cont_score_enabled");       g_sc.composite_mss_cont_score_enabled       = (v >= 0.5); }
+      if(JsonHasKey(content, "composite_ote_retrace_score_enabled"))    { v = JsonGetDouble(content,"composite_ote_retrace_score_enabled");    g_sc.composite_ote_retrace_score_enabled    = (v >= 0.5); }
+      if(JsonHasKey(content, "composite_liq_sweep_rev_score_enabled"))  { v = JsonGetDouble(content,"composite_liq_sweep_rev_score_enabled");  g_sc.composite_liq_sweep_rev_score_enabled  = (v >= 0.5); }
       // v2.7.117 — cascade-recovery safety TP (BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY / BUY_STOP_CONT fallback)
       if(JsonHasKey(breakout_json, "cascade_recovery_tp_atr_mult")){ v = JsonGetDouble(breakout_json,"cascade_recovery_tp_atr_mult"); if(v > 0 && v <= 10.0) g_sc.cascade_recovery_tp_atr_mult = v; }
       // ─────────────────────────────────────────────────────────────────────────
@@ -7815,6 +7829,57 @@ void ForgeEvalAtoms() {
       g_ict_last_atom_fvg_on_reversal_leg = Atom_FVGOnReversalLeg(1) ? 1 : 0;
    else
       g_ict_last_atom_fvg_on_reversal_leg = 0;
+
+   // v2.7.124 Phase A expansion — per-category KZ + per-direction HTF.
+   //   Reuses existing FORGE_ICT_ATOM_*_ENABLED flags (no new knobs); computes
+   //   every category × direction permutation the Phase B scorer needs. When the
+   //   parent flag is OFF, all derived globals are zeroed for byte-stable logs.
+   if(g_sc.ict_atom_killzone_favorable_enabled) {
+      g_ict_last_atom_kz_fav_mss_cont  = Atom_KillzoneFavorable(1, 1) ? 1 : 0;
+      g_ict_last_atom_kz_fav_ote       = Atom_KillzoneFavorable(2, 1) ? 1 : 0;
+      g_ict_last_atom_kz_fav_liq_sweep = Atom_KillzoneFavorable(3, 1) ? 1 : 0;
+      g_ict_last_atom_kz_fav_breaker   = Atom_KillzoneFavorable(4, 1) ? 1 : 0;
+   } else {
+      g_ict_last_atom_kz_fav_mss_cont  = 0;
+      g_ict_last_atom_kz_fav_ote       = 0;
+      g_ict_last_atom_kz_fav_liq_sweep = 0;
+      g_ict_last_atom_kz_fav_breaker   = 0;
+   }
+
+   if(g_sc.ict_atom_htf_aligned_enabled) {
+      g_ict_last_atom_htf_aligned_buy  = Atom_HTFAligned(1) ? 1 : 0;
+      g_ict_last_atom_htf_aligned_sell = Atom_HTFAligned(-1) ? 1 : 0;
+   } else {
+      g_ict_last_atom_htf_aligned_buy  = 0;
+      g_ict_last_atom_htf_aligned_sell = 0;
+   }
+
+   // v2.7.124 Phase B — composite scores. Each enable flag default OFF; compute
+   //   BOTH directions when ON so the scorer column pair logs simultaneously.
+   //   ComputeCategoryScore lives in <Forge\IctScoring.mqh> (anti-overfit unified fn).
+   if(g_sc.composite_mss_cont_score_enabled) {
+      g_ict_last_mss_cont_score_buy  = ComputeCategoryScore(1, 1);
+      g_ict_last_mss_cont_score_sell = ComputeCategoryScore(1, -1);
+   } else {
+      g_ict_last_mss_cont_score_buy  = 0;
+      g_ict_last_mss_cont_score_sell = 0;
+   }
+
+   if(g_sc.composite_ote_retrace_score_enabled) {
+      g_ict_last_ote_retrace_score_buy  = ComputeCategoryScore(2, 1);
+      g_ict_last_ote_retrace_score_sell = ComputeCategoryScore(2, -1);
+   } else {
+      g_ict_last_ote_retrace_score_buy  = 0;
+      g_ict_last_ote_retrace_score_sell = 0;
+   }
+
+   if(g_sc.composite_liq_sweep_rev_score_enabled) {
+      g_ict_last_liq_sweep_rev_score_buy  = ComputeCategoryScore(3, 1);
+      g_ict_last_liq_sweep_rev_score_sell = ComputeCategoryScore(3, -1);
+   } else {
+      g_ict_last_liq_sweep_rev_score_buy  = 0;
+      g_ict_last_liq_sweep_rev_score_sell = 0;
+   }
 }
 
 
@@ -9502,7 +9567,26 @@ bool JournalInit() {
       "atom_htf_aligned INTEGER DEFAULT 0, "
       "atom_pullback_in_ote INTEGER DEFAULT 0, "
       "atom_premium_discount_aligned INTEGER DEFAULT 0, "
-      "atom_fvg_on_reversal_leg INTEGER DEFAULT 0"
+      "atom_fvg_on_reversal_leg INTEGER DEFAULT 0, "
+      // v2.7.124 Phase A expansion (6 INTEGERs) — per-category KZ + per-direction HTF.
+      //   Reuse Phase A enable flags; capture every category × direction permutation
+      //   the Phase B scorer needs. atom_killzone_favorable / atom_htf_aligned above
+      //   are retained for byte-stable backward compat (BUY-context).
+      "atom_kz_fav_mss_cont INTEGER DEFAULT 0, "
+      "atom_kz_fav_ote INTEGER DEFAULT 0, "
+      "atom_kz_fav_liq_sweep INTEGER DEFAULT 0, "
+      "atom_kz_fav_breaker INTEGER DEFAULT 0, "
+      "atom_htf_aligned_buy INTEGER DEFAULT 0, "
+      "atom_htf_aligned_sell INTEGER DEFAULT 0, "
+      // v2.7.124 Phase B (6 INTEGERs) — composite scores 0-10 per §B.8.2.
+      //   Each pair (BUY/SELL) populated only when its enable flag is ON. BREAKER_RETEST
+      //   deferred until Phase 3 IctOrderBlock.mqh ships.
+      "mss_cont_score_buy INTEGER DEFAULT 0, "
+      "mss_cont_score_sell INTEGER DEFAULT 0, "
+      "ote_retrace_score_buy INTEGER DEFAULT 0, "
+      "ote_retrace_score_sell INTEGER DEFAULT 0, "
+      "liq_sweep_rev_score_buy INTEGER DEFAULT 0, "
+      "liq_sweep_rev_score_sell INTEGER DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -9714,6 +9798,23 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_pullback_in_ote INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_premium_discount_aligned INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_fvg_on_reversal_leg INTEGER DEFAULT 0;");
+   // v2.7.124 Phase A expansion + Phase B composite scores — 12 new INTEGER cols.
+   //   Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2. Idempotent ALTERs (no-op when columns
+   //   already exist). Schema-parity 5-layer ship: CREATE TABLE text above + these
+   //   ALTERs + JournalRecordSignal INSERT list + scribe.py CREATE/ALTER/INSERT +
+   //   placeholder count bump 146 → 158.
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_kz_fav_mss_cont INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_kz_fav_ote INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_kz_fav_liq_sweep INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_kz_fav_breaker INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_htf_aligned_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_htf_aligned_sell INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN mss_cont_score_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN mss_cont_score_sell INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ote_retrace_score_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ote_retrace_score_sell INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN liq_sweep_rev_score_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN liq_sweep_rev_score_sell INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
@@ -9953,7 +10054,15 @@ void JournalRecordSignal(string outcome, string gate_reason,
       //   BUY-direction context. All zero when ict_atom_*_enabled flags are OFF
       //   (defaults). Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2 — atom_* prefix.
       "atom_killzone_favorable, atom_htf_aligned, atom_pullback_in_ote, "
-      "atom_premium_discount_aligned, atom_fvg_on_reversal_leg"
+      "atom_premium_discount_aligned, atom_fvg_on_reversal_leg, "
+      // v2.7.124 Phase A expansion (6 INTEGERs) + Phase B composite scores (6 INTEGERs).
+      //   12 new cols read from g_ict_last_atom_kz_fav_*, g_ict_last_atom_htf_aligned_*,
+      //   g_ict_last_*_score_* globals set in ForgeEvalAtoms. Per §B.8.2.
+      "atom_kz_fav_mss_cont, atom_kz_fav_ote, atom_kz_fav_liq_sweep, atom_kz_fav_breaker, "
+      "atom_htf_aligned_buy, atom_htf_aligned_sell, "
+      "mss_cont_score_buy, mss_cont_score_sell, "
+      "ote_retrace_score_buy, ote_retrace_score_sell, "
+      "liq_sweep_rev_score_buy, liq_sweep_rev_score_sell"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -10108,7 +10217,21 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_ict_last_atom_htf_aligned)              + ", "
       + IntegerToString(g_ict_last_atom_pullback_in_ote)          + ", "
       + IntegerToString(g_ict_last_atom_premium_discount_aligned) + ", "
-      + IntegerToString(g_ict_last_atom_fvg_on_reversal_leg)
+      + IntegerToString(g_ict_last_atom_fvg_on_reversal_leg)      + ", "
+      // v2.7.124 Phase A expansion — per-category KZ + per-direction HTF
+      + IntegerToString(g_ict_last_atom_kz_fav_mss_cont)          + ", "
+      + IntegerToString(g_ict_last_atom_kz_fav_ote)               + ", "
+      + IntegerToString(g_ict_last_atom_kz_fav_liq_sweep)         + ", "
+      + IntegerToString(g_ict_last_atom_kz_fav_breaker)           + ", "
+      + IntegerToString(g_ict_last_atom_htf_aligned_buy)          + ", "
+      + IntegerToString(g_ict_last_atom_htf_aligned_sell)         + ", "
+      // v2.7.124 Phase B — composite scores (0-10 per direction)
+      + IntegerToString(g_ict_last_mss_cont_score_buy)            + ", "
+      + IntegerToString(g_ict_last_mss_cont_score_sell)           + ", "
+      + IntegerToString(g_ict_last_ote_retrace_score_buy)         + ", "
+      + IntegerToString(g_ict_last_ote_retrace_score_sell)        + ", "
+      + IntegerToString(g_ict_last_liq_sweep_rev_score_buy)       + ", "
+      + IntegerToString(g_ict_last_liq_sweep_rev_score_sell)
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
