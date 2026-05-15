@@ -2306,6 +2306,132 @@ git commit -m "..."
 
 If `make forge-compile` reports errors, FIX THEM before committing. Do not commit a broken FORGE.mq5.
 
+### MANDATORY: Schema-parity ship — every new data point touches ALL 5 layers
+
+**Operator mandate** (2026-05-14): "update skill always add schema expansion whenever we had new data". Whenever a ship adds a new column, atom, score, state-machine output, or any value destined for the SIGNALS journal (and therefore the scribe `forge_signals` mirror), the schema expansion is part of the SAME ship — never deferred, never an afterthought. This rule exists because of repeated historical incidents where new data was added to the EA logic but the DB plumbing was forgotten, causing data to be computed in memory but never persisted.
+
+#### Historical incidents this rule prevents
+
+| Version | What got added | What got missed | Symptom |
+|---|---|---|---|
+| v2.7.45 + v2.7.47 | 5 cols (killzone, minutes_into_kz, htf_h1_strong, intraday_label, intraday_counter_htf) | scribe.py placeholder count not bumped (106 → 110) | Every INSERT failed silently with `106 values for 110 columns`; Athena dashboard's TAKEN ENTRIES went dark for 12 hours |
+| v2.7.112 | 5 cols (iss_score, iss_mss, iss_fvg, iss_choch_support, iss_choch_against) | ALTER TABLE migrations + scribe CREATE TABLE + scribe INSERT + placeholder count | Columns added to source CREATE TABLE text but never landed in existing DBs (CREATE TABLE IF NOT EXISTS doesn't ALTER); columns absent from scribe entirely; values computed at chokepoint went nowhere |
+| v2.7.118 | g_iss_mss/g_iss_fvg now compute real values | DB schema for these was never finished by v2.7.112 — chain broken downstream | Phase 1 ICT detection works in memory but Athena can't see it; live monitor can't validate score distribution |
+
+The v2.7.119 retroactive schema ship fixes both v2.7.112 (5 missing iss_*) and v2.7.118 (9 new ict_*) in one pass. Don't let it recur.
+
+#### When this rule fires
+
+ANY ship that:
+- Adds a new column to the SIGNALS schema text in `ea/FORGE.mq5`
+- Adds a new module global or struct field that gets logged at the chokepoint
+- Adds a new score, atom output, state-machine output, or composite verdict that should appear in tester / live analysis
+- Introduces a new value JournalRecordSignal will consume
+- Adds a new column to `python/data/aurum_intelligence.db` or `aurum_tester.db`
+
+#### The 5-layer checklist — every layer or the ship is incomplete
+
+```
+                                    ┌─ Layer 1: ea/FORGE.mq5 CREATE TABLE IF NOT EXISTS SIGNALS
+                                    │   (the schema text — applies ONLY to fresh DBs)
+                                    │
+                                    ├─ Layer 2: ea/FORGE.mq5 ALTER TABLE SIGNALS ADD COLUMN
+NEW DATA POINT ─────────────────────┤   (idempotent migrations — applies to existing DBs)
+                                    │
+                                    ├─ Layer 3: ea/FORGE.mq5 JournalRecordSignal()
+                                    │   - SQL INSERT column list extended
+                                    │   - SQL VALUES bind extended
+                                    │   - Module globals read at insert time (preferred)
+                                    │     OR function-signature params added (touches ~30 call sites)
+                                    │
+                                    ├─ Layer 4: python/scribe.py sync_forge_journal
+                                    │   - CREATE TABLE IF NOT EXISTS forge_signals (fresh-DB schema)
+                                    │   - ALTER TABLE forge_signals ADD COLUMN (existing-DB migration)
+                                    │   - SELECT from SIGNALS includes new columns
+                                    │   - INSERT INTO forge_signals column list extended
+                                    │   - Placeholder count bumped (",".join(["?"] * (N)) ← match exactly)
+                                    │   - Tuple-build code appends new values from source row
+                                    │
+                                    └─ Layer 5: schemas/aurum_tester.sql (if it exists — check first)
+                                        Mirror Layer 4 changes for cross-tooling consistency
+```
+
+**All 5 layers in the same commit**. The ship is not complete until all 5 are touched and verified.
+
+#### Schema-parity verification (pre-commit gate)
+
+Add this check to your pre-commit ritual. It should output `✓ PASS` on every column you've added; any `✗ MISSING` means you've forgotten a layer.
+
+```python
+#!/usr/bin/env python3
+"""Schema-parity check — every column reachable through the pipeline."""
+import re, sqlite3
+from pathlib import Path
+
+ROOT = Path("/Users/olasumbo/signal_system")
+new_cols = ["iss_score", "iss_mss", "ict_mss_swing_price", "ict_fvg_count_active"]  # adjust per ship
+
+# Layer 1 — EA CREATE TABLE
+ea = (ROOT / "ea/FORGE.mq5").read_text()
+m = re.search(r'CREATE TABLE IF NOT EXISTS SIGNALS \((.+?)\)";', ea, re.DOTALL)
+ea_create_cols = set(re.findall(r'"([a-z_]+)\s+(?:INTEGER|REAL|TEXT)', m.group(1))) if m else set()
+
+# Layer 2 — EA ALTER TABLE migrations
+ea_alter_cols = set(re.findall(r'ALTER TABLE SIGNALS ADD COLUMN (\w+)', ea))
+
+# Layer 3 — JournalRecordSignal INSERT column list (more complex grep — adapt per ship)
+# Look for the INSERT INTO SIGNALS statement and confirm new cols appear in column-list portion
+
+# Layer 4 — scribe.py forge_signals INSERT
+scribe = (ROOT / "python/scribe.py").read_text()
+m = re.search(r'INSERT OR IGNORE INTO forge_signals\s*"\s*"\((.+?)\)\s*"', scribe, re.DOTALL)
+scribe_cols = set(re.findall(r'\b([a-z_]+)\b', m.group(1))) if m else set()
+
+# Layer 5 — schemas/aurum_tester.sql if it exists
+sql_path = ROOT / "schemas/aurum_tester.sql"
+sql_cols = set()
+if sql_path.exists():
+    sql_cols = set(re.findall(r'(\w+)\s+(?:INTEGER|REAL|TEXT)', sql_path.read_text()))
+
+for c in new_cols:
+    status = [
+        "✓" if c in ea_create_cols else "✗ CREATE",
+        "✓" if c in ea_alter_cols else "✗ ALTER",
+        "✓" if c in scribe_cols else "✗ scribe",
+    ]
+    if sql_path.exists():
+        status.append("✓" if c in sql_cols else "✗ sql")
+    print(f"  {c}: {' '.join(status)}")
+```
+
+Plus the placeholder-math check:
+
+```bash
+# scribe.py placeholder must equal: count of columns in the INSERT list.
+# If you added N new columns to the list, the math `(41 + 24 + 45 + 7 + ...)` must bump by N.
+grep -nE '"\\?"\\] \\* \\(' /Users/olasumbo/signal_system/python/scribe.py
+```
+
+#### Anti-patterns this rule rejects
+
+- **"I'll add the migration later"** — by the time "later" arrives, FORGE has been re-deployed against a tester DB and you have stale data that's missing columns. Always migrate in the same ship.
+- **"It's just CREATE TABLE — that'll cover it"** — `CREATE TABLE IF NOT EXISTS` does NOT add columns to an existing table. Every active DB you don't ALTER is a missed migration.
+- **"scribe.py is mostly auto-synced"** — it isn't. The INSERT column list + placeholder count + SELECT extraction are all hand-maintained and DRIFT when ships are sloppy. Bridge silently fails when the placeholder count doesn't match.
+- **"The columns log NULL/0 by default — what's the harm?"** — the column being missing entirely from the schema is different from it being present with a default value. Missing = scribe INSERT fails or column not present in dashboard joins. Default = column exists, value is 0/NULL, analysis is possible.
+- **"I'll add the columns but skip the dashboard layer"** — the operator can run validation queries through the dashboard (Athena) directly. If the column doesn't reach `forge_signals`, the validation can't happen.
+
+#### Recovery if a ship missed a layer
+
+If you discover after-the-fact that a ship landed columns in some layers but not all:
+
+1. Identify the affected DBs (`find` for `aurum_tester.db` + `aurum_intelligence.db` + every tester journal DB)
+2. Apply ALTER TABLE migrations idempotently — they're safe to re-run
+3. Update scribe.py CREATE TABLE + INSERT + placeholder count
+4. `make reload-bridge` so the new INSERT path runs
+5. Document the retroactive fix in the run analysis doc + this skill's changelog (so the next agent can learn from it)
+
+The v2.7.119 ship is the canonical example of recovery — it fixes v2.7.112's missing migrations + closes the v2.7.118 schema gap in one pass.
+
 ### MANDATORY: `.env` comment placement — never inline after a value
 
 The env-sync parser (`scripts/sync_scalper_config_from_env.py` → `_parse_value()`) calls
