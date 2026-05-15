@@ -280,6 +280,14 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_ICT_LIQUIDITY_SWEEP_WINDOW_BARS":                     ("safety",    "ict_liquidity_sweep_window_bars",               "int",    1,     20),
     "FORGE_ICT_LIQUIDITY_EQUAL_TOLERANCE_ATR_MULT":              ("safety",    "ict_liquidity_equal_tolerance_atr_mult",        "float",  0.0,   5.0),
     "FORGE_ICT_LIQUIDITY_REJECTION_MIN_WICK_ATR_MULT":           ("safety",    "ict_liquidity_rejection_min_wick_atr_mult",     "float",  0.0,   5.0),
+    # v2.7.123 — Phase A ICT atoms (compute + log only, Mode A). Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2.
+    # Five new atoms behind individual enable flags, all default OFF. Atom function bodies live in
+    # ea/include/Forge/IctScoring.mqh + IctStructure.mqh. Feed Phase B weighted composite scorer.
+    "FORGE_ICT_ATOM_KILLZONE_FAVORABLE_ENABLED":                 ("safety",    "ict_atom_killzone_favorable_enabled",           "bool01", None,  None),
+    "FORGE_ICT_ATOM_HTF_ALIGNED_ENABLED":                        ("safety",    "ict_atom_htf_aligned_enabled",                  "bool01", None,  None),
+    "FORGE_ICT_ATOM_PULLBACK_IN_OTE_ENABLED":                    ("safety",    "ict_atom_pullback_in_ote_enabled",              "bool01", None,  None),
+    "FORGE_ICT_ATOM_PREMIUM_DISCOUNT_ALIGNED_ENABLED":           ("safety",    "ict_atom_premium_discount_aligned_enabled",     "bool01", None,  None),
+    "FORGE_ICT_ATOM_FVG_ON_REVERSAL_LEG_ENABLED":                ("safety",    "ict_atom_fvg_on_reversal_leg_enabled",          "bool01", None,  None),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),

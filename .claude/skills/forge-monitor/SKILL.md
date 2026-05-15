@@ -359,7 +359,125 @@ Is the work...
 - `docs/FORGE_LOT_SIZING_PRE_ICT.md` — lot engine (FMSR plugs into the existing pipeline; M13 restructure will rework it)
 - `docs/research/ICT_KILLZONES.md` — killzone canon (FMSR honors `g_regime.killzone` per `§B.7` single source of truth)
 
-### §I.8 Stale-reference flag
+### §I.8 Long-term architecture vision — SUM3API hybrid (MQL5 ⇄ ZeroMQ ⇄ Rust)
+
+**Source**: Albeos, R. O. *SUM3API: Using Rust, ZeroMQ, and MetaQuotes Language (MQL5) API Combination to Extract, Communicate, and Externally Project Financial Data from MetaTrader 5 (MT5)*. SSRN 6143486 (2026). Open-source reference implementation: [huggingface.co/ContinualQuasars/SUM3API](https://huggingface.co/ContinualQuasars/SUM3API).
+
+**Operator-confirmed 2026-05-15 (corrected framing)**: SUM3API is an **inspiration / external layer reference**, NOT a brain-migration target. Operator clarified verbatim:
+- *"don't worry about the Python MT5 layer to ZeroMQ for now — EA won't be dumb."*
+- *"our own EA will be smart and make trades."*
+
+**The actual FORGE long-term architecture**:
+- **FORGE EA in MQL5** = **permanent home for trade brain + executor**. All ICT logic, all setup decisions, all order execution stays in `ea/FORGE.mq5` + `ea/include/Forge/*.mqh`. The EA makes trades — Rust does not.
+- **SUM3API-style ZMQ + Rust + QuestDB** = **future observability / external tooling layer** (optional, additive). Use cases: external dashboards (richer than Athena), telemetry export, ML analytics, backtest harness, validation pipeline. NOT trade decisions.
+
+The MQL5 `.mqh` ICT modular refactor we're doing (Phase 1/2 shipped, Phase A onward queued) is the **canonical brain implementation** — it's not a stepping stone to anything else. It's where the trading logic lives forever.
+
+#### Target architecture (3 layers per SSRN Fig. 1)
+
+```
+┌─────────────── MQL5 / MT5 ZONE (thin pipes) ───────────────┐
+│  ZmqPublisher.mq5 EA (451 lines reference)                 │
+│  - inherits authenticated MT5 session (NO creds in code)   │
+│  - OnTick: extracts tick + account + positions + orders    │
+│  - publishes JSON over PUB socket (port 5555)              │
+│  - listens for orders on REP socket (port 5556)            │
+│  - CZmq.mqh wrapper (145 lines) — libzmq.dll FFI           │
+└────────────────────────┬───────────────────────────────────┘
+                         │ ZeroMQ transport
+                         │ PUB/SUB ticks + REQ/REP orders
+                         ▼
+┌─────────────── RUST APPLICATION (the brain) ───────────────┐
+│  Tokio async runtime + egui GUI                            │
+│  - SubSocket task: receives ticks → MPSC ch (cap 100)      │
+│  - ReqSocket task: sends orders → MPSC ch (cap 10)         │
+│  - Mt5ChartApp state container (ICT engines live here):    │
+│    P1 Normalizer / P2 SwingEngine / P2 DealingRange /      │
+│    P3 LiquidityMap / P3 SweepDetector /                    │
+│    P4 MSSEngine / P4 DisplacementValidator /               │
+│    P5 FVGEngine / P5 OrderBlockEngine /                    │
+│    P6 ContextGates / P7 UnifiedSetupModel / P7 Scoring /   │
+│    P8 RiskEngine / P8 TradeStateMachine                    │
+│  - egui components: Price Chart, Account, Trade, History   │
+└────────────────────────┬───────────────────────────────────┘
+                         │ QuestDB writes (time-partitioned, symbol-tagged)
+                         ▼
+┌─────────────── QUESTDB (every engine logs events) ─────────┐
+│  ticks / bars / swings / dealing_range / liquidity_levels  │
+│  sweeps / mss_events / fvgs / order_blocks / context       │
+│  scores / skips / decisions / orders / trades              │
+└────────────────────────────────────────────────────────────┘
+```
+
+#### Why this architecture (operator's strategic rationale)
+
+| Aspect | MQL5-only (today) | SUM3API hybrid (future) |
+|---|---|---|
+| Credentials in code | Implicit via terminal | **None — EA inherits MT5 session** |
+| Memory safety | C++-like with manual care | **Rust affine type system, compile-time guarantees** |
+| Concurrency | Single-threaded EA event loop | **Tokio async — thousands of tasks** |
+| GUI | MQL5 graphical objects (limited) | **egui immediate-mode (rich charts, controls)** |
+| External ecosystem | Closed MT5 runtime | **Full Rust crates + Python via gRPC/REST etc.** |
+| Storage | SQLite via FileWriteString → bridge.py | **QuestDB directly — time-partitioned, columnar** |
+| Per-component score logging | Schema-parity 5-layer ship (manual) | **Native — every engine writes its own events** |
+| Backtest harness | MT5 strategy tester | **Bar-replay + walk-forward + shadow mode + random-entry baseline + CI-blocking lookahead suite** |
+| Setup model | Per-strategy branches (28 setup_types) | **ONE parameterized model — variants = param sets** |
+
+#### Modular plug-and-play design principles (the MQL5 EA itself)
+
+**Operator-confirmed 2026-05-15**: *"our modular design will help with plug and play."* The `.mqh` modules are designed for plug-and-play: any atom / composite / state machine / setup can be enabled, disabled, swapped, or replaced via flags without touching the rest of the EA.
+
+These 8 principles serve **the modular EA itself first**, and as a bonus make any future external telemetry/observability export (Rust dashboard, QuestDB writes, etc.) mechanical:
+
+1. **Atom evaluators = pure functions** — clean inputs (price arrays, indicator values), clean outputs (bool / score / struct), no hidden side effects beyond explicit `g_ict_last_*` exports per §I.2. Enables: any atom toggleable via flag, swap-in of new evaluators, deterministic unit tests.
+
+2. **State machines explicit, not implicit** — FVG state (virgin/touched/mitigated/CE/invalidated), OB state (virgin/touched/mitigated/broken), trade state (IDLE→MAPPED→SWEPT→MSS_OK→ARMED→ENTERED→MANAGING→PARTIAL→EXITED→COOLDOWN). Enables: observable transitions in SIGNALS, swap state-machine policy without rewriting consumers.
+
+3. **Output structures clean + named** — every struct that crosses module boundaries (`IctSwingPoint`, `FvgZone`, `SweepEvent`) has descriptive field names. Enables: schema-parity 5-layer ship to SIGNALS columns, JSON-friendly if export ever needed, clean module-to-module contracts.
+
+4. **Unified setup model parameterized — NOT branched** — ONE `EvaluateICTSetup(params)` function with variants as parameter sets (direction, target_liq, killzone_required, MSS_required, FVG_required, OTE_band), NOT 4 branched `setup_type` functions. Per §B.7 + `ICT-ideas.md` P7. Anti-overfit principle. Enables: new variants by adding a param set, no new code path.
+
+5. **Canonical SKIP codes** — adopt the `ICT-ideas.md` filter chain vocabulary: `SKIP_NO_SWEEP` / `SKIP_NO_MSS` / `SKIP_WEAK_DISPLACEMENT` / `SKIP_NO_VALID_FVG` / `SKIP_BUY_PREMIUM` / `SKIP_SELL_DISCOUNT` / `SKIP_OUTSIDE_KZ` / `SKIP_SPREAD` / `SKIP_NEWS` / `SKIP_CHOP` / `SKIP_FVG_FILLED` / `SKIP_OB_MITIGATED` / `SKIP_HTF_CONFLICT`. Enables: consistent filter-chain logging across modules, no per-setup gate-name explosion.
+
+6. **Anti-lookahead (closed-bar only)** — engines see only completed M5/M15/H1/H4/D1 bars. No intra-bar peek. Standard good engineering — every module must already follow this discipline.
+
+7. **Per-component score logging** — every atom value its own SIGNALS column (Strategy A per §B.8.4 / §J.6). Enables: ablation studies, calibration via score-distribution queries, post-mortem on individual atoms, future telemetry export.
+
+8. **Validation harness scaffolding now** — bar-replay tester output, walk-forward window queries, regime-stratified P&L, random-entry baseline. Build these into MQL5 tester / scribe pipeline as the modules ship so we can quantify edge per module.
+
+#### What's NOT in scope today (deferred — optional external layer if ever needed)
+
+The SUM3API ZMQ + Rust + QuestDB layer is **OPTIONAL for the FUTURE**, not a brain-replacement plan. Possible use cases when scope opens:
+- External dashboard richer than Athena (Rust + egui native GUI)
+- Telemetry export pipeline (QuestDB time-series storage)
+- ML analytics / scoring engine that consumes SIGNALS + trade events
+- Backtest harness more sophisticated than MT5 tester
+- Validation pipeline (walk-forward + shadow mode + random-entry baseline + lookahead CI)
+
+None of those are trade-decision components. The smart EA in MQL5 keeps making the trades.
+
+#### What IS in scope today (the canonical brain)
+
+- Complete Phase A → E of the `.mqh` ICT modular build-out per §I.1-§I.7
+- Every atom + composite + setup ships in MQL5 designed per the 8 plug-and-play principles above
+- Phase 1 (IctStructure.mqh) + Phase 2 (IctLiquidity.mqh) already shipped — these are the **canonical modules**, not stepping stones
+
+#### Cross-references
+
+- `docs/ICT-ideas.md` — operator's earlier vision doc (Python brain placeholder; superseded by Rust per SSRN paper)
+- SSRN 6143486 — the authoritative architecture paper
+- [huggingface.co/ContinualQuasars/SUM3API](https://huggingface.co/ContinualQuasars/SUM3API) — reference Rust + MQL5 implementation
+- `docs/QUESTDB_EVALUATION.md` — storage-layer rationale (already exists, aligned with SUM3API)
+- `docs/FORGE_SETUP_ICT_MAP.md` — entry category taxonomy (the 4 ICT categories map directly to Rust setup-model parameter sets)
+
+#### When to update this section
+
+- New finding from the SSRN paper or SUM3API reference impl that changes principles → append here
+- Operator opens scope for the brain ship (ZMQ bridge or Rust app or QuestDB) → promote from "deferred" to "in scope" + add ship roadmap entry
+- Migration principle violated by recent code → add to anti-pattern callout
+- Reference impl updates on Hugging Face → re-read + reconcile
+
+### §I.9 Stale-reference flag
 
 The skill (below) historically references `FORGE_REGIME_TAXONOMY.md §11` as the killzone atom's authoritative home. That file is no longer in the repo — its content is absorbed into `FORGE_SETUP_ICT_MAP.md §B.2 + §B.7` and `docs/research/ICT_KILLZONES.md`. When you encounter that reference in the body of this skill, redirect to those two docs. Cleanup of the stale references is a follow-up housekeeping ship — do not block forward work on it.
 

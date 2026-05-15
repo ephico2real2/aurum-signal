@@ -253,7 +253,15 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     -- v2.7.122 ict_sweep_rejection_score: 0..1 wick-quality score from ScoreLiquiditySweep
     ict_sweep_rejection_score  REAL    DEFAULT 0,
     -- v2.7.122 Pre-TP1 recovery armed flag (1 = this tick armed a pre-TP1 recovery LIMIT)
-    pre_tp1_recovery_armed     INTEGER DEFAULT 0
+    pre_tp1_recovery_armed     INTEGER DEFAULT 0,
+    -- v2.7.123 Phase A ICT atom outputs (5 INTEGERs; LOG-ONLY, Mode A).
+    -- Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2 — atom_* prefix (not ict_atom_*).
+    -- Bound by FORGE.mq5 JournalRecordSignal from g_ict_last_atom_* globals.
+    atom_killzone_favorable       INTEGER DEFAULT 0,
+    atom_htf_aligned              INTEGER DEFAULT 0,
+    atom_pullback_in_ote          INTEGER DEFAULT 0,
+    atom_premium_discount_aligned INTEGER DEFAULT 0,
+    atom_fvg_on_reversal_leg      INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forge_journal_trades (
@@ -709,7 +717,14 @@ class Scribe:
                     -- v2.7.122 ict_sweep_rejection_score: 0..1 wick-quality score from ScoreLiquiditySweep
                     ict_sweep_rejection_score REAL DEFAULT 0,
                     -- v2.7.122 Pre-TP1 recovery armed flag (1 = this tick armed pre-TP1 recovery)
-                    pre_tp1_recovery_armed INTEGER DEFAULT 0
+                    pre_tp1_recovery_armed INTEGER DEFAULT 0,
+                    -- v2.7.123 Phase A ICT atom outputs (5 INTEGERs; LOG-ONLY, Mode A).
+                    -- Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2 — atom_* prefix.
+                    atom_killzone_favorable INTEGER DEFAULT 0,
+                    atom_htf_aligned INTEGER DEFAULT 0,
+                    atom_pullback_in_ote INTEGER DEFAULT 0,
+                    atom_premium_discount_aligned INTEGER DEFAULT 0,
+                    atom_fvg_on_reversal_leg INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -941,6 +956,26 @@ class Scribe:
             except sqlite3.OperationalError as _e:
                 if "duplicate column" not in str(_e).lower():
                     raise
+        # v2.7.123 — Phase A ICT atom outputs (5 INTEGER cols; LOG-ONLY, Mode A).
+        #   atom_* prefix per docs/FORGE_SETUP_ICT_MAP.md §B.8.2 (not ict_atom_*).
+        #   Captured by FORGE.mq5 ForgeEvalAtoms() with BUY-direction context into
+        #   g_ict_last_atom_* globals; bound by JournalRecordSignal. With all 5
+        #   enable flags off (defaults), every row logs 0 across these columns.
+        _v123_atom_cols = [
+            ("atom_killzone_favorable",       "INTEGER DEFAULT 0"),
+            ("atom_htf_aligned",              "INTEGER DEFAULT 0"),
+            ("atom_pullback_in_ote",          "INTEGER DEFAULT 0"),
+            ("atom_premium_discount_aligned", "INTEGER DEFAULT 0"),
+            ("atom_fvg_on_reversal_leg",      "INTEGER DEFAULT 0"),
+        ]
+        for _col, _decl in _v123_atom_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    if "duplicate column" not in str(_e).lower():
+                        raise
         # 2.7.37 — v37 telemetry indexes. CREATE INDEX IF NOT EXISTS is idempotent;
         # always run so fresh DBs (which pass the col-missing check) still get indexes.
         # Previously gated by `not in fs_cols` which left fresh tables index-less.
@@ -1312,6 +1347,14 @@ class Scribe:
             has_ict_sweep_rej = "ict_sweep_rejection_score" in src_cols
             # v2.7.122 — Pre-TP1 recovery armed flag (1 INTEGER col; LOG-ONLY)
             has_pre_tp1_recov = "pre_tp1_recovery_armed" in src_cols
+            # v2.7.123 — Phase A ICT atom outputs (5 INTEGER cols; LOG-ONLY, Mode A).
+            #   atom_* prefix (not ict_atom_*) per docs/FORGE_SETUP_ICT_MAP.md §B.8.2.
+            v123_atom_cols = [
+                "atom_killzone_favorable", "atom_htf_aligned",
+                "atom_pullback_in_ote", "atom_premium_discount_aligned",
+                "atom_fvg_on_reversal_leg",
+            ]
+            has_v123_atoms = all(c in src_cols for c in v123_atom_cols)
 
             # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
@@ -1495,6 +1538,8 @@ class Scribe:
                 + (", ict_sweep_rejection_score" if has_ict_sweep_rej else ", 0")
                 # v2.7.122 — Pre-TP1 recovery armed flag (1 INTEGER col; LOG-ONLY)
                 + (", pre_tp1_recovery_armed" if has_pre_tp1_recov else ", 0")
+                # v2.7.123 — Phase A ICT atom outputs (5 INTEGER cols, all-or-nothing)
+                + (", " + ", ".join(v123_atom_cols) if has_v123_atoms else ", " + ", ".join(["0"] * len(v123_atom_cols)))
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1556,6 +1601,11 @@ class Scribe:
                 ict_sweep_rej_val = r[135] if len(r) > 135 else 0
                 # v2.7.122 — Pre-TP1 recovery armed flag at r[136] (1 INTEGER col)
                 pre_tp1_recov_val = r[136] if len(r) > 136 else 0
+                # v2.7.123 — Phase A ICT atom outputs (5 INTEGERs) at positions r[137]..r[141].
+                #   Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2. SELECT order is fixed by
+                #   v123_atom_cols list above: killzone_favorable, htf_aligned,
+                #   pullback_in_ote, premium_discount_aligned, fvg_on_reversal_leg.
+                v123_atom_vals = tuple(r[137 + i] if len(r) > 137 + i else 0 for i in range(5))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
@@ -1564,6 +1614,7 @@ class Scribe:
                     *v112_iss_vals, *v119_ict_ctx_vals, *v120_ict_p2_vals,
                     ict_sweep_rej_val,
                     pre_tp1_recov_val,
+                    *v123_atom_vals,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1630,7 +1681,13 @@ class Scribe:
                         # v2.7.122 — Pre-TP1 recovery armed flag (1 INTEGER col; LOG-ONLY)
                         # Set inside ArmPreTP1Recovery (FORGE.mq5) on successful OrderSend,
                         # cleared at top of each tick's ManageOpenGroups.
-                        "pre_tp1_recovery_armed"
+                        "pre_tp1_recovery_armed, "
+                        # v2.7.123 — Phase A ICT atom outputs (5 INTEGER cols; LOG-ONLY, Mode A).
+                        # Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2 — atom_* prefix (not ict_atom_*).
+                        # Captured by FORGE.mq5 ForgeEvalAtoms() with BUY-direction context
+                        # into g_ict_last_atom_* globals; bound by JournalRecordSignal.
+                        "atom_killzone_favorable, atom_htf_aligned, atom_pullback_in_ote, "
+                        "atom_premium_discount_aligned, atom_fvg_on_reversal_leg"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
                         # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → 117.
@@ -1639,11 +1696,13 @@ class Scribe:
                         # v2.7.120 adds 8 ICT Phase-2 context cols → 41 + 24 + 45 + 7 + 5 + 9 + 8 = 139.
                         # v2.7.122 adds 1 pre_tp1_recovery_armed + 1 ict_sweep_rejection_score
                         #   = 41+24+45+7+5+9+8+2 = 141.
+                        # v2.7.123 adds 5 Phase A ICT atom outputs (atom_*_*) cols
+                        #   = 41+24+45+7+5+9+8+7 = 146.
                         # If you add/remove a column in the col list ABOVE, bump both the
                         # count below AND the matching *_vals tuple build above. (See
                         # forge-monitor SKILL.md Check C — v2.7.45/47 historical incident
                         # where this drifted silently.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 2)) + ")",
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 7)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)

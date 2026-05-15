@@ -687,4 +687,111 @@ bool Forge_GetActiveFVGAlignedWith(string direction, double current_price, FVGZo
    return false;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Atom_PullbackInOTE — OTE_RETRACEMENT atom (Optimal Trade Entry fib 62-79%).
+//
+// PURPOSE
+//   Phase A atom #3 (v2.7.123). Returns true iff the current bid/ask price sits
+//   within the 62-79% retracement band of the most recent confirmed swing pair
+//   in the direction of the trade. The "impulsive leg" is the most recent
+//   swing pair found in the ring buffers (g_swing_highs[] and g_swing_lows[]):
+//     BUY  : leg = swing_low → swing_high; OTE is in discount
+//            band = [swing_high - 0.79*range, swing_high - 0.62*range]
+//     SELL : leg = swing_high → swing_low; OTE is in premium
+//            band = [swing_low + 0.62*range, swing_low + 0.79*range]
+//   Price reference: BID for BUY (offered side), ASK for SELL — matches
+//   FORGE.mq5's existing direction-aware chokepoint conventions.
+//
+// PARAMETERS
+//   direction  — 1 = BUY, -1 = SELL
+//
+// RETURNS
+//   true iff:
+//     (a) swing arrays both non-empty (latest confirmed swing high + low exist),
+//     (b) the leg has positive range (high > low),
+//     (c) current price sits inside the [62%, 79%] retracement band.
+//
+// CITATION
+//   "OTE is the fibonacci retracement zone between 62% and 79%, with 70.5% as
+//    the precise sweet spot. The level alone is not the trade — must pair with
+//    FVG, OB, or relative equal liquidity inside the zone."
+//   — innercircletrader.net/tutorials/ict-optimal-trade-entry-ote-pattern
+//
+// CHANGELOG
+//   2026-05-15  v2.7.123 Phase A ship — feeds OTE_RETRACEMENT composite (Phase B).
+// ─────────────────────────────────────────────────────────────────────────────
+bool Atom_PullbackInOTE(int direction)
+{
+   if(direction == 0) return false;
+   if(g_swing_high_count <= 0 || g_swing_low_count <= 0) return false;
+   double swing_h = g_swing_highs[g_swing_high_count - 1].price;
+   double swing_l = g_swing_lows [g_swing_low_count  - 1].price;
+   if(swing_h <= 0.0 || swing_l <= 0.0) return false;
+   double range = swing_h - swing_l;
+   if(range <= 0.0) return false;
+   double px = (direction > 0)
+                  ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                  : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(px <= 0.0) return false;
+   if(direction > 0) {
+      // BUY OTE — discount of the swing_low→swing_high leg.
+      //   lo edge = swing_high - 0.79*range  (deeper retrace)
+      //   hi edge = swing_high - 0.62*range  (shallower retrace)
+      double lo = swing_h - 0.79 * range;
+      double hi = swing_h - 0.62 * range;
+      return (px >= lo && px <= hi);
+   } else {
+      // SELL OTE — premium of the swing_high→swing_low leg.
+      //   lo edge = swing_low + 0.62*range
+      //   hi edge = swing_low + 0.79*range
+      double lo = swing_l + 0.62 * range;
+      double hi = swing_l + 0.79 * range;
+      return (px >= lo && px <= hi);
+   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Atom_PremiumDiscountAligned — OTE_RETRACEMENT atom (dealing-range midpoint).
+//
+// PURPOSE
+//   Phase A atom #4 (v2.7.123). Returns true iff the current price sits in the
+//   half of the dealing range that matches the trade direction:
+//     dealing range = (most recent confirmed swing high, swing low)
+//     equilibrium = (high + low) / 2
+//     BUY  → true if price < equilibrium (discount — cheap; institutions BUY)
+//     SELL → true if price > equilibrium (premium — expensive; institutions SELL)
+//   Lighter weight than the OTE atom (no fib precision) but catches the
+//   high-level "right half of the range" filter.
+//
+// PARAMETERS
+//   direction  — 1 = BUY, -1 = SELL
+//
+// RETURNS
+//   true iff price is on the correct side of the dealing-range midpoint.
+//
+// CITATION
+//   "Premium = price above 50% equilibrium (expensive, institutions SELL).
+//    Discount = price below (cheap, institutions BUY). The highest-probability
+//    setups are at the extremes."
+//   — arongroups.co/technical-analyze/ict-equilibrium-zones
+//
+// CHANGELOG
+//   2026-05-15  v2.7.123 Phase A ship — feeds OTE_RETRACEMENT composite (Phase B).
+// ─────────────────────────────────────────────────────────────────────────────
+bool Atom_PremiumDiscountAligned(int direction)
+{
+   if(direction == 0) return false;
+   if(g_swing_high_count <= 0 || g_swing_low_count <= 0) return false;
+   double swing_h = g_swing_highs[g_swing_high_count - 1].price;
+   double swing_l = g_swing_lows [g_swing_low_count  - 1].price;
+   if(swing_h <= 0.0 || swing_l <= 0.0 || swing_h <= swing_l) return false;
+   double eq = (swing_h + swing_l) * 0.5;
+   double px = (direction > 0)
+                  ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                  : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(px <= 0.0) return false;
+   if(direction > 0) return (px < eq);   // BUY in discount
+   return (px > eq);                     // SELL in premium
+}
+
 #endif // __FORGE_ICT_STRUCTURE_MQH__
