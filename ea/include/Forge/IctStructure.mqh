@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| Forge\IctStructure.mqh                                            |
-//| FORGE v2.7.118 — ICT structure detection module                   |
+//| FORGE v2.7.119 — ICT structure detection module                   |
 //| First modular FORGE component. See docs/MQL5_MODULAR_EA_DESIGN.md |
 //+------------------------------------------------------------------+
 #ifndef __FORGE_ICT_STRUCTURE_MQH__
@@ -47,6 +47,12 @@
 //
 // CHANGELOG
 //   2026-05-14  v2.7.118 initial ship — first modular FORGE component.
+//   2026-05-14  v2.7.119 — add 8 atom-context globals (g_ict_last_*) populated by
+//                          FORGE.mq5 at the chokepoint, read by JournalRecordSignal
+//                          for 14-column SIGNALS expansion (5 retroactive iss_*
+//                          + 9 new ict_*). Forge_GetActiveFVGAlignedWith now
+//                          zero-inits `out` unconditionally so callers can read
+//                          struct fields safely on no-match.
 //+------------------------------------------------------------------+
 
 // ─── Structs ────────────────────────────────────────────────────────────────
@@ -80,6 +86,21 @@ int           g_swing_low_count  = 0;
 
 FVGZone       g_fvg_ring[16];
 int           g_fvg_ring_count = 0;
+
+// v2.7.119 — ICT atom-context capture for SIGNALS logging.
+//   Populated by FORGE.mq5 at the setup-trigger chokepoint AFTER computing g_iss_*.
+//   Read inline by JournalRecordSignal so every SIGNALS row carries the ICT context
+//   that informed the (would-be) entry, even on SKIPs. All zero by default — when an
+//   atom is OFF (iss_enabled=0 / ict_*_enabled=0) the corresponding context stays 0,
+//   keeping the schema-parity invariant byte-stable vs v2.7.118 with defaults.
+double g_ict_last_mss_swing_price       = 0.0;   // swing price broken (0 if no MSS)
+double g_ict_last_mss_displacement_atr  = 0.0;   // body/ATR ratio at MSS fire
+double g_ict_last_fvg_upper             = 0.0;   // matched FVG upper bound
+double g_ict_last_fvg_lower             = 0.0;   // matched FVG lower bound
+double g_ict_last_fvg_midpoint_dist_atr = 0.0;   // (price − midpoint)/ATR
+int    g_ict_last_fvg_age_bars          = 0;     // age of matched FVG in M5 bars
+double g_ict_last_recent_swing_high     = 0.0;   // most-recent confirmed swing high
+double g_ict_last_recent_swing_low      = 0.0;   // most-recent confirmed swing low
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forge_PushSwingHigh — append a new swing high to the ring buffer.
@@ -633,9 +654,24 @@ int Forge_PushFVG(FVGZone &z)
 //
 // CHANGELOG:
 //   2026-05-14  v2.7.118 initial ship.
+//   2026-05-14  v2.7.119 — always zero-initialize `out` before scanning so callers
+//               can safely read the struct fields even when no match is found.
+//               (Required for the SIGNALS logging chokepoint that captures FVG
+//               context unconditionally.)
 // ─────────────────────────────────────────────────────────────────────────────
 bool Forge_GetActiveFVGAlignedWith(string direction, double current_price, FVGZone &out)
 {
+   // v2.7.119 — zero-init `out` first so the caller never reads uninitialized fields.
+   out.time               = 0;
+   out.upper              = 0.0;
+   out.lower              = 0.0;
+   out.midpoint           = 0.0;
+   out.bullish            = false;
+   out.mitigated          = false;
+   out.partiallyMitigated = false;
+   out.sourceBar          = 0;
+   out.displacementScore  = 0.0;
+   out.expiry             = 0;
    if(g_fvg_ring_count <= 0) return false;
    bool want_bullish = (direction == "BUY");
    bool want_bearish = (direction == "SELL");

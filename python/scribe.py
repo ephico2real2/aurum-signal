@@ -224,7 +224,23 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     m5_strong_bar     INTEGER DEFAULT 0,
     long_lower_wick   INTEGER DEFAULT 0,
     long_upper_wick   INTEGER DEFAULT 0,
-    m5_range_expanding INTEGER DEFAULT 0
+    m5_range_expanding INTEGER DEFAULT 0,
+    -- v2.7.112 ISS (ICT Structure Score) — 5 INTEGER cols (atoms ship in v2.7.118+)
+    iss_score             INTEGER DEFAULT 0,
+    iss_mss               INTEGER DEFAULT 0,
+    iss_fvg               INTEGER DEFAULT 0,
+    iss_choch_support     INTEGER DEFAULT 0,
+    iss_choch_against     INTEGER DEFAULT 0,
+    -- v2.7.119 ICT Phase-1 atom context (9 cols; LOG-ONLY)
+    ict_mss_swing_price       REAL    DEFAULT 0,
+    ict_mss_displacement_atr  REAL    DEFAULT 0,
+    ict_fvg_count_active      INTEGER DEFAULT 0,
+    ict_fvg_active_upper      REAL    DEFAULT 0,
+    ict_fvg_active_lower      REAL    DEFAULT 0,
+    ict_fvg_midpoint_dist_atr REAL    DEFAULT 0,
+    ict_fvg_age_bars          INTEGER DEFAULT 0,
+    ict_recent_swing_high     REAL    DEFAULT 0,
+    ict_recent_swing_low      REAL    DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forge_journal_trades (
@@ -644,14 +660,30 @@ class Scribe:
                     m5_doji INTEGER DEFAULT 0, m5_strong_bar INTEGER DEFAULT 0,
                     long_lower_wick INTEGER DEFAULT 0, long_upper_wick INTEGER DEFAULT 0,
                     m5_range_expanding INTEGER DEFAULT 0,
-                    -- v2.7.110 CES (Confluence Entry Score) — Option C instrumentation
+                    -- v2.7.110 CES (Confluence Entry Score) — Option C instrumentation (retired v2.7.112, retained as nullable for back-compat)
                     ces_score INTEGER DEFAULT 0,
                     ces_dtc INTEGER DEFAULT 0,
                     ces_pemcg INTEGER DEFAULT 0,
                     ces_momentum INTEGER DEFAULT 0,
                     ces_rsi INTEGER DEFAULT 0,
                     ces_vwap INTEGER DEFAULT 0,
-                    ces_di INTEGER DEFAULT 0
+                    ces_di INTEGER DEFAULT 0,
+                    -- v2.7.112 ISS (ICT Structure Score) — 5 INTEGER cols (atoms live in v2.7.118+)
+                    iss_score INTEGER DEFAULT 0,
+                    iss_mss INTEGER DEFAULT 0,
+                    iss_fvg INTEGER DEFAULT 0,
+                    iss_choch_support INTEGER DEFAULT 0,
+                    iss_choch_against INTEGER DEFAULT 0,
+                    -- v2.7.119 ICT Phase-1 atom context (9 cols; LOG-ONLY, no gate behaviour)
+                    ict_mss_swing_price REAL DEFAULT 0,
+                    ict_mss_displacement_atr REAL DEFAULT 0,
+                    ict_fvg_count_active INTEGER DEFAULT 0,
+                    ict_fvg_active_upper REAL DEFAULT 0,
+                    ict_fvg_active_lower REAL DEFAULT 0,
+                    ict_fvg_midpoint_dist_atr REAL DEFAULT 0,
+                    ict_fvg_age_bars INTEGER DEFAULT 0,
+                    ict_recent_swing_high REAL DEFAULT 0,
+                    ict_recent_swing_low REAL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -796,6 +828,48 @@ class Scribe:
                     if "duplicate column" not in str(_e).lower():
                         raise
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_ces_score ON forge_signals(ces_score)")
+        # v2.7.112 — ISS (ICT Structure Score) scaffolding columns (5 INTEGERs).
+        #   Retroactive migration: ISS columns were declared in FORGE SIGNALS CREATE
+        #   TABLE text at v2.7.112 but never had ALTERs on the FORGE side, AND were
+        #   never wired into scribe forge_signals at all. v2.7.119 lands both.
+        _v112_iss_cols = [
+            ("iss_score",         "INTEGER DEFAULT 0"),
+            ("iss_mss",           "INTEGER DEFAULT 0"),
+            ("iss_fvg",           "INTEGER DEFAULT 0"),
+            ("iss_choch_support", "INTEGER DEFAULT 0"),
+            ("iss_choch_against", "INTEGER DEFAULT 0"),
+        ]
+        for _col, _decl in _v112_iss_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    if "duplicate column" not in str(_e).lower():
+                        raise
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fs_iss_score ON forge_signals(iss_score)")
+        # v2.7.119 — ICT Phase-1 atom context (9 cols; LOG-ONLY, no gate behaviour).
+        #   Captured at the FORGE setup-trigger chokepoint and bound by JournalRecordSignal
+        #   alongside the 5 iss_* atoms. With ict_*_enabled=0 defaults all values are 0.
+        _v119_ict_ctx_cols = [
+            ("ict_mss_swing_price",       "REAL DEFAULT 0"),
+            ("ict_mss_displacement_atr",  "REAL DEFAULT 0"),
+            ("ict_fvg_count_active",      "INTEGER DEFAULT 0"),
+            ("ict_fvg_active_upper",      "REAL DEFAULT 0"),
+            ("ict_fvg_active_lower",      "REAL DEFAULT 0"),
+            ("ict_fvg_midpoint_dist_atr", "REAL DEFAULT 0"),
+            ("ict_fvg_age_bars",          "INTEGER DEFAULT 0"),
+            ("ict_recent_swing_high",     "REAL DEFAULT 0"),
+            ("ict_recent_swing_low",      "REAL DEFAULT 0"),
+        ]
+        for _col, _decl in _v119_ict_ctx_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    if "duplicate column" not in str(_e).lower():
+                        raise
         # 2.7.37 — v37 telemetry indexes. CREATE INDEX IF NOT EXISTS is idempotent;
         # always run so fresh DBs (which pass the col-missing check) still get indexes.
         # Previously gated by `not in fs_cols` which left fresh tables index-less.
@@ -1138,6 +1212,21 @@ class Scribe:
                 "ces_momentum", "ces_rsi", "ces_vwap", "ces_di",
             ]
             has_v110_ces = all(c in src_cols for c in v110_ces_cols)
+            # 2.7.112 — ISS (ICT Structure Score) — 5 INTEGER cols (retroactive ALTER in v2.7.119)
+            v112_iss_cols = [
+                "iss_score", "iss_mss", "iss_fvg",
+                "iss_choch_support", "iss_choch_against",
+            ]
+            has_v112_iss = all(c in src_cols for c in v112_iss_cols)
+            # 2.7.119 — ICT Phase-1 atom context (9 cols; LOG-ONLY)
+            v119_ict_ctx_cols = [
+                "ict_mss_swing_price", "ict_mss_displacement_atr",
+                "ict_fvg_count_active", "ict_fvg_active_upper",
+                "ict_fvg_active_lower", "ict_fvg_midpoint_dist_atr",
+                "ict_fvg_age_bars", "ict_recent_swing_high",
+                "ict_recent_swing_low",
+            ]
+            has_v119_ict_ctx = all(c in src_cols for c in v119_ict_ctx_cols)
 
             # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
@@ -1311,6 +1400,10 @@ class Scribe:
                 + (", " + ", ".join(v37g3_cols) if has_v37g3 else ", " + ", ".join(["NULL"] * len(v37g3_cols)))
                 # 2.7.110 — CES (Confluence Entry Score) — 7 INTEGER cols, same all-or-nothing pattern
                 + (", " + ", ".join(v110_ces_cols) if has_v110_ces else ", " + ", ".join(["0"] * len(v110_ces_cols)))
+                # 2.7.112 — ISS scaffolding — 5 INTEGER cols, all-or-nothing (retroactive ALTER in v2.7.119)
+                + (", " + ", ".join(v112_iss_cols) if has_v112_iss else ", " + ", ".join(["0"] * len(v112_iss_cols)))
+                # 2.7.119 — ICT Phase-1 atom context — 9 cols (REAL/INTEGER mixed), all-or-nothing
+                + (", " + ", ".join(v119_ict_ctx_cols) if has_v119_ict_ctx else ", " + ", ".join(["0"] * len(v119_ict_ctx_cols)))
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1357,11 +1450,19 @@ class Scribe:
                 v37g3_vals = tuple(r[61 + i] if len(r) > 61 + i else None for i in range(45))
                 # 2.7.110 — CES — 7 INTEGER cols at positions r[106]..r[112]
                 v110_ces_vals = tuple(r[106 + i] if len(r) > 106 + i else 0 for i in range(7))
+                # 2.7.112 — ISS scaffolding — 5 INTEGER cols at positions r[113]..r[117]
+                v112_iss_vals = tuple(r[113 + i] if len(r) > 113 + i else 0 for i in range(5))
+                # 2.7.119 — ICT Phase-1 atom context — 9 cols at positions r[118]..r[126].
+                #   ict_fvg_count_active and ict_fvg_age_bars are INTEGERs in the source schema
+                #   (default 0). The remaining 7 cols are REALs (default 0.0). sqlite3 handles
+                #   both via the same param binding — just preserve the source row value.
+                v119_ict_ctx_vals = tuple(r[118 + i] if len(r) > 118 + i else 0 for i in range(9))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
                     htf_h1_strong_val, intraday_label_val, intraday_counter_htf_v,
                     *v37_vals, *v37g3_vals, *v110_ces_vals,
+                    *v112_iss_vals, *v119_ict_ctx_vals,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1403,14 +1504,26 @@ class Scribe:
                         "long_lower_wick, long_upper_wick, m5_range_expanding, "
                         # 2.7.110 — CES (Confluence Entry Score) — 7 INTEGER cols
                         "ces_score, ces_dtc, ces_pemcg, ces_momentum, "
-                        "ces_rsi, ces_vwap, ces_di"
+                        "ces_rsi, ces_vwap, ces_di, "
+                        # 2.7.112 — ISS (ICT Structure Score) — 5 INTEGER cols
+                        # (retroactive scribe wiring; SIGNALS schema added them at v2.7.112
+                        #  but never landed in scribe forge_signals until v2.7.119).
+                        "iss_score, iss_mss, iss_fvg, iss_choch_support, iss_choch_against, "
+                        # 2.7.119 — ICT Phase-1 atom context — 9 cols (LOG-ONLY)
+                        # Captured at the FORGE setup-trigger chokepoint and bound by
+                        # JournalRecordSignal alongside the iss_* atoms.
+                        "ict_mss_swing_price, ict_mss_displacement_atr, ict_fvg_count_active, "
+                        "ict_fvg_active_upper, ict_fvg_active_lower, ict_fvg_midpoint_dist_atr, "
+                        "ict_fvg_age_bars, ict_recent_swing_high, ict_recent_swing_low"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
-                        # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → total now
-                        # 41 + 24 + 45 + 7 = 117. If you add/remove a column in the col list
-                        # ABOVE, bump both the count below AND the v110_ces_vals tuple build.
-                        # (See forge-monitor SKILL.md Check C — v2.7.45/47 historical incident.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7)) + ")",
+                        # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → 117.
+                        # v2.7.119 adds 5 ISS (retroactive) + 9 ICT context cols → total now
+                        # 41 + 24 + 45 + 7 + 5 + 9 = 131. If you add/remove a column in the
+                        # col list ABOVE, bump both the count below AND the matching
+                        # *_vals tuple build above. (See forge-monitor SKILL.md Check C —
+                        # v2.7.45/47 historical incident where this drifted silently.)
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)
