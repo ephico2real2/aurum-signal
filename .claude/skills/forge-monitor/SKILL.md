@@ -710,11 +710,11 @@ This is the **PRE-trade** framework — distinct from `feedback_trade_decision_t
 
 #### §I.13.3 Repeatable winning patterns (cite by name when current scan matches)
 
-- **Pattern P1 — MSS_CONTINUATION SELL in confirmed bear macro**: h1_trend ≤ −1.0 + m5 RSI 35-50 + m5_bb_mid/vwap retest + m5_strong_bar=1 + ISS ≥ 5 + SL ≥ 1.5×ATR. Canonical example: G5001 on 2026-05-15 ($104 in 6 min).
+- **Pattern P1 — MSS_CONTINUATION SELL in confirmed bear macro**: h1_trend ≤ −1.0 + m5 RSI 35-50 + m5_bb_mid/vwap retest + m5_strong_bar=1 + ISS ≥ 5 + SL ≥ 1.5×ATR. Canonical example: G5001 on 2026-05-15 ($104 in 6 min). **Ratchet flow** (the exit logic that delivered the win): see `docs/FORGE_RATCHET_DESIGN.md §3` for the full L1→L2→L3 trace + counter-factual P&L math.
 - **Pattern P2 — LIQUIDITY_SWEEP_REVERSAL** after sweep+ChoCH+FVG with KZ favorable.
 - **Pattern P3 — MOMENTUM_DUMP SELL with Friday-PM amplifier** (v2.7.125 ship pending).
 
-Full trigger conditions in `feedback_trade_setup_analysis_framework.md` §"Repeatable successful setups".
+Full trigger conditions in `feedback_trade_setup_analysis_framework.md` §"Repeatable successful setups". Full ratchet stack architecture (4 exit layers, knob defaults, anti-patterns, G5001 case study) in `docs/FORGE_RATCHET_DESIGN.md`.
 
 #### §I.13.4 Gotchas (anti-patterns that look tempting but lose)
 

@@ -151,7 +151,12 @@ These are the 28 legacy setups slated for fold under M7-M11 per `FORGE_SETUP_ICT
 
 | Term | Expansion | Definition | Doc |
 |---|---|---|---|
-| **FMSR** | Fast-Market Sweep Rescue | Multi-phase recovery design for bad-trade states during fast-market moves. Adds same-direction limits on adverse swing extremes to capture retrace. | `docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md` |
+| **Ratchet stack** | n/a | 4-layer profit-banking architecture engaged AFTER entry: L1 TP1 native fire → L2 `move_be_on_tp1` SL ratchet → L3 TP-trail post-TP1 → L4 conviction-decay partial close. Canonical doc with G5001 case study. | `docs/FORGE_RATCHET_DESIGN.md` |
+| **L1 / L2 / L3 / L4** | Ratchet layers | Numbered layers of the ratchet stack (see Ratchet stack above). L1=native TP1, L2=SL→BE, L3=TP tighten, L4=conviction decay. Distinct from PEMCG L1/L2/L3 (those are gate consumers, not exit layers — context disambiguates). | `docs/FORGE_RATCHET_DESIGN.md §2` |
+| **move_be_on_tp1** | Move BE on TP1 | The L2 ratchet — when TP1 fires, remaining legs' SL moves to TP1 price (= breakeven on remaining lot weight). Master toggle in scalper_config. Canonical example: G5001 leg2 SL jumped 4559.62 → 4544.80 in 6s after TP1. | `ea/FORGE.mq5:1976`; `docs/FORGE_RATCHET_DESIGN.md §2` |
+| **TP-trail / TP tighten** | n/a | The L3 ratchet — pulls TP closer to entry as retracement risk accumulates. Trail-pts formula: `MathMax(12, trigger_pts × 0.80-0.95, m5_atr × 0.90-1.20)` (chooses wider/more-conservative arm). Canonical example: G5001 TP2 4538.58 → 4543.73 (2.85 pts tighter). | `ea/FORGE.mq5:3224,3276`; `docs/FORGE_RATCHET_DESIGN.md §2` |
+| **Conviction-decay** | n/a | The L4 ratchet — partial close at L1/L2/L3 MFE-ratio thresholds (0.75/0.50/0.25). Did NOT fire on G5001 (MFE held above 0.75 throughout). | `ea/FORGE.mq5:2998-3052`; `docs/FORGE_RATCHET_DESIGN.md §2` |
+| **FMSR** | Fast-Market Sweep Rescue | Multi-phase recovery design for bad-trade states during fast-market moves. Adds same-direction limits on adverse swing extremes to capture retrace. **Distinct from ratchet** — FMSR handles MFE-stays-negative (rescue); ratchet handles MFE-positive (bank). | `docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md` |
 | **Track A** | n/a | Stopgap recovery — extends existing FORGE_BUY_LIMIT_RECOVERY / SELL_LIMIT_RECOVERY (post-TP1 ladder) to wider lot/expiry. Live as of v2.7.122. | FMSR §15.1 |
 | **Track B** | n/a | New ArmPreTP1Recovery function — fires when primary trade is bad-state pre-TP1. Live as of v2.7.122 (P1). | FMSR §3 |
 | **Track C** | n/a | DD-aware lot taper — reduce lot size as drawdown deepens. Deferred. | FMSR §15.2 |
