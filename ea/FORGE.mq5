@@ -55,12 +55,17 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.187"
+#property version "2.188"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
+// v2.7.118 — first modular FORGE component (ICT structure detection).
+//   Exposes: struct IctSwingPoint, struct FVGZone, g_swing_highs/lows ring buffers,
+//   g_fvg_ring, DetectBullish/BearishMSS, DetectBullish/BearishFVG, mitigation helpers.
+//   See docs/MQL5_MODULAR_EA_DESIGN.md for include layout + dependency rules.
+#include <Forge\IctStructure.mqh>
 
-const string FORGE_VERSION = "2.7.117";
+const string FORGE_VERSION = "2.7.118";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1518,6 +1523,16 @@ struct ScalperConfig {
    // FVG state-tracker config (consumed by v2.7.115 detector):
    int    iss_fvg_max_age_bars;                       // default 12 (M5 bars) — FVG age cap before expiry
    double iss_fvg_max_fill_pct;                       // default 0.50 — FVG mitigation threshold (50% retraced)
+   // v2.7.118 — ICT Phase 1 modular component knobs (first .mqh module).
+   //   See ea/include/Forge/IctStructure.mqh + docs/MQL5_MODULAR_EA_DESIGN.md.
+   //   All default-OFF. When OFF: atoms log 0, no behaviour change vs v2.7.117.
+   //   When enabled (still without iss_block_below_threshold): atoms compute +
+   //   log to SIGNALS for analysis but no SKIP gate fires.
+   bool   ict_mss_enabled;                            // master flag — compute MSS atom. Default false.
+   bool   ict_fvg_enabled;                            // master flag — compute FVG atom + maintain ring. Default false.
+   int    ict_swing_lookback;                         // fractal lookback (bars each side). Default 3.
+   double ict_mss_displacement_atr_mult;              // MSS body/ATR threshold. Default 0.5 (matches DirLock).
+   double ict_fvg_min_size_atr_mult;                  // FVG minimum size in ATR units. Default 0.15.
    // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
    //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
    //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
@@ -5000,6 +5015,12 @@ void InitScalperConfig() {
    g_sc.iss_weight_choch_support              = 2;     // confluence — supportive ChoCH
    g_sc.iss_fvg_max_age_bars                  = 12;    // M5 bars
    g_sc.iss_fvg_max_fill_pct                  = 0.50;  // 50% retracement = mitigated
+   // v2.7.118 — ICT Phase 1 modular knobs (default-OFF; flip via FORGE_ICT_* env vars).
+   g_sc.ict_mss_enabled                       = false; // master MSS flag
+   g_sc.ict_fvg_enabled                       = false; // master FVG flag
+   g_sc.ict_swing_lookback                    = 3;     // fractal lookback bars (each side)
+   g_sc.ict_mss_displacement_atr_mult         = 0.5;   // matches DirLock displacement convention
+   g_sc.ict_fvg_min_size_atr_mult             = 0.15;  // min FVG size in ATR units
    g_sc.cvcsm_enabled                         = true;
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
@@ -6095,6 +6116,12 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "iss_weight_choch_support"))               { v=JsonGetDouble(content,"iss_weight_choch_support");               if(v>=0.0&&v<=10.0) g_sc.iss_weight_choch_support=(int)v; }
    if(JsonHasKey(content, "iss_fvg_max_age_bars"))                   { v=JsonGetDouble(content,"iss_fvg_max_age_bars");                   if(v>=1.0&&v<=60.0) g_sc.iss_fvg_max_age_bars=(int)v; }
    if(JsonHasKey(content, "iss_fvg_max_fill_pct"))                   { v=JsonGetDouble(content,"iss_fvg_max_fill_pct");                   if(v>=0.0&&v<=1.0)  g_sc.iss_fvg_max_fill_pct=v; }
+   // v2.7.118 — ICT Phase 1 modular knobs (default-OFF instrumentation).
+   if(JsonHasKey(content, "ict_mss_enabled"))                        { v=JsonGetDouble(content,"ict_mss_enabled");                        g_sc.ict_mss_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "ict_fvg_enabled"))                        { v=JsonGetDouble(content,"ict_fvg_enabled");                        g_sc.ict_fvg_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "ict_swing_lookback"))                     { v=JsonGetDouble(content,"ict_swing_lookback");                     if(v>=1.0&&v<=10.0) g_sc.ict_swing_lookback=(int)v; }
+   if(JsonHasKey(content, "ict_mss_displacement_atr_mult"))          { v=JsonGetDouble(content,"ict_mss_displacement_atr_mult");          if(v>=0.0&&v<=5.0)  g_sc.ict_mss_displacement_atr_mult=v; }
+   if(JsonHasKey(content, "ict_fvg_min_size_atr_mult"))              { v=JsonGetDouble(content,"ict_fvg_min_size_atr_mult");              if(v>=0.0&&v<=5.0)  g_sc.ict_fvg_min_size_atr_mult=v; }
    if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
    if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
@@ -13174,6 +13201,77 @@ void CheckNativeScalperSetups() {
       UpdateSwingsOnNewBar();
    }
 
+   // v2.7.118 — ICT Phase 1 M5-close batch (first modular FORGE component).
+   //   On each new M5 bar, when ICT MSS or FVG is enabled:
+   //     (a) Try to create a new FVG from the latest 3 M5 bars (i-2, i-1, i)
+   //     (b) Sweep existing FVGs for mitigation + age-out
+   //     (c) Mirror the existing Tier 3 swing buffer into IctStructure module
+   //         so DetectBullish/BearishMSS can read recent swing levels.
+   //   Module: ea/include/Forge/IctStructure.mqh — see docs/MQL5_MODULAR_EA_DESIGN.md.
+   //   Default-OFF — when both ict_*_enabled flags are 0 the entire block is skipped
+   //   and behaviour is byte-identical to v2.7.117.
+   if(g_sc.ict_fvg_enabled || g_sc.ict_mss_enabled) {
+      static datetime _ict_last_bar = 0;
+      datetime _ict_cur_bar = iTime(_Symbol, PERIOD_M5, 0);
+      if(_ict_cur_bar > 0 && _ict_cur_bar != _ict_last_bar) {
+         _ict_last_bar = _ict_cur_bar;
+         // M5 OHLC for the 3-candle FVG pattern (i=newest, i-1=middle/displacement, i-2=oldest)
+         double _m5_h2 = iHigh (_Symbol, PERIOD_M5, 2);
+         double _m5_l2 = iLow  (_Symbol, PERIOD_M5, 2);
+         double _m5_h0 = iHigh (_Symbol, PERIOD_M5, 0);
+         double _m5_l0 = iLow  (_Symbol, PERIOD_M5, 0);
+         double _m5_c0 = iClose(_Symbol, PERIOD_M5, 0);
+         // FVG creation — bullish + bearish (only one direction will match)
+         if(g_sc.ict_fvg_enabled && m5_atr > 0.0) {
+            FVGZone _z;
+            // Bullish FVG: high[i-2] < low[i]
+            if(DetectBullishFVG(_m5_h2, _m5_l0, m5_atr, g_sc.ict_fvg_min_size_atr_mult, _z)) {
+               _z.time      = _ict_cur_bar;
+               _z.sourceBar = 1;  // displacement bar (middle)
+               long _age_sec = (long)g_sc.iss_fvg_max_age_bars * 300L;
+               _z.expiry    = _ict_cur_bar + (datetime)_age_sec;
+               Forge_PushFVG(_z);
+            }
+            // Bearish FVG: low[i-2] > high[i]
+            if(DetectBearishFVG(_m5_l2, _m5_h0, m5_atr, g_sc.ict_fvg_min_size_atr_mult, _z)) {
+               _z.time      = _ict_cur_bar;
+               _z.sourceBar = 1;
+               long _age_sec = (long)g_sc.iss_fvg_max_age_bars * 300L;
+               _z.expiry    = _ict_cur_bar + (datetime)_age_sec;
+               Forge_PushFVG(_z);
+            }
+            // Mitigation + age-out sweep
+            UpdateFVGMitigations(_m5_c0, TimeCurrent(),
+                                 g_sc.iss_fvg_max_fill_pct,
+                                 g_sc.iss_fvg_max_age_bars,
+                                 300);
+         }
+         // Swing mirror — reuse the existing Tier 3 g_swings[] ring buffer
+         //   (struct SwingPoint at :382). The Tier 3 infra runs its own
+         //   UpdateSwingsOnNewBar() above when any pattern setup is enabled;
+         //   we also force a refresh here so MSS works even when no Tier 3
+         //   setup is on. Then mirror highs/lows into IctStructure's separate
+         //   IctSwingPoint arrays for DetectBullish/BearishMSS to consume.
+         if(g_sc.ict_mss_enabled) {
+            UpdateSwingsOnNewBar();
+            // Reset + repopulate module's swing arrays (newest-last for natural access)
+            g_swing_high_count = 0;
+            g_swing_low_count  = 0;
+            SwingPoint _tmp_highs[16];
+            SwingPoint _tmp_lows[16];
+            int _hn = GetRecentSwings(+1, 16, _tmp_highs);
+            int _ln = GetRecentSwings(-1, 16, _tmp_lows);
+            // GetRecentSwings returns newest-first; reverse so module's array is oldest-first
+            for(int _i = _hn - 1; _i >= 0; _i--) {
+               Forge_PushSwingHigh(_tmp_highs[_i].time, _tmp_highs[_i].price, _i);
+            }
+            for(int _i = _ln - 1; _i >= 0; _i--) {
+               Forge_PushSwingLow(_tmp_lows[_i].time, _tmp_lows[_i].price, _i);
+            }
+         }
+      }
+   }
+
    // 2.7.42 — DOUBLE_TOP trigger (Tier 3). SELL on neckline break after two recent
    //   swing highs within peak_tolerance_atr × ATR + intermediate swing low.
    // 2.7.43 — layered (single-direction SELL; single g_double_top_last_time tracker)
@@ -13532,13 +13630,40 @@ void CheckNativeScalperSetups() {
       //   behaviour is byte-identical to v2.7.111 (less the CES columns).
       bool iss_blocked = false;
       if(g_sc.iss_enabled) {
-         // Atom detection STUB — replaced in v2.7.113-115 by swing-pivot tracker + FVG detector.
-         // bool _is_buy  = (direction == "BUY");
-         // bool _is_sell = (direction == "SELL");
-         g_iss_mss           = 0;   // v2.7.113: full-body close beyond prior swing
-         g_iss_fvg           = 0;   // v2.7.115: price in active FVG aligned with direction
-         g_iss_choch_support = 0;   // v2.7.114: recent supportive counter-trend ChoCH
-         g_iss_choch_against = 0;   // v2.7.114: opposing ChoCH against trade direction
+         // v2.7.118 — wire MSS + FVG atoms to real ICT detection (first modular ship).
+         //   ChoCH atoms remain stubbed (deferred to v2.7.119 — Phase 2 IctLiquidity module).
+         //   Detection lives in ea/include/Forge/IctStructure.mqh.
+         //   With ict_mss_enabled=0 and ict_fvg_enabled=0 (defaults), atoms log 0 — byte-
+         //   identical to v2.7.117 scaffolding. Flipping the per-atom flags computes the
+         //   atom + logs to SIGNALS; SKIP gate only fires when iss_block_below_threshold=1.
+         double _iss_m5_close = iClose(_Symbol, PERIOD_M5, 0);
+         double _iss_m5_open  = iOpen (_Symbol, PERIOD_M5, 0);
+         // MSS atom — direction-dependent body-close break of recent swing with displacement
+         if(g_sc.ict_mss_enabled) {
+            double _recent_swing_h = (g_swing_high_count > 0) ? g_swing_highs[g_swing_high_count - 1].price : 0.0;
+            double _recent_swing_l = (g_swing_low_count  > 0) ? g_swing_lows [g_swing_low_count  - 1].price : 0.0;
+            if(direction == "BUY") {
+               g_iss_mss = DetectBullishMSS(_iss_m5_close, _iss_m5_open, m5_atr,
+                                            _recent_swing_h, g_sc.ict_mss_displacement_atr_mult) ? 1 : 0;
+            } else if(direction == "SELL") {
+               g_iss_mss = DetectBearishMSS(_iss_m5_close, _iss_m5_open, m5_atr,
+                                            _recent_swing_l, g_sc.ict_mss_displacement_atr_mult) ? 1 : 0;
+            } else {
+               g_iss_mss = 0;
+            }
+         } else {
+            g_iss_mss = 0;
+         }
+         // FVG atom — active FVG aligned with direction, current price inside zone
+         if(g_sc.ict_fvg_enabled) {
+            FVGZone _fvg_match;
+            g_iss_fvg = Forge_GetActiveFVGAlignedWith(direction, _iss_m5_close, _fvg_match) ? 1 : 0;
+         } else {
+            g_iss_fvg = 0;
+         }
+         // ChoCH atoms stay 0 in v2.7.118 — deferred to v2.7.119 (Phase 2 — IctLiquidity).
+         g_iss_choch_support = 0;
+         g_iss_choch_against = 0;
          g_iss_score = g_iss_mss * g_sc.iss_weight_mss
                      + g_iss_fvg * g_sc.iss_weight_fvg
                      + g_iss_choch_support * g_sc.iss_weight_choch_support;

@@ -1,5 +1,5 @@
 {
-  "version": "2.7.117",
+  "version": "2.7.118",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -424,6 +424,11 @@
     "iss_weight_choch_support": 2,
     "iss_fvg_max_age_bars": 12,
     "iss_fvg_max_fill_pct": 0.5,
+    "ict_mss_enabled": 0,
+    "ict_fvg_enabled": 0,
+    "ict_swing_lookback": 3,
+    "ict_mss_displacement_atr_mult": 0.5,
+    "ict_fvg_min_size_atr_mult": 0.15,
     "cvcsm_enabled": 1,
     "cvcsm_release_threshold": 2,
     "cvcsm_required_clean_bars": 2,

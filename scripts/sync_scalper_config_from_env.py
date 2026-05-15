@@ -255,6 +255,14 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_ISS_WEIGHT_CHOCH_SUPPORT":                       ("safety",    "iss_weight_choch_support",                      "int",    0,     10),
     "FORGE_TIMING_ISS_FVG_MAX_AGE_BARS":                         ("safety",    "iss_fvg_max_age_bars",                          "int",    1,     60),
     "FORGE_GATE_ISS_FVG_MAX_FILL_PCT":                           ("safety",    "iss_fvg_max_fill_pct",                          "float",  0.0,   1.0),
+    # v2.7.118 — ICT Phase 1 modular component (first .mqh module ea/include/Forge/IctStructure.mqh).
+    # MSS (Market Structure Shift) + FVG (Fair Value Gap) detection. Default-OFF instrumentation —
+    # atoms compute + log to SIGNALS when enabled; SKIP gate fires only when iss_block_below_threshold=1.
+    "FORGE_ICT_MSS_ENABLED":                                     ("safety",    "ict_mss_enabled",                               "bool01", None,  None),
+    "FORGE_ICT_FVG_ENABLED":                                     ("safety",    "ict_fvg_enabled",                               "bool01", None,  None),
+    "FORGE_ICT_SWING_LOOKBACK":                                  ("safety",    "ict_swing_lookback",                            "int",    1,     10),
+    "FORGE_ICT_MSS_DISPLACEMENT_ATR_MULT":                       ("safety",    "ict_mss_displacement_atr_mult",                 "float",  0.0,   5.0),
+    "FORGE_ICT_FVG_MIN_SIZE_ATR_MULT":                           ("safety",    "ict_fvg_min_size_atr_mult",                     "float",  0.0,   5.0),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),
