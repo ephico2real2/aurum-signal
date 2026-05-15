@@ -1,5 +1,5 @@
 {
-  "version": "2.7.118",
+  "version": "2.7.119",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -416,7 +416,7 @@
     "dtc_exempt_override_buy_rsi_max": 25.0,
     "dtc_exempt_override_buy_setups": "BB_EXHAUSTION_REVERSAL_BUY",
     "dtc_exempt_override_sell_setups": "BB_EXHAUSTION_REVERSAL_SELL",
-    "iss_enabled": 0,
+    "iss_enabled": 1,
     "iss_min_threshold": 5,
     "iss_block_below_threshold": 0,
     "iss_c_override_pemcg_enabled": 0,
@@ -425,8 +425,8 @@
     "iss_weight_choch_support": 2,
     "iss_fvg_max_age_bars": 12,
     "iss_fvg_max_fill_pct": 0.5,
-    "ict_mss_enabled": 0,
-    "ict_fvg_enabled": 0,
+    "ict_mss_enabled": 1,
+    "ict_fvg_enabled": 1,
     "ict_swing_lookback": 3,
     "ict_mss_displacement_atr_mult": 0.5,
     "ict_fvg_min_size_atr_mult": 0.15,

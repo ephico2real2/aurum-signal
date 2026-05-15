@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.188"
+#property version "2.189"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -65,7 +65,7 @@
 //   See docs/MQL5_MODULAR_EA_DESIGN.md for include layout + dependency rules.
 #include <Forge\IctStructure.mqh>
 
-const string FORGE_VERSION = "2.7.118";
+const string FORGE_VERSION = "2.7.119";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -9323,7 +9323,20 @@ bool JournalInit() {
       "iss_mss INTEGER DEFAULT 0, "
       "iss_fvg INTEGER DEFAULT 0, "
       "iss_choch_support INTEGER DEFAULT 0, "
-      "iss_choch_against INTEGER DEFAULT 0"
+      "iss_choch_against INTEGER DEFAULT 0, "
+      // v2.7.119 — ICT Phase-1 atom context (9 cols). Captured at the setup-trigger
+      //   chokepoint by FORGE.mq5 + read inline by JournalRecordSignal via the
+      //   g_ict_last_* globals exported from Forge\IctStructure.mqh. LOG-ONLY:
+      //   no new SKIP gate, no behaviour change with default knobs (ict_*_enabled=0).
+      "ict_mss_swing_price REAL DEFAULT 0, "
+      "ict_mss_displacement_atr REAL DEFAULT 0, "
+      "ict_fvg_count_active INTEGER DEFAULT 0, "
+      "ict_fvg_active_upper REAL DEFAULT 0, "
+      "ict_fvg_active_lower REAL DEFAULT 0, "
+      "ict_fvg_midpoint_dist_atr REAL DEFAULT 0, "
+      "ict_fvg_age_bars INTEGER DEFAULT 0, "
+      "ict_recent_swing_high REAL DEFAULT 0, "
+      "ict_recent_swing_low REAL DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -9488,6 +9501,23 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN iss_choch_support INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN iss_choch_against INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_iss_score ON SIGNALS(iss_score);");
+   // v2.7.119 — ICT Phase-1 atom context (9 REAL/INTEGER cols).
+   //   Captured by FORGE.mq5 at the setup-trigger chokepoint (after computing g_iss_*)
+   //   and stored in g_ict_last_* globals exported from Forge\IctStructure.mqh. Read
+   //   inline by JournalRecordSignal. Each migration is idempotent — DatabaseExecute
+   //   returns false on existing columns without throwing (same pattern as v2.7.116).
+   //   The 5 iss_* migrations ABOVE were retroactively added in v2.7.119 alongside
+   //   these — they were declared in CREATE TABLE since v2.7.112 but never had ALTERs,
+   //   so existing DBs from before v2.7.112 silently lacked the columns.
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_mss_swing_price REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_mss_displacement_atr REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_fvg_count_active INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_fvg_active_upper REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_fvg_active_lower REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_fvg_midpoint_dist_atr REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_fvg_age_bars INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_recent_swing_high REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_recent_swing_low REAL DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
@@ -9705,7 +9735,13 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "m5_inside_bar, m5_outside_bar, m5_doji, m5_strong_bar, "
       "long_lower_wick, long_upper_wick, m5_range_expanding, "
       // v2.7.112 — ISS (ICT Structure Score) — 5 scaffolding columns (atoms stubbed)
-      "iss_score, iss_mss, iss_fvg, iss_choch_support, iss_choch_against"
+      "iss_score, iss_mss, iss_fvg, iss_choch_support, iss_choch_against, "
+      // v2.7.119 — ICT Phase-1 atom context (9 cols sourced from g_ict_last_* globals
+      //   exported by Forge\IctStructure.mqh, populated at the setup-trigger chokepoint
+      //   right after the iss_* atoms are computed). LOG-ONLY — no gate behaviour change.
+      "ict_mss_swing_price, ict_mss_displacement_atr, ict_fvg_count_active, "
+      "ict_fvg_active_upper, ict_fvg_active_lower, ict_fvg_midpoint_dist_atr, "
+      "ict_fvg_age_bars, ict_recent_swing_high, ict_recent_swing_low"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -9823,7 +9859,20 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_iss_mss)           + ", "
       + IntegerToString(g_iss_fvg)           + ", "
       + IntegerToString(g_iss_choch_support) + ", "
-      + IntegerToString(g_iss_choch_against)
+      + IntegerToString(g_iss_choch_against) + ", "
+      // v2.7.119 — ICT Phase-1 atom context (9 cols). Read inline from g_ict_last_*
+      //   globals (Forge\IctStructure.mqh). g_fvg_ring_count is the live module
+      //   counter for ict_fvg_count_active. All values stay 0 when ICT atoms are
+      //   disabled / no match found (chokepoint zeroes them on the no-match branch).
+      + DoubleToString(g_ict_last_mss_swing_price,       _Digits) + ", "
+      + DoubleToString(g_ict_last_mss_displacement_atr,        4) + ", "
+      + IntegerToString(g_fvg_ring_count)                         + ", "
+      + DoubleToString(g_ict_last_fvg_upper,             _Digits) + ", "
+      + DoubleToString(g_ict_last_fvg_lower,             _Digits) + ", "
+      + DoubleToString(g_ict_last_fvg_midpoint_dist_atr,       4) + ", "
+      + IntegerToString(g_ict_last_fvg_age_bars)                  + ", "
+      + DoubleToString(g_ict_last_recent_swing_high,     _Digits) + ", "
+      + DoubleToString(g_ict_last_recent_swing_low,      _Digits)
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
@@ -13631,17 +13680,17 @@ void CheckNativeScalperSetups() {
       bool iss_blocked = false;
       if(g_sc.iss_enabled) {
          // v2.7.118 — wire MSS + FVG atoms to real ICT detection (first modular ship).
-         //   ChoCH atoms remain stubbed (deferred to v2.7.119 — Phase 2 IctLiquidity module).
+         //   ChoCH atoms remain stubbed (deferred to v2.7.119+ — Phase 2 IctLiquidity).
          //   Detection lives in ea/include/Forge/IctStructure.mqh.
          //   With ict_mss_enabled=0 and ict_fvg_enabled=0 (defaults), atoms log 0 — byte-
          //   identical to v2.7.117 scaffolding. Flipping the per-atom flags computes the
          //   atom + logs to SIGNALS; SKIP gate only fires when iss_block_below_threshold=1.
          double _iss_m5_close = iClose(_Symbol, PERIOD_M5, 0);
          double _iss_m5_open  = iOpen (_Symbol, PERIOD_M5, 0);
+         double _recent_swing_h = (g_swing_high_count > 0) ? g_swing_highs[g_swing_high_count - 1].price : 0.0;
+         double _recent_swing_l = (g_swing_low_count  > 0) ? g_swing_lows [g_swing_low_count  - 1].price : 0.0;
          // MSS atom — direction-dependent body-close break of recent swing with displacement
          if(g_sc.ict_mss_enabled) {
-            double _recent_swing_h = (g_swing_high_count > 0) ? g_swing_highs[g_swing_high_count - 1].price : 0.0;
-            double _recent_swing_l = (g_swing_low_count  > 0) ? g_swing_lows [g_swing_low_count  - 1].price : 0.0;
             if(direction == "BUY") {
                g_iss_mss = DetectBullishMSS(_iss_m5_close, _iss_m5_open, m5_atr,
                                             _recent_swing_h, g_sc.ict_mss_displacement_atr_mult) ? 1 : 0;
@@ -13654,19 +13703,53 @@ void CheckNativeScalperSetups() {
          } else {
             g_iss_mss = 0;
          }
-         // FVG atom — active FVG aligned with direction, current price inside zone
+         // FVG atom — active FVG aligned with direction, current price inside zone.
+         // v2.7.119 — _fvg_match declared at outer scope so the context-capture block
+         //   below can read it whether or not the gate fires. Forge_GetActiveFVGAlignedWith
+         //   zero-inits `out` unconditionally (v2.7.119 hardening), so a no-match leaves
+         //   the struct with safe zeros.
+         FVGZone _fvg_match;
          if(g_sc.ict_fvg_enabled) {
-            FVGZone _fvg_match;
             g_iss_fvg = Forge_GetActiveFVGAlignedWith(direction, _iss_m5_close, _fvg_match) ? 1 : 0;
          } else {
+            // Zero-init the struct anyway so the capture block below reads safe defaults.
+            _fvg_match.time = 0; _fvg_match.upper = 0.0; _fvg_match.lower = 0.0;
+            _fvg_match.midpoint = 0.0; _fvg_match.bullish = false;
+            _fvg_match.mitigated = false; _fvg_match.partiallyMitigated = false;
+            _fvg_match.sourceBar = 0; _fvg_match.displacementScore = 0.0; _fvg_match.expiry = 0;
             g_iss_fvg = 0;
          }
-         // ChoCH atoms stay 0 in v2.7.118 — deferred to v2.7.119 (Phase 2 — IctLiquidity).
+         // ChoCH atoms stay 0 in v2.7.119 — deferred to Phase 2 IctLiquidity module.
          g_iss_choch_support = 0;
          g_iss_choch_against = 0;
          g_iss_score = g_iss_mss * g_sc.iss_weight_mss
                      + g_iss_fvg * g_sc.iss_weight_fvg
                      + g_iss_choch_support * g_sc.iss_weight_choch_support;
+         // v2.7.119 — capture ICT atom context for SIGNALS logging.
+         //   These globals are read inline by JournalRecordSignal so every emitted
+         //   row (TAKEN or SKIP) carries the ICT context that informed the decision.
+         //   Always populated when iss_enabled — zeroed on the `else` branch below.
+         g_ict_last_recent_swing_high = _recent_swing_h;
+         g_ict_last_recent_swing_low  = _recent_swing_l;
+         if(g_iss_mss == 1) {
+            g_ict_last_mss_swing_price      = (direction == "BUY") ? _recent_swing_h : _recent_swing_l;
+            g_ict_last_mss_displacement_atr = MathAbs(_iss_m5_close - _iss_m5_open) / MathMax(m5_atr, 1e-9);
+         } else {
+            g_ict_last_mss_swing_price      = 0.0;
+            g_ict_last_mss_displacement_atr = 0.0;
+         }
+         if(g_iss_fvg == 1) {
+            g_ict_last_fvg_upper             = _fvg_match.upper;
+            g_ict_last_fvg_lower             = _fvg_match.lower;
+            g_ict_last_fvg_midpoint_dist_atr = (_iss_m5_close - _fvg_match.midpoint) / MathMax(m5_atr, 1e-9);
+            // Age in M5 bars = elapsed seconds since FVG creation / 300 (M5 = 300s)
+            g_ict_last_fvg_age_bars          = (int)((TimeCurrent() - _fvg_match.time) / 300);
+         } else {
+            g_ict_last_fvg_upper             = 0.0;
+            g_ict_last_fvg_lower             = 0.0;
+            g_ict_last_fvg_midpoint_dist_atr = 0.0;
+            g_ict_last_fvg_age_bars          = 0;
+         }
          // Hard gate: ChoCH against trade direction → architectural NO (not weighted).
          if(g_sc.iss_block_below_threshold
             && !umcg_blocked && !cvcsm_blocked && !dirlock_blocked && !dtc_day_bias_blocked
@@ -13688,6 +13771,16 @@ void CheckNativeScalperSetups() {
          g_iss_fvg           = 0;
          g_iss_choch_support = 0;
          g_iss_choch_against = 0;
+         // v2.7.119 — also zero ICT atom-context globals so SIGNALS rows log 0
+         //   when iss_enabled=0. Keeps schema-parity invariant byte-stable.
+         g_ict_last_mss_swing_price       = 0.0;
+         g_ict_last_mss_displacement_atr  = 0.0;
+         g_ict_last_fvg_upper             = 0.0;
+         g_ict_last_fvg_lower             = 0.0;
+         g_ict_last_fvg_midpoint_dist_atr = 0.0;
+         g_ict_last_fvg_age_bars          = 0;
+         g_ict_last_recent_swing_high     = 0.0;
+         g_ict_last_recent_swing_low      = 0.0;
       }
       if(umcg_blocked || cvcsm_blocked || dirlock_blocked || dtc_day_bias_blocked || iss_blocked) {
          double _gate_mid_px = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
