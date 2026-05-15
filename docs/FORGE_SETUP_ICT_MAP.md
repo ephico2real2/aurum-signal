@@ -290,7 +290,443 @@ The selective-12 columns ship may still happen, but BEFORE the M7-M11 folding (w
 - The schema-parity 5-layer ship discipline (`.claude/skills/forge-monitor/SKILL.md`) — unchanged
 - The PEMCG / ICT 3-mode integration plan (`FORGE_PEMCG_ICT_INTEGRATION.md`) — Mode A (Phase 2 atoms compute + log) remains the validation gate before Mode B / Mode C flips
 
+## §10 Appendix B — Minimal viable ICT category set (confirmed 2026-05-15)
+
+This appendix supersedes §2's 6-category structure. After ICT-canon research (citations §B.6) the operator's bloat concern was validated: 6 entry categories are still too many for what ICT teaches. The clean separation is **entry categories (price action — what)** ⊥ **killzone tags (timing — when)**. Every trade gets ONE entry category + ONE killzone tag. Two orthogonal axes, not seven flat buckets.
+
+### §B.1 Why 4 entry categories, not 6
+
+ICT canon teaches a small set of entry primitives. From the research:
+
+> "The four core strategies: market structure breaks with order blocks, fair value gap trading during kill zones, liquidity sweeps with reversals, and Silver Bullet setups."
+
+The 6-category model in §2 has two redundancies:
+
+| Old category | Verdict | Reason |
+|---|---|---|
+| MSS_BREAKOUT | **Keep — renamed MSS_CONTINUATION** | Canonical ICT primitive. Folds in DISPLACEMENT (the impulsive move that *creates* an MSS is by definition displacement — they are not separate categories, they are the same event viewed at different scales). |
+| OTE_RETRACEMENT | **Keep** | Canonical. 62-79% fib pullback into discount/premium zone. |
+| LIQUIDITY_SWEEP_REVERSAL | **Keep** | Canonical. Stop hunt → ChoCH/MSS → entry. |
+| BREAKER_BLOCK_RETEST | **Keep — renamed BREAKER_RETEST** | Canonical. Distinct from MSS because the post-break behavior (broken OB acts as new S/R) has different entry mechanics. |
+| DISPLACEMENT_ENTRY | **DROP — fold into MSS_CONTINUATION** | Displacement *is* the MSS-confirming impulse. Not its own entry category — it's the leg that creates the structure shift. Setups currently in this bucket (MOMENTUM_DUMP, BB_SQUEEZE breakout, FLAG_PENNANT, INSIDE_BAR break) all fire on the impulse leg of an MSS event. |
+| TREND_CONTINUATION | **DROP — split into MSS_CONTINUATION + OTE_RETRACEMENT** | Not an ICT-canonical category. ICT teaches: trend continues via *either* a new MSS (push higher) *or* a pullback retest into OTE/FVG. Setups currently in this bucket are one or the other — there is no "trend continuation entry primitive" separate from MSS or OTE. GRINDING_SELL / NY_SESSION_BEARISH_BREAKOUT_SELL → MSS_CONTINUATION. TREND_CONTINUATION_BUY / FRACTIONAL_SELL_IN_BULL → OTE_RETRACEMENT. |
+
+**Final 4 entry categories:**
+
+1. `MSS_CONTINUATION` — Market Structure Shift confirmed by a displacement leg; entry on retrace into the FVG/OB that the impulse created (absorbs old A + E + half of F)
+2. `OTE_RETRACEMENT` — Pullback to 62-79% fib in discount/premium zone, with FVG/OB confluence (absorbs old B + other half of F)
+3. `LIQUIDITY_SWEEP_REVERSAL` — Sweep of equal highs/lows or session high/low followed by ChoCH; entry on first FVG retrace (absorbs old C + D)
+4. `BREAKER_RETEST` — OB that was traded through and now acts as new S/R; entry on retest with FVG confluence (kept distinct from MSS_CONTINUATION)
+
+### §B.2 Category G — preserved as ICT-canonical killzone dimension
+
+Operator's instinct is correct and matches ICT canon: killzones are not a separate entry category, they are a **time filter applied to all entry models**. From research:
+
+> "Kill Zones are not merely high-volatility time windows; they function as a time filter for all entry models. An FVG that forms at 2:00 PM is not the same trade as an FVG that forms at 2:30 AM during London open."
+
+So Category G becomes a **dimension every trade carries**, not a flat category. The new `setup_type` is the entry category; a new `killzone` column tags the session. ICT-canonical naming for the 5 windows (NY time per ICT teaching):
+
+| Tag | NY time window | Description | When to favor |
+|---|---|---|---|
+| `ASIAN_KZ` | 20:00 – 00:00 | Asian session — accumulation phase, ranges form | OTE_RETRACEMENT inside the Asian range; LIQUIDITY_SWEEP_REVERSAL of Asian high/low at London Open |
+| `LONDON_OPEN_KZ` | 02:00 – 05:00 | London Open — first liquidity grab, often sweeps Asian range | All four entry categories; highest-conviction MSS_CONTINUATION window |
+| `NY_AM_KZ` | 07:00 – 10:00 | New York AM — primary directional move of the day | MSS_CONTINUATION, BREAKER_RETEST of London-Open levels |
+| `NY_PM_KZ` | 13:30 – 16:00 | New York PM — reversals, profit-taking, second move | LIQUIDITY_SWEEP_REVERSAL of NY-AM high/low |
+| `LONDON_CLOSE_KZ` | 10:00 – 12:00 | London Close — bias hand-off, often reverses NY AM | OTE_RETRACEMENT for NY-PM continuation; bias-flip signal |
+| `OFF_SESSION` | everything else | Outside any killzone | De-rate lot factor; entries should require ≥1 extra confluence |
+
+**Silver Bullet sub-windows (optional precision tags within a killzone):**
+
+| Tag | NY time | Within killzone | Use |
+|---|---|---|---|
+| `LONDON_SB` | 03:00 – 04:00 | LONDON_OPEN_KZ | 1-hour high-conviction window; FVG entries only |
+| `AM_SB` | 10:00 – 11:00 | LONDON_CLOSE_KZ / NY_AM_KZ overlap | Highest-conviction NY-AM window |
+| `PM_SB` | 14:00 – 15:00 | NY_PM_KZ | 1-hour PM-reversal window |
+
+Silver Bullet tags are an OPTIONAL second dimension — most trades won't carry one. When they do, lot factor +0.1 amplifier per ICT canon (high-conviction window).
+
+### §B.3 Combined tag format — colleague-friendly naming
+
+Every trade carries: **`<entry_category>` + `<killzone>` [+ `<silver_bullet>`]**. Examples:
+
+| FORGE tag | Plain-English (colleague-friendly) |
+|---|---|
+| `MSS_CONTINUATION + LONDON_OPEN_KZ` | "London-open MSS continuation" |
+| `OTE_RETRACEMENT + NY_AM_KZ + AM_SB` | "AM Silver Bullet OTE" |
+| `LIQUIDITY_SWEEP_REVERSAL + NY_PM_KZ` | "PM sweep reversal" |
+| `BREAKER_RETEST + LONDON_CLOSE_KZ` | "London-close breaker retest" |
+| `OTE_RETRACEMENT + ASIAN_KZ` | "Asian-range OTE" |
+
+This is the colleague-discussion grammar the operator asked for: two ICT-canonical nouns concatenated, instantly memorable, no internal codenames.
+
+### §B.4 Migration impact relative to Appendix A
+
+Appendix A's milestones M7-M11 collapse to **M7-M9** under this minimal set:
+
+| New milestone | Replaces | Effect |
+|---|---|---|
+| **M7 — Fold to `MSS_CONTINUATION`** | Old M7 (MSS) + old M10 (DISPLACEMENT) + half of old M11 (TREND_CONTINUATION) | One setup_type covers `BB_BREAKOUT`, `MA_CROSSOVER`, `ORB`, `GAP_AND_GO`, `MOMENTUM_DUMP`, `MOMENTUM_DUMP_COMPOSITE`, `BB_SQUEEZE`, `FLAG_PENNANT`, `INSIDE_BAR`, `GRINDING_SELL`, `NY_SESSION_BEARISH_BREAKOUT_SELL`. Subtype column preserves original-trigger identity. |
+| **M8 — Fold to `OTE_RETRACEMENT`** | Old M8 (OTE) + other half of M11 | One setup_type covers `BB_BOUNCE`, `BB_PULLBACK_SCALP`, `BB_LOWER_REVERSION_BUY`, `FIB_CONFLUENCE`, `VWAP_REVERSION`, `BULL_DAY_DIP_BUY`, `TREND_CONTINUATION_BUY`, `FRACTIONAL_SELL_IN_BULL`, `INTRADAY_REVERSAL_SELL`. |
+| **M9 — Fold to `LIQUIDITY_SWEEP_REVERSAL`** | Old M9 (LIQUIDITY_SWEEP) | `BB_EXHAUSTION_REVERSAL_*`, post-M2/M3 remnants of chart patterns, `ASIA_CAPITULATION_BUY`. |
+
+(BREAKER_RETEST stays gated behind Phase 3 — M5 in Appendix A is unchanged.)
+
+After M9 the EA has **4 setup_types**, not 6. Subtype column preserves attribution for ablation studies.
+
+### §B.5 New SIGNALS schema columns (per schema-parity mandate)
+
+To represent the entry × session structure end-to-end, two new columns are required (5-layer ship per `.claude/skills/forge-monitor/SKILL.md`):
+
+| Column | Type | Domain | Source |
+|---|---|---|---|
+| `killzone` | TEXT | `ASIAN_KZ` / `LONDON_OPEN_KZ` / `NY_AM_KZ` / `NY_PM_KZ` / `LONDON_CLOSE_KZ` / `OFF_SESSION` | `g_regime.killzone` (already computed per `FORGE_REGIME_TAXONOMY.md §11`) |
+| `silver_bullet` | TEXT | `LONDON_SB` / `AM_SB` / `PM_SB` / `NONE` | new `IsInSilverBulletWindow()` in `Forge/IctLiquidity.mqh` |
+
+The `killzone` atom is already computed and logged per `g_regime` migration; this just promotes it from runtime to schema. `silver_bullet` is new — slot it next to `killzone` in `JournalRecordSignal`.
+
+### §B.6 Citations
+
+- [JadeCap — All Five ICT Entry Models Explained](https://time-price-research-astrofin.blogspot.com/2026/02/all-five-ict-entry-models-explained.html) — confirms ICT canon teaches 5 entry models (MSS, OTE, Liquidity Sweep, OB/Breaker, Unicorn)
+- [QuantumAlgo — Complete Guide to ICT Concepts (2026)](https://www.quantum-algo.com/blog/ict-trading-strategy-complete-guide/) — "the four core strategies: market structure breaks with order blocks, fair value gap trading during kill zones, liquidity sweeps with reversals, and Silver Bullet setups"
+- [LuxAlgo — ICT Killzones Toolkit](https://www.luxalgo.com/library/indicator/ict-killzones-toolkit/) — confirms killzone is overlay/filter applied to entry models, not a separate entry category
+- [TradingFinder — Build an ICT Entry Model: Select Timeframe and Kill Zone](https://tradingfinder.com/education/forex/ict-build-entry-model/) — killzone as time-filter dimension on the entry model
+- [TradingWit — ICT Strategy Concepts](https://tradingwit.com/learn-trading/ict-strategy-concepts/) — canonical primitives definitions for MSS/FVG/OTE/OB/Breaker
+- [InnerCircleTrader — Unicorn Model](https://innercircletrader.net/tutorials/ict-unicorn-model/) — confirms Unicorn = composite of Breaker + FVG (defers to Phase 4 in FORGE)
+
+### §B.7 Current FORGE killzone implementation — review + ICT-aligned recommendations
+
+FORGE today ships **two parallel killzone implementations** that diverge. This section pulls both verbatim, lists the correctness/divergence issues, and specifies the alignment plan that makes the EA match the §B.2 canonical model.
+
+#### §B.7.1 What's in the code today
+
+**Implementation A — `FORGE.mq5:6977` `ComputeCurrentKillzoneLabel()` (authoritative chokepoint)**
+
+```mql5
+string ComputeCurrentKillzoneLabel() {
+   if(!g_sc.killzones_enabled) return "";
+   datetime ny = GetNYTimeNow();
+   MqlDateTime dt; TimeToStruct(ny, dt);
+   if(dt.day_of_week == 6) return "";
+   if(dt.day_of_week == 0 && dt.hour < 17) return "";
+   int now_min = dt.hour * 60 + dt.min;
+   if(MinuteInWindow(now_min, g_sc.kz_ny_open_start_min,      g_sc.kz_ny_open_end_min))      return "NY_OPEN_KZ";
+   if(MinuteInWindow(now_min, g_sc.kz_london_open_start_min,  g_sc.kz_london_open_end_min))  return "LONDON_OPEN_KZ";
+   if(MinuteInWindow(now_min, g_sc.kz_london_close_start_min, g_sc.kz_london_close_end_min)) return "LONDON_CLOSE_KZ";
+   if(MinuteInWindow(now_min, g_sc.kz_asia_start_min,         g_sc.kz_asia_end_min))         return "ASIAN_KZ";
+   return "";
+}
+```
+
+- **NY-anchored** via `BrokerToNY()` (FORGE.mq5:6922) — broker time → UTC → NY using broker_gmt_offset + EU/US DST detection
+- **Config-driven** windows from `config/scalper_config.defaults.json:208-216` (NY minute-of-day):
+
+  | Field | Value | NY clock |
+  |---|---|---|
+  | `kz_asia_start_min` / `kz_asia_end_min` | 1140 / 180 | 19:00 → 03:00 next day |
+  | `kz_london_open_start_min` / `kz_london_open_end_min` | 120 / 300 | 02:00 → 05:00 |
+  | `kz_ny_open_start_min` / `kz_ny_open_end_min` | 420 / 600 | 07:00 → 10:00 |
+  | `kz_london_close_start_min` / `kz_london_close_end_min` | 600 / 720 | 10:00 → 12:00 |
+
+- **DST-safe** (Approach B per `docs/research/ICT_KILLZONES.md §5`): `IsEU_DST()` + `IsUS_DST()` + last/first-Sunday helpers (FORGE.mq5:6862-6920)
+- **Sunday guard**: closed-market block before 17:00 NY Sunday
+- **Writes to**: `g_regime.killzone`, `market_data.json:killzone` (FORGE.mq5:4050), SIGNALS schema `killzone` column, per-killzone trade cap counter, v2.7.63 killzone lot amplifier (FORGE.mq5:807)
+
+**Implementation B — `ea/include/Forge/IctLiquidity.mqh:616-731` (Phase 2 v2.7.120 atoms)**
+
+```mql5
+bool IsInLondonKillZone(datetime t)  { return (mt.hour >= 7  && mt.hour < 10); }  // hardcoded UTC 07-10
+bool IsInNewYorkKillZone(datetime t) { return (mt.hour >= 12 && mt.hour < 15); }  // hardcoded UTC 12-15
+bool IsInSilverBulletWindow(datetime t) { return (mt.hour == 10 || mt.hour == 14); }  // 10-11 + 14-15 UTC
+bool IsInKillZone(datetime t) {  // composite
+   if(mt.hour >= 7  && mt.hour < 10) return true;
+   if(mt.hour >= 12 && mt.hour < 15) return true;
+   if(mt.hour >= 15 && mt.hour < 17) return true;  // collapses NY PM + London Close
+   return false;
+}
+int GetSessionContext(datetime t) {  // returns 0..3
+   if(mt.hour >= 7  && mt.hour < 10) return 1;   // LONDON_KZ
+   if(mt.hour >= 12 && mt.hour < 15) return 2;   // NY_AM_KZ
+   if(mt.hour >= 15 && mt.hour < 17) return 3;   // NY_PM / LONDON_CLOSE overlap
+   return 0;                                     // ASIAN / DEAD_ZONE
+}
+```
+
+- **Hardcoded** hours (no config knobs) — not tunable per broker or instrument
+- **Treats broker time AS UTC** — comment at IctLiquidity.mqh:606-609 explicitly acknowledges this is wrong for GMT+2/+3 brokers but ships anyway
+- **No DST detection** — windows shift by 1 hour winter↔summer
+- **No Sunday guard**
+- **Collapses NY PM into London Close** (single 15:00-17:00 UTC bucket)
+- **Returns ints**, not the `NY_OPEN_KZ` / `LONDON_OPEN_KZ` / etc. strings that the chokepoint writes
+- **Silver Bullet hardcoded** to {10, 14} UTC hours; not config-driven; not written to SIGNALS
+
+#### §B.7.2 Divergence + correctness issues
+
+| # | Issue | Impact |
+|---|---|---|
+| 1 | **Two sources of truth** for "what killzone is it" — chokepoint string vs. ICT-module int. They can disagree at any tick. | A liquidity-sweep atom thinks "NY_AM_KZ active" while the SIGNALS row written by the same tick records `killzone=""`. Cross-DB analysis joins break. |
+| 2 | **Implementation B is not DST-safe** — broker time treated as UTC ignores broker GMT offset (+2/+3 typical) AND ignores US DST. London KZ silently shifts 2-3 hours from the intended window. | Phase 2 atoms (ChoCH, Sweep, Order Block) score liquidity events with the wrong session label. Killzone scoring weight applies in the wrong hour. |
+| 3 | **No `NY_PM_KZ`** in chokepoint (§B.2 spec: 13:30-16:00 NY). Today's `kz_london_close_*` covers 10:00-12:00 NY (the AM overlap) but nothing covers PM. | The PM-reversal window — historically the second-largest move per ICT canon — is recorded as `killzone=""` (off-session). Setup attribution can't separate PM trades from dead-zone trades. |
+| 4 | **NY PM and London Close conflated** in Impl B (single 15:00-17:00 UTC bucket). They are distinct ICT windows with distinct behavior — London Close is bias-handoff; NY PM is reversal/second-move. | Lot amplifier + composite gating can't differentiate the two; loses ICT-canonical signal granularity. |
+| 5 | **Silver Bullet not first-class** — hardcoded UTC hours in Impl B, no config knobs, no SIGNALS column. | §B.5 schema-parity mandate not met for `silver_bullet`. Operator can't tune the precision-window definition without recompiling. |
+| 6 | **Asian KZ in Impl B is implicit** (= "none of the above") — collapsed with DEAD_ZONE as code 0. | Loss of Asian-range accumulation context; can't score "OTE inside Asian range" or "LIQUIDITY_SWEEP of Asian-high at London Open" cleanly. |
+
+#### §B.7.3 ICT-aligned recommendation
+
+**Single source of truth**: chokepoint owns the killzone label. ICT-module atoms read it via thin wrappers — they do not re-derive from datetime. This eliminates issues #1, #2, and #6 in one move.
+
+**Add the two missing windows**: `NY_PM_KZ` (config-driven) + `silver_bullet` (config-driven). This closes issues #3, #4, #5.
+
+**Final canonical surface (matches §B.2)**:
+
+| Killzone string | NY window | Config knobs (NY minute-of-day) |
+|---|---|---|
+| `ASIAN_KZ` | 20:00 – 00:00 (operator may extend to 03:00 as today) | `kz_asia_start_min` / `kz_asia_end_min` (existing) |
+| `LONDON_OPEN_KZ` | 02:00 – 05:00 | `kz_london_open_start_min` / `kz_london_open_end_min` (existing) |
+| `NY_AM_KZ` | 07:00 – 10:00 | `kz_ny_open_start_min` / `kz_ny_open_end_min` (existing — rename to `kz_ny_am_*` optional, alias-tolerated) |
+| `LONDON_CLOSE_KZ` | 10:00 – 12:00 | `kz_london_close_start_min` / `kz_london_close_end_min` (existing) |
+| **`NY_PM_KZ`** ← NEW | 13:30 – 16:00 | **`kz_ny_pm_start_min=810` / `kz_ny_pm_end_min=960`** (new) |
+| `OFF_SESSION` | everything else | (no knob — fallthrough) |
+
+| Silver Bullet string | NY window | Config knobs |
+|---|---|---|
+| `LONDON_SB` | 03:00 – 04:00 | **`sb_london_start_min=180` / `sb_london_end_min=240`** (new) |
+| `AM_SB` | 10:00 – 11:00 | **`sb_am_start_min=600` / `sb_am_end_min=660`** (new) |
+| `PM_SB` | 14:00 – 15:00 | **`sb_pm_start_min=840` / `sb_pm_end_min=900`** (new) |
+
+#### §B.7.4 Implementation plan (v2.7.122 candidate ship)
+
+Five-layer per schema-parity mandate:
+
+1. **EA (FORGE.mq5)**:
+   - Add 8 new config fields to `ScalperConfig` (kz_ny_pm_* + sb_london_* + sb_am_* + sb_pm_*)
+   - Set defaults in `LoadScalperDefaults` per §B.7.3 tables
+   - Extend `ComputeCurrentKillzoneLabel()` with the NY_PM check (insert after LONDON_CLOSE; order doesn't matter when ranges don't overlap)
+   - Add **`ComputeCurrentSilverBulletLabel()`** mirroring the killzone helper — same NY-anchored time, same Sunday guard, returns `LONDON_SB` / `AM_SB` / `PM_SB` / `""`
+   - Add `silver_bullet` field to `RegimeState` (Layer 5 atom)
+   - Wire JSON config keys in `LoadScalperConfigFromFile` (JsonHasKey/JsonGetDouble for each new field)
+   - Write `silver_bullet` into `market_data.json` next to `killzone`
+2. **Retire Impl B** (`IctLiquidity.mqh` killzone helpers):
+   - Replace `IsInLondonKillZone(t)` body with `return g_regime.killzone == "LONDON_OPEN_KZ";`
+   - Replace `IsInNewYorkKillZone(t)` body with `return g_regime.killzone == "NY_AM_KZ";`
+   - Replace `IsInSilverBulletWindow(t)` body with `return g_regime.silver_bullet != "";`
+   - Replace `IsInKillZone(t)` body with `return g_regime.killzone != "";`
+   - Replace `GetSessionContext(t)` with a lookup of `g_regime.killzone` → int (kept for analytic joins only; ICT-module scoring should consume the string)
+   - Drop the `t` parameter from callers (state is per-tick, not arbitrary-time); keep the signature for compat with a deprecation comment
+3. **Config defaults** (`config/scalper_config.defaults.json`):
+   - Add the 8 new keys with the values from §B.7.3
+4. **Env mapping** (`scripts/sync_scalper_config_from_env.py`):
+   - Add `FORGE_KZ_NY_PM_START_MIN` / `_END_MIN` + `FORGE_SB_LONDON_START_MIN` / `_END_MIN` / `FORGE_SB_AM_*` / `FORGE_SB_PM_*` env-to-JSON mappings
+   - Add commented-out lines to `.env.example` per "no dead env vars" mandate
+5. **Schema (5-layer ship)**:
+   - `SIGNALS` CREATE TABLE: add `silver_bullet TEXT` (the `killzone` column already exists)
+   - `ALTER TABLE` migration in journal init: `ALTER TABLE SIGNALS ADD COLUMN silver_bullet TEXT` (idempotent via PRAGMA check)
+   - `JournalRecordSignal`: append `g_regime.silver_bullet` to the placeholder list (bumps count from 139 → 140)
+   - `python/scribe.py` `sync_forge_journal`: include `silver_bullet` in the column list + INSERT statement
+   - `sql/forge_signals_schema.sql`: add the column to the canonical schema file
+
+**Validation gate (per `docs/research/ICT_KILLZONES.md §9`)** before shipping:
+- Tester replay with `killzones_enabled=1`, check that `killzone` and `silver_bullet` populate correctly across DST transitions (run Mar 30 + Apr 7 — week of US DST switch)
+- Cross-check `g_regime.killzone == g_ict_last_killzone_active` mapping post-retirement
+- Confirm no FORGE_* env knob is dead per `feedback_no_dead_env_vars` mandate
+
+#### §B.7.5 What changes for trading logic (downstream impact)
+
+| Subsystem | Today | Post-v2.7.122 |
+|---|---|---|
+| v2.7.63 killzone lot amplifier (FORGE.mq5:807) | Keys on 4 zones | Keys on 5 zones + optional SB amplifier overlay (+0.1 lot factor when SB active per §B.2) |
+| Per-killzone trade cap (FORGE.mq5:8619) | 4 buckets | 5 buckets (NY PM gets its own cap) |
+| §B.2 composite gating | NY_PM_KZ behavior gated as OFF_SESSION today | NY_PM_KZ activates `LIQUIDITY_SWEEP_REVERSAL` favored window per §B.2 |
+| Phase 2 ICT atoms (ChoCH/Sweep/OB scoring) | Score with broken UTC-hour bucket | Score with chokepoint-true NY-anchored bucket |
+| Athena UI killzone breakdown | 4 columns | 5 + Silver Bullet drill-down |
+
+#### §B.7.6 Cross-references
+
+Authoritative ICT killzone reference is `docs/research/ICT_KILLZONES.md` — see §2 (NY-time table), §5 (Approach B MQL5 implementation already shipped in FORGE.mq5:6862-6989), §8 (practical FORGE recommendations), §9 (validation checklist). This appendix §B.7 supersedes ICT_KILLZONES.md §6 for the **canonical FORGE killzone surface** (5 windows + 3 Silver Bullet sub-windows); ICT_KILLZONES.md remains the authoritative research/citation source for ICT canon itself.
+
+The skill `.claude/skills/forge-monitor/SKILL.md` previously referenced `FORGE_REGIME_TAXONOMY.md §11` as the killzone atom's home doc. That file is no longer in the repo — its content has been absorbed into this appendix §B and into `ICT_KILLZONES.md`. The skill should be updated to redirect to `docs/FORGE_SETUP_ICT_MAP.md §B.2 + §B.7` (out of scope for this appendix; flagged for a follow-up housekeeping ship).
+
+### §B.8 ICT-aligned boolean composite atoms — per-category atom catalog
+
+This section is the **canonical atom catalog** for ICT-aligned boolean composite analysis. Every new ICT setup decision composes from these atoms — do not invent new ones without WebSearch ICT-canon backing and Appendix update.
+
+#### §B.8.1 The pattern — 3-tier architecture (atoms / composites / gates), ISS-aligned
+
+The full picture is **3 tiers**, not 2. ISS is already in production — its design IS the canonical ISS-aligned pattern; the 4 new category composites extend it without competing with it.
+
+```
+Tier 1 — Atoms (canonical, single source of truth)
+   ~16 unique boolean evaluators in ea/include/Forge/IctScoring.mqh
+   atom_mss_confirmed, atom_fvg_aligned, atom_fvg_unfilled,
+   atom_choch_confirmed, atom_sweep_detected, atom_sweep_wick_quality,
+   atom_ob_broken, atom_breaker_retest, atom_displacement_present,
+   atom_pullback_in_ote, atom_premium_discount_aligned, atom_ob_confluence,
+   atom_killzone_favorable, atom_htf_aligned, ...
+   Logged as SIGNALS columns (Strategy A) or JSON blob (Strategy B per §B.8.4)
+        │
+        ▼
+Tier 2 — Composites (multiple weighted aggregators over the same atoms)
+   ┌─ ISS (general "is structure present right now?")
+   │     MSS(5) + FVG(3) + ChoCH(2) = 0-10
+   │     Shipped v2.7.118-120; operator-judged weights; production
+   ├─ MSS_CONT_SCORE_<DIR>      — §B.8.2 Category 1 atoms, 0-10
+   ├─ OTE_RETRACE_SCORE_<DIR>   — §B.8.2 Category 2 atoms, 0-10
+   ├─ LIQ_SWEEP_REV_SCORE_<DIR> — §B.8.2 Category 3 atoms, 0-10
+   └─ BREAKER_RETEST_SCORE_<DIR>— §B.8.2 Category 4 atoms, 0-10
+        │
+        ▼
+Tier 3 — Gates (Mode A/B/C consumers of Tier 2 scores per §B.8.3)
+   Mode A: compute + log only
+   Mode B: warning de-rate (score < 5 → lot ×0.7)
+   Mode C: hard block (score < 7 → gate_reason=<cat>_score_below_threshold)
+```
+
+**Why 3 tiers, not 2:**
+
+- **Atoms are canonical.** Each atom is implemented ONCE in `IctScoring.mqh`. Multiple composites read from it — never re-derive.
+- **Composites are derived, not canonical.** ISS and the 4 category composites are different *aggregations* over the same atom layer. Same primitives, different weights, different questions answered.
+- **Gates are policy.** Mode A/B/C choice is operator policy per composite (start at A, promote with evidence) — not baked into the composite itself.
+
+**Why two atomic layers (atoms + composites) instead of one:**
+
+| Approach | Failure mode |
+|---|---|
+| Pure boolean composite (flat AND / majority) | Loses magnitude — a 4.99 RSI is the same as a 35 RSI at threshold 30. Creates threshold cliffs. PEMCG works at flat-majority because its atoms are already-thresholded warning bits; ICT atoms have more magnitude content. |
+| Pure scored composite (no audit atoms logged) | Loses categorical clarity — "score was 6.4" doesn't tell you WHICH atoms failed. Ablation impossible. |
+| **Both layers (atoms + composite)** | Atoms answer "which primitive held?"; composite answers "did enough hold, weighted appropriately?" Audit + decision split cleanly. ISS already proves this in production. |
+
+**Why ISS is not redundant with the 4 category composites:**
+
+ISS answers *"is the market giving us ICT structure right now?"* — a **coarse, general, always-on** signal. Used for: quick filter ("only fire ANY setup when ISS ≥ 5"), dashboard color, lot-factor amplifier on high-ISS bars, and as a Mode B warning for low-ISS bars regardless of category.
+
+The 4 category composites answer *"should THIS specific entry category fire here?"* — a **fine, targeted, decision-layer** signal. Used for: the actual gate that decides if MSS_CONT_BUY or OTE_RETRACE_SELL fires.
+
+Both consume the same atom layer (DRY at Tier 1). They are siblings at Tier 2, not parent-child.
+
+**Composite naming**: prefix with category. `MSS_CONT_SCORE_<DIR>` / `OTE_RETRACE_SCORE_<DIR>` / `LIQ_SWEEP_REV_SCORE_<DIR>` / `BREAKER_RETEST_SCORE_<DIR>` with `<DIR>` ∈ {BUY, SELL}. ISS stays as `iss_score` (no direction suffix — ISS is direction-agnostic; the underlying MSS_BULL / MSS_BEAR atoms encode direction at Tier 1).
+
+**Same atom in different composites with different weights is EXPECTED:** `atom_mss_confirmed` carries weight 5 in ISS (which is *about* structure — MSS dominates) but weight 3 in MSS_CONT_SCORE (where MSS is the precondition but the discriminator is the *other* atoms: displacement quality, FVG alignment, killzone favorability, HTF agreement). The weight is tuned to the question the composite answers. Per-composite weight tuning is the design; do not flatten to "one weight per atom across all composites".
+
+**Weights are calibrated, not invented:** ISS's 5/3/2 was operator judgment per `project_ces_provisional.md` memory (CES was retired and replaced because it couldn't discriminate; ISS weights were chosen to give it discrimination power). The §B.8.2 weights are first-cut and require similar calibration — empirical hit-rate against known winners/losers (per `feedback_supermajority_composite_threshold` memory: calibrate composite thresholds against known winners + check block distributions before promoting from Mode A → B → C).
+
+#### §B.8.2 Atom inventory — per entry category
+
+The weight column shows ISS-style points; total per category = 10. Threshold = 7/10 for hard gate, 5/10 for warning (matches PEMCG supermajority rule per memory `feedback_supermajority_composite_threshold`).
+
+**Category 1 — MSS_CONTINUATION** (entry on retrace into MSS-confirming FVG/OB):
+
+| Atom | Source | Weight | Description |
+|---|---|---|---|
+| `atom_mss_confirmed` | `IctStructure.mqh` DetectBullish/BearishMSS | 3 | Swing high/low broken on close |
+| `atom_displacement_present` | `g_ict_last_displacement_atr_mult ≥ 1.5` | 2 | Impulse leg ≥ 1.5× ATR (the "displacement" that creates the MSS) |
+| `atom_fvg_aligned` | `Forge_GetActiveFVGAlignedWith()` | 2 | FVG exists in the MSS direction |
+| `atom_fvg_unfilled` | `g_fvg_ring[i].mitigated == false` | 1 | FVG not yet retraced into |
+| `atom_killzone_favorable` | `g_regime.killzone ∈ {LONDON_OPEN_KZ, NY_AM_KZ}` | 1 | Inside the institutional flow window for MSS continuation |
+| `atom_htf_aligned` | `g_regime.htf_label` matches MSS direction | 1 | H1/H4 trend agreement (anti `feedback_against_market_entries`) |
+| **Total** | | **10** | |
+
+**Category 2 — OTE_RETRACEMENT** (pullback to 62-79% fib in discount/premium zone):
+
+| Atom | Source | Weight | Description |
+|---|---|---|---|
+| `atom_pullback_in_ote` | fib retracement 62-79% of prior leg | 3 | Price inside the OTE band |
+| `atom_premium_discount_aligned` | dealing range midpoint check | 2 | Buys in discount, sells in premium |
+| `atom_fvg_confluence` | FVG in OTE zone | 2 | Structural confluence boost |
+| `atom_ob_confluence` | `IctOrderBlock.mqh` OB in OTE zone (post-Phase 3) | 1 | Additional confluence |
+| `atom_killzone_favorable` | `g_regime.killzone != OFF_SESSION` | 1 | Any killzone (OTE is the most session-agnostic category) |
+| `atom_htf_aligned` | trend agreement | 1 | OTE is a continuation entry — counter-trend OTE = lower-conviction |
+| **Total** | | **10** | |
+
+**Category 3 — LIQUIDITY_SWEEP_REVERSAL** (sweep + ChoCH + FVG retrace):
+
+| Atom | Source | Weight | Description |
+|---|---|---|---|
+| `atom_sweep_detected` | `IctLiquidity.mqh` DetectBuy/SellSideLiquiditySweep | 3 | Equal highs/lows or session extreme taken |
+| `atom_sweep_wick_quality` | wick_atr_ratio ≥ 1.0 | 2 | Sweep with proportional rejection wick (magnitude-scored — use `g_ict_last_sweep_wick_atr_mult`, threshold-tier into 0/1/2) |
+| `atom_choch_confirmed` | `IctLiquidity.mqh` DetectBullish/BearishChOCh | 2 | Structure shift after the sweep |
+| `atom_fvg_on_reversal_leg` | FVG opposite to sweep direction | 2 | Entry zone on the retrace |
+| `atom_killzone_favorable` | `g_regime.killzone ∈ {LONDON_OPEN_KZ, NY_PM_KZ}` | 1 | Sweeps cluster at session opens + PM reversal window |
+| **Total** | | **10** | |
+
+**Category 4 — BREAKER_RETEST** (broken OB acts as new S/R):
+
+| Atom | Source | Weight | Description |
+|---|---|---|---|
+| `atom_ob_broken` | OB traded through with displacement | 3 | Prior OB invalidated by impulse (Phase 3 atom) |
+| `atom_breaker_retest` | price retraces to broken OB zone | 3 | Entry trigger — touch the breaker |
+| `atom_fvg_confluence` | FVG aligned with retest direction | 2 | Unicorn-pattern boost (Breaker ∩ FVG, per ICT canon) |
+| `atom_killzone_favorable` | `g_regime.killzone != OFF_SESSION` | 1 | Any killzone |
+| `atom_htf_aligned` | trend agreement | 1 | Breaker continuation in trend |
+| **Total** | | **10** | |
+
+#### §B.8.3 Gate decision pattern
+
+Three gate modes per composite (matches `FORGE_PEMCG_ICT_INTEGRATION.md` 3-mode plan):
+
+| Mode | Gate condition | Use case |
+|---|---|---|
+| **Mode A — Compute + log only** | always pass; score logged | New composite; validation phase; building empirical baseline |
+| **Mode B — Warning gate** | `score < 5` → lot factor de-rate (×0.7) but trade fires | Composite that adds value but isn't proven enough to hard-block |
+| **Mode C — Hard gate** | `score < 7` → BLOCK with `gate_reason=<category>_score_below_threshold` | Validated composite, supermajority threshold |
+
+Mode B is the right default for a fresh ICT composite — preserve trade flow, attribute the score, ablate after 100+ trades. Promote to Mode C only with evidence.
+
+#### §B.8.4 Schema impact (per schema-parity mandate)
+
+Two strategies depending on cardinality:
+
+**Strategy A — full-column** (use when total atom count across all categories ≤ 24, i.e. plenty of column budget):
+
+Add 1 SIGNALS column per atom (boolean 0/1) + 1 score column per category. ~20-24 new columns. Best for ablation studies.
+
+**Strategy B — selective-column + JSON blob** (use when atom count grows past 24):
+
+Add only the score columns (4 — one per category) + 1 `ict_atoms_passed` TEXT column holding a comma-separated atom list. Per the selective-column rule (skill SKILL.md `selective-column rule for high-cardinality diagnostic data`). Trade ablation precision for column-budget headroom.
+
+**Recommendation**: ship **Strategy A** for v2.7.122 — current atom count = 19 (6+6+5+5 minus overlaps like `atom_killzone_favorable` which collapse to one shared atom). Headroom is fine; ablation precision is worth it during the validation phase.
+
+#### §B.8.5 Atom reuse across categories
+
+Three atoms are shared across multiple categories. Implement once, read everywhere:
+
+| Shared atom | Used by | Shared logic |
+|---|---|---|
+| `atom_killzone_favorable` | All 4 (with different killzone sets) | Single function `IsKillzoneFavorableFor(category)` in `IctScoring.mqh` |
+| `atom_htf_aligned` | MSS_CONT / OTE / BREAKER (not LIQ_SWEEP — sweep entries are by definition counter-trend at the local frame) | Reads `g_regime.htf_label` + direction |
+| `atom_fvg_confluence` / `atom_fvg_aligned` / `atom_fvg_on_reversal_leg` | All 4 (with direction variant) | Single `Forge_GetActiveFVGAlignedWith()` parameterized by direction |
+
+#### §B.8.6 Legacy composites still apply (PEMCG / UMCG / CVCSM)
+
+Existing boolean composites are NOT deprecated:
+
+- **PEMCG** (7-atom warning count, supermajority 5/7) — still gates Layer 1/2/3 reversal blocks per `FORGE_PEMCG_ARCHITECTURE.md`
+- **UMCG** (Unified Market Condition Gate) — still gates entry direction
+- **CVCSM** (Counter-Volume Cooldown State Machine) — still manages SL-only cooldown
+
+These are pure-boolean composites with majority/supermajority thresholds. They predate the ISS scored-composite pattern but solve a similar problem cleanly. **Going-forward rule** (per Mode B above): new ICT composites use the weighted-score pattern; legacy boolean composites stay as-is until a deliberate restructure.
+
+#### §B.8.7 Implementation home
+
+The atom evaluators live in `ea/include/Forge/IctScoring.mqh` (Phase 4, currently scaffolded — body deferred to v2.7.122). Each atom is a function `bool Atom_<name>(int direction)` returning 0/1. The score function `ComputeCategoryScore(category, direction)` sums the weights for atoms returning 1. Mode A/B/C gate selection is a `ScalperConfig.ict_score_mode_<category>` knob (int 0/1/2).
+
+The chokepoint reads `ComputeCategoryScore()` per tick per direction, writes both the score and the atom-by-atom booleans to the SIGNALS row. No re-derivation in setup-trigger code — single computation, multiple readers.
+
+### §B.9 What this appendix changes vs Appendix A
+
+| Item | Appendix A (was) | Appendix B (now) |
+|---|---|---|
+| Target entry categories | 6 | **4** |
+| Killzone treatment | Implicit (per-setup gating) | **Explicit dimension — every trade tagged** |
+| Migration milestones | M7 / M8 / M9 / M10 / M11 (5 folds) | **M7 / M8 / M9 (3 folds)** — DISPLACEMENT and TREND_CONTINUATION dissolve |
+| SIGNALS schema | (Appendix A silent) | **+2 columns: `killzone`, `silver_bullet`** |
+| Naming for ops/colleague discussion | Internal codenames | **ICT-canonical session names** (Asian / London Open / NY AM / NY PM / London Close + Silver Bullet sub-windows) |
+
+§B does not invalidate A — A's strategic frame (FORGE → ICT-canonical IS the design target, not deferred) is preserved verbatim. B refines the target endpoint from 6 to 4 entry categories and codifies the session axis as a first-class dimension.
+
 ## §9 Changelog
 
 - **2026-05-15** — Initial catalog. 28 active FORGE setups mapped to 6 ICT-canonical categories. Per-category deep-dive (§3.1-3.6). Full alphabetical inventory (§4). What's missing from ICT canon (§5 — Phase 3-5 work). Consolidation proposal (§6 — NOT recommended today, but rename map is the canonical target for future restructure).
 - **2026-05-15** — Appendix A added (§8) capturing operator-confirmed strategic intent. Reverses §6's "don't rename today" recommendation — consolidation IS the active design target. Migration milestones M0-M13 sequence the FORGE → ICT-canonical reorganization alongside Phase 2-5 ICT atom work. Cross-system impact catalog (A.4). Changes next-ship target from "v2.7.122 selective-12 columns" to "M1 Phase 2 validation pass + M2/M3 chart-pattern retirement".
+- **2026-05-15** — Appendix B added (§10). Collapses 6 entry categories → 4 ICT-canonical (`MSS_CONTINUATION` / `OTE_RETRACEMENT` / `LIQUIDITY_SWEEP_REVERSAL` / `BREAKER_RETEST`). Drops `DISPLACEMENT_ENTRY` (= MSS impulse leg, not separate) and `TREND_CONTINUATION` (= MSS or OTE depending on structural read, not separate primitive). Preserves operator's Category G as **killzone dimension** with ICT-canonical session names: `ASIAN_KZ` / `LONDON_OPEN_KZ` / `NY_AM_KZ` / `NY_PM_KZ` / `LONDON_CLOSE_KZ` + Silver Bullet sub-windows (`LONDON_SB` / `AM_SB` / `PM_SB`). Migration M7-M11 collapses to M7-M9. New schema columns `killzone` + `silver_bullet` per schema-parity mandate. Citations §B.6 ground category choices in ICT canon.
+- **2026-05-15** — Appendix B §B.7 added: current FORGE killzone implementation review + ICT-aligned recommendations. Documents the two-source-of-truth divergence between `FORGE.mq5:6977 ComputeCurrentKillzoneLabel()` (NY-anchored, DST-safe, config-driven, authoritative) and `IctLiquidity.mqh:616-731 IsInLondonKillZone/IsInNewYorkKillZone/...` (hardcoded UTC-hour, no DST, broken for non-UTC brokers). Identifies 6 correctness/divergence issues. Prescribes the v2.7.122 alignment ship: add `NY_PM_KZ` (5th killzone, 13:30-16:00 NY) + 3 Silver Bullet helpers, retire Impl B to thin wrappers reading `g_regime.killzone`, full 5-layer schema-parity ship for new `silver_bullet` column. Cross-references `docs/research/ICT_KILLZONES.md` as authoritative ICT canon source. Flags stale skill reference to `FORGE_REGIME_TAXONOMY.md` (no longer in repo) for housekeeping follow-up.
+- **2026-05-15** — Appendix B §B.8 added: ICT-aligned boolean composite atoms — per-category atom catalog. Two-layer pattern (boolean atoms = audit; scored composite = decision). 19 unique atoms across 4 ICT entry categories, ISS-style weights summing to 10/category. 3 shared atoms (`atom_killzone_favorable`, `atom_htf_aligned`, FVG-confluence) implemented once + read across categories. Gate modes A/B/C (compute-only / warning de-rate / hard-block) match `FORGE_PEMCG_ICT_INTEGRATION.md` 3-mode plan. Strategy A schema (full per-atom column) recommended for v2.7.122 — 19 atoms within column budget. Implementation home = `ea/include/Forge/IctScoring.mqh` (Phase 4, currently scaffolded). Legacy PEMCG / UMCG / CVCSM composites preserved; new ICT composites use weighted-score pattern.
+- **2026-05-15** — §B.8.1 refactored from 2-tier to **3-tier architecture** (atoms / composites / gates) to make ISS-aligned design explicit. ISS is now formally placed at Tier 2 alongside the 4 new category composites — siblings, not children, all weighted-score composites aggregating from the same canonical atom layer. Documents why ISS is NOT redundant with category composites (ISS = "is structure present?" coarse general signal; category composites = "should THIS category fire?" fine targeted decision). Clarifies per-composite weight tuning is expected: `atom_mss_confirmed` has weight 5 in ISS but weight 3 in MSS_CONT_SCORE — both correct, tuned to the question each composite answers. Weights are calibrated empirically (per `feedback_supermajority_composite_threshold`), not invented; §B.8.2 first-cut weights require validation before Mode A → B → C promotion.

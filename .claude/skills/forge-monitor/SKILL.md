@@ -222,6 +222,204 @@ If any of these counts jumped meaningfully since the prior tick, surface it in t
 
 ---
 
+## ICT-ALIGNED MODULAR DESIGN — DESIGN TARGET for all forward work (mandatory)
+
+**Operator-confirmed 2026-05-15**: FORGE is transitioning to be **more modular** (`.mqh` includes under `ea/include/Forge/`) and **ICT-canonical** (entry models grounded in MSS / OTE / Liquidity Sweep / Breaker + killzone-as-time-filter). Every new enhancement from this point forward MUST follow both axes. Old skill content remains authoritative for **fixing existing legacy logic** — do not delete or weaken it. The two regimes coexist: legacy maintenance follows legacy rules; greenfield work follows the rules below.
+
+### §I.1 The canonical doc set (read FIRST for any ICT / killzone / entry-category work)
+
+| Doc | Authority | When to read |
+|---|---|---|
+| `docs/FORGE_SETUP_ICT_MAP.md` | **Master ICT-alignment doc** — entry-category taxonomy, killzone dimension, migration milestones, current-state implementation review | Any work that touches setup naming, entry categories, killzone logic, lot factors, or schema |
+| `docs/FORGE_SETUP_ICT_MAP.md §2` | Current 6-category state (catalog of 28 legacy setups) | When mapping a legacy setup to its ICT-canonical home |
+| `docs/FORGE_SETUP_ICT_MAP.md §6` | Rename map (28 legacy → 6 ICT-canonical) — the technical fold spec | Any M7-M11 fold ship |
+| `docs/FORGE_SETUP_ICT_MAP.md §8 Appendix A` | **Strategic intent** — confirms ICT-consolidation IS the design target, not deferred | Read when tempted to add a new flat setup_type without ICT mapping |
+| `docs/FORGE_SETUP_ICT_MAP.md §10 Appendix B §B.2` | **Final 4 entry categories** (MSS_CONTINUATION / OTE_RETRACEMENT / LIQUIDITY_SWEEP_REVERSAL / BREAKER_RETEST) + killzone dimension naming | Any new setup design — must slot into one of the 4 |
+| `docs/FORGE_SETUP_ICT_MAP.md §B.7` | **FORGE killzone implementation review** + v2.7.122 alignment plan (5 windows + 3 Silver Bullet) | Any killzone-related code change |
+| `docs/FORGE_PEMCG_ICT_INTEGRATION.md` | 3-mode integration plan (A coexist / B additive / C override) for ICT atoms + PEMCG | Any ISS / PEMCG gate change |
+| `docs/FORGE_ICT_PEMCG_COMBINATIONS.md` | 16-cell ICT × PEMCG truth table | Combination gating decisions |
+| `docs/FORGE_LOT_SIZING_PRE_ICT.md` | Pre-ICT Lot Engine reference (30 factors, selective-12 plan, Phase D equity-% restructure) | Any lot-factor change |
+| `docs/research/ICT_KILLZONES.md` | ICT-canon citations + Approach B MQL5 reference | Killzone theory; not the FORGE surface (§B.7 is) |
+
+If a doc above contradicts a legacy doc, the ICT-aligned doc wins **for new work**. Legacy docs remain authoritative for legacy-logic maintenance.
+
+### §I.2 The `.mqh` module index (Phase 1-5)
+
+Every new ICT atom or ICT-aligned subsystem ships as an `.mqh` include under `ea/include/Forge/`, NOT inline in `FORGE.mq5`. The chokepoint `FORGE.mq5` may call into the module but should not host new ICT logic bodies.
+
+| Module | Status | Owns |
+|---|---|---|
+| `ea/include/Forge/IctStructure.mqh` | ✅ shipped v2.7.118 (Phase 1) | Swing pivot tracker, MSS detection, FVG detection + ring buffer, FVG-aligned lookups |
+| `ea/include/Forge/IctLiquidity.mqh` | ✅ shipped v2.7.120 (Phase 2) | ChoCH events, Buy/Sell-side Liquidity Sweep, **killzone helpers (slated for v2.7.122 retirement to thin wrappers per §B.7.4)** |
+| `ea/include/Forge/IctOrderBlock.mqh` | scaffolded — body deferred (Phase 3, v2.7.121) | Order Block + Breaker Block + PD-array detection |
+| `ea/include/Forge/IctScoring.mqh` | scaffolded — body deferred (Phase 4, v2.7.122) | Unicorn (Breaker ∩ FVG), master `ICTSignalScore` struct, ISS-C continuation composite |
+| `ea/include/Forge/IctIntradayModel.mqh` | scaffolded — body deferred (Phase 5, v2.7.123) | CRT, Venom, Bread & Butter, S&D, RDRB intraday models |
+
+**Module conventions** (mandatory for any new module / function added to existing modules):
+
+- File guard: `#ifndef __FORGE_<MODULE>_MQH__ ... #define __FORGE_<MODULE>_MQH__ ... #endif`
+- Include via `#include <Forge/IctXxx.mqh>` (angle-brackets — Wine MT5 resolves against `MQL5/Include/`)
+- Build script `scripts/compile_forge_ea_macos.sh` already recursively syncs `.mqh` files to Wine — do not bypass; if you add a new include subdir, confirm the recursive sync covers it
+- Every public function gets the canonical header block per existing IctStructure.mqh / IctLiquidity.mqh style (PURPOSE / PARAMETERS / RETURNS / CHANGELOG)
+- Module globals prefixed `g_ict_last_*` for atom-context exports the chokepoint reads
+- No module re-derives state already in `g_regime.*` — read the chokepoint state, don't recompute (§B.7 lesson — Impl B re-derived killzone from datetime and got DST wrong)
+
+### §I.3 The four canonical entry categories (every new setup must slot into one)
+
+Per `FORGE_SETUP_ICT_MAP.md §B.2`:
+
+1. **MSS_CONTINUATION** — Market Structure Shift confirmed by a displacement leg; entry on retrace into the FVG/OB the impulse created
+2. **OTE_RETRACEMENT** — Pullback to 62-79% fib in discount/premium zone, with FVG/OB confluence
+3. **LIQUIDITY_SWEEP_REVERSAL** — Sweep of equal highs/lows or session high/low followed by ChoCH; entry on first FVG retrace
+4. **BREAKER_RETEST** — OB that was traded through and now acts as new S/R; entry on retest with FVG confluence
+
+If a proposed new setup does NOT fit one of these four, STOP — either it's a misclassification (re-read §B.2) or it's a candidate to be dropped (per the bloat-reduction mandate, §10 Appendix B). Do not invent a 5th flat category.
+
+### §I.4 The killzone dimension — every trade tagged (post-v2.7.122 ship)
+
+Per `FORGE_SETUP_ICT_MAP.md §B.2 + §B.7`:
+
+- **5 ICT-canonical killzones** (NY-anchored): `ASIAN_KZ` / `LONDON_OPEN_KZ` / `NY_AM_KZ` / `LONDON_CLOSE_KZ` / `NY_PM_KZ` + `OFF_SESSION` fallback
+- **3 Silver Bullet sub-windows**: `LONDON_SB` (03:00-04:00 NY) / `AM_SB` (10:00-11:00 NY) / `PM_SB` (14:00-15:00 NY)
+- **Single source of truth**: `g_regime.killzone` (chokepoint-owned via `ComputeCurrentKillzoneLabel()` at `FORGE.mq5:6977`). ICT module helpers read this — they do NOT re-derive from datetime
+- **Schema**: SIGNALS carries `killzone` (existing) + `silver_bullet` (new in v2.7.122) per schema-parity 5-layer ship
+
+Any new code that asks "what session is it" reads `g_regime.killzone` and (optionally) `g_regime.silver_bullet`. Hardcoded hour checks against `MqlDateTime` are forbidden in new code — they bypass DST + broker-offset handling and create the kind of divergence §B.7 documents.
+
+### §I.5 Mandatory rules for ALL forward enhancements
+
+1. **ICT-canonical naming**: every new setup_type / composite / atom uses ICT vocabulary. No new bespoke names like `BB_SQUEEZE_VARIANT_2` — find the ICT primitive it actually expresses and name it that.
+2. **Modular**: new ICT logic lands in an `.mqh` under `ea/include/Forge/`, not inline in `FORGE.mq5`. The chokepoint calls into the module.
+3. **Single source of truth**: ICT atoms that need killzone/regime context read `g_regime.*`. Atoms that need the structural state read the module globals (`g_ict_last_*`) populated by the module's per-tick `Forge_<Module>_Eval()`. No parallel re-derivation.
+4. **Schema-parity 5-layer**: any new atom data point ships across CREATE TABLE + ALTER TABLE + JournalRecordSignal + scribe.py + sql files in the SAME PR. Selective-column rule applies for high-cardinality data (log full text + promote ~10-12 most-variable columns).
+5. **WebSearch industry validation** (existing mandate) extended: ICT atoms must cite the ICT-canon source (research/ICT_KILLZONES.md citations, or new WebSearch per `feedback_research_mql5_keywords` mandate). No bespoke ICT derivations without canon backing.
+6. **Update the master map**: after shipping any ICT-aligned change, append a one-liner to `FORGE_SETUP_ICT_MAP.md §9 Changelog` AND, if it changes a milestone, update the M0-M13 table in §8 Appendix A.
+7. **Legacy fix path preserved**: when fixing a bug in legacy chart-pattern code (e.g. `DOUBLE_TOP`, `BB_BOUNCE`, `MOMENTUM_DUMP`), the old skill rules still apply — schema parity, no dead env vars, build-before-commit, the 3-question loss framework, etc. The new ICT-aligned rules above do NOT retroactively require renaming legacy setups in a bug-fix PR. Renames happen on the M7-M11 fold ships, not opportunistically.
+
+### §I.6 Decision tree — is this work "new ICT" or "legacy fix"?
+
+```
+Is the work...
+├── Fixing a bug in an existing legacy setup / gate / lot factor without
+│   changing its scope?
+│     → LEGACY FIX path. Apply existing skill rules. Do NOT rename or restructure.
+│       Cite the legacy doc the rule comes from.
+├── Adding a new atom, composite, or setup?
+│     → NEW ICT path. Slot into §I.3 category. Ship as .mqh module per §I.2.
+│       Cite FORGE_SETUP_ICT_MAP.md §B.2/§B.7 for naming + structure.
+├── Touching killzone logic in any way?
+│     → §B.7 path. Single source of truth = g_regime.killzone. No new hardcoded
+│       hour checks. Plan against the v2.7.122 alignment ship.
+├── Folding a legacy setup into an ICT-canonical name (M7-M11 milestone)?
+│     → Hybrid: legacy preservation via setup_subtype column + ICT-canonical
+│       setup_type. Schema-parity ship. Update §6 rename map status.
+└── Reviewing a loss / writing an analysis doc?
+      → Existing skill rules unchanged (3-question framework, Q9, GFM, etc.).
+        BUT when proposing a new gate / setup, route through §I.3 / §I.4 above.
+```
+
+### §I.7 Stale-reference flag
+
+The skill (below) historically references `FORGE_REGIME_TAXONOMY.md §11` as the killzone atom's authoritative home. That file is no longer in the repo — its content is absorbed into `FORGE_SETUP_ICT_MAP.md §B.2 + §B.7` and `docs/research/ICT_KILLZONES.md`. When you encounter that reference in the body of this skill, redirect to those two docs. Cleanup of the stale references is a follow-up housekeeping ship — do not block forward work on it.
+
+---
+
+## ICT-ALIGNED BOOLEAN COMPOSITE ANALYSIS (mandatory for all NEW setup work)
+
+**Going-forward rule** (per §I.5): every new ICT setup decision composes from the canonical atom catalog in `FORGE_SETUP_ICT_MAP.md §B.8`. Do not invent new atoms inline; check Appendix C first. If a needed atom isn't there, propose an addition with WebSearch ICT-canon citation (per `feedback_research_mql5_keywords`) before writing code.
+
+### §J.1 The two-layer pattern
+
+| Layer | Role | Implementation |
+|---|---|---|
+| **Boolean atom (audit)** | One bit per ICT primitive (yes/no); logged per signal | One SIGNALS column per atom, evaluator in `IctScoring.mqh`, returns `bool` |
+| **Scored composite (decision)** | Weighted sum of relevant atoms, max 10; the gate fires on `score ≥ threshold` | `ComputeCategoryScore(category, direction)` summing atom weights |
+
+**Why both**: pure boolean composites lose magnitude info (threshold cliffs); pure scoring loses categorical clarity for genuinely-yes/no primitives. Two layers split the labor: atoms = audit + ablation; score = gate. ISS (MSS=5 + FVG=3 + ChoCH=2) and PEMCG (7-atom warning supermajority) already prove the pattern in production — extend it to all 4 ICT entry categories.
+
+### §J.2 The 4 ICT composites — name, threshold, atom count
+
+Full catalog with weights is `FORGE_SETUP_ICT_MAP.md §B.8.2`. Summary:
+
+| Composite | Category | Total weight | Hard gate | Warning gate | # atoms |
+|---|---|---|---|---|---|
+| `MSS_CONT_SCORE_<DIR>` | MSS_CONTINUATION | 10 | ≥ 7 | < 5 | 6 |
+| `OTE_RETRACE_SCORE_<DIR>` | OTE_RETRACEMENT | 10 | ≥ 7 | < 5 | 6 |
+| `LIQ_SWEEP_REV_SCORE_<DIR>` | LIQUIDITY_SWEEP_REVERSAL | 10 | ≥ 7 | < 5 | 5 |
+| `BREAKER_RETEST_SCORE_<DIR>` | BREAKER_RETEST | 10 | ≥ 7 | < 5 | 5 |
+
+Thresholds match `feedback_supermajority_composite_threshold` (≥0.7×N for hard gate). Each composite carries `<DIR>` ∈ {BUY, SELL} — separate scores for each direction at the same tick.
+
+### §J.3 Gate modes (per `FORGE_PEMCG_ICT_INTEGRATION.md` 3-mode plan)
+
+| Mode | Gate condition | Default for new composite |
+|---|---|---|
+| **Mode A — Compute + log only** | always pass; score logged | ✅ ship in this mode first |
+| **Mode B — Warning gate** | `score < 5` → lot factor de-rate (×0.7) but trade fires | promote after 100+ trades show signal |
+| **Mode C — Hard gate** | `score < 7` → BLOCK with `gate_reason=<category>_score_below_threshold` | only with strong empirical edge |
+
+**Mode B is the right default** for a fresh ICT composite — preserve trade flow, attribute the score, ablate after enough samples. Mode C requires evidence per `feedback_supermajority_composite_threshold` (calibrate against known winners/losers + check block RSI distribution).
+
+### §J.4 When to use composite vs individual atom
+
+| Decision | Use | Rationale |
+|---|---|---|
+| "Should this setup fire?" | Composite score | Aggregate signal; threshold-tunable; magnitude-aware |
+| "Why did this loss happen?" | Individual atom audit | Which atom failed? Which combination held? Ablation requires per-atom |
+| "Should we add gate X?" | Atom hit-rate query | Run Q9-style precision check on the atom across TAKEN+SKIP |
+| "Should we promote A→B→C?" | Score distribution analysis | Histogram score vs outcome; pick threshold at the inflection point |
+
+### §J.5 Atom reuse — implement once, read everywhere
+
+Three atoms are shared across multiple ICT composites. Do NOT re-implement per-category:
+
+| Shared atom | Used by | Implementation |
+|---|---|---|
+| `atom_killzone_favorable` | All 4 (different KZ sets per category) | `IsKillzoneFavorableFor(category)` in `IctScoring.mqh`; reads `g_regime.killzone` |
+| `atom_htf_aligned` | MSS_CONT / OTE / BREAKER (not LIQ_SWEEP — sweeps are by definition counter-trend locally) | Reads `g_regime.htf_label` + direction |
+| FVG-confluence atoms | All 4 (with direction variants) | `Forge_GetActiveFVGAlignedWith(direction)` in `IctStructure.mqh` |
+
+Re-derivation = the §B.7 mistake. Don't repeat it.
+
+### §J.6 Schema impact (Strategy A — full-column, recommended for v2.7.122)
+
+Per `FORGE_SETUP_ICT_MAP.md §B.8.4`:
+
+- Add 1 SIGNALS column per unique atom (boolean 0/1) — ~16 columns (19 minus 3 shared collapsed)
+- Add 1 score column per category — 4 columns × 2 directions = 8 columns (or single TEXT column `ict_scores` holding all 8 as JSON)
+- Total: ~20-24 new columns, within budget
+- 5-layer schema-parity ship mandatory: CREATE TABLE → ALTER TABLE → JournalRecordSignal → scribe.py → sql/
+
+Promote to Strategy B (selective + JSON blob) only when atom count exceeds 24.
+
+### §J.7 Legacy composite preservation
+
+The existing `## BOOLEAN COMPOSITE ANALYSIS` section below this one remains authoritative for:
+
+- PEMCG / UMCG / CVCSM (legacy pure-boolean composites)
+- Any composite work on legacy chart-pattern setups (DOUBLE_TOP, BB_BOUNCE, MOMENTUM_DUMP, etc.) — these stay as flat booleans until the M7-M11 fold ships
+- Existing 5-layer entry decision (Setup Trigger / Filter Chain / Boolean Composite / Atoms / Geometry) per `FORGE_DECISION_STACK.md`
+
+**Distinction**: the legacy section is the pattern for boolean composites WITHOUT weights. §J above is the pattern for ICT-aligned weighted-score composites. Both are valid; ICT-aligned is mandatory for NEW work per §I.5.
+
+### §J.8 Mandatory reads before constructing a new ICT composite
+
+1. `FORGE_SETUP_ICT_MAP.md §B.8` — the atom catalog (this is your menu)
+2. `FORGE_SETUP_ICT_MAP.md §B.2` — confirm the entry category for the composite
+3. `FORGE_PEMCG_ICT_INTEGRATION.md` — confirm Mode A/B/C choice
+4. `FORGE_ICT_PEMCG_COMBINATIONS.md` — check the 16-cell matrix for any ICT × PEMCG interaction
+5. Existing `IctStructure.mqh` / `IctLiquidity.mqh` / `IctScoring.mqh` to confirm the atom isn't already implemented
+
+### §J.9 Update mandate after shipping a new composite
+
+- Add atom rows to `FORGE_SETUP_ICT_MAP.md §B.8.2` (if new atoms)
+- Add changelog one-liner to §9
+- Update `FORGE_COMPOSITE_ROADMAP.md` §1 inventory + §8 status dashboard (if that doc exists in the repo — flag if stale)
+- Update `FORGE_INDICATOR_ATLAS.md` §5 composite registry (if exists)
+- Log every verification command per atlas §13 mandate
+
+---
+
 ## BOOLEAN COMPOSITE ANALYSIS (mandatory for every setup/signal decision)
 
 **Going-forward rule:** every analytical claim about whether a setup should fire — or
