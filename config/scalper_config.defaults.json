@@ -415,6 +415,7 @@
     "iss_enabled": 0,
     "iss_min_threshold": 5,
     "iss_block_below_threshold": 0,
+    "iss_c_override_pemcg_enabled": 0,
     "iss_weight_mss": 5,
     "iss_weight_fvg": 3,
     "iss_weight_choch_support": 2,

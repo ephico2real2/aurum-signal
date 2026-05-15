@@ -250,6 +250,12 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_COMPOSITE_ISS_ENABLED":                               ("safety",    "iss_enabled",                                   "bool01", None,  None),
     "FORGE_GATE_ISS_MIN_THRESHOLD":                              ("safety",    "iss_min_threshold",                             "int",    0,     10),
     "FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD":                      ("safety",    "iss_block_below_threshold",                     "bool01", None,  None),
+    # v2.7.118+ Mode C reservation per docs/FORGE_PEMCG_ICT_INTEGRATION.md §3.3.
+    # When 1: ISS-C HIGH_CONVICTION (≥8) overrides pemcg_*_reversal_block on the matching
+    # direction. Underlying ISS-C composite (regime + h1 + m5_adx + m15_adx + vwap + psar
+    # + bar-quality + prev-bar hard gate) ships in Phase 4 (v2.7.121+). EA struct field
+    # not yet wired — knob exists at config layer only, EA reads default 0 until v2.7.121.
+    "FORGE_GATE_ISS_C_OVERRIDE_PEMCG_ENABLED":                   ("safety",    "iss_c_override_pemcg_enabled",                  "bool01", None,  None),
     "FORGE_GATE_ISS_WEIGHT_MSS":                                 ("safety",    "iss_weight_mss",                                "int",    0,     10),
     "FORGE_GATE_ISS_WEIGHT_FVG":                                 ("safety",    "iss_weight_fvg",                                "int",    0,     10),
     "FORGE_GATE_ISS_WEIGHT_CHOCH_SUPPORT":                       ("safety",    "iss_weight_choch_support",                      "int",    0,     10),
