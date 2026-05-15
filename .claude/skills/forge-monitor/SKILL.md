@@ -481,6 +481,262 @@ None of those are trade-decision components. The smart EA in MQL5 keeps making t
 
 The skill (below) historically references `FORGE_REGIME_TAXONOMY.md §11` as the killzone atom's authoritative home. That file is no longer in the repo — its content is absorbed into `FORGE_SETUP_ICT_MAP.md §B.2 + §B.7` and `docs/research/ICT_KILLZONES.md`. When you encounter that reference in the body of this skill, redirect to those two docs. Cleanup of the stale references is a follow-up housekeeping ship — do not block forward work on it.
 
+### §I.10 Hot-reload troubleshooting — "atom shows 0 / config flag doesn't seem live"
+
+FORGE supports **runtime hot reload** of `scalper_config.json` — operators flipping a flag in `.env`, running `make scalper-env-sync`, do NOT need to recompile or restart MT5. The chokepoint reloads the JSON every 20 EA cycles (`FORGE.mq5:2404` — `// Reload scalper config every 20 cycles`).
+
+This means: when a new atom / composite / flag looks "dead" (column always 0, gate doesn't fire, etc.), there is a precise decision tree to diagnose **before** assuming a logical bug. Most "dormant atom" reports turn out to be either correct-behavior-under-current-conditions OR an eval-hook single-context limitation, NOT a hot-reload failure.
+
+**Reference incident (2026-05-15, Phase A v2.7.123 ship)**:
+- 5 new ICT atoms (`atom_killzone_favorable`, `atom_htf_aligned`, `atom_pullback_in_ote`, `atom_premium_discount_aligned`, `atom_fvg_on_reversal_leg`) all logging 0 across 561 signals after enabling.
+- Operator's first instinct: "do I need to recompile — maybe we have a logical issue with hot reload."
+- Actual root cause: atoms WERE computing correctly. The eval hook stored only one context (MSS_CONT category, BUY direction). In bear-macro NY-PM off-session, every atom legitimately returns 0:
+  - `killzone_favorable(MSS_CONT, BUY)` → 0 because killzone=="" (NY-PM is OFF_SESSION between windows)
+  - `htf_aligned(BUY)` → 0 because `h1_trend=-1.65` (bear macro, BUY not aligned)
+- Fix shipped same session: Option A+B (v2.7.124) — expanded eval hook to log per-category + per-direction columns + added 3 composite scores. Same atoms now visible across 6 + 6 new columns.
+
+#### §I.10.1 Diagnostic checklist (run in order; STOP at first negative result)
+
+**Step 1 — Verify the flag actually loaded into the EA runtime.** Read `market_data.json` and look for the field. Example for `FORGE_KILLZONES_ENABLED=1`:
+
+```bash
+python3 -c "import json; d=json.load(open('$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/$USER/AppData/Roaming/MetaQuotes/Terminal/Common/Files/market_data.json')); print('killzones_enabled:', d.get('forge_session_state',{}).get('killzones_enabled')); print('forge_version:', d.get('forge_version'))"
+```
+
+- ✅ Value present + matches `.env` → hot reload works. Skip to Step 3.
+- ❌ Value missing or stale → Step 2.
+
+**Step 2 — Verify `scalper_config.json` was actually regenerated.** Three sub-checks:
+
+```bash
+# (a) Did make scalper-env-sync actually run? Check timestamp vs .env mtime
+ls -la /Users/olasumbo/signal_system/config/scalper_config.json /Users/olasumbo/signal_system/.env
+
+# (b) Was the synced config copied to MT5 Common Files?
+diff /Users/olasumbo/signal_system/config/scalper_config.json \
+     "$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/$USER/AppData/Roaming/MetaQuotes/Terminal/Common/Files/scalper_config.json"
+
+# (c) Does the flag appear in the synced config?
+grep -E "your_flag_name" /Users/olasumbo/signal_system/config/scalper_config.json
+```
+
+If (a) is old → re-run `make scalper-env-sync`.
+If (b) differs → re-run `make scalper-env-sync` (the target copies AND syncs).
+If (c) is empty → either the env-name → config-key mapping is missing in `scripts/sync_scalper_config_from_env.py`, OR the key is absent from `config/scalper_config.defaults.json`. Both are dead-on-arrival per `feedback_no_dead_env_vars`.
+
+**Step 3 — Verify the EA's `JsonHasKey` block reads the flag.** Grep FORGE.mq5 for the key name. Every flag must have a `JsonHasKey(content, "<key>") { v = JsonGetDouble(...); g_sc.<field> = (v >= 0.5); }` block. If missing, the flag won't propagate from JSON → struct → eval hook. This is also caught by `tests/test_forge_27x_gates.py`.
+
+**Step 4 — Verify per-tick eval hook actually reads the struct flag and writes to the global.** Trace: `ForgeEvalAtoms` → `if(g_sc.<flag>) { g_ict_last_<atom> = Atom_X(...) ? 1 : 0; }`. If the eval hook hard-codes 0 OR doesn't reference the flag at all, the column will always be 0 regardless of config.
+
+**Step 5 — Verify `JournalRecordSignal` writes the global to the SIGNALS row.** Grep for the column name in FORGE.mq5 `JournalRecordSignal`. The order of columns in INSERT must match the order of parameters; mismatch → silent corruption (wrong value in wrong column).
+
+**Step 6 — Now check whether the atom is _legitimately_ returning 0.** This is the step operators (and Claude) most often skip. Before declaring a bug:
+- What category/direction context does the eval hook log? (Phase A pre-v2.7.124 was MSS_CONT/BUY only.) An atom logged in ONE context will appear 0 in conditions where THAT context doesn't fire, even if the same atom in OTHER contexts would return 1.
+- What does the atom's truth table say for current state? Pull `market_data.json` regime fields (`h1_trend`, `m15_trend`, `killzone`, `silver_bullet`, RSIs, ATRs) and walk the atom logic. If atom return = 0 is correct under current conditions, the atom is **working as intended**, not dormant.
+
+**Step 7 — Only after Steps 1-6 pass: actual recompile may be needed.** Recompile is needed ONLY when:
+- New code paths added to `.mq5` / `.mqh` (e.g. a new atom function body, a new eval hook block)
+- New JsonHasKey loader added (struct field is a new piece of EA code, not config data)
+- VERSION file changed (the `forge_version` stamp is baked into `.ex5`)
+
+Recompile is NOT needed when:
+- Only `.env` value changed (e.g. `FORGE_X_ENABLED=0` → `1`)
+- Only `config/scalper_config.defaults.json` numeric default changed
+- Only `config/scalper_config.json` regenerated via `make scalper-env-sync`
+
+The 20-cycle reload picks up all three "not needed" cases within ~20 seconds of live tick activity.
+
+#### §I.10.2 Common false alarms (don't recompile — diagnose first)
+
+| Symptom | Most likely cause | Where to check |
+|---|---|---|
+| All atom columns = 0 immediately after enable | Atom returns 0 under current regime (not a bug) | Read `market_data.json` regime fields + walk atom truth table |
+| `killzone_favorable = 0` during NY-PM gap | `killzone=""` because NY-PM (15:00-17:00 NY) is between LONDON_CLOSE_KZ (10:00-12:00) and ASIAN_KZ (19:00 next day) — OFF_SESSION is correct | `g_regime.killzone` empty is the source of truth; check current NY time |
+| `htf_aligned_buy = 0` in bear macro | `h1_trend < 0` correctly fails BUY alignment | `market_data.json` → `indicators_h1.h1_trend` |
+| Column logs 0 in some signals, 1 in others | Working as intended — atom is direction/category-sensitive | Confirm by grouping SIGNALS by category/direction |
+| Brand new column always 0 across all signals | Likely missing eval hook write — Step 4 | Grep FORGE.mq5 for `g_ict_last_<col>` assignment |
+| Brand new column missing entirely from DB | ALTER TABLE migration missing OR scribe.py not updated | `sqlite3 <db> ".schema SIGNALS" | grep <col>` |
+| Eval hook computes correct value but DB shows 0 | `JournalRecordSignal` INSERT column-order mismatch | Grep FORGE.mq5 `JournalRecordSignal` for INSERT col list + binding tuple |
+| Flag flipped in .env but `make scalper-env-sync` not re-run | scalper_config.json still has old value | Step 2a — compare timestamps |
+
+#### §I.10.3 Quick "is hot reload alive?" smoke test
+
+To prove hot reload works end-to-end without shipping new code:
+
+1. Pick any harmless numeric knob in `.env` (e.g. `FORGE_DEBUG_LOG_LEVEL` or any existing `_FACTOR` value).
+2. Note the current value in `market_data.json`.
+3. Change `.env`, run `make scalper-env-sync`.
+4. Wait 30-60 seconds (need ~20 ticks at live cadence).
+5. Re-read `market_data.json` — value should match new `.env`.
+
+If step 5 still shows the old value: hot reload IS broken, escalate to MT5 restart via `make forge-reload`. If step 5 shows new value: hot reload is fine; the symptom is elsewhere (Steps 3-6 above).
+
+### §I.11 Decision-log mandate — record what we shipped + why + what it solved
+
+Every meaningful ship (atom, composite, gate, recovery feature, schema change, design pivot) MUST be recorded in BOTH places:
+
+1. **Living doc** — append a §X.Y subsection to the relevant canonical doc (e.g. `FORGE_SETUP_ICT_MAP.md §9 Changelog` for ICT-aligned ships, `FORGE_FAST_MARKET_SWEEP_RESCUE.md §15 backlog` for FMSR design, `FORGE_PEMCG_ARCHITECTURE.md §11 Changelog` for PEMCG ships).
+2. **Skill (this file)** — append a one-liner to the relevant §I.x or §J.x mandate so the next forge-monitor session sees the decision context without having to read N docs.
+
+The format is **decision + why + what it solved**, NOT a code summary. The code summary lives in git log. The skill captures the rationale a future operator would otherwise lose. Example for the v2.7.124 ship below.
+
+**Mandatory fields**:
+- **What** — one-sentence summary of the ship (e.g. "Phase A expansion: 6 new per-category/per-direction atom columns + 6 composite score columns").
+- **Why** — what triggered the design choice. Often an observed limitation (e.g. "Phase A atoms appeared dormant because the eval hook logged only MSS_CONT/BUY context").
+- **What it solved** — the symptom that goes away after the ship (e.g. "atom dormancy was visibility limitation, not logic bug — fix exposes per-category truth").
+- **What it deferred** — what's still on the backlog after this ship (e.g. "BREAKER_RETEST composite deferred to Phase 3 OB module").
+- **Mode at ship time** — Mode A (log only) / B (warning) / C (gate). Operators must know whether the new column has trade-flow impact.
+
+#### §I.11.1 Decision log — running ledger (newest at top)
+
+##### 2026-05-15 — v2.7.124 Phase A expansion + Phase B composite scoring (`Option A + B` combined ship)
+
+- **What**: Expanded ForgeEvalAtoms hook to log 4 per-category `atom_kz_fav_*` columns (mss_cont, ote, liq_sweep, breaker) + 2 per-direction `atom_htf_aligned_*` columns (buy, sell). Added unified `ComputeCategoryScore(category, direction)` in `IctScoring.mqh` returning 0-10 weighted sum per `FORGE_SETUP_ICT_MAP.md §B.8.2`, exported as 6 score columns (3 categories × 2 directions: MSS_CONT, OTE_RETRACE, LIQ_SWEEP_REV). 12 new SIGNALS columns total, full 5-layer schema parity, behind 3 new composite enable flags (default OFF).
+- **Why**: After enabling Phase A atoms (v2.7.123 commit d91feb8 + `FORGE_ICT_ATOM_KILLZONE_FAVORABLE_ENABLED=1` + `FORGE_ICT_ATOM_HTF_ALIGNED_ENABLED=1` + `FORGE_KILLZONES_ENABLED=1`), all 5 atom columns logged 0 across 561 signals in 5 minutes. Diagnosis (per §I.10 checklist): atoms WERE computing correctly, but the v2.7.123 eval hook stored ONLY single-context globals (MSS_CONT category, BUY direction). Even when Asian KZ starts at 19:00 NY, `atom_killzone_favorable` would STILL log 0 because Asian KZ doesn't favor MSS_CONT — only LONDON_OPEN + NY_OPEN do. The eval hook design was the visibility ceiling.
+- **What it solved**: Atom-level visibility is now per-category/per-direction (operators can grep `atom_kz_fav_liq_sweep=1 AND atom_htf_aligned_sell=1` to find LIQ_SWEEP_REV SELL contexts where 2 atoms aligned). Composite scoring layer (6 new columns) directly answers "should this category fire at this tick" without operators having to manually weight atoms. Future Mode B / C promotion (gating) needs only flip enable flags + add threshold to gate code — composite math is already running.
+- **What it deferred**: BREAKER_RETEST composite (Category 4) returns 0 — needs Phase 3 `IctOrderBlock.mqh` body (OB detection + Breaker detection + PD-array). Phase D ships BREAKER composite after Phase 3.
+- **Mode**: A (log only, default OFF). Zero trade-flow impact. Operators enable per-composite as they want to test calibration.
+- **Why "A and B" instead of just B**: Option A (per-category visibility) is structurally subsumed by Option B (composite scoring already calls atoms per-category-per-direction inside ComputeCategoryScore). Doing both gave atom-level visibility (debugging "which atom failed") + composite-level visibility ("would this fire") in one ship. Total ~12 columns vs ~6 if only B — minimal extra cost, maximal observability for the Mode A → B → C promotion sequence.
+
+##### 2026-05-15 — v2.7.123 Phase A initial ICT atom ship + ICT Map §B.8 atom catalog
+
+- **What**: 5 ICT atom functions in `IctScoring.mqh` + `IctStructure.mqh` (Atom_KillzoneFavorable, Atom_HTFAligned, Atom_PullbackInOTE, Atom_PremiumDiscountAligned, Atom_FVGOnReversalLeg) + 5 SIGNALS columns, behind individual `FORGE_ICT_ATOM_*_ENABLED` flags. Mode A. `ict_sweep_rejection_score` column also added (was orphan global computed at FORGE.mq5:13504 with no log target).
+- **Why**: Initiate ICT-canonical atom catalog per `FORGE_SETUP_ICT_MAP.md §B.8` (operator-approved 2026-05-15 boolean composite design). Each atom independently flag-toggleable per §I.8 plug-and-play principle #1 (atoms = pure functions). Each atom cites WebSearch ICT-canon source in its function header (per `feedback_research_mql5_keywords` mandate).
+- **What it solved**: Replaces bespoke `g_iss_*` ad-hoc fields with canonical ICT atom catalog. Operators can ablation-test individual atoms via enable flags without recompile (hot reload, §I.10).
+- **What it deferred**: Phase B composite scoring (shipped same day in v2.7.124 above). Single-context eval hook limitation (also fixed in v2.7.124).
+- **Mode**: A.
+
+##### 2026-05-15 — v2.7.122 P1 Pre-TP1 Recovery (FMSR Track A stopgap)
+
+- **What**: New `ArmPreTP1Recovery` function called from `ManageOpenGroups`. When primary trade is in bad-trade-state (MFE ≤ 0 AND adverse ≥ 1.5×ATR AND no TP1 hit), arm ONE same-direction LIMIT order at adverse swing extreme with 1×ATR SL/TP, lot factor 0.5, 40min expiry, magic offset +30009. Behind `FORGE_RECOVERY_PRE_TP1_ENABLED` knob (default OFF).
+- **Why**: Existing `FORGE_BUY_LIMIT_RECOVERY` / `FORGE_SELL_LIMIT_RECOVERY` only fire from `ArmPostTP1Ladder` — they're a POST-TP1 ladder, NOT a recovery from a bad-trade state where primary never reached TP1. Operator observed live trades sitting underwater for hours with no recovery armed.
+- **What it solved**: Bad-trade-state primary now gets ONE rescue limit at the adverse swing extreme — captures a retrace bounce if one comes within 40 minutes, otherwise expires harmlessly. Caps risk via 1×ATR SL + 0.5 lot factor.
+- **What it deferred**: Track B = full Fast-Market Sweep Rescue (FMSR) — spec'd in `docs/FORGE_FAST_MARKET_SWEEP_RESCUE.md` §1-§13 with §15 living backlog. Track C = DD-aware lot taper. Both Mode B/C promotion still pending empirical calibration on Mode A logs.
+- **Mode**: A (knob default OFF; operator flips on per session).
+
+#### §I.11.2 When NOT to add to the decision log
+
+- Tiny refactors (variable renames, comment edits) — git log is enough.
+- Bug fixes that revert to specified behavior (e.g. column should always log; was logging 0; fixed). Use commit message, not decision log.
+- Skill / doc edits with no code impact.
+
+Decision log entries are reserved for ships that shape future operator/Claude decisions. A future Claude looking at the eval hook in 6 weeks needs to know "Option A+B was the deliberate combined ship because A was structurally subsumed by B" — that decision context is exactly what gets lost without the log.
+
+#### §I.11.3 Cross-link mandate
+
+Every decision-log entry MUST cross-reference:
+- The canonical doc section (`FORGE_SETUP_ICT_MAP.md §X.Y`) where the technical spec lives
+- The commit SHA(s) implementing it (after commit lands)
+- Related memory files (e.g. `feedback_no_dead_env_vars.md`, `project_sum3api_vision.md`) when the decision applied an established mandate
+- Any predecessor decision-log entry the new ship replaces or builds on (e.g. "supersedes single-context eval hook from v2.7.123")
+
+### §I.12 Glossary update mandate — `docs/FORGE_GLOSSARY.md` is the canonical lookup surface
+
+**Single source of truth** for every term, acronym, parameter, variable, struct field, and config knob FORGE invents or adapts: `docs/FORGE_GLOSSARY.md`.
+
+**Operator origin (2026-05-15)**: "what is OTE in OTE_RETRACE" — the question exposed that ICT acronyms (OTE = Optimal Trade Entry; MSS = Market Structure Shift; ChoCH = Change of Character; FVG = Fair Value Gap; OB = Order Block; KZ = Killzone; SB = Silver Bullet; etc.) were scattered across 5+ docs with no single lookup surface. The glossary fixes that.
+
+#### §I.12.1 When you MUST update the glossary
+
+| Ship type | Action |
+|---|---|
+| New atom function | Add row to §3 with module + direction/category-aware flags + SIGNALS column |
+| New composite | Add row to §4 with category code + mode + enable flag |
+| New env var (`FORGE_*`) | Add to §10 by prefix family |
+| New struct field (`g_sc.*`) | Add to §10 if directly env-mapped, else mention in atom/composite row |
+| New runtime global (`g_ict_last_*`, `g_iss_*`, `g_pemcg_*`) | Add to §9 |
+| New killzone or SB sub-window | Add to §5 with NY-local window |
+| Rename a setup / atom / category | Update existing row AND add a "renamed from X" note |
+| Delete an atom / setup / env var | Strike-through or delete entry + add deletion note to §13 changelog |
+| New ICT canon term (e.g. introducing "Unicorn") | Add to §1 with citation + first FORGE module using it |
+| New recovery / risk term | Add to §8 |
+| New mode (e.g. Mode D) | Update §4 mode taxonomy line |
+
+**Same PR rule**: glossary edit lands in the SAME commit as the code change that introduces / renames / removes the term. Not "in a follow-up". The reason is identical to `feedback_no_dead_env_vars`: stale glossary = misleading documentation, worse than no documentation.
+
+#### §I.12.2 When monitoring encounters an unfamiliar term
+
+If `/forge-monitor` (or any Claude session) encounters a term it doesn't recognize during analysis, the lookup order is:
+
+1. `docs/FORGE_GLOSSARY.md` — table of contents at the top, search by acronym
+2. The canonical doc cited in the glossary entry (e.g. `FORGE_SETUP_ICT_MAP.md §B.8.2` for atom semantics)
+3. The `.mqh` module header comment (per the module convention in §I.2 — every public function has a CHANGELOG with citations)
+4. If still unknown → flag it. Either it's a legitimate gap (add to glossary in the same response if you discover the answer) OR it's stale terminology that shouldn't be used.
+
+#### §I.12.3 Glossary structure (don't drift)
+
+Sections are ordered: ICT canon → categories → atoms → composites → killzones → legacy → PEMCG → recovery → variables → env vars → ops. Keep this ordering — operators learn to scan top-down. New sections only with strong justification.
+
+Entries follow `Term — expansion — short definition — where defined`. Long-form explanations stay in canonical docs; the glossary is a lookup index, not a tutorial.
+
+#### §I.12.4 Anti-patterns
+
+- Explaining an acronym inline in 5 docs because "operators won't find the glossary" — they will once it exists and is cross-linked. Cite the glossary instead.
+- Inventing a new acronym without checking the glossary first for an existing term (e.g. inventing `MSC` for "market structure change" when `MSS` already covers it).
+- Reusing an existing acronym for a different concept. ALL collisions get caught at glossary-add time.
+- Letting the glossary lag — a ship with a new column that's not in §3 of the glossary is incomplete and should be flagged at commit time.
+
+### §I.13 Trade setup analysis framework — operator's canonical PRE-trade format
+
+When the operator asks ANY of:
+- "Should we [buy / sell / scalp / take this setup]?"
+- "Do we need a [limit / stop / pending] for [Sunday / Monday / next session]?"
+- "Can we scalp here?"
+- "Is this a good entry?"
+- "Should I hold / close / add to this position?"
+
+…the response MUST follow the 6-section template codified in `feedback_trade_setup_analysis_framework.md`. Operator-validated 2026-05-15 on the Sunday-pending analysis ("thank you for the report on not taking that risks. Please i love that analysis").
+
+This is the **PRE-trade** framework — distinct from `feedback_trade_decision_table_format` which is the **POST-trade** post-mortem format. The two are complementary; use the right one for the question type.
+
+#### §I.13.1 The 6-section template (mandatory order)
+
+1. **Current context table** — pipe-syntax table with current bid/ask, day/week range, h4 RSI, h1 ADX/RSI, key levels (BB/fib/VWAP) with ATR-distance reads, and any operator rules in play (cited by memory file name).
+2. **The three plays** — pipe-syntax table comparing BUY play / SELL play / NO-TRADE play. Every play has Entry, SL, TP1, TP2, RR, and a one-sentence thesis. The NO-TRADE play is mandatory — it's a real option, not a cop-out.
+3. **Risk factors specific to this situation** — numbered list (3-5 items) of concrete failure modes with magnitudes (not generic warnings).
+4. **Recommendation with three independent reasons** — name the recommended play and back it with three reasons that converge. Independent = each could stand alone to justify the call.
+5. **Lighter-touch alternative** — if operator wants exposure despite the recommendation, give the lowest-regret version (typically half-size, deeper-SL variant of the recommended play). Quantify max-loss + max-win in dollars. Name ONE alternative play to AVOID and why.
+6. **What I'd actually do** — one prose paragraph. Close any open-trade context. State the wait condition + re-engage trigger + estimated time. End with a memorable closer.
+
+#### §I.13.2 Numbers I always include (audit trail)
+
+- Current bid/ask + spread
+- Position vs key levels in **both** points AND ATR multiples (e.g. "−2.86×ATR below bb_mid")
+- ATR values per timeframe (m5, m15, h1)
+- ICT atom values pulled from live scribe (not guessed)
+- SL/ATR ratio for every proposed entry
+- RR ratio for every proposed entry
+- Max-loss + max-win dollar amounts for the lighter-touch alternative
+
+#### §I.13.3 Repeatable winning patterns (cite by name when current scan matches)
+
+- **Pattern P1 — MSS_CONTINUATION SELL in confirmed bear macro**: h1_trend ≤ −1.0 + m5 RSI 35-50 + m5_bb_mid/vwap retest + m5_strong_bar=1 + ISS ≥ 5 + SL ≥ 1.5×ATR. Canonical example: G5001 on 2026-05-15 ($104 in 6 min).
+- **Pattern P2 — LIQUIDITY_SWEEP_REVERSAL** after sweep+ChoCH+FVG with KZ favorable.
+- **Pattern P3 — MOMENTUM_DUMP SELL with Friday-PM amplifier** (v2.7.125 ship pending).
+
+Full trigger conditions in `feedback_trade_setup_analysis_framework.md` §"Repeatable successful setups".
+
+#### §I.13.4 Gotchas (anti-patterns that look tempting but lose)
+
+- **G1**: Counter-trend BUY at h4_rsi < 30 in deep bear
+- **G2**: Pending orders across weekend (gap × thin liquidity = unmanaged risk)
+- **G3**: Trading during FORGE `session_off`
+- **G4**: Chasing the first reversal bar without follow-through confirmation
+- **G5**: Trade-or-pass FOMO (NO-TRADE is the highest-EV play when 3 reasons align)
+- **G6**: Friday-PM "no recovery" rule misapplied to Sunday open (different session)
+- **G7**: ISS=5 treated as high-conviction (it's standard, not high-conviction)
+
+Full mechanism + rule for each in `feedback_trade_setup_analysis_framework.md` §"Gotchas".
+
+#### §I.13.5 When NOT to apply this framework
+
+- Operator asks for raw data ("what's the current price?") — answer directly
+- Operator asks for monitoring tick — use LIVE MODE skill protocol
+- Operator asks post-mortem on a closed trade — use `feedback_trade_decision_table_format` (different format)
+- Operator asks a code / config / debugging question — use the appropriate skill section
+
+The framework is for PRE-trade directional questions only. Don't force-fit it onto questions it doesn't match.
+
 ---
 
 ## ICT-ALIGNED BOOLEAN COMPOSITE ANALYSIS (mandatory for all NEW setup work)

@@ -288,6 +288,11 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_ICT_ATOM_PULLBACK_IN_OTE_ENABLED":                    ("safety",    "ict_atom_pullback_in_ote_enabled",              "bool01", None,  None),
     "FORGE_ICT_ATOM_PREMIUM_DISCOUNT_ALIGNED_ENABLED":           ("safety",    "ict_atom_premium_discount_aligned_enabled",     "bool01", None,  None),
     "FORGE_ICT_ATOM_FVG_ON_REVERSAL_LEG_ENABLED":                ("safety",    "ict_atom_fvg_on_reversal_leg_enabled",          "bool01", None,  None),
+    # v2.7.124 — Phase B ICT composite scoring (Mode A, log only). Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2.
+    # Each composite returns 0-10 weighted sum per category × direction. BREAKER_RETEST deferred until Phase 3.
+    "FORGE_COMPOSITE_MSS_CONT_SCORE_ENABLED":                    ("safety",    "composite_mss_cont_score_enabled",              "bool01", None,  None),
+    "FORGE_COMPOSITE_OTE_RETRACE_SCORE_ENABLED":                 ("safety",    "composite_ote_retrace_score_enabled",           "bool01", None,  None),
+    "FORGE_COMPOSITE_LIQ_SWEEP_REV_SCORE_ENABLED":               ("safety",    "composite_liq_sweep_rev_score_enabled",         "bool01", None,  None),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),

@@ -541,7 +541,13 @@ function ATHENA(){
   const [aurumH,setAurumH]=useState(148); // default shows header + quick buttons + input bar
   const aurumDragRef=useRef(null);
   // Column + panel resize state
-  const [leftW,setLeftW]=useState(186);    // left sidebar width (px)
+  // v2.7.124 — bumped default 186→280; ACCOUNT panel BALANCE row was wrapping + numbers
+  // clipping at 186 (operator-reported 2026-05-15). Drag clamp also widened to 360.
+  const [leftW,setLeftW]=useState(()=>{
+    try { const s = parseInt(localStorage.getItem('athena_leftW')||'',10);
+          if(!Number.isNaN(s) && s>=160 && s<=400) return s; } catch(e){}
+    return 280;
+  });    // left sidebar width (px) — persisted in localStorage
   // Backtest tab state
   const [btRuns,setBtRuns]=useState([]);
   const [btAllRuns,setBtAllRuns]=useState([]);       // full list (pre-display-limit slice)
@@ -877,6 +883,25 @@ function ATHENA(){
           fontFamily:T.mono,color:connected?T.green:T.amber}}>
           <Dot ok={connected} sz={5} b={connected}/>{connected?'LIVE':'DEMO'}
         </div>
+        {/* v2.7.124 — data-mode pill driven by market_data.json strategy_tester flag.
+            Pill source of truth: D.strategy_tester (forwarded from /api/live, which the
+            EA at ea/FORGE.mq5:4061-62 writes only when MQL_TESTER!=0).
+            LIVE  = MT5 Strategy Tester is not writing → live broker session data.
+            BACKTEST = tester is active → backtest panels show the current run. */}
+        <div style={{display:'flex',alignItems:'center',gap:5,padding:'2px 7px',
+          borderRadius:3,
+          background:D.strategy_tester?'rgba(245,158,11,0.12)':'rgba(16,185,129,0.10)',
+          border:`1px solid ${D.strategy_tester?T.amber:T.green}`,
+          fontSize:9,fontFamily:T.mono,letterSpacing:1.5,
+          color:D.strategy_tester?T.amber:T.green}}
+          title={D.strategy_tester
+            ?'MT5 Strategy Tester is writing market_data.json. Backtest panels show the active run.'
+            :'MT5 Strategy Tester is not running. Live panels show real-broker MT5 session data; Backtest tab shows historical runs.'}>
+          <Dot ok={!D.strategy_tester} sz={5} b={true}/>
+          DATA: {D.strategy_tester
+            ? `BACKTEST${btSelRun?` · #${btSelRun}`:''}`
+            : 'LIVE'}
+        </div>
         <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>Cycle {D.cycle}</span>
       </div>
     </div>
@@ -893,7 +918,11 @@ function ATHENA(){
           onMouseDown={e=>{
             e.preventDefault();
             const startX=e.clientX,startW=leftW;
-            const onMove=ev=>setLeftW(Math.max(140,Math.min(320,startW+(ev.clientX-startX))));
+            const onMove=ev=>{
+              const w=Math.max(160,Math.min(400,startW+(ev.clientX-startX)));
+              setLeftW(w);
+              try { localStorage.setItem('athena_leftW', String(w)); } catch(e){}
+            };
             const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);};
             document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
           }}
@@ -1464,6 +1493,27 @@ function ATHENA(){
                 <span style={{fontSize:9,color:T.cyan,fontFamily:T.mono,letterSpacing:2}}>🔬 BACKTEST — aurum_tester.db</span>
                 <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>{btRuns.length} run(s) stored</span>
               </div>
+              {/* v2.7.124 — tester-idle banner driven by market_data.json strategy_tester flag.
+                  When the flag is false, the tab is showing historical run data, not live state.
+                  Mirrors the header DATA pill so the tab's own context is unambiguous. */}
+              {!D.strategy_tester&&btRuns.length>0&&(
+                <div style={{padding:'8px 10px',marginBottom:10,
+                  background:'rgba(245,158,11,0.08)',
+                  border:`1px solid ${T.amber}`,borderRadius:4,
+                  fontSize:9,fontFamily:T.mono,color:T.amber,lineHeight:1.55}}>
+                  <span style={{color:T.gold,fontWeight:700,letterSpacing:1.5}}>⚠ TESTER IDLE</span>
+                  {' — '}<span style={{color:T.text}}>market_data.json reports <code>strategy_tester=false</code>. The runs below are historical (last completed: run #{btRuns[0]?.aurum_run_id}{btRuns[0]?.forge_version?` v${btRuns[0].forge_version}`:''}). For live-session signals/trades + real-broker P&L use the Live or Performance tab.</span>
+                </div>
+              )}
+              {D.strategy_tester&&(
+                <div style={{padding:'8px 10px',marginBottom:10,
+                  background:'rgba(16,185,129,0.08)',
+                  border:`1px solid ${T.green}`,borderRadius:4,
+                  fontSize:9,fontFamily:T.mono,color:T.green,lineHeight:1.55}}>
+                  <span style={{color:T.gold,fontWeight:700,letterSpacing:1.5}}>● TESTER ACTIVE</span>
+                  {' — '}<span style={{color:T.text}}>MT5 Strategy Tester is currently writing market_data.json. Selected run reflects the active backtest.</span>
+                </div>
+              )}
               {/* Run selector */}
               {btRuns.length===0?(
                 <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,padding:'20px 0'}}>
