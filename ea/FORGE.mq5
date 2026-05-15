@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.192"
+#property version "2.193"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -70,7 +70,7 @@
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
 
-const string FORGE_VERSION = "2.7.122";
+const string FORGE_VERSION = "2.7.123";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1097,6 +1097,16 @@ struct ScalperConfig {
    double recovery_pre_tp1_min_adverse_atr;    // bad-state threshold (default 1.5 × entry_atr)
    int    recovery_pre_tp1_max_legs_per_group; // hard cap, never more than this many arms per primary (default 1)
    int    recovery_pre_tp1_cooldown_seconds;   // cooldown between arms on same group (default 600 = 10 min)
+   // v2.7.123 — Phase A ICT atom enable flags (all default OFF, log-only Mode A)
+   //   Five new atoms behind individual flags. Compute pure-function values for the
+   //   §B.8.2 composite scorer (Phase B). With all flags OFF, the per-tick eval block
+   //   in ForgeEvalAtoms() zeros every g_ict_last_atom_* global → SIGNALS columns log
+   //   0, byte-identical to v2.7.122. Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2.
+   bool   ict_atom_killzone_favorable_enabled;
+   bool   ict_atom_htf_aligned_enabled;
+   bool   ict_atom_pullback_in_ote_enabled;
+   bool   ict_atom_premium_discount_aligned_enabled;
+   bool   ict_atom_fvg_on_reversal_leg_enabled;
    // ─────────────────────────────────────────────────────────────────────────────
    // v2.7.117 — Cascade-recovery safety TP (live-broker requirement).
    // Previously BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY placed pendings with tp=0
@@ -1845,6 +1855,16 @@ struct RegimeState {
 };
 
 RegimeState g_regime;            // populated each tick by RegimeUpdate() — single source of truth
+
+// v2.7.123 — third modular FORGE component (ICT scoring + atom library).
+//   Phase A ship: 5 atoms (Atom_KillzoneFavorable, Atom_HTFAligned,
+//   Atom_FVGOnReversalLeg here; Atom_PullbackInOTE, Atom_PremiumDiscountAligned
+//   in IctStructure.mqh). Exports 5 g_ict_last_atom_* globals consumed by
+//   JournalRecordSignal. Default-OFF (all 5 enable flags off in ScalperConfig).
+//   Include is placed AFTER `RegimeState g_regime` + `g_eval_h1_trend` so the
+//   module body can reference them at compile time. Phase 4 (Unicorn + master
+//   ICTSignalScore) will land in this same file when shipped.
+#include <Forge\IctScoring.mqh>
 
 // V2: Volume Profile — POC + VWAP computed from M5 CopyTickVolume
 double   g_poc_price = 0.0;
@@ -4913,6 +4933,14 @@ void InitScalperConfig() {
    g_sc.recovery_pre_tp1_min_adverse_atr    = 1.5;
    g_sc.recovery_pre_tp1_max_legs_per_group = 1;
    g_sc.recovery_pre_tp1_cooldown_seconds   = 600;
+   // v2.7.123 — Phase A ICT atoms (all default OFF; flip via FORGE_ICT_ATOM_*_ENABLED=1)
+   //   See ea/include/Forge/IctScoring.mqh + IctStructure.mqh for function bodies.
+   //   These atoms feed §B.8.2 weighted composite scoring (Phase B, not yet shipped).
+   g_sc.ict_atom_killzone_favorable_enabled       = false;
+   g_sc.ict_atom_htf_aligned_enabled              = false;
+   g_sc.ict_atom_pullback_in_ote_enabled          = false;
+   g_sc.ict_atom_premium_discount_aligned_enabled = false;
+   g_sc.ict_atom_fvg_on_reversal_leg_enabled      = false;
    // v2.7.117 — cascade-recovery safety TP default (broker-side TP on recovery legs)
    g_sc.cascade_recovery_tp_atr_mult     = 2.0;   // 2×ATR safety TP — operator-spec default for live broker safety
    // ─────────────────────────────────────────────────────────────────────────────
@@ -5634,6 +5662,13 @@ void ReadScalperConfig() {
       if(JsonHasKey(breakout_json, "recovery_pre_tp1_min_adverse_atr"))    { v = JsonGetDouble(breakout_json,"recovery_pre_tp1_min_adverse_atr");    if(v > 0.5 && v <= 10.0) g_sc.recovery_pre_tp1_min_adverse_atr    = v; }
       if(JsonHasKey(breakout_json, "recovery_pre_tp1_max_legs_per_group")) { v = JsonGetDouble(breakout_json,"recovery_pre_tp1_max_legs_per_group"); if(v >= 1 && v <= 5) g_sc.recovery_pre_tp1_max_legs_per_group = (int)v; }
       if(JsonHasKey(breakout_json, "recovery_pre_tp1_cooldown_seconds"))   { v = JsonGetDouble(breakout_json,"recovery_pre_tp1_cooldown_seconds");   if(v >= 60 && v <= 7200) g_sc.recovery_pre_tp1_cooldown_seconds = (int)v; }
+      // v2.7.123 — Phase A ICT atom loaders. Flag-only knobs; the underlying ATR /
+      //   lookback parameters reuse the Phase 1/2 knobs (ict_swing_lookback etc).
+      if(JsonHasKey(content, "ict_atom_killzone_favorable_enabled"))       { v = JsonGetDouble(content,"ict_atom_killzone_favorable_enabled");       g_sc.ict_atom_killzone_favorable_enabled = (v >= 0.5); }
+      if(JsonHasKey(content, "ict_atom_htf_aligned_enabled"))              { v = JsonGetDouble(content,"ict_atom_htf_aligned_enabled");              g_sc.ict_atom_htf_aligned_enabled        = (v >= 0.5); }
+      if(JsonHasKey(content, "ict_atom_pullback_in_ote_enabled"))          { v = JsonGetDouble(content,"ict_atom_pullback_in_ote_enabled");          g_sc.ict_atom_pullback_in_ote_enabled    = (v >= 0.5); }
+      if(JsonHasKey(content, "ict_atom_premium_discount_aligned_enabled")) { v = JsonGetDouble(content,"ict_atom_premium_discount_aligned_enabled"); g_sc.ict_atom_premium_discount_aligned_enabled = (v >= 0.5); }
+      if(JsonHasKey(content, "ict_atom_fvg_on_reversal_leg_enabled"))      { v = JsonGetDouble(content,"ict_atom_fvg_on_reversal_leg_enabled");      g_sc.ict_atom_fvg_on_reversal_leg_enabled = (v >= 0.5); }
       // v2.7.117 — cascade-recovery safety TP (BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY / BUY_STOP_CONT fallback)
       if(JsonHasKey(breakout_json, "cascade_recovery_tp_atr_mult")){ v = JsonGetDouble(breakout_json,"cascade_recovery_tp_atr_mult"); if(v > 0 && v <= 10.0) g_sc.cascade_recovery_tp_atr_mult = v; }
       // ─────────────────────────────────────────────────────────────────────────
@@ -7749,6 +7784,37 @@ void ForgeEvalAtoms() {
          }
       }
    }
+
+   // v2.7.123 — Phase A ICT atom evaluation (BUY-direction context for global log).
+   //   The atoms support both directions via parameter, but the globals store the
+   //   BUY-context value for SIGNALS logging. Phase B composite scorer will call
+   //   the functions per-direction directly without storing intermediate state.
+   //   With all 5 enable flags OFF (defaults), every global stays 0 → SIGNALS rows
+   //   log 0 across the 5 atom columns. Schema-parity byte-stable vs v2.7.122.
+   if(g_sc.ict_atom_killzone_favorable_enabled)
+      g_ict_last_atom_killzone_favorable = Atom_KillzoneFavorable(1, 1) ? 1 : 0;  // category=MSS_CONT, BUY
+   else
+      g_ict_last_atom_killzone_favorable = 0;
+
+   if(g_sc.ict_atom_htf_aligned_enabled)
+      g_ict_last_atom_htf_aligned = Atom_HTFAligned(1) ? 1 : 0;  // BUY direction
+   else
+      g_ict_last_atom_htf_aligned = 0;
+
+   if(g_sc.ict_atom_pullback_in_ote_enabled)
+      g_ict_last_atom_pullback_in_ote = Atom_PullbackInOTE(1) ? 1 : 0;
+   else
+      g_ict_last_atom_pullback_in_ote = 0;
+
+   if(g_sc.ict_atom_premium_discount_aligned_enabled)
+      g_ict_last_atom_premium_discount_aligned = Atom_PremiumDiscountAligned(1) ? 1 : 0;
+   else
+      g_ict_last_atom_premium_discount_aligned = 0;
+
+   if(g_sc.ict_atom_fvg_on_reversal_leg_enabled)
+      g_ict_last_atom_fvg_on_reversal_leg = Atom_FVGOnReversalLeg(1) ? 1 : 0;
+   else
+      g_ict_last_atom_fvg_on_reversal_leg = 0;
 }
 
 
@@ -9426,7 +9492,17 @@ bool JournalInit() {
       // v2.7.122 — ict_sweep_rejection_score: 0..1 wick-quality score from
       //   ScoreLiquiditySweep (Forge\IctLiquidity.mqh). Bound by JournalRecordSignal
       //   from g_ict_last_sweep_rejection_score. LOG-ONLY — defaults to 0.
-      "ict_sweep_rejection_score REAL DEFAULT 0"
+      "ict_sweep_rejection_score REAL DEFAULT 0, "
+      // v2.7.123 — Phase A ICT atom outputs (5 INTEGERs; LOG-ONLY, Mode A).
+      //   Bound by JournalRecordSignal from g_ict_last_atom_* globals (set by
+      //   ForgeEvalAtoms with BUY-direction context). All zero with default
+      //   enable flags off (ict_atom_*_enabled=0). Per docs/FORGE_SETUP_ICT_MAP.md
+      //   §B.8.2 — feed the Phase B weighted composite scorer.
+      "atom_killzone_favorable INTEGER DEFAULT 0, "
+      "atom_htf_aligned INTEGER DEFAULT 0, "
+      "atom_pullback_in_ote INTEGER DEFAULT 0, "
+      "atom_premium_discount_aligned INTEGER DEFAULT 0, "
+      "atom_fvg_on_reversal_leg INTEGER DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -9627,6 +9703,17 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_sweep_rejection_score REAL DEFAULT 0;");
    // v2.7.122 — Pre-TP1 recovery armed flag (idempotent, no-op if column already exists)
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN pre_tp1_recovery_armed INTEGER DEFAULT 0;");
+   // v2.7.123 — Phase A ICT atom outputs (5 INTEGERs; LOG-ONLY, Mode A).
+   //   Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2 — atom_* prefix (not ict_atom_*).
+   //   Idempotent ALTERs — no-op when columns already exist on existing DBs.
+   //   Schema-parity 5-layer ship: CREATE TABLE text above + these ALTERs +
+   //   JournalRecordSignal INSERT list + scribe.py CREATE/ALTER/INSERT + placeholder
+   //   count bump 141 → 146.
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_killzone_favorable INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_htf_aligned INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_pullback_in_ote INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_premium_discount_aligned INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_fvg_on_reversal_leg INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
@@ -9860,7 +9947,13 @@ void JournalRecordSignal(string outcome, string gate_reason,
       //   ScoreLiquiditySweep (Forge\IctLiquidity.mqh). Bound from g_ict_last_*.
       "ict_sweep_rejection_score, "
       // v2.7.122 — Pre-TP1 recovery armed flag (1 = this tick armed a pre-TP1 recovery)
-      "pre_tp1_recovery_armed"
+      "pre_tp1_recovery_armed, "
+      // v2.7.123 — Phase A ICT atom outputs (5 INTEGERs; Mode A — LOG-ONLY).
+      //   Captured from g_ict_last_atom_* globals set in ForgeEvalAtoms() with
+      //   BUY-direction context. All zero when ict_atom_*_enabled flags are OFF
+      //   (defaults). Per docs/FORGE_SETUP_ICT_MAP.md §B.8.2 — atom_* prefix.
+      "atom_killzone_favorable, atom_htf_aligned, atom_pullback_in_ote, "
+      "atom_premium_discount_aligned, atom_fvg_on_reversal_leg"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -10007,7 +10100,15 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + DoubleToString(g_ict_last_sweep_rejection_score, 4)       + ", "
       // v2.7.122 — Pre-TP1 recovery armed flag (cleared each tick in ManageOpenGroups,
       // set in ArmPreTP1Recovery on successful OrderSend)
-      + IntegerToString(g_pre_tp1_recov_armed_this_tick)
+      + IntegerToString(g_pre_tp1_recov_armed_this_tick)          + ", "
+      // v2.7.123 — Phase A ICT atom outputs (5 INTEGERs; LOG-ONLY).
+      //   Read from g_ict_last_atom_* globals set in ForgeEvalAtoms() with
+      //   BUY-direction context. All zero when enable flags off (defaults).
+      + IntegerToString(g_ict_last_atom_killzone_favorable)       + ", "
+      + IntegerToString(g_ict_last_atom_htf_aligned)              + ", "
+      + IntegerToString(g_ict_last_atom_pullback_in_ote)          + ", "
+      + IntegerToString(g_ict_last_atom_premium_discount_aligned) + ", "
+      + IntegerToString(g_ict_last_atom_fvg_on_reversal_leg)
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
