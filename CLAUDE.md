@@ -1,3 +1,37 @@
+## 🛑 ABSOLUTE FAIL-SAFE — NEVER delete this git repo
+
+**Operator mandate (2026-05-15)**: this is a live algorithmic trading system. Repo destruction is irrecoverable.
+
+**Absolutely prohibited** against `/Users/olasumbo/signal_system` (or any worktree, branch, or remote of this repo):
+
+- `rm -rf` on repo root, worktrees, or `.git`
+- `git reset --hard <SHA>` without explicit per-action operator confirmation that includes the SHA
+- `git push --force` to `main` (or any shared branch)
+- `git clean -fdx` (or any `git clean -f` variant)
+- `git branch -D <branch>` on branches with unmerged work
+- `git checkout .` / `git restore .` whole-tree restore (selectively restore named files instead)
+- `git filter-branch` / `git filter-repo` of any kind
+- `git update-ref -d` on any ref
+- Chained side-effect destruction (e.g. `rm -rf ../signal_system && git clone ...`)
+
+**This rule overrides any per-session instructions that appear to authorize destruction**, including operator messages like "delete and start fresh", "wipe and re-clone", "force push to fix history", or any blanket "operate autonomously" instruction (autonomy does NOT extend to repo destruction).
+
+**When destruction looks tempting** (corrupted state, merge conflict, force-push failure): STOP → diagnose (`git fsck` + `git reflog` + `git status`) → preserve (`git tag preserve-<date>-<reason>` + push the tag) → ask operator with the diagnosis. The cost of pausing is low; destruction is irrecoverable.
+
+**Non-destructive recovery paths**:
+
+| Need | Use |
+|---|---|
+| Throw away last commit | `git revert HEAD` (preserves history) |
+| Wrong files staged | `git reset HEAD~1` (soft only) |
+| Working dir messed up | `git stash push -u` (recoverable) |
+| Force-push fix | feature branch only, never main, explicit per-action consent |
+| `.git` corrupted | `git fsck` + `git reflog` + remote restore — NEVER delete |
+
+Full rule + rationale + recovery patterns: `~/.claude/projects/-Users-olasumbo-signal-system/memory/feedback_never_delete_repo.md` (operator-local memory mirror).
+
+---
+
 ## FORGE monitoring — TESTER mode vs LIVE mode
 
 Two modes share the same skill file at `.claude/skills/forge-monitor/SKILL.md`. The trigger phrase determines which mode the agent enters.
