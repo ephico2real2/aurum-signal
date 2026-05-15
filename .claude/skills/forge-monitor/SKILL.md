@@ -1499,11 +1499,241 @@ Use the most recently modified DB (check mtime).
 
 **Multi-agent design:** When MT5 assigns a new tester run to Agent-3001 while Agent-3000 has an older run, both DBs are monitored simultaneously. Each gets its own `aurum_run_id`.
 
-### Live AURUM DB (NOT for backtest monitoring)
+### Live AURUM DB (live FORGE trading on real broker — SCRIBE-written)
 ```
 /Users/olasumbo/signal_system/python/data/aurum_intelligence.db
 ```
-This is the live trading SCRIBE DB. Do NOT query it for backtest data.
+This is the live trading SCRIBE DB. Use this for **LIVE MODE** monitoring (see next section). Do NOT query it for tester/backtest data — those go in `aurum_tester.db` + the source journal DBs above.
+
+---
+
+## LIVE MODE — monitor the live broker EA instead of the tester (operator-mandated 2026-05-14)
+
+### Trigger phrases (route to LIVE MODE)
+
+Default `/forge-monitor` invocation = TESTER MODE (the Sections below). LIVE MODE is invoked by ANY message that contains the word `live` near a monitor-related token. Recognised forms include:
+
+- `/forge-monitor live`
+- `live /forge-monitor`
+- `live forge-monitor`
+- `live mon`
+- `live monitor` / `live monitors`
+- `live-mon`
+- `monitor live`
+- `forge live monitor`
+- "monitor the live trading"
+- "watch the live broker"
+- "tail live FORGE"
+
+**Rule**: if the operator's message contains the word `live` (case-insensitive) AND any of {`monitor`, `mon`, `forge-monitor`, `forge monitor`, `tail`, `watch`, `tick`}, route to LIVE MODE — do not over-narrow on the exact phrase. The intent signal is `live` + monitor-noun adjacency.
+
+When you detect any of these, **do NOT use the tester source journal DB**. Switch to the scribe DB + `market_data.json` per the section below. Report at the top of tick 0 that you're in LIVE MODE so the operator can confirm.
+
+### Data sources
+
+| What | Where | Read via |
+|---|---|---|
+| Live signals + skips (24h+) | `python/data/aurum_intelligence.db` `forge_signals` table | `sqlite3 "file:${DB}?mode=ro&immutable=1"` |
+| Live trades | same DB, `forge_journal_trades` table | same |
+| Live trade groups (group-level aggregate) | same DB, `trade_groups` table | same |
+| Live positions (per-leg state) | same DB, `trade_positions` table | same |
+| Live trade closures | same DB, `trade_closures` table | same |
+| Current market state | `~/Library/Application Support/.../Common/Files/market_data.json` | `python3 -m json.tool` |
+| Service health | `make status` (bridge/listener/aurum/athena PIDs) | shell |
+| Athena UI | `http://localhost:7842/` | `mcp__playwright__playwright_navigate` |
+
+The `immutable=1` URI mode bypasses WAL lock contention from live `bridge.py` + `scribe.py` writers. Always use it for read-only live queries — without it, you'll hit transient `unable to open database file` errors during sync cycles.
+
+### Key differences from TESTER mode
+
+| Aspect | TESTER MODE | LIVE MODE |
+|---|---|---|
+| Source DB | `FORGE_journal_XAUUSD_tester.db` per agent | `aurum_intelligence.db` (single scribe DB) |
+| Time scope | filter by `run_id=(SELECT MAX(id) FROM TESTER_RUNS)` | filter by `time >= strftime('%s','now','-24 hours')` (or whatever window) |
+| `run_id` concept | exists, primary partition key | does NOT exist in live tables — use time-windowing |
+| Sim clock | `MAX(time)` advances as backtest progresses | `MAX(time)` = real wall-clock now |
+| TAKEN cadence | dense (hours of sim time per minute of wall time) | sparse (real trades on real broker; may be 0 in a slow day) |
+| Analysis doc | `docs/FORGE_RUN<aurum_run_id>_ANALYSIS.md` | `docs/FORGE_LIVE_<YYYY-MM-DD>_ANALYSIS.md` (per calendar day, append-only) |
+| MT5 log path | `Tester/Agent-127.0.0.1-3000/logs` | `MQL5/Logs/<broker>.log` (terminal main, not tester) |
+| Stop condition | 3 ticks with no new signals (backtest finished) | operator says stop — live runs continuously |
+
+### LIVE MODE setup (replaces tester Setup steps)
+
+```bash
+SCRIBE_DB=/Users/olasumbo/signal_system/python/data/aurum_intelligence.db
+MD_FILE="$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/market_data.json"
+
+# 1. Confirm scribe DB exists + services are up
+ls -la "$SCRIBE_DB"
+make status | tail -8
+
+# 2. Baseline: 24h signal counts + last TAKEN timestamp + current price
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT COUNT(*) AS total_24h,
+       SUM(CASE WHEN outcome='TAKEN' THEN 1 ELSE 0 END) AS taken_24h,
+       datetime((SELECT MAX(time) FROM forge_signals WHERE outcome='TAKEN'),'unixepoch','localtime') AS last_taken_local
+FROM forge_signals WHERE time >= strftime('%s','now','-24 hours');"
+
+# 3. Current market state from broker
+python3 -c "
+import json
+md = json.load(open('$MD_FILE'))
+p = md.get('price', {})
+acc = md.get('account', {})
+print(f\"price: bid={p.get('bid')} ask={p.get('ask')} spread={p.get('spread')}\")
+print(f\"account: balance={acc.get('balance')} equity={acc.get('equity')} margin={acc.get('margin')}\")
+print(f\"open_positions: {len(md.get('open_positions', []))}\")
+print(f\"pending_orders: {len(md.get('pending_orders', []))}\")
+"
+
+# 4. Analysis doc name — use calendar date
+echo "docs/FORGE_LIVE_$(date +%Y-%m-%d)_ANALYSIS.md"
+```
+
+### LIVE MODE loop queries (replace Q1-Q9 from tester mode)
+
+#### Live-Q1 — sim progress equivalent (just current count, last signal time)
+
+```bash
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT datetime(MAX(time),'unixepoch','localtime') AS latest_signal_local,
+       COUNT(*) AS total_24h,
+       SUM(CASE WHEN outcome='TAKEN' THEN 1 ELSE 0 END) AS taken_24h
+FROM forge_signals WHERE time >= strftime('%s','now','-24 hours');"
+```
+
+#### Live-Q2 — TAKEN signals (last 24h, no run_id filter)
+
+```bash
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT datetime(time,'unixepoch','localtime') AS local_t, setup_type, direction,
+       ROUND(price,2), ROUND(rsi,1), ROUND(adx,1), session, magic,
+       iss_score, iss_mss, iss_fvg, iss_choch_support, iss_choch_against
+FROM forge_signals
+WHERE outcome='TAKEN' AND time >= strftime('%s','now','-24 hours')
+ORDER BY time DESC;"
+```
+
+If 0 rows, broaden the window (e.g. `-72 hours` or `-7 days`) but flag in the report: "Last TAKEN was N days ago — possible structural over-block, run gate breakdown."
+
+#### Live-Q3 — gate breakdown (last 24h)
+
+```bash
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT gate_reason, COUNT(*) AS cnt
+FROM forge_signals
+WHERE outcome='SKIP' AND gate_reason IS NOT NULL AND gate_reason!=''
+  AND time >= strftime('%s','now','-24 hours')
+GROUP BY gate_reason ORDER BY cnt DESC LIMIT 15;"
+```
+
+Same interpretation rules as tester (PEMCG asymmetry audit, etc.) — only the time-window changes.
+
+#### Live-Q4 — recent trades + closures from broker (canonical, NOT from scribe DB)
+
+For LIVE, the broker is the source of truth for fills. `market_data.json` carries the live `recent_closed_deals` array — read it directly rather than waiting for SCRIBE to sync:
+
+```bash
+python3 -c "
+import json
+md = json.load(open('$MD_FILE'))
+print('open_positions:', len(md.get('open_positions', [])))
+for p in md.get('open_positions', [])[:10]: print(' ', p)
+print()
+print('pending_orders:', len(md.get('pending_orders', [])))
+for p in md.get('pending_orders', [])[:10]: print(' ', p)
+print()
+print('recent_closed_deals (last 10):')
+for d in md.get('recent_closed_deals', [])[:10]: print(' ', d)
+"
+```
+
+Cross-reference SCRIBE `forge_journal_trades` for the durable record:
+
+```bash
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT deal_ticket, magic, ROUND(profit,2), comment, datetime(time,'unixepoch','localtime')
+FROM forge_journal_trades
+WHERE time >= strftime('%s','now','-24 hours')
+ORDER BY time DESC LIMIT 20;"
+```
+
+#### Live-Q5 — live cascade arming (MT5 terminal log, not tester log)
+
+```bash
+# Live MT5 terminal logs — different path from tester
+LOGDIR="$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/MQL5/Logs"
+grep -E "ArmPostTP1Ladder|SELL STOP CONT|BUY LIMIT|BUY_LIMIT_RECOV|SELL_LIMIT_RECOVERY|slot\[2\]|slot\[3\]|slot\[4\]|exhausted" \
+  "$LOGDIR"/*.log 2>/dev/null | sort -u | tail -20
+```
+
+If `$LOGDIR` is empty, MT5 may be logging to a different broker-specific path — operator may need to point you at it.
+
+#### Live-Q6 — losses (last 24h)
+
+```bash
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT deal_ticket, magic, ROUND(profit,2), comment, datetime(time,'unixepoch','localtime')
+FROM forge_journal_trades
+WHERE profit < 0 AND time >= strftime('%s','now','-24 hours')
+ORDER BY profit ASC;"
+```
+
+For deeper post-mortem on live losses, additionally join `trade_groups` + `trade_positions` (live-only tables that SCRIBE populates with per-group/per-leg state):
+
+```bash
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT * FROM trade_groups ORDER BY rowid DESC LIMIT 5;"
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT * FROM trade_positions ORDER BY rowid DESC LIMIT 10;"
+```
+
+Schemas may drift — always `.schema trade_groups` / `.schema trade_positions` before relying on column names (per the atlas §11 verification rule).
+
+#### Live-Q7 — component heartbeats (service health from scribe)
+
+```bash
+sqlite3 "file:${SCRIBE_DB}?mode=ro&immutable=1" "
+SELECT component, status, datetime(last_seen,'unixepoch','localtime')
+FROM component_heartbeats ORDER BY last_seen DESC LIMIT 8;"
+```
+
+If any component's `last_seen` is older than 5 minutes during active hours, surface in the tick report. Cross-check with `make status` — heartbeats can lag for genuine reasons but stale-heartbeat + running-PID = silent failure.
+
+### LIVE MODE mandatory checks
+
+The HOUSEKEEPING CHECKS A/B/C from tester mode still apply (run once at session start). Additionally:
+
+- **No open positions check**: if `open_positions: 0` AND last TAKEN > 24h ago, flag as `LIVE DRY SPELL — possible structural over-block` and run the gate breakdown to identify the dominant blocker. Compare against the predicted top-3 from `aurum_run_id=N` tester runs (most recent).
+- **PEMCG asymmetry on live data**: same audit as tester (`pemcg_buy_reversal_block` vs `pemcg_sell_reversal_block` over the 24h window) — if ratio ≥ 5× either direction, flag and run day-type verification.
+- **Athena UI sync check**: confirm `forge_signals` is populating in scribe (not just `forge_journal_trades`) — same bug class as Check C, just on the live scribe DB. If trades work but signals don't, the Athena "TAKEN ENTRIES" panel will go dark even though live trades execute.
+
+### LIVE MODE reporting differences
+
+- Don't use the per-run analysis doc template — that's tester-specific. Create / append to `docs/FORGE_LIVE_<YYYY-MM-DD>_ANALYSIS.md` per calendar day. Multi-day live monitoring spans multiple files (one per day, append-only daily section log).
+- Don't report "sim time" — report **wall-clock local time** + current price. Operator is watching their live broker, not a simulated clock.
+- Flag any pending order with `tp == 0` immediately — that's the v2.7.117-fixed bug class. If a pending fills without TP, operator must manually close. Confirm v2.7.117 is loaded with `make forge-verify-live` before assuming the fix is active.
+- When live cascade-recovery fills, surface the magic + tp value to confirm the v2.7.117 safety TP is being applied:
+
+```bash
+python3 -c "
+import json
+md = json.load(open('$MD_FILE'))
+for p in md.get('pending_orders', []):
+    if p.get('tp', 0) == 0:
+        print('🔴 PENDING WITH NO TP:', p)
+    else:
+        print('✓ pending with TP:', p.get('ticket'), 'tp=', p.get('tp'))
+"
+```
+
+### LIVE MODE stop condition
+
+LIVE MODE has no auto-stop — live trading runs continuously. Stop only when:
+- Operator says stop / `/clear` / etc.
+- A live SL/loss event occurs that the operator wants a deep post-mortem on (switch to focused investigation, then resume)
+
+Default cadence: 60s loop (vs 45s for tester) — broker tick rate is slower than backtest tick rate, so polling too fast wastes attention.
 
 ---
 

@@ -1,21 +1,32 @@
-## FORGE backtest monitoring
+## FORGE monitoring — TESTER mode vs LIVE mode
 
-When the user types `/forge-monitor` or says "forge-monitor", "monitor the forge tester",
-"watch the backtest", "tail the journal", or similar: read and execute the full skill at
-`.claude/skills/forge-monitor/SKILL.md`.
+Two modes share the same skill file at `.claude/skills/forge-monitor/SKILL.md`. The trigger phrase determines which mode the agent enters.
 
-The CLI command `.claude/commands/forge-monitor.md` delegates to the same skill file.
+### TESTER mode (default — backtest journal monitoring)
+
+Trigger: `/forge-monitor` (no args), "forge-monitor", "monitor the forge tester", "watch the backtest", "tail the journal", or similar.
 
 Key paths:
 - Journal DB: `$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/.../FORGE_journal_*_tester.db`
 - Query reference (writable): `docs/FORGE_TESTER_JOURNAL_QUERIES.md`
-- Per-run analysis output: `docs/FORGE_RUN<run_id>_ANALYSIS.md`
+- Per-run analysis output: `docs/FORGE_RUN<aurum_run_id>_ANALYSIS.md`
 
-The cheat sheet is a living document. New tables and refined queries discovered
-during monitoring sessions are auto-appended under
-`## Discovered Queries (auto-added by /forge-monitor)` and
-`## Query revisions (auto-added by /forge-monitor)`. Hand-curated entries above
-those sections are never modified.
+### LIVE mode (live broker monitoring via scribe)
+
+Trigger: any message containing the word `live` (case-insensitive) AND a monitor-related token (`monitor`, `mon`, `forge-monitor`, `tail`, `watch`, `tick`). Recognised forms include `/forge-monitor live`, `live /forge-monitor`, `live forge-monitor`, `live mon`, `live monitor`, `live monitors`, `live-mon`, `monitor live`, "watch the live broker", "tail live FORGE", or similar. The intent signal is `live` + monitor-noun adjacency — don't over-narrow on exact phrasing.
+
+Key paths:
+- Scribe DB: `python/data/aurum_intelligence.db` (read with `sqlite3 "file:${DB}?mode=ro&immutable=1"` to bypass WAL locks)
+- Live broker state: `~/Library/Application Support/.../Common/Files/market_data.json`
+- Per-day analysis output: `docs/FORGE_LIVE_<YYYY-MM-DD>_ANALYSIS.md`
+
+Full LIVE mode protocol (data sources, replacement queries, mandatory checks, reporting differences) is in `.claude/skills/forge-monitor/SKILL.md` → "LIVE MODE — monitor the live broker EA instead of the tester" section. Both modes use the same housekeeping checks, PEMCG asymmetry audit, GFM-mandatory output rules, and recommendations pattern.
+
+The CLI command `.claude/commands/forge-monitor.md` delegates to the same skill file — pass `live` as the arg to enter LIVE mode.
+
+### Cheat sheet (TESTER-mode only)
+
+The cheat sheet `docs/FORGE_TESTER_JOURNAL_QUERIES.md` is a living document. New tables and refined queries discovered during TESTER-mode monitoring sessions are auto-appended under `## Discovered Queries (auto-added by /forge-monitor)` and `## Query revisions (auto-added by /forge-monitor)`. Hand-curated entries above those sections are never modified.
 
 ## Service operations — ALWAYS use Makefile targets
 
