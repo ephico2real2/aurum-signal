@@ -269,6 +269,16 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_ICT_SWING_LOOKBACK":                                  ("safety",    "ict_swing_lookback",                            "int",    1,     10),
     "FORGE_ICT_MSS_DISPLACEMENT_ATR_MULT":                       ("safety",    "ict_mss_displacement_atr_mult",                 "float",  0.0,   5.0),
     "FORGE_ICT_FVG_MIN_SIZE_ATR_MULT":                           ("safety",    "ict_fvg_min_size_atr_mult",                     "float",  0.0,   5.0),
+    # v2.7.120 — ICT Phase 2 modular component (ea/include/Forge/IctLiquidity.mqh).
+    # ChoCH (Change of Character) + liquidity sweep + kill-zone helpers. Default-OFF
+    # instrumentation — atoms compute + log to SIGNALS when enabled; no new SKIP gate.
+    # Wires real values into g_iss_choch_support / g_iss_choch_against (was stubbed 0).
+    "FORGE_ICT_CHOCH_ENABLED":                                   ("safety",    "ict_choch_enabled",                             "bool01", None,  None),
+    "FORGE_ICT_LIQUIDITY_SWEEP_ENABLED":                         ("safety",    "ict_liquidity_sweep_enabled",                   "bool01", None,  None),
+    "FORGE_ICT_CHOCH_LOOKBACK_BARS":                             ("safety",    "ict_choch_lookback_bars",                       "int",    1,     20),
+    "FORGE_ICT_LIQUIDITY_SWEEP_WINDOW_BARS":                     ("safety",    "ict_liquidity_sweep_window_bars",               "int",    1,     20),
+    "FORGE_ICT_LIQUIDITY_EQUAL_TOLERANCE_ATR_MULT":              ("safety",    "ict_liquidity_equal_tolerance_atr_mult",        "float",  0.0,   5.0),
+    "FORGE_ICT_LIQUIDITY_REJECTION_MIN_WICK_ATR_MULT":           ("safety",    "ict_liquidity_rejection_min_wick_atr_mult",     "float",  0.0,   5.0),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),

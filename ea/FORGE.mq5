@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.189"
+#property version "2.190"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -64,8 +64,13 @@
 //   g_fvg_ring, DetectBullish/BearishMSS, DetectBullish/BearishFVG, mitigation helpers.
 //   See docs/MQL5_MODULAR_EA_DESIGN.md for include layout + dependency rules.
 #include <Forge\IctStructure.mqh>
+// v2.7.120 — second modular FORGE component (ICT Phase 2: ChoCH + liquidity
+//   sweep + kill-zone helpers). Depends on IctStructure.mqh (uses
+//   g_swing_highs/lows, IctSwingPoint). Wires real values into g_iss_choch_*
+//   atoms (previously stubbed at 0). Default-OFF.
+#include <Forge\IctLiquidity.mqh>
 
-const string FORGE_VERSION = "2.7.119";
+const string FORGE_VERSION = "2.7.120";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1533,6 +1538,17 @@ struct ScalperConfig {
    int    ict_swing_lookback;                         // fractal lookback (bars each side). Default 3.
    double ict_mss_displacement_atr_mult;              // MSS body/ATR threshold. Default 0.5 (matches DirLock).
    double ict_fvg_min_size_atr_mult;                  // FVG minimum size in ATR units. Default 0.15.
+   // v2.7.120 — ICT Phase 2 modular knobs (ChoCH + liquidity sweep + kill zone).
+   //   Module: ea/include/Forge/IctLiquidity.mqh — depends on IctStructure.mqh.
+   //   Default-OFF instrumentation. With both flags=0, behaviour is byte-identical
+   //   to v2.7.119. Enabling lifts the iss_score ceiling 8→10 by wiring real
+   //   values into g_iss_choch_support / g_iss_choch_against (was stubbed 0).
+   bool   ict_choch_enabled;                          // master ChoCH atom flag. Default false.
+   bool   ict_liquidity_sweep_enabled;                // master liquidity-sweep tracker flag. Default false.
+   int    ict_choch_lookback_bars;                    // ChoCH internal-structure lookback. Default 5.
+   int    ict_liquidity_sweep_window_bars;            // sweep-recent window (N bars). Default 3.
+   double ict_liquidity_equal_tolerance_atr_mult;     // equal-H/L tolerance. Default 0.2.
+   double ict_liquidity_rejection_min_wick_atr_mult;  // sweep wick/ATR floor. Default 0.3.
    // v2.7.84 — Layer 2: CVCSM (Smart SL-Triggered State Machine with Bidirectional Retry)
    //   Independent BUY/SELL state machines. OPEN→COOLDOWN on SL fire in that direction.
    //   Every M5 close, both directions retry: PEMCG cleared for N consecutive bars → OPEN.
@@ -5021,6 +5037,13 @@ void InitScalperConfig() {
    g_sc.ict_swing_lookback                    = 3;     // fractal lookback bars (each side)
    g_sc.ict_mss_displacement_atr_mult         = 0.5;   // matches DirLock displacement convention
    g_sc.ict_fvg_min_size_atr_mult             = 0.15;  // min FVG size in ATR units
+   // v2.7.120 — ICT Phase 2 modular knobs (default-OFF; flip via FORGE_ICT_* env vars).
+   g_sc.ict_choch_enabled                          = false; // master ChoCH atom flag
+   g_sc.ict_liquidity_sweep_enabled                = false; // master sweep tracker flag
+   g_sc.ict_choch_lookback_bars                    = 5;     // ChoCH internal-structure lookback
+   g_sc.ict_liquidity_sweep_window_bars            = 3;     // sweep-recent window (N bars)
+   g_sc.ict_liquidity_equal_tolerance_atr_mult     = 0.2;   // equal-H/L tolerance (ATR units)
+   g_sc.ict_liquidity_rejection_min_wick_atr_mult  = 0.3;   // sweep wick/ATR floor
    g_sc.cvcsm_enabled                         = true;
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
@@ -6122,6 +6145,13 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "ict_swing_lookback"))                     { v=JsonGetDouble(content,"ict_swing_lookback");                     if(v>=1.0&&v<=10.0) g_sc.ict_swing_lookback=(int)v; }
    if(JsonHasKey(content, "ict_mss_displacement_atr_mult"))          { v=JsonGetDouble(content,"ict_mss_displacement_atr_mult");          if(v>=0.0&&v<=5.0)  g_sc.ict_mss_displacement_atr_mult=v; }
    if(JsonHasKey(content, "ict_fvg_min_size_atr_mult"))              { v=JsonGetDouble(content,"ict_fvg_min_size_atr_mult");              if(v>=0.0&&v<=5.0)  g_sc.ict_fvg_min_size_atr_mult=v; }
+   // v2.7.120 — ICT Phase 2 modular knobs (ChoCH + liquidity sweep + kill zone).
+   if(JsonHasKey(content, "ict_choch_enabled"))                          { v=JsonGetDouble(content,"ict_choch_enabled");                          g_sc.ict_choch_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "ict_liquidity_sweep_enabled"))                { v=JsonGetDouble(content,"ict_liquidity_sweep_enabled");                g_sc.ict_liquidity_sweep_enabled=(v>=0.5); }
+   if(JsonHasKey(content, "ict_choch_lookback_bars"))                    { v=JsonGetDouble(content,"ict_choch_lookback_bars");                    if(v>=1.0&&v<=20.0) g_sc.ict_choch_lookback_bars=(int)v; }
+   if(JsonHasKey(content, "ict_liquidity_sweep_window_bars"))            { v=JsonGetDouble(content,"ict_liquidity_sweep_window_bars");            if(v>=1.0&&v<=20.0) g_sc.ict_liquidity_sweep_window_bars=(int)v; }
+   if(JsonHasKey(content, "ict_liquidity_equal_tolerance_atr_mult"))     { v=JsonGetDouble(content,"ict_liquidity_equal_tolerance_atr_mult");     if(v>=0.0&&v<=5.0)  g_sc.ict_liquidity_equal_tolerance_atr_mult=v; }
+   if(JsonHasKey(content, "ict_liquidity_rejection_min_wick_atr_mult"))  { v=JsonGetDouble(content,"ict_liquidity_rejection_min_wick_atr_mult");  if(v>=0.0&&v<=5.0)  g_sc.ict_liquidity_rejection_min_wick_atr_mult=v; }
    if(JsonHasKey(content, "cvcsm_enabled"))                         { v=JsonGetDouble(content,"cvcsm_enabled");                         g_sc.cvcsm_enabled=(v>=0.5); }
    if(JsonHasKey(content, "cvcsm_release_threshold"))               { v=JsonGetDouble(content,"cvcsm_release_threshold");               if(v>=1.0&&v<=7.0) g_sc.cvcsm_release_threshold=(int)v; }
    if(JsonHasKey(content, "cvcsm_required_clean_bars"))             { v=JsonGetDouble(content,"cvcsm_required_clean_bars");             if(v>=1.0&&v<=20.0) g_sc.cvcsm_required_clean_bars=(int)v; }
@@ -9336,7 +9366,20 @@ bool JournalInit() {
       "ict_fvg_midpoint_dist_atr REAL DEFAULT 0, "
       "ict_fvg_age_bars INTEGER DEFAULT 0, "
       "ict_recent_swing_high REAL DEFAULT 0, "
-      "ict_recent_swing_low REAL DEFAULT 0"
+      "ict_recent_swing_low REAL DEFAULT 0, "
+      // v2.7.120 — ICT Phase-2 atom context (8 cols). ChoCH event counters,
+      //   liquidity-sweep state, equal-H/L cluster sizes, killzone enum.
+      //   Captured at chokepoint via g_ict_last_* globals from IctLiquidity.mqh.
+      //   LOG-ONLY — no new SKIP gate. Defaults to 0 when ict_choch_enabled=0
+      //   AND ict_liquidity_sweep_enabled=0.
+      "ict_choch_buy_count INTEGER DEFAULT 0, "
+      "ict_choch_sell_count INTEGER DEFAULT 0, "
+      "ict_choch_level REAL DEFAULT 0, "
+      "ict_liquidity_sweep_recent INTEGER DEFAULT 0, "
+      "ict_sweep_level REAL DEFAULT 0, "
+      "ict_equal_highs_count INTEGER DEFAULT 0, "
+      "ict_equal_lows_count INTEGER DEFAULT 0, "
+      "ict_killzone_active INTEGER DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -9518,6 +9561,19 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_fvg_age_bars INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_recent_swing_high REAL DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_recent_swing_low REAL DEFAULT 0;");
+   // v2.7.120 — ICT Phase-2 atom context (8 cols; LOG-ONLY).
+   //   Each migration is idempotent — DatabaseExecute returns false on existing
+   //   columns without throwing (same pattern as v2.7.119). Schema-parity 5-layer
+   //   discipline: CREATE TABLE text above + these ALTERs + JournalRecordSignal
+   //   INSERT list + scribe.py CREATE/ALTER/INSERT + placeholder count bump 131→139.
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_choch_buy_count INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_choch_sell_count INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_choch_level REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_liquidity_sweep_recent INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_sweep_level REAL DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_equal_highs_count INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_equal_lows_count INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ict_killzone_active INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
@@ -9741,7 +9797,12 @@ void JournalRecordSignal(string outcome, string gate_reason,
       //   right after the iss_* atoms are computed). LOG-ONLY — no gate behaviour change.
       "ict_mss_swing_price, ict_mss_displacement_atr, ict_fvg_count_active, "
       "ict_fvg_active_upper, ict_fvg_active_lower, ict_fvg_midpoint_dist_atr, "
-      "ict_fvg_age_bars, ict_recent_swing_high, ict_recent_swing_low"
+      "ict_fvg_age_bars, ict_recent_swing_high, ict_recent_swing_low, "
+      // v2.7.120 — ICT Phase-2 atom context (8 cols sourced from g_ict_last_* globals
+      //   exported by Forge\IctLiquidity.mqh). LOG-ONLY — no gate behaviour change.
+      "ict_choch_buy_count, ict_choch_sell_count, ict_choch_level, "
+      "ict_liquidity_sweep_recent, ict_sweep_level, "
+      "ict_equal_highs_count, ict_equal_lows_count, ict_killzone_active"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -9872,7 +9933,18 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + DoubleToString(g_ict_last_fvg_midpoint_dist_atr,       4) + ", "
       + IntegerToString(g_ict_last_fvg_age_bars)                  + ", "
       + DoubleToString(g_ict_last_recent_swing_high,     _Digits) + ", "
-      + DoubleToString(g_ict_last_recent_swing_low,      _Digits)
+      + DoubleToString(g_ict_last_recent_swing_low,      _Digits) + ", "
+      // v2.7.120 — ICT Phase-2 atom context (8 cols from g_ict_last_* globals in
+      //   Forge\IctLiquidity.mqh). All stay 0 when ict_choch_enabled=0 AND
+      //   ict_liquidity_sweep_enabled=0 (chokepoint zeroes on the disabled branch).
+      + IntegerToString(g_ict_last_choch_buy_count)               + ", "
+      + IntegerToString(g_ict_last_choch_sell_count)              + ", "
+      + DoubleToString(g_ict_last_choch_level,           _Digits) + ", "
+      + IntegerToString(g_ict_last_liquidity_sweep_recent)        + ", "
+      + DoubleToString(g_ict_last_sweep_level,           _Digits) + ", "
+      + IntegerToString(g_ict_last_equal_highs_count)             + ", "
+      + IntegerToString(g_ict_last_equal_lows_count)              + ", "
+      + IntegerToString(g_ict_last_killzone_active)
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
@@ -13318,6 +13390,95 @@ void CheckNativeScalperSetups() {
                Forge_PushSwingLow(_tmp_lows[_i].time, _tmp_lows[_i].price, _i);
             }
          }
+         // v2.7.120 — Phase 2 M5-close batch: liquidity-pool maintenance +
+         //   ChoCH event tracking. Runs ONLY when either Phase 2 master flag is
+         //   enabled. Reads Phase 1's swing-arrays (g_swing_highs/lows) populated
+         //   above. All writes funnel into g_choch_*_events + g_liquidity_pools.
+         //   Module: ea/include/Forge/IctLiquidity.mqh.
+         if(g_sc.ict_choch_enabled || g_sc.ict_liquidity_sweep_enabled) {
+            // Refresh equal-H/L pools — anchored on most-recent swings each close.
+            //   Equal-highs (buy-side) and equal-lows (sell-side) pools captured
+            //   for downstream sweep scoring. Pool ring keeps a small history.
+            if(g_sc.ict_liquidity_sweep_enabled && m5_atr > 0.0) {
+               double _eh_avg = 0.0;
+               int _eh_n = DetectEqualHighs(g_swing_highs, g_swing_high_count, m5_atr,
+                                            g_sc.ict_liquidity_equal_tolerance_atr_mult, _eh_avg);
+               if(_eh_n >= 2 && _eh_avg > 0.0) {
+                  LiquidityPool _lp;
+                  _lp.time = _ict_cur_bar; _lp.level = _eh_avg; _lp.buy_side = true;
+                  _lp.swept = false; _lp.swept_time = 0; _lp.cluster_size = _eh_n;
+                  Forge_PushLiquidityPool(_lp);
+               }
+               double _el_avg = 0.0;
+               int _el_n = DetectEqualLows(g_swing_lows, g_swing_low_count, m5_atr,
+                                           g_sc.ict_liquidity_equal_tolerance_atr_mult, _el_avg);
+               if(_el_n >= 2 && _el_avg > 0.0) {
+                  LiquidityPool _lp;
+                  _lp.time = _ict_cur_bar; _lp.level = _el_avg; _lp.buy_side = false;
+                  _lp.swept = false; _lp.swept_time = 0; _lp.cluster_size = _el_n;
+                  Forge_PushLiquidityPool(_lp);
+               }
+               // Sweep detection — does the current bar wick beyond + close back?
+               double _sweep_level   = 0.0;
+               int    _sweep_cluster = 0;
+               bool _buy_swept  = DetectBuySideLiquiditySweep(_m5_h0, _m5_l0, _m5_c0,
+                                                              g_swing_highs, g_swing_high_count,
+                                                              m5_atr,
+                                                              g_sc.ict_liquidity_equal_tolerance_atr_mult,
+                                                              g_sc.ict_liquidity_rejection_min_wick_atr_mult,
+                                                              _sweep_level, _sweep_cluster);
+               bool _sell_swept = false;
+               if(!_buy_swept) {
+                  _sell_swept = DetectSellSideLiquiditySweep(_m5_h0, _m5_l0, _m5_c0,
+                                                              g_swing_lows, g_swing_low_count,
+                                                              m5_atr,
+                                                              g_sc.ict_liquidity_equal_tolerance_atr_mult,
+                                                              g_sc.ict_liquidity_rejection_min_wick_atr_mult,
+                                                              _sweep_level, _sweep_cluster);
+               }
+               if(_buy_swept || _sell_swept) {
+                  // Mark the matching pool as swept (newest matching side).
+                  for(int _pi = g_liquidity_pool_count - 1; _pi >= 0; _pi--) {
+                     if(g_liquidity_pools[_pi].buy_side == _buy_swept
+                        && !g_liquidity_pools[_pi].swept) {
+                        g_liquidity_pools[_pi].swept       = true;
+                        g_liquidity_pools[_pi].swept_time  = _ict_cur_bar;
+                        break;
+                     }
+                  }
+                  g_ict_last_liquidity_sweep_recent = 1;
+                  g_ict_last_sweep_level            = _sweep_level;
+                  // Rejection score = wick magnitude relative to ATR
+                  double _wick = _buy_swept ? (_m5_h0 - _m5_c0) : (_m5_c0 - _m5_l0);
+                  g_ict_last_sweep_rejection_score = ScoreLiquiditySweep(
+                     _sweep_cluster, _wick / MathMax(m5_atr, 1e-9),
+                     GetSessionContext(TimeCurrent()));
+               }
+               // Cluster sizes for the SIGNALS row (kept fresh each close).
+               g_ict_last_equal_highs_count = _eh_n;
+               g_ict_last_equal_lows_count  = _el_n;
+            }
+            // ChoCH event tracking — both directions evaluated each close.
+            if(g_sc.ict_choch_enabled && m5_atr > 0.0) {
+               int _minor = MathMin(MathMax(2, g_sc.ict_choch_lookback_bars / 2), 4);
+               double _choch_level = 0.0;
+               if(DetectBullishChOCh(_m5_c0, iOpen(_Symbol, PERIOD_M5, 0), m5_atr,
+                                     g_swing_highs, g_swing_high_count,
+                                     g_swing_lows,  g_swing_low_count,
+                                     _minor, g_sc.ict_mss_displacement_atr_mult,
+                                     _choch_level)) {
+                  _PushChoChEvent(true, _ict_cur_bar, _choch_level);
+                  g_ict_last_choch_level = _choch_level;
+               } else if(DetectBearishChOCh(_m5_c0, iOpen(_Symbol, PERIOD_M5, 0), m5_atr,
+                                            g_swing_highs, g_swing_high_count,
+                                            g_swing_lows,  g_swing_low_count,
+                                            _minor, g_sc.ict_mss_displacement_atr_mult,
+                                            _choch_level)) {
+                  _PushChoChEvent(false, _ict_cur_bar, _choch_level);
+                  g_ict_last_choch_level = _choch_level;
+               }
+            }
+         }
       }
    }
 
@@ -13719,9 +13880,78 @@ void CheckNativeScalperSetups() {
             _fvg_match.sourceBar = 0; _fvg_match.displacementScore = 0.0; _fvg_match.expiry = 0;
             g_iss_fvg = 0;
          }
-         // ChoCH atoms stay 0 in v2.7.119 — deferred to Phase 2 IctLiquidity module.
-         g_iss_choch_support = 0;
-         g_iss_choch_against = 0;
+         // v2.7.120 — wire ChoCH atoms to real ICT detection (Phase 2 module).
+         //   Counters are populated at the M5-close batch and read here.
+         //   - choch_support: a ChoCH in OUR direction = supportive reversal turn
+         //   - choch_against: a ChoCH in the OPPOSITE direction = warning sign
+         //   When ict_choch_enabled=0, both stay 0 (byte-identical to v2.7.119).
+         //   Module: ea/include/Forge/IctLiquidity.mqh.
+         if(g_sc.ict_choch_enabled) {
+            // Refresh stale-event counters within the configured lookback window.
+            //   Counts only events whose `time` is within the last lookback_bars × 300s.
+            datetime _now = TimeCurrent();
+            long _win_sec = (long)g_sc.ict_choch_lookback_bars * 300L;
+            int _buy_in_win  = 0;
+            for(int _i = 0; _i < g_choch_buy_count; _i++) {
+               if(_now - g_choch_buy_events[_i].time <= _win_sec) _buy_in_win++;
+            }
+            int _sell_in_win = 0;
+            for(int _i = 0; _i < g_choch_sell_count; _i++) {
+               if(_now - g_choch_sell_events[_i].time <= _win_sec) _sell_in_win++;
+            }
+            g_ict_last_choch_buy_count  = _buy_in_win;
+            g_ict_last_choch_sell_count = _sell_in_win;
+            if(direction == "BUY") {
+               g_iss_choch_support = (_buy_in_win  > 0) ? 1 : 0;
+               g_iss_choch_against = (_sell_in_win > 0) ? 1 : 0;
+            } else if(direction == "SELL") {
+               g_iss_choch_support = (_sell_in_win > 0) ? 1 : 0;
+               g_iss_choch_against = (_buy_in_win  > 0) ? 1 : 0;
+            } else {
+               g_iss_choch_support = 0;
+               g_iss_choch_against = 0;
+            }
+         } else {
+            g_iss_choch_support = 0;
+            g_iss_choch_against = 0;
+            g_ict_last_choch_buy_count  = 0;
+            g_ict_last_choch_sell_count = 0;
+         }
+         // v2.7.120 — kill-zone enum + Phase 2 context refresh (per-row snapshot).
+         g_ict_last_killzone_active      = GetSessionContext(TimeCurrent());
+         g_ict_last_silver_bullet_active = IsInSilverBulletWindow(TimeCurrent()) ? 1 : 0;
+         // v2.7.120 — recency check for the liquidity-sweep flag. The M5-close
+         //   batch sets g_ict_last_liquidity_sweep_recent=1 when a sweep fires;
+         //   here we age it out if no swept pool exists within the configured
+         //   window (default 3 M5 bars = 900s). Keeps SIGNALS rows accurate.
+         if(g_sc.ict_liquidity_sweep_enabled) {
+            datetime _now2 = TimeCurrent();
+            long _sweep_win = (long)g_sc.ict_liquidity_sweep_window_bars * 300L;
+            bool _has_recent = false;
+            for(int _pi = g_liquidity_pool_count - 1; _pi >= 0; _pi--) {
+               if(g_liquidity_pools[_pi].swept
+                  && g_liquidity_pools[_pi].swept_time > 0
+                  && (_now2 - g_liquidity_pools[_pi].swept_time) <= _sweep_win) {
+                  _has_recent = true;
+                  if(g_ict_last_sweep_level <= 0.0)
+                     g_ict_last_sweep_level = g_liquidity_pools[_pi].level;
+                  break;
+               }
+            }
+            g_ict_last_liquidity_sweep_recent = _has_recent ? 1 : 0;
+            if(!_has_recent) {
+               g_ict_last_sweep_level           = 0.0;
+               g_ict_last_sweep_rejection_score = 0.0;
+            }
+         } else {
+            g_ict_last_liquidity_sweep_recent = 0;
+            g_ict_last_sweep_level            = 0.0;
+            g_ict_last_equal_highs_count      = 0;
+            g_ict_last_equal_lows_count       = 0;
+            g_ict_last_sweep_rejection_score  = 0.0;
+         }
+         // v2.7.120 — recompute iss_score with real ChoCH_support contribution.
+         //   Score ceiling now 10 (= 5+3+2) when all three atoms fire.
          g_iss_score = g_iss_mss * g_sc.iss_weight_mss
                      + g_iss_fvg * g_sc.iss_weight_fvg
                      + g_iss_choch_support * g_sc.iss_weight_choch_support;
@@ -13781,6 +14011,18 @@ void CheckNativeScalperSetups() {
          g_ict_last_fvg_age_bars          = 0;
          g_ict_last_recent_swing_high     = 0.0;
          g_ict_last_recent_swing_low      = 0.0;
+         // v2.7.120 — also zero Phase-2 atom-context globals so SIGNALS rows log 0
+         //   when iss_enabled=0. Schema-parity byte-stable.
+         g_ict_last_choch_buy_count        = 0;
+         g_ict_last_choch_sell_count       = 0;
+         g_ict_last_choch_level            = 0.0;
+         g_ict_last_liquidity_sweep_recent = 0;
+         g_ict_last_sweep_level            = 0.0;
+         g_ict_last_equal_highs_count      = 0;
+         g_ict_last_equal_lows_count       = 0;
+         g_ict_last_sweep_rejection_score  = 0.0;
+         g_ict_last_killzone_active        = 0;
+         g_ict_last_silver_bullet_active   = 0;
       }
       if(umcg_blocked || cvcsm_blocked || dirlock_blocked || dtc_day_bias_blocked || iss_blocked) {
          double _gate_mid_px = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;

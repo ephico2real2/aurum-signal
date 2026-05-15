@@ -240,7 +240,16 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     ict_fvg_midpoint_dist_atr REAL    DEFAULT 0,
     ict_fvg_age_bars          INTEGER DEFAULT 0,
     ict_recent_swing_high     REAL    DEFAULT 0,
-    ict_recent_swing_low      REAL    DEFAULT 0
+    ict_recent_swing_low      REAL    DEFAULT 0,
+    -- v2.7.120 ICT Phase-2 atom context (8 cols; LOG-ONLY — ChoCH + liquidity sweep + killzone)
+    ict_choch_buy_count        INTEGER DEFAULT 0,
+    ict_choch_sell_count       INTEGER DEFAULT 0,
+    ict_choch_level            REAL    DEFAULT 0,
+    ict_liquidity_sweep_recent INTEGER DEFAULT 0,
+    ict_sweep_level            REAL    DEFAULT 0,
+    ict_equal_highs_count      INTEGER DEFAULT 0,
+    ict_equal_lows_count       INTEGER DEFAULT 0,
+    ict_killzone_active        INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forge_journal_trades (
@@ -683,7 +692,16 @@ class Scribe:
                     ict_fvg_midpoint_dist_atr REAL DEFAULT 0,
                     ict_fvg_age_bars INTEGER DEFAULT 0,
                     ict_recent_swing_high REAL DEFAULT 0,
-                    ict_recent_swing_low REAL DEFAULT 0
+                    ict_recent_swing_low REAL DEFAULT 0,
+                    -- v2.7.120 ICT Phase-2 atom context (8 cols; LOG-ONLY — ChoCH + sweep + killzone)
+                    ict_choch_buy_count INTEGER DEFAULT 0,
+                    ict_choch_sell_count INTEGER DEFAULT 0,
+                    ict_choch_level REAL DEFAULT 0,
+                    ict_liquidity_sweep_recent INTEGER DEFAULT 0,
+                    ict_sweep_level REAL DEFAULT 0,
+                    ict_equal_highs_count INTEGER DEFAULT 0,
+                    ict_equal_lows_count INTEGER DEFAULT 0,
+                    ict_killzone_active INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -863,6 +881,29 @@ class Scribe:
             ("ict_recent_swing_low",      "REAL DEFAULT 0"),
         ]
         for _col, _decl in _v119_ict_ctx_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    if "duplicate column" not in str(_e).lower():
+                        raise
+        # v2.7.120 — ICT Phase-2 atom context (8 cols; LOG-ONLY).
+        #   ChoCH event counters, liquidity-sweep state, equal-H/L cluster sizes,
+        #   killzone enum. Captured by FORGE.mq5 chokepoint via g_ict_last_*
+        #   globals from Forge\IctLiquidity.mqh. With both Phase-2 master flags=0
+        #   defaults all values are 0 (schema-parity byte-stable vs v2.7.119).
+        _v120_ict_p2_cols = [
+            ("ict_choch_buy_count",        "INTEGER DEFAULT 0"),
+            ("ict_choch_sell_count",       "INTEGER DEFAULT 0"),
+            ("ict_choch_level",            "REAL DEFAULT 0"),
+            ("ict_liquidity_sweep_recent", "INTEGER DEFAULT 0"),
+            ("ict_sweep_level",            "REAL DEFAULT 0"),
+            ("ict_equal_highs_count",      "INTEGER DEFAULT 0"),
+            ("ict_equal_lows_count",       "INTEGER DEFAULT 0"),
+            ("ict_killzone_active",        "INTEGER DEFAULT 0"),
+        ]
+        for _col, _decl in _v120_ict_p2_cols:
             if _col not in fs_cols:
                 try:
                     conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
@@ -1227,6 +1268,14 @@ class Scribe:
                 "ict_recent_swing_low",
             ]
             has_v119_ict_ctx = all(c in src_cols for c in v119_ict_ctx_cols)
+            # 2.7.120 — ICT Phase-2 atom context (8 cols; LOG-ONLY)
+            v120_ict_p2_cols = [
+                "ict_choch_buy_count", "ict_choch_sell_count",
+                "ict_choch_level", "ict_liquidity_sweep_recent",
+                "ict_sweep_level", "ict_equal_highs_count",
+                "ict_equal_lows_count", "ict_killzone_active",
+            ]
+            has_v120_ict_p2 = all(c in src_cols for c in v120_ict_p2_cols)
 
             # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
@@ -1404,6 +1453,8 @@ class Scribe:
                 + (", " + ", ".join(v112_iss_cols) if has_v112_iss else ", " + ", ".join(["0"] * len(v112_iss_cols)))
                 # 2.7.119 — ICT Phase-1 atom context — 9 cols (REAL/INTEGER mixed), all-or-nothing
                 + (", " + ", ".join(v119_ict_ctx_cols) if has_v119_ict_ctx else ", " + ", ".join(["0"] * len(v119_ict_ctx_cols)))
+                # 2.7.120 — ICT Phase-2 atom context — 8 cols (REAL/INTEGER mixed), all-or-nothing
+                + (", " + ", ".join(v120_ict_p2_cols) if has_v120_ict_p2 else ", " + ", ".join(["0"] * len(v120_ict_p2_cols)))
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1457,12 +1508,16 @@ class Scribe:
                 #   (default 0). The remaining 7 cols are REALs (default 0.0). sqlite3 handles
                 #   both via the same param binding — just preserve the source row value.
                 v119_ict_ctx_vals = tuple(r[118 + i] if len(r) > 118 + i else 0 for i in range(9))
+                # 2.7.120 — ICT Phase-2 atom context — 8 cols at positions r[127]..r[134].
+                #   Mix of INTEGERs (counts, killzone enum, sweep-recent flag) and REALs
+                #   (level prices). sqlite3 handles both via the same param binding.
+                v120_ict_p2_vals = tuple(r[127 + i] if len(r) > 127 + i else 0 for i in range(8))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
                     htf_h1_strong_val, intraday_label_val, intraday_counter_htf_v,
                     *v37_vals, *v37g3_vals, *v110_ces_vals,
-                    *v112_iss_vals, *v119_ict_ctx_vals,
+                    *v112_iss_vals, *v119_ict_ctx_vals, *v120_ict_p2_vals,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1514,16 +1569,25 @@ class Scribe:
                         # JournalRecordSignal alongside the iss_* atoms.
                         "ict_mss_swing_price, ict_mss_displacement_atr, ict_fvg_count_active, "
                         "ict_fvg_active_upper, ict_fvg_active_lower, ict_fvg_midpoint_dist_atr, "
-                        "ict_fvg_age_bars, ict_recent_swing_high, ict_recent_swing_low"
+                        "ict_fvg_age_bars, ict_recent_swing_high, ict_recent_swing_low, "
+                        # 2.7.120 — ICT Phase-2 atom context — 8 cols (LOG-ONLY)
+                        # ChoCH event counters + liquidity-sweep state + equal-H/L cluster
+                        # sizes + killzone enum. Captured at chokepoint via g_ict_last_*
+                        # globals from Forge\IctLiquidity.mqh.
+                        "ict_choch_buy_count, ict_choch_sell_count, ict_choch_level, "
+                        "ict_liquidity_sweep_recent, ict_sweep_level, "
+                        "ict_equal_highs_count, ict_equal_lows_count, ict_killzone_active"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
                         # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → 117.
                         # v2.7.119 adds 5 ISS (retroactive) + 9 ICT context cols → total now
-                        # 41 + 24 + 45 + 7 + 5 + 9 = 131. If you add/remove a column in the
-                        # col list ABOVE, bump both the count below AND the matching
-                        # *_vals tuple build above. (See forge-monitor SKILL.md Check C —
-                        # v2.7.45/47 historical incident where this drifted silently.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9)) + ")",
+                        # 41 + 24 + 45 + 7 + 5 + 9 = 131.
+                        # v2.7.120 adds 8 ICT Phase-2 context cols → 41 + 24 + 45 + 7 + 5 + 9 + 8 = 139.
+                        # If you add/remove a column in the col list ABOVE, bump both the
+                        # count below AND the matching *_vals tuple build above. (See
+                        # forge-monitor SKILL.md Check C — v2.7.45/47 historical incident
+                        # where this drifted silently.)
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)
