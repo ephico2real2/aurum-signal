@@ -971,6 +971,65 @@ Every new setup type MUST follow the 8-step pattern in §10 (inventory check →
 Atlas §5/§6/§10 and playbook §12 are append-only (historical). Atlas §1/§3 and playbook §1
 are live-updated (current state).
 
+### MANDATORY: Score-first entry gating (foundational simplification)
+
+**Operator mandate (2026-05-16)**: *"We just have to make sure our score was higher before taking that trade."*
+
+**The rule**: Every entry must clear a minimum composite score (ISS or category-specific) BEFORE firing. The score IS the gate. Everything else — cooldown-flip routines, bilateral arming, geometry profiles, setup-specific atom logic — is REFINEMENT layered on top of this foundational check.
+
+**Why this rule is foundational**: it collapses the complexity. Without it, every setup has its own gate stack (28+ setups × 4-7 gates each = ~150 gate codes). With it, ALL setups share ONE primary gate: `score ≥ threshold OR skip`. Setup-specific logic still exists but is SECONDARY to the score check.
+
+#### §A — The two scoring layers (per `FORGE_SETUP_ICT_MAP.md §B.8.1`)
+
+| Layer | Composite | What it answers | Threshold |
+|---|---|---|---|
+| **General structure** | `iss_score` (0-10, direction-agnostic) | "Is ICT structure present right now?" | ≥ 5 standard, ≥ 8 high-conviction |
+| **Category-specific** | `mss_cont_score_<DIR>`, `ote_retrace_score_<DIR>`, `liq_sweep_rev_score_<DIR>`, `breaker_retest_score_<DIR>` | "Should THIS category fire in THIS direction here?" | ≥ 7 hard gate, < 5 warning |
+
+Plus: `iss_choch_against` is a **HARD GATE** (not summed into score) — fires when bearish/bullish ChoCH opposes the trade direction. Blocks entry regardless of score.
+
+#### §B — When monitoring a loss or proposing a new setup
+
+Always answer: **what was the score at entry, and did it clear the threshold?**
+
+- If score was below threshold → that trade should never have fired. The fix is enabling the score gate (Mode B/C), not designing a new atom.
+- If score was above threshold → the score gate would have allowed the trade. The discriminator is elsewhere (geometry, post-entry price action, etc.)
+- If HARD GATE (ChoCH-against) fires → that trade is structurally invalid; no Mode B/C needed, just turn the gate on
+
+#### §C — The G5001/G5003 canonical example
+
+| Trade | Direction | ISS at entry | HARD GATE | Threshold (≥ 5) | Action |
+|---|---|---|---|---|---|
+| G5001 | BUY | 2/10 (V-flush lag) | 0 | ❌ | **SKIP** per pure ISS gate (operator may want a relaxed variant for first-leg flush — see §D) |
+| G5003 | BUY | n/a | **1** | n/a | **SKIP** (HARD GATE) — saves −$3,655 |
+| G5003 | SELL (counterfactual) | **10/10** | 0 | ✅ high-conviction | **TAKE** — score-validated, captures $5,386 |
+
+#### §D — First-leg V-flush variant (operator decision)
+
+The score-first rule creates a known ICT-canon tradeoff: V-flush entries (sweep + wick rejection on the same bar) have ISS ≈ 2/10 AT THE ENTRY TICK because MSS + FVG confirm 1-2 bars later. Two valid approaches:
+
+| Variant | Entry tick condition | Score check | Tradeoff |
+|---|---|---|---|
+| **Strict score-first** | Wait for retrace into FVG after MSS confirms | Score ≥ 5 at entry | Misses first 5-7 pts; full structural validation |
+| **Relaxed with timeout** | Enter on wick + sweep atoms; SCORE CONFIRMATION TIMEOUT — close at BE/min-TP if score < 5 within N bars | Score must reach ≥ 5 within N bars or auto-exit | Catches the first leg; auto-cuts if confirmation doesn't arrive |
+
+Which variant FORGE ships is a v2.7.116 calibration call. Both are valid. Document the choice in `feedback_score_first_variant.md` when decided.
+
+#### §E — Implementation roadmap (when atoms wire)
+
+- **v2.7.112 (today)**: ISS atoms stub at 0; `FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD=0` (default OFF, Mode A log only)
+- **v2.7.115+**: Real ISS atom detection ships; `iss_score` becomes meaningful
+- **v2.7.116**: Flip `FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD=1` (Mode C — score-first hard gate at `iss_min_threshold=5`). Validate with backtest replay.
+- **v2.7.117+**: Tighten threshold based on calibration evidence per `feedback_supermajority_composite_threshold`. Possibly per-setup overrides.
+
+#### §F — Anti-patterns
+
+- ❌ **Designing a new atom to "fix" a loss when the score gate would have blocked it** — turn the score gate on first, see if the loss survives
+- ❌ **Reporting "score 7/10 missed by 2 points"** without flagging that as a near-miss for threshold tuning — every near-miss is data
+- ❌ **Treating ISS as redundant with category composites** — they answer different questions (general structure vs targeted category). Both are gates. See `FORGE_SETUP_ICT_MAP.md §B.8.1`.
+
+---
+
 ### MANDATORY: Counterfactual upside analysis on every loss (the "real money" rule)
 
 **Operator mandate (2026-05-16)**: *"This is real money. Imagine if we can sell 10 lot one day."*

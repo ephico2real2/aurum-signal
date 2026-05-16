@@ -370,6 +370,38 @@ ICT canon validates BOTH the bounce-reversal pattern (G5001) AND the sweep-conti
 
 ---
 
+## §5.5 The score-first rule (foundational)
+
+**Operator mandate (2026-05-16)**: *"We just have to make sure our score was higher before taking that trade."*
+
+Every entry must clear a minimum ISS / category-composite score threshold BEFORE firing. The score IS the gate. All other mechanisms (cooldown-flip, bilateral arming, geometry profiles) are refinements LAYERED on top of the score-first rule.
+
+### §5.5.1 Applied to G5001 + G5003
+
+| Trade | Direction | ISS score at entry | ChoCH-against gate | Threshold check (≥ 5) | Verdict |
+|---|---|---|---|---|---|
+| G5001 | BUY | 2/10 (lags by 1-2 bars on V-flush) | 0 | ❌ below threshold | **SKIP per pure ISS gate** |
+| G5001 (5 min post-entry) | BUY | 9-10/10 | 0 | ✅ clears | TAKE on retrace into FVG (canonical OTE-style entry) |
+| G5003 | BUY | n/a (HARD GATE fires) | **1** | n/a — HARD GATE | **SKIP** (saves −$3,655 instantly) |
+| G5003 | SELL | **10/10** | 0 | ✅ high-conviction | **TAKE — score-validated** |
+
+### §5.5.2 The ICT-canon tradeoff that score-first reveals
+
+G5001 is the **first-leg V-flush** case — entry-tick ISS is 2/10 because MSS + FVG confirm 1-2 bars AFTER the wick. The operator faces a choice:
+
+| Approach | Entry tick | Score at entry | Misses | Captures |
+|---|---|---|---|---|
+| **Score-first strict (canonical ICT)** | Wait for retrace into FVG after MSS confirms | 8-10/10 | first +5-7 pts of the move | the rest, with full structural validation |
+| **Score-first relaxed (pre-MSS, with confirmation timeout)** | Enter on wick + immediate sweep atoms; hold IF score ≥ 5 within N bars else exit | 2/10 at entry → must reach 5+ in 2 bars | nothing if pattern continues | full move + first 5-7 pts |
+
+The relaxed variant requires a **"score confirmation timeout"** atom: if `iss_score < 5` within N bars post-entry, close at BE or smallest TP. This is a Mode B/C calibration question, not a Mode A decision.
+
+### §5.5.3 The simplification
+
+Without the score-first rule, FORGE has 28+ setups each with their own gate logic. With it, ALL setups collapse to: "fire only when category score ≥ threshold AND no hard-gate fires." Setup-specific logic (atoms, geometry) lives below this universal gate.
+
+This is the v2.7.116+ design target — flip `FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD=1` once v2.7.115 ships real atoms, with `iss_min_threshold=5` as default.
+
 ## §6 Mode A → B → C ship sequence (corrected)
 
 ### Mode A — enable composite logging + cooldown-analysis logging (next ship, no entry logic change)
