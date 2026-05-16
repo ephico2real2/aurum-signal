@@ -971,6 +971,35 @@ Every new setup type MUST follow the 8-step pattern in §10 (inventory check →
 Atlas §5/§6/§10 and playbook §12 are append-only (historical). Atlas §1/§3 and playbook §1
 are live-updated (current state).
 
+### MANDATORY: empirical-data-only rule (technical banter is allowed; speculation is NOT)
+
+**Operator mandate (2026-05-16)**: *"You are allowed to banter with me technically — but only with empirical data and logic that conforms to the actual trades. So you must come prepared."*
+
+Every numerical claim in trading analysis must be backed by a query against the source DB (SIGNALS / TRADES / TESTER_RUNS / forge_signals / forge_journal_trades / market_data.json) at the actual timestamps in question. No hypothetical math. No "let's say…". No round numbers without verification.
+
+**Concrete protocol** (run BEFORE proposing any P&L estimate or "would have happened" claim):
+
+1. **Pull the price window** — `SELECT MIN(price), MAX(price) FROM SIGNALS WHERE run_id=N AND time BETWEEN …` for the relevant window. Get the actual high + low.
+2. **Pull the execution prices** — `SELECT price, profit, comment FROM TRADES WHERE magic=M ORDER BY time` for the trade in question. Execution prices live in TRADES, not SIGNALS.
+3. **Verify TP/SL trigger feasibility** — if proposing "TP at X.XX would have hit", confirm `SELECT MAX(price)` ≥ X.XX for BUY or `SELECT MIN(price)` ≤ X.XX for SELL within the holding window.
+4. **Pull the gate context** — when a trade was skipped or filtered, query the actual `gate_reason` + the indicator values at the SKIP time. Don't speculate why something was blocked.
+5. **Compute P&L from real lot sizing** — `SELECT volume FROM TRADES WHERE magic=M` for actual per-deal volume, not assumed 0.2/1.0 lots. Then `volume × pts × $1/pt` (XAUUSD) for realistic capture math.
+6. **Cite the row** — every claim references the SIGNALS.id or TRADES.deal_ticket that backs it. "Per `TRADES.deal_ticket=14 at 01:59:09, price=4483.37`" — not "around 4483".
+
+**Anti-patterns this rule rejects** (canonical examples from operator-flagged errors):
+
+- ❌ **Using execution price as market peak.** TRADES.price for a wave-amp fill (e.g. 4490.33) is the price the order EXECUTED at — the market may have touched it briefly. The actual market peak in the window comes from `MAX(SIGNALS.price)` over the holding window, which may be different (and is what the operator's mental model of "max upside" tracks).
+- ❌ **"Rough swing estimate"** without pulling the actual MIN/MAX. The operator's actual edge is measured against actual extremes, not estimates.
+- ❌ **"TP would have hit"** without confirming the price actually crossed the TP level. The 02:00 → 02:05 G5003 window peaked at 4488.35 = +4.96 pts — claiming TP1=+10pts would have hit is empirically false.
+- ❌ **Proposing bilateral arming / chop-scalp / any strategy** without first computing what the actual price range was. The 2026-03-30 G5001/G5003 window was 4451.66 → 4510.74 = 59 pts of capturable move. Without pulling that range, every strategy proposal is detached from the actual edge.
+- ❌ **Round-numbering P&L** ($3k, $1.2k) when actuals are $3,655.40 / $1,212.60. Use the precise number when it's available.
+
+**When data isn't available**: say so explicitly. "I don't have tick-level data between 02:05 and 02:30 in SIGNALS — the gap there means I can't tell what the intermediate peaks were" is the right answer, NOT filling with estimation.
+
+**Why this rule exists** (operator origin, 2026-05-16): I (Claude) proposed a "G5003 chop-scalp would have been a small $68 win" framing without first pulling the actual price extremes in the window. The operator corrected: the window had a 59-pt range with a 31-pt move BELOW G5003's entry — the real capture was on the SELL side, not the BUY side. Speculative math obscured the actual edge by ~10× ($68 imagined vs $5,000+ real). The rule prevents this class of error: **measure first, propose after**.
+
+---
+
 ### MANDATORY: log every verification command to atlas §13 (append-only)
 
 Every time you run a shell/SQL command to verify a fact that will be cited in the atlas,
