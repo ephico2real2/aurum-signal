@@ -140,6 +140,16 @@ input int     ScalperLiveWarmupM15Bars = 1;   // Live only: min M15 bar rollover
 input int     ScalperTesterWarmupM5Bars = 2;       // Strategy Tester: M5 bar rollovers after init (each ~5 min simulated time); 0=off.
 input int     ScalperTesterWarmupSimCapMinutes = 0; // Strategy Tester: after this many *simulated* minutes, waive M5 rollover wait (0=off). Only if ScalperTesterWarmupM5Bars>0.
 
+// ── S4: ExecuteOpenGroup defense-in-depth sanity checks ──────────
+// Refuse pathological commands from BRIDGE / AURUM / channel signals even
+// when upstream (Aegis) approves. Each threshold rejects the WHOLE group
+// (no partial leg-open). Set any threshold to 0 to disable that specific
+// check. Defaults are XAUUSD-tuned (price units = USD); other symbols
+// may need different absolute thresholds via .set files.
+input double  ExecOpenGroup_MaxLotPerLeg          = 2.0;   // Reject if any leg requests > N lots (operator manual SELL 0.5 = pass; 5× ladder = reject). 0 = disabled.
+input double  ExecOpenGroup_MaxEntryDeviationAbs  = 50.0;  // Reject if entry farther than N price units from current bid/ask (XAUUSD: $50 = far off-market). 0 = disabled.
+input double  ExecOpenGroup_MaxSlDistanceAbs      = 100.0; // Reject if |SL - entry| > N price units (XAUUSD: $100 cap, typical scalp SL is $3–$15). 0 = disabled.
+
 // ── GLOBALS ───────────────────────────────────────────────────────
 // CTrade: MQL5 trade execution helper (buy, sell, modify, close)
 // CPositionInfo: MQL5 position info reader (ticket, price, profit)
@@ -2578,6 +2588,125 @@ void ReadAndExecuteCommand() {
 }
 
 //+------------------------------------------------------------------+
+//| S4: ExecuteOpenGroup defense-in-depth sanity checks                |
+//| Returns true if every threshold passes (or is disabled by 0).      |
+//| Reasons are logged at WARN-level by the caller on rejection.       |
+//+------------------------------------------------------------------+
+bool ValidateOpenGroupSanity(
+   const string &direction,
+   const double lot_per_trade,
+   const EntryLeg &legs[],
+   const double sl,
+   const double tp1,
+   const double tp2,
+   string &reject_reason
+) {
+   reject_reason = "";
+   int n = ArraySize(legs);
+   if(n == 0) {
+      reject_reason = "no_entry_legs";
+      return false;
+   }
+
+   // 1. Lot per leg — reject pathological size requests
+   if(ExecOpenGroup_MaxLotPerLeg > 0 && lot_per_trade > ExecOpenGroup_MaxLotPerLeg) {
+      reject_reason = StringFormat(
+         "lot_too_large lot=%.2f cap=%.2f",
+         lot_per_trade, ExecOpenGroup_MaxLotPerLeg
+      );
+      return false;
+   }
+
+   // 2. Direction-aware SL/TP wrong-side checks (defense — Aegis enforces
+   //    these too, but the EA must not trust upstream blindly).
+   double entry_ref = legs[0].entry_price;  // representative entry
+   if(direction == "BUY") {
+      if(sl > 0 && sl >= entry_ref) {
+         reject_reason = StringFormat(
+            "buy_sl_above_entry sl=%.2f entry=%.2f",
+            sl, entry_ref
+         );
+         return false;
+      }
+      if(tp1 > 0 && tp1 <= entry_ref) {
+         reject_reason = StringFormat(
+            "buy_tp1_below_entry tp1=%.2f entry=%.2f",
+            tp1, entry_ref
+         );
+         return false;
+      }
+      if(tp2 > 0 && tp2 <= entry_ref) {
+         reject_reason = StringFormat(
+            "buy_tp2_below_entry tp2=%.2f entry=%.2f",
+            tp2, entry_ref
+         );
+         return false;
+      }
+   } else if(direction == "SELL") {
+      if(sl > 0 && sl <= entry_ref) {
+         reject_reason = StringFormat(
+            "sell_sl_below_entry sl=%.2f entry=%.2f",
+            sl, entry_ref
+         );
+         return false;
+      }
+      if(tp1 > 0 && tp1 >= entry_ref) {
+         reject_reason = StringFormat(
+            "sell_tp1_above_entry tp1=%.2f entry=%.2f",
+            tp1, entry_ref
+         );
+         return false;
+      }
+      if(tp2 > 0 && tp2 >= entry_ref) {
+         reject_reason = StringFormat(
+            "sell_tp2_above_entry tp2=%.2f entry=%.2f",
+            tp2, entry_ref
+         );
+         return false;
+      }
+   }
+
+   // 3. SL distance from entry — reject extreme stops
+   if(ExecOpenGroup_MaxSlDistanceAbs > 0 && sl > 0) {
+      double sl_dist = MathAbs(entry_ref - sl);
+      if(sl_dist > ExecOpenGroup_MaxSlDistanceAbs) {
+         reject_reason = StringFormat(
+            "sl_too_far dist=%.2f cap=%.2f entry=%.2f sl=%.2f",
+            sl_dist, ExecOpenGroup_MaxSlDistanceAbs, entry_ref, sl
+         );
+         return false;
+      }
+   }
+
+   // 4. Entry deviation from current market — reject far-off entries.
+   //    Uses BID for SELL reference (where market is) and ASK for BUY.
+   //    Pending orders (LIMIT/STOP) at intentionally-offset prices are
+   //    allowed up to MaxEntryDeviationAbs from market; beyond that
+   //    they're more likely a pathological/stale command than intent.
+   if(ExecOpenGroup_MaxEntryDeviationAbs > 0) {
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double mkt = (direction == "BUY") ? ask : bid;
+      if(mkt > 0) {
+         for(int i = 0; i < n; i++) {
+            double e = legs[i].entry_price;
+            if(e <= 0) continue;
+            double dev = MathAbs(e - mkt);
+            if(dev > ExecOpenGroup_MaxEntryDeviationAbs) {
+               reject_reason = StringFormat(
+                  "entry_off_market leg=%d entry=%.2f mkt=%.2f dev=%.2f cap=%.2f",
+                  i + 1, e, mkt, dev, ExecOpenGroup_MaxEntryDeviationAbs
+               );
+               return false;
+            }
+         }
+      }
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| Open N trades as a group across entry ladder                       |
 //+------------------------------------------------------------------+
 void ExecuteOpenGroup(const string &json) {
@@ -2623,6 +2752,21 @@ void ExecuteOpenGroup(const string &json) {
    if(direction != "BUY" && direction != "SELL") {
       Print("FORGE: OPEN_GROUP aborted — bad direction '", direction, "'");
       return;
+   }
+
+   // S4: defense-in-depth sanity checks (refuse pathological commands even
+   // when upstream Aegis approves). Runs BEFORE NormalizeLot so the lot
+   // value reflects what BRIDGE actually requested, not a snapped-down
+   // broker-min surrogate.
+   {
+      string sanity_reason = "";
+      if(!ValidateOpenGroupSanity(direction, lot_per_trade, legs, sl, tp1, tp2, sanity_reason)) {
+         Print(
+            "FORGE: OPEN_GROUP REFUSED G", group_id, " ", direction,
+            " — S4 sanity: ", sanity_reason
+         );
+         return;
+      }
    }
 
    lot_per_trade = NormalizeLot(lot_per_trade);
