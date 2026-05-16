@@ -193,8 +193,20 @@ BRIDGE_SYNC_TESTER_JOURNAL = os.environ.get("BRIDGE_SYNC_TESTER_JOURNAL", "0").s
     "1", "true", "yes", "on"
 )
 
-# Drawdown protection
-DD_EQUITY_CLOSE_ALL_PCT  = float(os.environ.get("DD_EQUITY_CLOSE_ALL_PCT",  "3.0"))
+# Drawdown protection — E3: graduated three-tier breaker.
+#
+# T1 (warn)         → Herald-only notice; no state change, new entries allowed.
+# T2 (close losers) → close positions with floating_pnl < 0; winners keep running;
+#                     new entries still allowed (operator can let winners trail).
+# T3 (close all)    → close everything + force WATCH (current single-threshold
+#                     behavior, kept as the final tier).
+#
+# Each tier fires once per session per peak; all three reset when equity prints
+# a new session high. Thresholds are independent and must be monotone increasing
+# (Bridge clamps them at startup if not). Set any tier to 0 to disable.
+DD_EQUITY_WARN_PCT        = float(os.environ.get("DD_EQUITY_WARN_PCT",        "1.5"))
+DD_EQUITY_CLOSE_LOSERS_PCT = float(os.environ.get("DD_EQUITY_CLOSE_LOSERS_PCT", "2.0"))
+DD_EQUITY_CLOSE_ALL_PCT   = float(os.environ.get("DD_EQUITY_CLOSE_ALL_PCT",   "3.0"))
 DD_FLOATING_BLOCK_PCT    = float(os.environ.get("DD_FLOATING_BLOCK_PCT",    "2.0"))   # block new groups if floating loss exceeds this % of balance
 DD_LOSS_COOLDOWN_SEC     = int(os.environ.get("DD_LOSS_COOLDOWN_SEC",       "300"))   # seconds to wait after a group closes at loss before AUTO_SCALPER resumes
 
@@ -1066,8 +1078,10 @@ class Bridge:
         self._last_sydney_open_alert_key = None
         self._sentinel_user_override = False   # user manually bypassed sentinel
         self._sentinel_override_until = 0      # auto-revert timestamp
-        # Drawdown protection state
+        # Drawdown protection state — E3 per-tier idempotence
         self._session_peak_equity  = 0.0
+        self._dd_warn_fired        = False
+        self._dd_close_losers_fired = False
         self._dd_close_all_fired   = False
         self._last_loss_close_ts   = 0
         # Position tracker
@@ -3999,54 +4013,175 @@ class Bridge:
         )
 
     # ── DRAWDOWN PROTECTION ─────────────────────────────────
+    def _close_losing_positions(self, mt5: dict) -> tuple[int, float]:
+        """E3 T2 helper: close only positions with floating_pnl < 0.
+
+        Returns (count_closed, total_loss_closed). Reads positions from
+        market_data.json (already enriched in the calling _tick); emits one
+        CLOSE_GROUP per losing group_magic so winners on other magics stay
+        untouched. Idempotent — re-running with no losing positions is a
+        no-op.
+        """
+        positions = mt5.get("open_positions") or []
+        if not positions:
+            return (0, 0.0)
+        # Group losing positions by magic so one CLOSE_GROUP covers a
+        # multi-leg loss without firing per-ticket commands.
+        losing_magics: dict[int, float] = {}
+        for p in positions:
+            try:
+                pnl = float(p.get("profit", 0) or 0)
+                magic = int(p.get("magic", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if pnl >= 0 or magic == 0:
+                continue
+            losing_magics[magic] = losing_magics.get(magic, 0.0) + pnl
+        if not losing_magics:
+            return (0, 0.0)
+        for magic, total_pnl in losing_magics.items():
+            _write_forge_command({
+                "action": "CLOSE_GROUP",
+                "magic": int(magic),
+                "timestamp": _now(),
+            })
+            gid = self._resolve_group_for_magic(int(magic))
+            if gid:
+                self.scribe.update_trade_group(
+                    int(gid), "CLOSED", close_reason="DD_BREAKER_CLOSE_LOSERS"
+                )
+            log.info(
+                "DD BREAKER T2: closing losing magic=%d total_loss=$%.2f",
+                magic, total_pnl,
+            )
+        total_loss = sum(losing_magics.values())
+        return (len(losing_magics), total_loss)
+
     def _check_drawdown(self, mt5: dict, now: float) -> None:
-        """Equity drawdown circuit breaker. Runs every tick when mt5 is fresh."""
+        """Equity drawdown circuit breaker — E3 graduated three-tier.
+
+        T1 warn          → DD_EQUITY_WARN_PCT          (Herald-only)
+        T2 close losers  → DD_EQUITY_CLOSE_LOSERS_PCT  (CLOSE_GROUP for each losing magic)
+        T3 close all     → DD_EQUITY_CLOSE_ALL_PCT     (CLOSE_ALL + WATCH)
+
+        All three tiers fire once per session per peak; flags reset when
+        equity prints a new high. Set any tier env var to 0 to disable
+        that tier independently. Tester mode bypasses the whole breaker.
+        """
         if mt5.get("strategy_tester"):
             return
         acc = mt5.get("account", {})
         equity = acc.get("equity", 0)
         balance = acc.get("balance", 0)
-        floating = acc.get("total_floating_pnl", 0)
 
         if equity <= 0 or balance <= 0:
             return
 
-        # Track session peak equity
+        # Track session peak equity; new high resets ALL three tier flags.
         if equity > self._session_peak_equity:
             self._session_peak_equity = equity
-            self._dd_close_all_fired = False  # reset if we make new high
+            self._dd_warn_fired = False
+            self._dd_close_losers_fired = False
+            self._dd_close_all_fired = False
 
-        # Equity DD check: if equity drops X% from peak, CLOSE ALL + WATCH
-        if self._session_peak_equity > 0 and not self._dd_close_all_fired:
-            dd_pct = (self._session_peak_equity - equity) / self._session_peak_equity * 100
-            if dd_pct >= DD_EQUITY_CLOSE_ALL_PCT:
-                log.error(
-                    "DD BREAKER: equity $%.2f dropped %.1f%% from peak $%.2f — CLOSE ALL + WATCH",
-                    equity, dd_pct, self._session_peak_equity,
-                )
-                self._dd_close_all_fired = True
-                # Close all positions
-                _write_forge_command({"action": "CLOSE_ALL", "timestamp": _now()})
-                for g in self.scribe.get_open_groups():
-                    gid = g.get("id")
-                    if gid is not None:
-                        self.scribe.update_trade_group(
-                            int(gid), "CLOSED_ALL", close_reason="DD_BREAKER"
-                        )
-                self._open_groups.clear()
-                # Force WATCH
-                self._change_mode("WATCH", "DD_BREAKER")
-                self.scribe.log_system_event(
-                    "DD_BREAKER_CLOSE_ALL",
-                    triggered_by="BRIDGE",
-                    reason=f"Equity DD {dd_pct:.1f}% (peak ${self._session_peak_equity:.2f} → ${equity:.2f})",
-                )
+        if self._session_peak_equity <= 0:
+            return
+
+        dd_pct = (self._session_peak_equity - equity) / self._session_peak_equity * 100
+        peak = self._session_peak_equity
+
+        # T3 — CLOSE ALL (highest priority; subsumes T1/T2 if it fires this tick)
+        if (DD_EQUITY_CLOSE_ALL_PCT > 0
+                and not self._dd_close_all_fired
+                and dd_pct >= DD_EQUITY_CLOSE_ALL_PCT):
+            log.error(
+                "DD BREAKER T3: equity $%.2f dropped %.1f%% from peak $%.2f — CLOSE ALL + WATCH",
+                equity, dd_pct, peak,
+            )
+            self._dd_close_all_fired = True
+            # T3 implies T2/T1 also "done" (nothing left to do at lower tiers
+            # until next peak); silence them so we don't spam Herald on the
+            # same drawdown event.
+            self._dd_close_losers_fired = True
+            self._dd_warn_fired = True
+            _write_forge_command({"action": "CLOSE_ALL", "timestamp": _now()})
+            for g in self.scribe.get_open_groups():
+                gid = g.get("id")
+                if gid is not None:
+                    self.scribe.update_trade_group(
+                        int(gid), "CLOSED_ALL", close_reason="DD_BREAKER"
+                    )
+            self._open_groups.clear()
+            self._change_mode("WATCH", "DD_BREAKER")
+            self.scribe.log_system_event(
+                "DD_BREAKER_CLOSE_ALL",
+                triggered_by="BRIDGE",
+                reason=f"Equity DD {dd_pct:.1f}% (peak ${peak:.2f} → ${equity:.2f})",
+            )
+            self.herald.send(
+                f"🚨 <b>DRAWDOWN BREAKER — T3 CLOSE ALL</b>\n"
+                f"Equity dropped {dd_pct:.1f}% from peak ${peak:,.2f}\n"
+                f"All positions CLOSED. Mode → WATCH.\n"
+                f"Current equity: ${equity:,.2f}"
+            )
+            return
+
+        # T2 — close losing positions only (keep winners trailing)
+        if (DD_EQUITY_CLOSE_LOSERS_PCT > 0
+                and not self._dd_close_losers_fired
+                and dd_pct >= DD_EQUITY_CLOSE_LOSERS_PCT):
+            log.warning(
+                "DD BREAKER T2: equity $%.2f at %.1f%% DD from peak $%.2f — closing losers only",
+                equity, dd_pct, peak,
+            )
+            self._dd_close_losers_fired = True
+            self._dd_warn_fired = True  # T2 supersedes T1 for this peak
+            closed_n, total_loss = self._close_losing_positions(mt5)
+            self.scribe.log_system_event(
+                "DD_BREAKER_CLOSE_LOSERS",
+                triggered_by="BRIDGE",
+                reason=(
+                    f"Equity DD {dd_pct:.1f}% (peak ${peak:.2f} → ${equity:.2f}); "
+                    f"closed {closed_n} losing magic(s) total_loss=${total_loss:.2f}"
+                ),
+            )
+            if closed_n > 0:
                 self.herald.send(
-                    f"🚨 <b>DRAWDOWN BREAKER</b>\n"
-                    f"Equity dropped {dd_pct:.1f}% from peak ${self._session_peak_equity:,.2f}\n"
-                    f"All positions CLOSED. Mode → WATCH.\n"
-                    f"Current equity: ${equity:,.2f}"
+                    f"⚠️ <b>DRAWDOWN BREAKER — T2 CLOSE LOSERS</b>\n"
+                    f"Equity DD {dd_pct:.1f}% from peak ${peak:,.2f}\n"
+                    f"Closed {closed_n} losing position group(s), "
+                    f"realized loss ${total_loss:,.2f}.\n"
+                    f"Winners still running. Mode unchanged."
                 )
+            else:
+                self.herald.send(
+                    f"⚠️ <b>DRAWDOWN BREAKER — T2</b>\n"
+                    f"Equity DD {dd_pct:.1f}% from peak ${peak:,.2f}\n"
+                    f"No losing positions to close (drawdown is from realized losses)."
+                )
+            return
+
+        # T1 — warn only, no state change
+        if (DD_EQUITY_WARN_PCT > 0
+                and not self._dd_warn_fired
+                and dd_pct >= DD_EQUITY_WARN_PCT):
+            log.warning(
+                "DD BREAKER T1: equity $%.2f at %.1f%% DD from peak $%.2f — warn only",
+                equity, dd_pct, peak,
+            )
+            self._dd_warn_fired = True
+            self.scribe.log_system_event(
+                "DD_BREAKER_WARN",
+                triggered_by="BRIDGE",
+                reason=f"Equity DD {dd_pct:.1f}% (peak ${peak:.2f} → ${equity:.2f})",
+            )
+            self.herald.send(
+                f"⚠️ <b>DRAWDOWN WARN — T1</b>\n"
+                f"Equity DD {dd_pct:.1f}% from peak ${peak:,.2f}\n"
+                f"Current ${equity:,.2f}. T2 (close losers) at "
+                f"{DD_EQUITY_CLOSE_LOSERS_PCT:.1f}%, T3 (close all) at "
+                f"{DD_EQUITY_CLOSE_ALL_PCT:.1f}%."
+            )
 
     def _lookup_group_magic(self, group_id: int) -> int | None:
         """Get magic_number for a group from SCRIBE."""
