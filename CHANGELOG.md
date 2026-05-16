@@ -1,5 +1,33 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [hygiene] — 2026-05-15 (Codex review FAIL cleanup: missing .env.example entry + .env duplicate-line dedup)
+
+Codex `/forge-ea-review` (2026-05-15) flagged 17 FAILs against Mandatory Checks C + Variable Integrity. Root-causes:
+
+**Class A — Mandatory Check C (1 FAIL):**
+- `FORGE_GATE_ISS_C_OVERRIDE_PEMCG_ENABLED` was mapped at `scripts/sync_scalper_config_from_env.py:259` and set in `.env:1187`, but never documented in `.env.example`. Operators couldn't discover the knob from the cheat sheet.
+
+**Class B — "Variable Integrity drift" (16 FAILs):**
+- Initially reported as 16 cases where `.env` and `config/scalper_config.json` disagreed.
+- Actual root cause: **`.env` had duplicate entries for each key** — an earlier line with the "intended" value and a later line (clustered at lines 915–944) overriding it to `0`/`70`/`300`. Python's `os.environ` keeps the last value, so the sync correctly applied the second line; the active config matched the LATER value. The codex audit reported the FIRST occurrence as "the .env value", manufacturing apparent drift.
+- This was not config drift. It was `.env` file noise.
+
+### Changed
+
+- **`.env.example`** — added the missing `# FORGE_GATE_ISS_C_OVERRIDE_PEMCG_ENABLED=0` block, sibling to `FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD`, with v2.7.118 Mode-C reservation context. Re-running Check C audit now returns 0 unmapped keys.
+- **`.env`** (local-only, gitignored) — removed 16 duplicate earlier entries (lines 196, 223, 257, 728, 750, 761, 772, 782, 794, 808, 819, 835, 847, 860, 870, 880 in the pre-dedup file). Kept the later (currently-active) values. Pre-dedup snapshot saved at `.env.backup-pre-dedup-20260515-220637` (untracked).
+
+### Behaviour
+
+- **Zero runtime change.** Active config (`config/scalper_config.json`) was already aligned with the later `.env` entries; `os.environ` semantics meant those were the values being read. Removing the duplicates just makes the file unambiguous.
+- Codex review re-run will pass Check C, and Variable Integrity will show all 16 keys matching active config.
+
+### Out of scope
+
+The 3 WARNINGs from the review (M5 RSI floor doc drift, SELL session cutoff disabled, TP3 atr_mult doc drift) are per-SKILL.md ACCEPTED operator-intent drift in `docs/FORGE_ENTRY_CONDITIONS.md`. The canonical as-implemented doc is `docs/FORGE_DECISION_STACK_INVENTORY.md`. Not fixed here — intent doc updates are a separate ticket if/when operator decides to align the doc to current implementation.
+
+---
+
 ## [E3] — 2026-05-15 (Graduated drawdown breaker — T1 warn → T2 close losers → T3 close all)
 
 Replaces the single-threshold "hammer" in `_check_drawdown` (one DD% → CLOSE_ALL + WATCH) with a three-tier graduated response. The hammer killed winners along with losers and banned new entries on every momentary drawdown spike. The graduated breaker gives an early warning, then salvages winners when only some positions are underwater, before escalating to the terminal CLOSE_ALL behaviour.
