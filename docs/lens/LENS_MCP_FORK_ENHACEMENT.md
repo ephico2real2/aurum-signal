@@ -631,48 +631,188 @@ open http://127.0.0.1:7842/
 
 **Upstream PR**: none. F6 is signal_system deployment; not relevant to the MCP fork.
 
-### F7 — `shared-services` consolidation (moduliths pattern, post-F6, ours only)
+### F7 — Core service separation (aegis, lens, shared-services), post-F6, ours only
 
-**Goal**: extract the **shared library modules** (`herald`, `reconciler`, `sentinel`, plus optional `aegis`/`status_report`) that are currently imported by 2-3 of the main services into a single new container called **`shared-services`**. This is the moduliths pattern: one HTTP-exposed service hosts multiple logical modules, callers HTTP into it instead of importing.
+**Goal**: split three core concerns out of the bridge/aurum/athena monoliths into their own containers. Each is a separate service in the compose, not a library imported by 3 different host processes. Operator-mandated topology (2026-05-16) — these are core services, not utility libraries.
 
-**Why**: today these modules are duplicated in memory across processes that import them (bridge imports all 5; aurum imports herald; athena imports aegis). Consolidating them into one container means:
+**Three new containers**:
 
-- One restart point when any of those modules changes (today: restart 2-3 services to pick up a herald.py edit)
-- One log destination for module-level events
-- One place to instrument (metrics, tracing) — currently scattered
-- Smaller host service images (bridge/aurum/athena no longer carry herald/reconciler/sentinel code)
-- Cleaner failure domain — herald going down doesn't crash bridge
+| Container | Hosts | Rationale |
+|---|---|---|
+| **aegis** | `python/aegis.py` | Security perimeter. ALL trade-modifying commands (OPEN_GROUP, CLOSE_*, MODIFY_*) flow through aegis validation before reaching FORGE EA. Deserves its own container as a distinct security boundary — restart aegis independently, scope its logs separately, instrument its decisions cleanly. Used by bridge (write path) + athena (read path for UI display of current limits/decisions). |
+| **lens** | `python/lens.py` | Data acquisition perimeter. Owns all TradingView data fetching: MCP calls via tv-mcp, indicator parsing, snapshot caching, TV-Brief generation. Deserves its own container because LENS lifecycle is self-contained (poll loop + cache) and the data-shaping logic is the integration substrate for everything downstream. Used by bridge (pulls snapshots for tick decisions) + aurum (queries snapshots for LLM context). |
+| **shared-services** | `herald` + `reconciler` + `sentinel` | The remaining low-frequency utilities. Moduliths pattern: ONE container hosting three modules behind HTTP. These don't deserve standalone services because their failure modes + cadence are similar (low-frequency, observability-class). |
 
-**Why NOT a full microservices split per module**: per-module HTTP overhead × per-call frequency = death by 1000 cuts on hot paths. Moduliths gives 80% of the architectural benefit at 20% of the operational complexity.
+**status_report stays bundled with athena_api.py** — it's the per-component status-write helper that the dashboard UI consumes. Logically belongs at the API/UI boundary, not in shared-services.
 
-#### F7.1 Modules to consolidate (empirically chosen by call frequency)
+**Why**: today these modules are duplicated in memory across processes that import them (bridge imports lens + aegis + sentinel + reconciler + herald; aurum imports herald + lens; athena imports aegis + status_report). Splitting them gives:
 
-| Module | Current frequency | Consolidate? | Why |
-|---|---|---|---|
-| `herald` | ~1-10 Telegram posts per hour | ✅ yes | Low frequency, HTTP overhead is noise |
-| `reconciler` | Periodic sweeps (~1/min in bridge) | ✅ yes | Low frequency; reconciler-as-service can drive its own clock independently |
-| `sentinel` | Periodic component-health checks (~1/30s) | ✅ yes | Low frequency; service can poll QuestDB directly |
-| `status_report` | ~1/30s heartbeat writes | ✅ yes | Already a write-path utility, fits the consolidated service |
-| `aegis` | **Per-signal validation — HIGH frequency** | ⚠️ **defer** | A signal-firing decision can't pay a 5-50ms HTTP roundtrip per validate. Keep aegis embedded in bridge + athena until benchmarked. Reconsider if/when aegis logic grows beyond pure validation. |
-| `lens` | Polls every ~5s in WATCH mode | ⚠️ **defer / separate F7.5** | Lens lifecycle is tightly coupled to bridge state (mode transitions, mt5_data). Splitting it cleanly is a separate effort. |
+- **Independent restart cadence** — change aegis rules, restart aegis only. Today: restart bridge + athena simultaneously.
+- **Independent failure domain** — lens down doesn't take down bridge's order-management loop (bridge can fall back to cached snapshot or skip the tick).
+- **Independent scaling profile** — aegis is stateless validation (can be replicated trivially if ever needed); lens is stateful cache (single-replica only); shared-services is mixed (sentinel is stateful, herald is stateless).
+- **Cleaner observability** — aegis decision log per container, lens fetch metrics per container.
+- **Cleaner security boundary** — aegis as a separate process makes "all trade commands pass through aegis" a structural guarantee enforced by network topology, not by code review.
 
-So F7 v1 scope: **herald + reconciler + sentinel + status_report** → consolidated into `shared-services`. aegis and lens stay embedded for now.
+#### F7.1 Service split summary
 
-#### F7.2 HTTP API surface design
+| Module | Current location | F7 target | Frequency | Justification |
+|---|---|---|---|---|
+| `aegis` | imported by bridge + athena | **own container `aegis`** | Per-command (~1-10/hour during active trading) | Security perimeter; structural enforcement that all commands validate. HTTP overhead negligible at this frequency. |
+| `lens` | imported by bridge + aurum | **own container `lens`** | Internal poll loop (~5s WATCH mode); external query on demand | Data acquisition; runs its own clock. Bridge/aurum consume cached snapshots via HTTP. |
+| `herald` | imported by bridge + aurum + sentinel | **`shared-services` container** | Low (~1-10 Telegram posts/hour) | Utility-class; bundled with other low-frequency modules |
+| `reconciler` | imported by bridge | **`shared-services` container** | Periodic sweeps (~1/min) | Utility-class; can drive its own clock inside shared-services |
+| `sentinel` | imported by bridge | **`shared-services` container** | Periodic component checks (~1/30s) | Utility-class; can poll QuestDB independently |
+| `status_report` | imported by athena_api | **STAYS with athena container** | ~1/30s heartbeat writes | Per design — consumed by the API to expose the UI. Moving it out adds a network hop on every dashboard render. Keep bundled. |
 
-Single Flask (or FastAPI) app at `python/shared_services/app.py`. One blueprint per module. Endpoints mirror the existing function signatures so refactor is mechanical.
+#### F7.2 HTTP API surface design — three services
+
+Each new container exposes its own Flask app. Endpoints mirror the existing function signatures so caller refactors are mechanical.
+
+##### F7.2a — `aegis` service (port 9101)
+
+`python/aegis_service/app.py`. The security perimeter. Every command-validating call site in bridge + athena moves to HTTP. Aegis is stateless beyond config (`config/aegis_limits.json`), so the container can be replicated trivially if ever needed.
+
+```python
+# python/aegis_service/app.py
+from flask import Flask, request, jsonify
+import aegis
+
+app = Flask(__name__)
+
+# ── Trade-modifying validation (write path — used by bridge) ─────
+@app.post("/aegis/validate_open_group")
+def validate_open_group():
+    """Body: {direction, lot, sl, tp, magic_base, source, ...}
+       Returns: {approved: bool, reason: str, risk_score: float}
+    """
+    body = request.json
+    result = aegis.validate_open_group(body)
+    return jsonify(result)
+
+@app.post("/aegis/validate_modify")
+def validate_modify():
+    """Body: {ticket|group_id|tp_stage, new_sl?, new_tp?, ...}"""
+    body = request.json
+    return jsonify(aegis.validate_modify(body))
+
+@app.post("/aegis/validate_close")
+def validate_close():
+    """Body: {action: CLOSE_ALL|CLOSE_GROUP|CLOSE_PCT|..., ...}"""
+    body = request.json
+    return jsonify(aegis.validate_close(body))
+
+# ── Read-only state (used by athena UI for "current limits" panel) ─
+@app.get("/aegis/limits")
+def get_limits():
+    """Return current SL/TP/lot/MAX_GROUPS limits + recent decision counts."""
+    return jsonify(aegis.get_active_limits())
+
+@app.get("/aegis/decisions")
+def recent_decisions():
+    """Recent N validation decisions (last 50 by default). Used by UI."""
+    limit = int(request.args.get("limit", 50))
+    return jsonify(aegis.get_recent_decisions(limit))
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "service": "aegis",
+                    "decisions_24h": aegis.count_decisions(hours=24)})
+```
+
+Aegis is **stateless** other than config + an in-memory decision-history ring buffer (for the UI panel). No background loop needed.
+
+##### F7.2b — `lens` service (port 9102)
+
+`python/lens_service/app.py`. Data acquisition perimeter. Runs its own poll loop independent of bridge tick cycle; bridge/aurum query for the latest snapshot via HTTP.
+
+```python
+# python/lens_service/app.py
+import threading, time
+from flask import Flask, request, jsonify
+import lens
+
+app = Flask(__name__)
+_lens = lens.Lens()  # the existing lens.Lens class
+_lock = threading.Lock()
+_last_snapshot = None
+
+# ── Background poll loop ────────────────────────────────────────────
+# Replaces bridge.py's `self.lens.fetch_fresh(mode, mt5)` call inside
+# the bridge tick. Lens drives its own clock based on mode the bridge
+# pushes (via POST /lens/mode).
+_current_mode = "WATCH"
+
+def _poll_loop():
+    global _last_snapshot
+    while True:
+        try:
+            mt5_data = _fetch_mt5_market_data()  # read /mt5/market_data.json
+            snap = _lens.fetch_fresh(_current_mode, mt5_data)
+            with _lock:
+                _last_snapshot = snap
+        except Exception as e:
+            log.warning(f"LENS poll failed: {e}")
+        time.sleep(_poll_interval_for_mode(_current_mode))
+
+threading.Thread(target=_poll_loop, daemon=True).start()
+
+# ── Read paths (used by bridge + aurum) ────────────────────────────
+@app.get("/lens/snapshot")
+def get_snapshot():
+    """Return the most-recent cached snapshot. <1ms response since it's an
+       in-memory read — replaces the per-call MCP roundtrip pattern."""
+    with _lock:
+        snap = _last_snapshot
+    if snap is None:
+        return jsonify({"error": "no snapshot yet"}), 503
+    return jsonify(snap.to_dict())
+
+@app.post("/lens/refresh")
+def force_refresh():
+    """Force an immediate fetch (operator override / aurum on-demand)."""
+    mt5_data = _fetch_mt5_market_data()
+    snap = _lens.fetch_fresh(_current_mode, mt5_data)
+    with _lock:
+        global _last_snapshot
+        _last_snapshot = snap
+    return jsonify(snap.to_dict())
+
+# ── Bridge tells lens about mode transitions ──────────────────────
+@app.post("/lens/mode")
+def set_mode():
+    """Body: {mode: WATCH|SIGNAL|SCALPER|HYBRID|OFF}"""
+    global _current_mode
+    _current_mode = request.json["mode"]
+    return jsonify({"mode": _current_mode})
+
+@app.get("/health")
+def health():
+    with _lock:
+        age_sec = (time.time() - _last_snapshot.ts) if _last_snapshot else None
+    return jsonify({
+        "status": "ok" if (age_sec is not None and age_sec < 60) else "warn",
+        "service": "lens",
+        "snapshot_age_sec": age_sec,
+        "mode": _current_mode,
+    })
+```
+
+Lens is **stateful** (cache + poll loop). Single-replica only — if you ran two, both would poll TV redundantly and the bridge's snapshot view would oscillate. The F2 write mutex on tv-mcp serializes their writes correctly, but it's wasteful.
+
+##### F7.2c — `shared-services` (port 9100) — herald + reconciler + sentinel
+
+`python/shared_services/app.py`. The moduliths container for the three remaining utility modules.
 
 ```python
 # python/shared_services/app.py
 from flask import Flask, request, jsonify
-import herald, reconciler, sentinel, status_report
+import herald, reconciler, sentinel
 
 app = Flask(__name__)
 
 # ── Herald (Telegram poster) ────────────────────────────────────────
 @app.post("/herald/post")
 def herald_post():
-    """Body: {channel, text, parse_mode?, reply_to?}"""
     body = request.json
     msg_id = herald.post(body["channel"], body["text"], **body.get("opts", {}))
     return jsonify({"message_id": msg_id})
@@ -683,104 +823,220 @@ def herald_edit():
     herald.edit(body["channel"], body["message_id"], body["text"])
     return jsonify({"ok": True})
 
-# ── Reconciler (periodic sweeps) ────────────────────────────────────
-# Reconciler doesn't get called from outside — it runs on its OWN clock
-# inside shared-services. Exposes a /reconciler/status endpoint for
-# health probes + a /reconciler/trigger endpoint for manual sweeps.
+# ── Reconciler (own clock — periodic sweeps) ───────────────────────
 @app.get("/reconciler/status")
 def reconciler_status():
     return jsonify(reconciler.get_status())
 
 @app.post("/reconciler/trigger")
 def reconciler_trigger():
-    """Manually fire a reconciliation sweep (operator override)."""
-    result = reconciler.sweep_once()
-    return jsonify(result)
+    return jsonify(reconciler.sweep_once())
 
-# ── Sentinel (component health checks) ──────────────────────────────
+# ── Sentinel (component heartbeats + health) ───────────────────────
 @app.get("/sentinel/heartbeats")
 def sentinel_heartbeats():
-    """Return current per-component last-seen timestamps."""
     return jsonify(sentinel.get_all_heartbeats())
 
 @app.post("/sentinel/heartbeat")
 def sentinel_heartbeat():
-    """Component reports liveness."""
     body = request.json
     sentinel.record_heartbeat(body["component"], body.get("status", "ok"))
     return jsonify({"ok": True})
 
-# ── Status report (per-component health writes) ────────────────────
-@app.post("/status/report")
-def status_report_endpoint():
-    body = request.json
-    status_report.report_component_status(body["component"], body["payload"])
-    return jsonify({"ok": True})
-
-# ── Health probe ────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return jsonify({
-        "status": "ok",
-        "service": "shared-services",
-        "modules": ["herald", "reconciler", "sentinel", "status_report"],
-        "uptime_sec": time.time() - START_TIME,
+        "status": "ok", "service": "shared-services",
+        "modules": ["herald", "reconciler", "sentinel"],
     })
 ```
 
-**Background loops** (reconciler sweep, sentinel periodic check) start in a background thread when shared-services boots — same lifecycle as launching `bridge.py` with reconciler+sentinel imports today, but now in a dedicated process.
+Background loops (reconciler sweep, sentinel periodic check) start in a daemon thread when shared-services boots.
+
+**status_report is NOT here** — it stays imported directly into `athena_api.py` because the UI consumes it on every dashboard request, and `/api/status` would otherwise become a cross-container chain (UI → athena → shared-services → write). Keeping it bundled with athena removes an unnecessary hop.
 
 #### F7.3 Caller refactor pattern
 
-Replace import-and-call with HTTP-and-call. New Python helper `python/shared_services_client.py`:
+Three new client wrappers — one per service. Same module-level call surface, HTTP under the hood. Caller code changes only the `import` line.
+
+`python/aegis_client.py`:
 
 ```python
 import os, requests
+BASE = os.environ.get("AEGIS_URL", "http://aegis:9101")
+_TIMEOUT = float(os.environ.get("AEGIS_TIMEOUT_SEC", "3"))
 
-BASE_URL = os.environ.get("SHARED_SERVICES_URL", "http://shared-services:9100")
+def validate_open_group(payload: dict) -> dict:
+    r = requests.post(f"{BASE}/aegis/validate_open_group", json=payload, timeout=_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
 
-def herald_post(channel, text, **opts):
-    r = requests.post(f"{BASE_URL}/herald/post",
+def validate_modify(payload: dict) -> dict:
+    r = requests.post(f"{BASE}/aegis/validate_modify", json=payload, timeout=_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+def validate_close(payload: dict) -> dict:
+    r = requests.post(f"{BASE}/aegis/validate_close", json=payload, timeout=_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+def get_active_limits() -> dict:
+    return requests.get(f"{BASE}/aegis/limits", timeout=_TIMEOUT).json()
+```
+
+`python/lens_client.py`:
+
+```python
+import os, requests
+BASE = os.environ.get("LENS_URL", "http://lens:9102")
+_TIMEOUT = float(os.environ.get("LENS_TIMEOUT_SEC", "5"))
+
+def get_snapshot() -> dict | None:
+    """Return latest cached snapshot from the lens service.
+       Returns None if lens hasn't polled yet OR the call fails."""
+    try:
+        r = requests.get(f"{BASE}/lens/snapshot", timeout=_TIMEOUT)
+        if r.status_code == 503:
+            return None
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException:
+        return None
+
+def force_refresh() -> dict | None:
+    r = requests.post(f"{BASE}/lens/refresh", timeout=15)  # MCP roundtrip cost
+    return r.json() if r.ok else None
+
+def set_mode(mode: str) -> None:
+    requests.post(f"{BASE}/lens/mode", json={"mode": mode}, timeout=_TIMEOUT)
+```
+
+`python/shared_services_client.py`:
+
+```python
+import os, requests
+BASE = os.environ.get("SHARED_SERVICES_URL", "http://shared-services:9100")
+
+def herald_post(channel: str, text: str, **opts) -> int:
+    r = requests.post(f"{BASE}/herald/post",
                       json={"channel": channel, "text": text, "opts": opts},
                       timeout=5)
     r.raise_for_status()
     return r.json()["message_id"]
 
-def sentinel_heartbeat(component, status="ok"):
-    requests.post(f"{BASE_URL}/sentinel/heartbeat",
+def sentinel_heartbeat(component: str, status: str = "ok") -> None:
+    requests.post(f"{BASE}/sentinel/heartbeat",
                   json={"component": component, "status": status},
                   timeout=2)
 ```
 
-Then in `bridge.py` / `aurum.py`:
+**Refactor at the import site only** — `bridge.py` swaps `from aegis import validate_open_group` → `from aegis_client import validate_open_group`. Same name, same signature. Cleaner than rewriting callers.
 
-```python
-# BEFORE:
-# from herald import post as herald_post
-# herald_post("trade_room", "G5001 +$1212")
+**Failure-mode design** (explicit per service):
 
-# AFTER:
-from shared_services_client import herald_post
-herald_post("trade_room", "G5001 +$1212")
-```
+| Service down | Caller behavior | Reason |
+|---|---|---|
+| aegis | **Bridge BLOCKS the command** (returns failure to AURUM). | Security perimeter — fail closed, never approve a command without validation. |
+| lens | **Bridge SKIPS the tick** (uses last cached snapshot if available, else no-op). | Stale data is better than wrong action. AURUM may answer with "data unavailable" to operator. |
+| shared-services | **Caller retries 3× then logs and drops.** | Herald posts can be queued / dropped; reconciler will catch up on next sweep; sentinel heartbeat staleness will eventually alarm. None are critical-path on a single missed call. |
 
-Same call site shape, just a different import. Failure mode changes: HTTP timeout / 5xx instead of in-process exception. Wrap with retries + circuit-breaker if needed.
+#### F7.4 Migration sequence (per service — ship independently with flag-guarded paths)
 
-#### F7.4 Migration sequence (lockstep refactor — can't ship in halves)
+Each new service ships independently with a `USE_<SERVICE>=0/1` flag so the cutover is risk-bounded. Order matters: ship the LOW-RISK ones first to learn the pattern, then aegis (security perimeter), then lens (highest coupling risk).
 
-1. **Build `python/shared_services/` package** — copy herald/reconciler/sentinel/status_report modules into a new directory; wire them behind Flask endpoints; write a Dockerfile.
-2. **Write `python/shared_services_client.py`** — HTTP wrapper exposing the same call surface as the original modules.
-3. **Refactor callers** — `bridge.py`, `aurum.py`, `athena_api.py` switch from `from herald import ...` to `from shared_services_client import herald_*`. Same for sentinel/reconciler/status_report imports.
-4. **Add `shared-services` to compose** — new container, port 9100 (internal docker network only), same `signal-net`.
-5. **Test in parallel**: keep both code paths available behind `USE_SHARED_SERVICES=1` env flag. Default 0 = current embedded; 1 = HTTP via shared-services. Soak each path for a week.
-6. **Promote default** — flip default to 1. Remove the embedded import path after another week.
-7. **Delete the duplicate module files from non-shared-services containers** — bridge/aurum/athena Dockerfiles stop copying herald/reconciler/sentinel/status_report.
+**Ship order**: shared-services → aegis → lens.
 
-#### F7.5 Compose addition
+**Per-service migration template**:
 
-Add to the `docker-compose.yml` from F6:
+1. **Build service package** — `python/<service>_service/app.py` + Flask blueprint; reuse the existing module code unchanged (it stays the same, just newly hosted in a Flask process).
+2. **Build client wrapper** — `python/<service>_client.py` with same call surface as the original module's exports.
+3. **Refactor callers via flag** — every call site gets a `if USE_<SERVICE>: from <service>_client import X else: from <service> import X` guard during the soak period.
+4. **Add to compose** — new container, internal-only port, healthcheck, depends_on, env_file.
+5. **Test in parallel** with `USE_<SERVICE>=0` (current embedded) vs `=1` (new HTTP). Soak for 1 week per service.
+6. **Promote default to 1**. Operator-confirmed before flip.
+7. **Remove the guard + embedded import code** after another week of clean operation. Dockerfiles for callers stop copying the now-extracted module's files.
+
+**Why per-service flags, not one master flag**: lets you flip shared-services to HTTP (low-risk) without exposing aegis (security perimeter — higher-risk if buggy) at the same time. Independent rollback per service.
+
+#### F7.5 Compose additions — 3 new containers
+
+Add to the `docker-compose.yml` from F6. All three are internal-only (no host port exposure); inter-service traffic goes through the `signal-net` bridge network.
 
 ```yaml
+  # ── aegis (validation perimeter, port 9101) ───────────────────────
+  aegis:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    image: signal/aegis:local
+    container_name: signal-aegis
+    restart: unless-stopped
+    networks: [ signal-net ]
+    command: ["python", "python/aegis_service/app.py"]
+    env_file: .env
+    environment:
+      QUESTDB_HOST: questdb
+      QUESTDB_PG_PORT: "8812"
+      AEGIS_PORT: "9101"
+      PYTHONUNBUFFERED: "1"
+    expose: [ "9101" ]
+    volumes:
+      - "./config:/app/config:ro"     # aegis_limits.json + scalper_config.json
+      - "./logs:/app/logs"
+    depends_on:
+      questdb: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9101/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: json-file
+      options: { max-size: 20m, max-file: "5" }
+
+  # ── lens (TradingView data acquisition, port 9102) ────────────────
+  lens:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    image: signal/lens:local
+    container_name: signal-lens
+    restart: unless-stopped
+    networks: [ signal-net ]
+    command: ["python", "python/lens_service/app.py"]
+    env_file: .env
+    environment:
+      # tv-mcp is the canonical MCP daemon — lens calls it for chart data
+      LENS_MCP_TRANSPORT: http
+      MCP_HTTP_HOST: tv-mcp
+      MCP_HTTP_PORT: "8765"
+      # Where lens persists snapshots (also queryable via QuestDB for cross-run analytics)
+      QUESTDB_HOST: questdb
+      QUESTDB_PG_PORT: "8812"
+      LENS_PORT: "9102"
+      MT5_COMMON_FILES_DIR: "/mt5"    # lens reads market_data.json for mt5 context
+      PYTHONUNBUFFERED: "1"
+      TZ: America/New_York
+    expose: [ "9102" ]
+    volumes:
+      - "${MT5_COMMON_FILES_HOST_PATH}:/mt5:ro"  # read-only — only bridge writes back
+      - "./logs:/app/logs"
+    depends_on:
+      tv-mcp: { condition: service_healthy }
+      questdb: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9102/health | grep -q ok || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: { max-size: 30m, max-file: "5" }
+
+  # ── shared-services (herald + reconciler + sentinel, port 9100) ──
   shared-services:
     build:
       context: .
@@ -796,10 +1052,9 @@ Add to the `docker-compose.yml` from F6:
       QUESTDB_PG_PORT: "8812"
       SHARED_SERVICES_PORT: "9100"
       PYTHONUNBUFFERED: "1"
-    # No external port — internal-only
     expose: [ "9100" ]
     volumes:
-      - "aurum-state:/app/python/data/aurum_state"  # for Telegram session state used by herald
+      - "aurum-state:/app/python/data/aurum_state"  # herald's Telegram session
       - "./logs:/app/logs"
     depends_on:
       questdb: { condition: service_healthy }
@@ -814,68 +1069,117 @@ Add to the `docker-compose.yml` from F6:
       options: { max-size: 20m, max-file: "5" }
 ```
 
-And callers gain one env var:
+**Bridge / aurum / athena gain URL env vars** (with USE_* flags during soak):
 
 ```yaml
   bridge:
     environment:
+      AEGIS_URL: "http://aegis:9101"
+      LENS_URL: "http://lens:9102"
       SHARED_SERVICES_URL: "http://shared-services:9100"
-      USE_SHARED_SERVICES: "1"   # 0 to fall back to embedded imports
+      USE_AEGIS: "1"               # 0 = fall back to embedded import
+      USE_LENS: "1"
+      USE_SHARED_SERVICES: "1"
+    depends_on:
+      aegis: { condition: service_healthy }
+      lens: { condition: service_healthy }
+      shared-services: { condition: service_healthy }
+      # ... existing depends_on entries
 
   aurum:
     environment:
+      LENS_URL: "http://lens:9102"
       SHARED_SERVICES_URL: "http://shared-services:9100"
+      USE_LENS: "1"
       USE_SHARED_SERVICES: "1"
+    depends_on:
+      lens: { condition: service_healthy }
+      shared-services: { condition: service_healthy }
 
   athena:
     environment:
-      SHARED_SERVICES_URL: "http://shared-services:9100"
-      USE_SHARED_SERVICES: "1"
+      AEGIS_URL: "http://aegis:9101"
+      USE_AEGIS: "1"
+      # status_report stays embedded — no new env needed
+    depends_on:
+      aegis: { condition: service_healthy }
 ```
 
-#### F7.6 Acceptance criteria
+**Total compose post-F7**: 9 services (questdb + tv-mcp + bridge + aurum + athena + listener + aegis + lens + shared-services). 5 of these mirror the launchd topology; 1 is the new F5 MCP daemon; 3 are the new F7 split-outs. Plus questdb is the data backbone — also new vs launchd (lives wherever scribe DB used to be).
 
-- [ ] `docker compose up -d` brings shared-services up healthy.
-- [ ] With `USE_SHARED_SERVICES=0` (default during soak): system behaves identically to F6 — bridge/aurum/athena use embedded imports. Shared-services container runs idle.
-- [ ] With `USE_SHARED_SERVICES=1`: every herald/sentinel/reconciler/status_report call goes through HTTP. Verify via shared-services access log.
-- [ ] Telegram posts still appear with same formatting (herald regression check).
-- [ ] Component heartbeats still appear in QuestDB at same cadence (sentinel regression check).
-- [ ] Periodic reconciliation sweeps still run (verify via reconciler logs or QuestDB markers).
-- [ ] **Shared-services down** = herald posts queue and retry, OR fail loudly. Define behavior explicitly per module — don't leave it implicit.
-- [ ] Per-call HTTP latency to shared-services <10ms p99 (over localhost docker network).
+#### F7.6 Acceptance criteria (per service)
 
-#### F7.7 Rollback
+**Each new service ships with its own checklist before flipping its `USE_*` flag to default-on.**
 
-- Set `USE_SHARED_SERVICES=0` in `.env`, `docker compose up -d` rerolls.
-- Containers fall back to embedded imports.
-- Shared-services container stays up (idle) — no harm.
+**aegis acceptance**:
+- [ ] `aegis` container up healthy; `/aegis/limits` returns current config
+- [ ] With `USE_AEGIS=0`: bridge + athena use embedded `from aegis import ...` (regression baseline)
+- [ ] With `USE_AEGIS=1`: every OPEN_GROUP / CLOSE_* / MODIFY_* command in bridge goes through `http://aegis:9101/aegis/validate_*` (verify via aegis access log)
+- [ ] Athena UI's "Aegis decisions" panel renders identical content from the new HTTP endpoint vs embedded read
+- [ ] **aegis container DOWN**: bridge BLOCKS new commands (fail closed). Verify via `docker compose stop aegis` + Telegram OPEN_GROUP attempt → operator sees rejection
+- [ ] Per-call latency `aegis.validate_open_group()` <20ms p99
+
+**lens acceptance**:
+- [ ] `lens` container up healthy; `/lens/snapshot` returns recent data after ~5-10s warmup
+- [ ] With `USE_LENS=0`: bridge calls `self.lens.fetch_fresh()` embedded (regression baseline)
+- [ ] With `USE_LENS=1`: bridge calls `lens_client.get_snapshot()` returning <2ms (cached read) — no MCP roundtrip in bridge tick
+- [ ] Lens runs its own poll loop independent of bridge tick cycle; snapshot freshness <60s during active mode
+- [ ] Mode transitions: bridge `POST /lens/mode` when mode flips (WATCH→SIGNAL→SCALPER); lens adjusts poll cadence
+- [ ] **lens container DOWN**: bridge skips ticks that need fresh data; aurum returns "lens unavailable" for chart queries; AURUM Telegram still works for non-LENS questions
+- [ ] AURUM end-to-end: ask "how's gold?" → AURUM calls `lens_client.get_snapshot()` → returns cached data → LLM answers
+
+**shared-services acceptance**:
+- [ ] `shared-services` container up healthy
+- [ ] With `USE_SHARED_SERVICES=0`: embedded imports work (regression baseline)
+- [ ] With `USE_SHARED_SERVICES=1`: every herald/sentinel/reconciler call goes through HTTP (verify via access log)
+- [ ] Telegram posts appear with same formatting (herald regression)
+- [ ] Component heartbeats in QuestDB at same cadence (sentinel regression)
+- [ ] Periodic reconciliation sweeps still run (reconciler regression — check QuestDB markers)
+- [ ] **shared-services DOWN**: herald posts dropped with warning log; reconciler/sentinel paused; bridge/aurum continue serving trades (graceful degradation)
+- [ ] Per-call HTTP latency <10ms p99
+
+#### F7.7 Rollback (per service, independent)
+
+Each `USE_<SERVICE>` flag is independent:
+
+| Service | Rollback step |
+|---|---|
+| aegis | `USE_AEGIS=0` in `.env` + `docker compose up -d bridge athena` (containers fall back to embedded). aegis container stays up but idle — no harm. |
+| lens | `USE_LENS=0` in `.env` + `docker compose up -d bridge aurum`. lens container stays up idle. |
+| shared-services | `USE_SHARED_SERVICES=0` + `docker compose up -d bridge aurum`. |
+
+Independent rollback per service is a deliberate design choice — if lens has a bug post-flip, you can revert lens to embedded without losing the aegis or shared-services HTTP cutover.
 
 #### F7.8 What F7 does NOT do
 
-- **Does not split aegis** — high-frequency per-signal validation; keep embedded. Future F7.x if aegis logic grows enough to warrant HTTP cost.
-- **Does not split lens** — coupled to bridge mode state; needs separate effort.
-- **Does not introduce service mesh / sidecars** — single HTTP service is enough at this scale.
+- **Does not move status_report into a separate container** — stays bundled with `athena_api.py` because the API consumes it on every dashboard render (operator-confirmed 2026-05-16).
+- **Does not introduce service mesh / sidecars** — direct HTTP between containers is sufficient at single-host scale.
 - **Does not change the QuestDB schema or scribe writes** — same data flow, different process boundary.
+- **Does not horizontally scale aegis/lens** — aegis is replicable in principle (stateless) but the bridge would need a load-balancer in front; lens is single-replica only by design (avoid duplicate polling). Both are out of scope.
+- **Does not migrate `listener.py`** — already its own launchd service, will be its own compose container in F6. No change in F7.
 
 #### F7.9 Honest payoff at our scale
 
 | Benefit | Real? |
 |---|---|
-| Cleaner architecture | yes, but cosmetic at single-machine scale |
-| One restart point for shared logic | yes — useful when iterating on herald/reconciler |
-| Smaller host service images | yes — bridge image shrinks by ~maybe 200KB; not a meaningful cost saver |
-| Independent failure domain (herald down ≠ bridge down) | yes, BUT requires explicit per-call failure mode design (queue? fail? retry?) — work, not free |
-| Easier to instrument | yes — single Prometheus exporter per module |
-| Easier to test in isolation | yes — shared-services has a clean HTTP contract |
+| **Security perimeter** (aegis as separate process) | yes — structural guarantee that all trade commands validate, enforced by network topology not code review |
+| **Data acquisition perimeter** (lens as separate process) | yes — lens lifecycle becomes self-contained; bridge tick no longer pays MCP roundtrip cost |
+| Independent restart cadence | yes — change herald, restart only shared-services. Change aegis rules, restart only aegis. |
+| Independent failure domain | yes, with explicit failure-mode contracts (§F7.3 table). Aegis down = fail closed; lens down = skip ticks; shared-services down = drop optional events. |
+| Cleaner observability | yes — per-service logs, per-service metrics endpoints (Prometheus next step) |
+| Smaller host service images | yes — bridge image shrinks meaningfully when 5 modules extract |
+| Cleaner testing | yes — each service has a clean HTTP contract; can be tested in isolation |
 
-**The payoff is architectural, not performance.** At current scale, F7 is a 2-3 day refactor that buys you cleaner boundaries. Don't ship F7 unless you have a concrete reason — same rule as the original microservices-vs-mutex decision in F2.
+**The payoff is architectural + operational, not raw performance.** At current scale, F7 is a 1-2 week refactor (3 services × ~3-4 days each). Per-call latency goes from 0ms (in-process import) to 5-20ms (HTTP) — but on the LENS path, the win flips: bridge tick stops paying the MCP roundtrip (~50-300ms) because it gets cached snapshots from the lens container.
 
 **Suggested trigger for shipping F7**:
-- You hit a herald.py change that requires restarting bridge + aurum + sentinel simultaneously, and it's painful, OR
-- You want to add Prometheus metrics to herald and don't want to instrument it in 3 places, OR
-- You start adding a second LLM-driven module that also wants herald — fourth caller is the tipping point.
+- F6 (containerize) is shipped and stable
+- You're adding a new caller for aegis or lens (e.g. a second LLM agent) — second caller is the canonical "extract" signal
+- You want to enforce "all trade commands go through aegis" as a network-level guarantee, not a code-review guarantee
+- You want to swap the lens implementation (e.g. add a second TV instance, or a non-TradingView data source) without touching bridge/aurum
+- You want to add Prometheus metrics + Grafana dashboards per service
 
-Until one of those fires, F6 (containerize the embedded topology) is sufficient.
+Until F6 is stable, F7 is design-only. Don't ship in parallel with F6 — operational risk multiplies.
 
 ## Upstream PR sequencing (post-F1)
 
