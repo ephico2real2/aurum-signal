@@ -2606,6 +2606,9 @@ bool ValidateOpenGroupSanity(
    const double sl,
    const double tp1,
    const double tp2,
+   const double tp3,
+   const double tp4,
+   const double tp5,
    string &reject_reason
 ) {
    reject_reason = "";
@@ -2626,6 +2629,8 @@ bool ValidateOpenGroupSanity(
 
    // 2. Direction-aware SL/TP wrong-side checks (defense — Aegis enforces
    //    these too, but the EA must not trust upstream blindly).
+   //    v2.7.126: extended to cover tp3/tp4/tp5 (BRIDGE/AURUM can now stage
+   //    all 5 TP tiers; each must be on the correct side of entry).
    double entry_ref = legs[0].entry_price;  // representative entry
    if(direction == "BUY") {
       if(sl > 0 && sl >= entry_ref) {
@@ -2649,6 +2654,44 @@ bool ValidateOpenGroupSanity(
          );
          return false;
       }
+      if(tp3 > 0 && tp3 <= entry_ref) {
+         reject_reason = StringFormat(
+            "buy_tp3_below_entry tp3=%.2f entry=%.2f",
+            tp3, entry_ref
+         );
+         return false;
+      }
+      if(tp4 > 0 && tp4 <= entry_ref) {
+         reject_reason = StringFormat(
+            "buy_tp4_below_entry tp4=%.2f entry=%.2f",
+            tp4, entry_ref
+         );
+         return false;
+      }
+      if(tp5 > 0 && tp5 <= entry_ref) {
+         reject_reason = StringFormat(
+            "buy_tp5_below_entry tp5=%.2f entry=%.2f",
+            tp5, entry_ref
+         );
+         return false;
+      }
+      // Monotone-increase check: BUY targets must climb tp1 < tp2 < tp3 < tp4 < tp5.
+      if(tp2 > 0 && tp1 > 0 && tp2 <= tp1) {
+         reject_reason = StringFormat("buy_tp2_not_above_tp1 tp1=%.2f tp2=%.2f", tp1, tp2);
+         return false;
+      }
+      if(tp3 > 0 && tp2 > 0 && tp3 <= tp2) {
+         reject_reason = StringFormat("buy_tp3_not_above_tp2 tp2=%.2f tp3=%.2f", tp2, tp3);
+         return false;
+      }
+      if(tp4 > 0 && tp3 > 0 && tp4 <= tp3) {
+         reject_reason = StringFormat("buy_tp4_not_above_tp3 tp3=%.2f tp4=%.2f", tp3, tp4);
+         return false;
+      }
+      if(tp5 > 0 && tp4 > 0 && tp5 <= tp4) {
+         reject_reason = StringFormat("buy_tp5_not_above_tp4 tp4=%.2f tp5=%.2f", tp4, tp5);
+         return false;
+      }
    } else if(direction == "SELL") {
       if(sl > 0 && sl <= entry_ref) {
          reject_reason = StringFormat(
@@ -2669,6 +2712,44 @@ bool ValidateOpenGroupSanity(
             "sell_tp2_above_entry tp2=%.2f entry=%.2f",
             tp2, entry_ref
          );
+         return false;
+      }
+      if(tp3 > 0 && tp3 >= entry_ref) {
+         reject_reason = StringFormat(
+            "sell_tp3_above_entry tp3=%.2f entry=%.2f",
+            tp3, entry_ref
+         );
+         return false;
+      }
+      if(tp4 > 0 && tp4 >= entry_ref) {
+         reject_reason = StringFormat(
+            "sell_tp4_above_entry tp4=%.2f entry=%.2f",
+            tp4, entry_ref
+         );
+         return false;
+      }
+      if(tp5 > 0 && tp5 >= entry_ref) {
+         reject_reason = StringFormat(
+            "sell_tp5_above_entry tp5=%.2f entry=%.2f",
+            tp5, entry_ref
+         );
+         return false;
+      }
+      // Monotone-decrease check: SELL targets must descend tp1 > tp2 > tp3 > tp4 > tp5.
+      if(tp2 > 0 && tp1 > 0 && tp2 >= tp1) {
+         reject_reason = StringFormat("sell_tp2_not_below_tp1 tp1=%.2f tp2=%.2f", tp1, tp2);
+         return false;
+      }
+      if(tp3 > 0 && tp2 > 0 && tp3 >= tp2) {
+         reject_reason = StringFormat("sell_tp3_not_below_tp2 tp2=%.2f tp3=%.2f", tp2, tp3);
+         return false;
+      }
+      if(tp4 > 0 && tp3 > 0 && tp4 >= tp3) {
+         reject_reason = StringFormat("sell_tp4_not_below_tp3 tp3=%.2f tp4=%.2f", tp3, tp4);
+         return false;
+      }
+      if(tp5 > 0 && tp4 > 0 && tp5 >= tp4) {
+         reject_reason = StringFormat("sell_tp5_not_below_tp4 tp4=%.2f tp5=%.2f", tp4, tp5);
          return false;
       }
    }
@@ -2723,6 +2804,14 @@ void ExecuteOpenGroup(const string &json) {
    double sl            = JsonGetDouble(json,  "sl");
    double tp1           = JsonGetDouble(json,  "tp1");
    double tp2           = JsonGetDouble(json,  "tp2");
+   // v2.7.126 — tp3/tp4/tp5 accepted from BRIDGE/AURUM OPEN_GROUP. Default 0
+   // when absent (backward-compatible with old payloads that only carried
+   // tp1/tp2). The EA's existing TP3 / TP4 / TP5 staging code (FORGE.mq5
+   // §"TP3 staging pass" and "TP3 → TP4 staging pass") activates per-group
+   // when these fields are > 0 — no new gates needed.
+   double tp3           = JsonGetDouble(json,  "tp3");
+   double tp4           = JsonGetDouble(json,  "tp4");
+   double tp5           = JsonGetDouble(json,  "tp5");
    double tp1_close_pct = JsonGetDouble(json,  "tp1_close_pct");
    if(tp1_close_pct == 0) tp1_close_pct = 70;
    string mbe = JsonGetString(json, "move_be_on_tp1");
@@ -2761,13 +2850,61 @@ void ExecuteOpenGroup(const string &json) {
       return;
    }
 
+   // v2.7.126 — EA-determined tp3/tp4/tp5 staging targets.
+   //   Operator decision: AURUM opens at tp1/tp2 only; the EA decides when
+   //   and where to extend to tp3/tp4/tp5 based on market structure. So when
+   //   the BRIDGE/AURUM payload doesn't supply a target (or sends 0), the
+   //   EA computes it from the same M5-ATR formula the native scalper uses:
+   //     tpN = entry ± m5_atr × g_sc.breakout_tpN_atr_mult.
+   //   Setup-type gating from the native scalper is dropped here (operator-
+   //   directed groups don't have a setup_type); the master toggles
+   //   breakout_tp4_staging_enabled / breakout_tp5_staging_enabled still
+   //   govern TP4/TP5 (TP3 has no master toggle — controlled by atr_mult > 0).
+   //   Runtime promotion (TP2→TP3, TP3→TP4, TP4→TP5) remains gated by
+   //   regime + ADX in ManageOpenGroups, so the "when market supports it"
+   //   condition is enforced there — pre-computing the targets just makes
+   //   them available to that staging logic.
+   if(ArraySize(legs) > 0 && legs[0].entry_price > 0) {
+      double _entry_ref = legs[0].entry_price;
+      double _atr_buf[];
+      double _m5_atr = 0.0;
+      if(g_mtf[0].h_atr != INVALID_HANDLE
+         && CopyBuffer(g_mtf[0].h_atr, 0, 0, 1, _atr_buf) == 1)
+         _m5_atr = _atr_buf[0];
+      if(_m5_atr > 0.0) {
+         if(tp3 <= 0.0 && g_sc.breakout_tp3_atr_mult > 0.0) {
+            double raw_tp3 = (direction == "SELL")
+                             ? _entry_ref - _m5_atr * g_sc.breakout_tp3_atr_mult
+                             : _entry_ref + _m5_atr * g_sc.breakout_tp3_atr_mult;
+            tp3 = NormalizeDouble(raw_tp3, _Digits);
+         }
+         if(tp4 <= 0.0
+            && g_sc.breakout_tp4_staging_enabled
+            && g_sc.breakout_tp4_atr_mult > 0.0) {
+            double raw_tp4 = (direction == "SELL")
+                             ? _entry_ref - _m5_atr * g_sc.breakout_tp4_atr_mult
+                             : _entry_ref + _m5_atr * g_sc.breakout_tp4_atr_mult;
+            tp4 = NormalizeDouble(raw_tp4, _Digits);
+         }
+         if(tp5 <= 0.0
+            && g_sc.breakout_tp5_staging_enabled
+            && g_sc.breakout_tp5_atr_mult > 0.0) {
+            double raw_tp5 = (direction == "SELL")
+                             ? _entry_ref - _m5_atr * g_sc.breakout_tp5_atr_mult
+                             : _entry_ref + _m5_atr * g_sc.breakout_tp5_atr_mult;
+            tp5 = NormalizeDouble(raw_tp5, _Digits);
+         }
+      }
+   }
+
    // S4: defense-in-depth sanity checks (refuse pathological commands even
    // when upstream Aegis approves). Runs BEFORE NormalizeLot so the lot
    // value reflects what BRIDGE actually requested, not a snapped-down
-   // broker-min surrogate.
+   // broker-min surrogate. v2.7.126: extended to validate tp3/tp4/tp5
+   // (whether AURUM-supplied or EA-computed just above).
    {
       string sanity_reason = "";
-      if(!ValidateOpenGroupSanity(direction, lot_per_trade, legs, sl, tp1, tp2, sanity_reason)) {
+      if(!ValidateOpenGroupSanity(direction, lot_per_trade, legs, sl, tp1, tp2, tp3, tp4, tp5, sanity_reason)) {
          Print(
             "FORGE: OPEN_GROUP REFUSED G", group_id, " ", direction,
             " — S4 sanity: ", sanity_reason
@@ -2845,9 +2982,13 @@ void ExecuteOpenGroup(const string &json) {
    g_groups[gi].direction     = direction;
    g_groups[gi].tp1           = tp1;
    g_groups[gi].tp2           = tp2;
-   g_groups[gi].tp3           = 0;   // BRIDGE path — tp3 not available from JSON
-   g_groups[gi].tp4           = 0;   // 2.7.27: BRIDGE path does not stage TP4
-   g_groups[gi].tp5           = 0;   // 2.7.27: BRIDGE path does not stage TP5
+   // v2.7.126 — BRIDGE/AURUM path now passes tp3/tp4/tp5 explicitly. Staging
+   // logic at "TP3 staging pass" / "TP3 → TP4 staging pass" / "TP4 → TP5
+   // staging pass" only fires when the corresponding tpN > 0, so omitting
+   // these fields in JSON (or sending 0) preserves the legacy "2-stage" behaviour.
+   g_groups[gi].tp3           = tp3;
+   g_groups[gi].tp4           = tp4;
+   g_groups[gi].tp5           = tp5;
    g_groups[gi].tp1_close_pct = tp1_close_pct;
    g_groups[gi].tp2_close_pct = g_sc.breakout_tp2_close_pct;  // v2.7.96 Set 2 — BRIDGE path defaults to BREAKOUT-family % (most BRIDGE groups are breakout). Dormant until g_sc.tp2_close_enabled flipped.
    // v2.7.97 Sets 6+7 — Direction Lock per-group state. Compute entry swing high/low over last N M5 bars (used as break levels in EvaluateDirectionLock).

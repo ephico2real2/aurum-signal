@@ -1,5 +1,55 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [v2.7.126] — 2026-05-15 (TP3/TP4/TP5 support for BRIDGE/AURUM OPEN_GROUP; EA auto-computes from M5 ATR)
+
+Operator decision: "we will open at tp1/tp2 but ability to move up tp3, tp4, tp5 during when market support it — the system should determine this."
+
+Previously, the `ExecuteOpenGroup` command path hardcoded `g_groups[gi].tp3/tp4/tp5 = 0`, so any BRIDGE/AURUM-sourced group missed the EA's existing TP3 / TP4 / TP5 staging passes that already work for native-scalper entries. Native scalper computed tp3/4/5 from M5 ATR × `breakout_tpN_atr_mult` at open; the BRIDGE path didn't.
+
+### Added — `ea/FORGE.mq5`
+
+- `ExecuteOpenGroup` now parses optional `tp3` / `tp4` / `tp5` from the OPEN_GROUP JSON (default 0 when absent — backward-compatible with old payloads).
+- **Auto-compute fallback (v2.7.126 core):** when `tp3` / `tp4` / `tp5` is not supplied (== 0), the EA computes it from M5 ATR using the same formula as the native scalper:
+  ```mql5
+  tpN = entry ± m5_atr × g_sc.breakout_tpN_atr_mult   // direction-aware
+  ```
+  - Reads M5 ATR via `g_mtf[0].h_atr` handle.
+  - Setup-type gating dropped (operator-directed groups have no `setup_type`); master toggles `breakout_tp4_staging_enabled` and `breakout_tp5_staging_enabled` still govern whether TP4 / TP5 are populated.
+  - When the operator explicitly supplies `tp3 / tp4 / tp5` in JSON, those win; auto-compute only fires for empty fields. Useful for AURUM override scenarios.
+- Group registration now uses the (possibly auto-computed) `tp3 / tp4 / tp5` values instead of hardcoded 0.
+- `ValidateOpenGroupSanity` (S4) extended:
+  - New wrong-side checks for tp3 / tp4 / tp5 (BUY: each tpN > entry; SELL: each tpN < entry).
+  - New monotone-ordering checks: BUY requires `tp1 < tp2 < tp3 < tp4 < tp5`; SELL requires the reverse. Rejects out-of-order targets with explicit reason codes (`buy_tp3_not_above_tp2`, `sell_tp4_not_below_tp3`, etc.).
+
+### Changed — `python/bridge.py`
+
+- `_dispatch_aurum_open_group` `forge_cmd` now includes `tp4` and `tp5` alongside the existing `tp3` pass-through. When AURUM omits them (the recommended path), the EA computes them itself; when AURUM supplies them, they flow straight through.
+
+### SL movement at every stage (unchanged but now reachable for BRIDGE groups)
+
+Now that BRIDGE groups have non-zero `tp3 / tp4 / tp5`, the EA's existing `ManageOpenGroups` staging passes engage end-to-end:
+
+| Trigger | TP transition | SL ratchet | Gate |
+|---|---|---|---|
+| TP1 hit | TP → TP2 | SL → BE (entry, or entry ± ATR-cushion) | `move_be_on_tp1=true` default |
+| TP2 reached | TP → TP3 | SL → TP1 (SL invariant) | `breakout_tp2_sl_ratchet_enabled` — **default OFF** |
+| TP3 reached | TP → TP4 | SL → TP2 (SL invariant) | `breakout_tp4_staging_enabled` + `TREND_*/VOLATILE` regime + `m5_adx ≥ breakout_tp4_min_adx` |
+| TP4 reached | TP → TP5 | SL → TP3 (SL invariant) | `breakout_tp5_staging_enabled` + same regime + `m5_adx ≥ breakout_tp5_min_adx` (stricter) |
+
+SL invariant preserved at every step: BUY raises SL only, SELL lowers SL only.
+
+### Wired
+
+- `SKILL.md §5`: AURUM should include `tp1` + `tp2` only; EA determines `tp3 / tp4 / tp5`. Optional explicit override documented.
+- No new env vars — re-uses existing `breakout_tp3_atr_mult` / `breakout_tp4_atr_mult` / `breakout_tp5_atr_mult` and staging-enabled toggles (already wired through sync mapping + .env.example).
+
+### Activation
+
+- `make forge-compile` rebuilt FORGE.ex5 (v2.7.123, 2026-05-15). MT5 must reload the `.ex5` (remove + drag-drop chart, or restart MT5) for the new staging to engage.
+- Optional behaviour tweak: enable `FORGE_BREAKOUT_TP2_SL_RATCHET_ENABLED=1` in `.env` if you want SL → TP1 the moment TP2 is reached (instead of staying at BE).
+
+---
+
 ## [v2.7.125] — 2026-05-15 (Strip Bridge B1/B2 PROFIT_RATCHET; port early-lock-floor to EA L2)
 
 Operator decision after the B1/B2 vs EA L0-L9 diff (this session's analysis):
