@@ -593,7 +593,7 @@ update-lens-mcp:
 	@echo "Updating TradingView MCP (LENS)..."
 	@if [ ! -d "$(LENS_MCP_DIR)/.git" ]; then \
 		echo "  Cloning tradingview-mcp-jackson..."; \
-		git clone https://github.com/ephico2real2/tradingview-mcp-aurum.git "$(LENS_MCP_DIR)"; \
+		git clone git@github.com:ephico2real2/tradingview-mcp-aurum.git "$(LENS_MCP_DIR)"; \
 	else \
 		echo "  Pulling latest from origin/main..."; \
 		git -C "$(LENS_MCP_DIR)" stash --include-untracked 2>/dev/null || true; \

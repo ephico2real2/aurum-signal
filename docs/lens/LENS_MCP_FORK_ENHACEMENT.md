@@ -1,6 +1,6 @@
 # LENS MCP — Fork & Enhancement Plan
 
-**Status**: F1 shipped 2026-05-16; F2–F5 pending
+**Status**: F1 + F2 shipped 2026-05-16 (F2 awaiting commit); F3–F5 pending
 **Owner**: operator (`ephico2real2`)
 **Created**: 2026-05-16
 **Companion doc**: [`docs/LENS_MCP_INTEGRATION.md`](../LENS_MCP_INTEGRATION.md) (current architecture as of pre-fork)
@@ -66,7 +66,7 @@ Acceptance:
 
 Rollback: revert the Makefile diff, re-clone upstream. No data loss possible.
 
-### F2 — Write-tool async mutex (1–2h, ours then upstream PR)
+### F2 — Write-tool async mutex (1–2h, ours then upstream PR) ✅ SHIPPED 2026-05-16
 
 **Goal**: serialize write tool handlers inside the MCP so concurrent HTTP/stdio clients can't race on shared Chrome state. Read tools stay unblocked.
 
@@ -209,3 +209,4 @@ If a PR merges, we `git pull` upstream into our fork and drop the matching commi
 |---|---|
 | 2026-05-16 | Initial plan. Awaiting operator's fork URL to begin F1. |
 | 2026-05-16 | F1 shipped. Fork cloned at `/Users/olasumbo/tradingview-mcp-aurum/` (HEAD `5d6d7bc`, byte-identical to upstream). `upstream` git remote added for future rebases. `Makefile` `LENS_MCP_DIR` + clone URL flipped to our fork. `make update-lens-mcp` + `make clean-mcp-git-stash` validated against new path. `make health` Overall ✅ OK. The legacy `/Users/olasumbo/tradingview-mcp-jackson/` clone is kept on disk as the upstream reference for `git diff` sanity checks — will be removed after F2/F3/F4 stabilise. Next: F2 write-tool async mutex. |
+| 2026-05-16 | F2 implemented on `feat/write-mutex` branch in the fork. `async-mutex` (operator-confirmed dep choice) added at `^0.5.0`. New exports in `src/connection.js`: `evaluateWrite(expression, opts)` runs single-statement writes under a process-wide mutex; `withWriteLock(fn)` wraps multi-step write sequences (handler receives a `evalInside` callback so reads+writes inside the critical section don't re-lock). ~30 write handlers across 9 `src/core/` modules now serialize: chart.js (setSymbol/setTimeframe/setType/manageIndicator/setVisibleRange/scrollToDate), drawing.js (drawShape/removeOne/clearAll), alerts.js (create/deleteAlerts), pane.js (setLayout/focus/setSymbol), indicators.js (setInputs/toggleVisibility), pine.js (setSource/compile/save/smartCompile/newScript/openScript — `ensurePineEditorOpen` left unlocked as idempotent open-or-noop), replay.js (start/step/autoplay/stop/trade), batch.js (per-iteration symbol/tf switch lock), watchlist.js (add), ui.js (click/openPanel/fullscreen/layoutSwitch/keyboard/typeText/hover/scroll/mouseClick/uiEvaluate). New `tests/concurrency.test.js` with 4 tests: arrival-order serialization, withWriteLock multi-step atomicity, exports-check, reads-not-blocked-by-writes — all pass. Pre-existing tests (29) still pass. Server starts clean. `make health` shows LENS polling fork at 4.1s freshness — no regression. Not yet committed/pushed; awaiting operator review. Next: open upstream issue describing the multi-client race, then PR `feat/write-mutex`. |
