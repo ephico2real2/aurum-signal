@@ -1,5 +1,48 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [S4] — 2026-05-15 (EA-side ExecuteOpenGroup defense-in-depth sanity checks)
+
+Operator-mandated: "EA must refuse pathological commands even when upstream Aegis approves." Today's G411 — AURUM-proposed SELL @ 4563.5–4564 with `lot_per_trade=0.5` (6× the prior G410 at the same range) — passed Aegis and only didn't fill due to timing. Without S4, a future variant would have filled at 0.5 lot. S4 closes that gap inside the EA itself, so Bridge/Aegis/AURUM bugs can't cascade into broker orders.
+
+### Added — `ea/FORGE.mq5`
+
+Three input parameters (XAUUSD-tuned defaults; 0 disables each check):
+
+```mql5
+input double ExecOpenGroup_MaxLotPerLeg         = 2.0;   // hard cap per leg
+input double ExecOpenGroup_MaxEntryDeviationAbs = 50.0;  // |entry - market| price-units
+input double ExecOpenGroup_MaxSlDistanceAbs     = 100.0; // |SL - entry| price-units
+```
+
+New helper `ValidateOpenGroupSanity(direction, lot, legs, sl, tp1, tp2, &reason)` runs in `ExecuteOpenGroup` right after the direction check and BEFORE `NormalizeLot()`/the leg loop, so the lot value reflects what BRIDGE actually requested (not a snapped-down broker-min surrogate). Rejection refuses the WHOLE group — no partial leg opens. Failure log line:
+
+```
+FORGE: OPEN_GROUP REFUSED G<id> <dir> — S4 sanity: <reason>
+```
+
+Six rejection reasons emitted:
+- `lot_too_large lot=X cap=Y` — extreme leg sizing.
+- `buy_sl_above_entry` / `sell_sl_below_entry` — SL on wrong side of entry for direction.
+- `buy_tp1_below_entry` / `buy_tp2_below_entry` / `sell_tp1_above_entry` / `sell_tp2_above_entry` — TP on wrong side of entry.
+- `sl_too_far dist=X cap=Y entry=E sl=S` — SL > MaxSlDistanceAbs price units from entry.
+- `entry_off_market leg=N entry=E mkt=M dev=D cap=C` — any leg's entry > MaxEntryDeviationAbs from current bid (SELL) / ask (BUY).
+- `no_entry_legs` — empty legs array (defense — shouldn't happen).
+
+Wrong-side SL/TP checks are belt-and-suspenders to Aegis's geometry validation. The `Aegis_only_validates_OPEN_GROUP` asymmetry meant a stale aurum_cmd.json with corrupted direction or sign-flipped SL would have made it to the EA; now it doesn't.
+
+### Activation
+
+- `make forge-compile` — FORGE.ex5 rebuilt (583582 bytes, version 2.7.123).
+- MT5 must reload the new .ex5 (remove FORGE from chart → drag back, or restart MT5). `forge_version` in market_data.json stays on the old number until reloaded.
+- Disable any specific check by setting the input to `0` (per-input toggle, no master flag).
+- Defaults tuned for XAUUSD; symbols with smaller absolute price scales (FX majors, JPY) need lower `MaxEntryDeviationAbs` / `MaxSlDistanceAbs` overrides via .set file or input UI.
+
+### Not done
+
+Per-symbol auto-scaling of the absolute thresholds is deferred — operator's primary symbol is XAUUSD; the defaults are correct for that. When the EA is attached to non-XAUUSD pairs, the operator can override via .set file inputs (no recompile needed).
+
+---
+
 ## [SCRIBE PnL Rollup] — 2026-05-15 (auto-rollup total_pnl from trade_closures + journal fallback)
 
 Operator finding: `trade_groups.total_pnl` was 0 / NULL on most closed groups today, even though the broker journal (`forge_journal_trades`) had the correct deals. Pulling "all orders" required raw journal queries because the scribe roll-up wasn't writing back.

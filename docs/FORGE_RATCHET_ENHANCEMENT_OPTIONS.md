@@ -60,10 +60,11 @@
 
 ---
 
-### S4 — EA-side `ExecuteOpenGroup` sanity checks (entry/lot/SL distance vs current)
+### S4 — EA-side `ExecuteOpenGroup` sanity checks ✅ SHIPPED 2026-05-15
 
-- **Why:** defense in depth — refuse pathological commands even if upstream approves
-- **Effort:** 1-2h, contained to `FORGE.mq5`
+- **Why:** defense in depth — refuse pathological commands even if upstream Aegis approves. Today's G411 (AURUM 0.5 lot SELL, 6× prior leg size) passed Aegis but only avoided filling by timing — S4 explicitly rejects that class.
+- **Done:** new `ValidateOpenGroupSanity()` helper in `ea/FORGE.mq5` + three input parameters (`ExecOpenGroup_MaxLotPerLeg=2.0`, `MaxEntryDeviationAbs=50.0`, `MaxSlDistanceAbs=100.0` — XAUUSD-tuned; 0 disables per-check). Validates: lot ceiling, direction-aware SL/TP wrong-side checks, SL distance cap, entry-vs-market deviation cap. Rejection logs `FORGE: OPEN_GROUP REFUSED G<id> <dir> — S4 sanity: <reason>` with 9 distinct reason codes.
+- **Activation:** `make forge-compile` done (FORGE.ex5 v2.7.123, 583582 bytes). MT5 must reload the .ex5 (remove + drag-drop FORGE chart, or restart MT5) before the new gate is active in live trading.
 
 ---
 
