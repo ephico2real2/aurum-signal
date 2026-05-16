@@ -20,6 +20,7 @@ from aeb_executor import execute_action, execute_scribe_query
 
 from scribe import get_scribe, get_tester_scribe
 from status_report import KNOWN_COMPONENTS
+from redis_cache import cached_view, get_cache  # F5R: Redis read-cache to decouple dashboard polling from scribe write contention
 from market_data import MT5_STALE_SEC, build_execution_quote, enrich_mt5_for_stale_check, safe_float, stabilize_mt5_tester_overlay
 from autoscalper_condition_service import build_autoscalper_condition_report
 from trading_session import (
@@ -458,6 +459,7 @@ def _build_scalper_gates(mt5: dict) -> dict:
 
 
 @app.route("/api/live")
+@cached_view(ttl=2)
 def api_live():
     # Self-heartbeat so ATHENA component stays current in System Health panel
     try:
@@ -803,6 +805,7 @@ def api_regime_performance():
 
 
 @app.route("/api/autoscalper/conditions")
+@cached_view(ttl=2)
 def api_autoscalper_conditions():
     """Query current AUTO_SCALPER trigger readiness + recent reasoning context."""
     try:
@@ -867,6 +870,7 @@ def api_brief():
 
 # ── Component health endpoint ──────────────────────────────────────
 @app.route("/api/components")
+@cached_view(ttl=2)
 def api_components():
     """Component health panel — one entry per component."""
     scribe  = get_scribe()
@@ -1413,6 +1417,7 @@ def api_signals_parse():
 
 # ── Signal history ─────────────────────────────────────────
 @app.route("/api/signals")
+@cached_view(ttl=2)
 def api_signals():
     limit = int(request.args.get("limit", 20))
     days_raw = request.args.get("days")
@@ -1466,6 +1471,7 @@ def api_performance():
 
 # ── P&L curve for chart ────────────────────────────────────────────
 @app.route("/api/pnl_curve")
+@cached_view(ttl=2)
 def api_pnl_curve():
     days = max(1, min(int(request.args.get("days", 1)), 366))
     scribe = get_scribe()
@@ -1560,6 +1566,7 @@ def api_aurum_exec():
 
 # ── System events log ──────────────────────────────────────────────
 @app.route("/api/events")
+@cached_view(ttl=2)
 def api_events():
     limit = max(1, min(int(request.args.get("limit", 200)), 2000))
     scribe = get_scribe()
@@ -1642,6 +1649,10 @@ def api_health():
         "aurum_exec": {
             "auth_required": bool(AURUM_EXEC_SECRET),
         },
+        # F5R: Redis read-cache state. enabled=False here is the
+        # operator's signal that dashboard polling will bypass cache
+        # and hit scribe directly (slower during heavy writes).
+        "cache": get_cache().health(),
     })
 
 

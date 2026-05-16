@@ -8,7 +8,8 @@
 - **Node.js 18+** (TradingView MCP server runtime)
 - **MetaTrader 5 (macOS native app)** (FORGE execution + account feed)
 - **TradingView Desktop with CDP enabled (`localhost:9222`)** (LENS live indicator source)
-- **TradingView MCP server**: `https://github.com/LewisWJackson/tradingview-mcp-jackson.git`
+- **TradingView MCP server (forked)**: `https://github.com/ephico2real2/tradingview-mcp-aurum.git` — operator's fork with F2 mutex + F3 HTTP transport + F4 reconnect (see `docs/lens/LENS_MCP_FORK_ENHACEMENT.md`). Upstream: `https://github.com/LewisWJackson/tradingview-mcp-jackson.git`.
+- **Redis 7+** (Athena read-cache, port 6379 default) — install: `brew install redis && brew services start redis`. Verify: `redis-cli ping` returns `PONG`. Athena API caches hot scribe queries in Redis with TTL=2s to prevent dashboard polling from blocking on heavy backtest write transactions. `ATHENA_CACHE_ENABLED=0` in `.env` disables the cache layer (falls back to direct scribe reads). Future: Dragonfly via Docker in F6 compose stack (Redis-API-compatible drop-in replacement; no code change required).
 - **Telegram account + Bot API token** (LISTENER intake + HERALD/AURUM notifications)
 - **Anthropic API key** (LISTENER parsing + AURUM intelligence layer)
 - **Tesseract OCR (optional, recommended for chart image extraction quality)**
