@@ -1,5 +1,49 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [E3] — 2026-05-15 (Graduated drawdown breaker — T1 warn → T2 close losers → T3 close all)
+
+Replaces the single-threshold "hammer" in `_check_drawdown` (one DD% → CLOSE_ALL + WATCH) with a three-tier graduated response. The hammer killed winners along with losers and banned new entries on every momentary drawdown spike. The graduated breaker gives an early warning, then salvages winners when only some positions are underwater, before escalating to the terminal CLOSE_ALL behaviour.
+
+### Tiers (defaults, all env-overridable)
+
+| Tier | Env | Default | Action | New entries |
+|---|---|---|---|---|
+| **T1 warn** | `DD_EQUITY_WARN_PCT` | 1.5% | Herald `⚠️ DD WARN` + `DD_BREAKER_WARN` scribe event. No trading state change. | Allowed |
+| **T2 close losers** | `DD_EQUITY_CLOSE_LOSERS_PCT` | 2.0% | For each open magic with `floating_pnl < 0`, emit `CLOSE_GROUP magic=<m>`. Winners keep running. `DD_BREAKER_CLOSE_LOSERS` scribe event. | Allowed |
+| **T3 close all** | `DD_EQUITY_CLOSE_ALL_PCT` | 3.0% | Legacy behaviour: `CLOSE_ALL` + force WATCH. `DD_BREAKER_CLOSE_ALL` scribe event. | Blocked |
+
+Each tier fires once per session per equity peak. All three flags reset when equity prints a new session high. Set any threshold to 0 to disable that tier independently — useful when an operator wants T1+T3 only (skip the salvage tier) or T3 only (legacy single-hammer).
+
+### Changed — `python/bridge.py`
+
+- New constants: `DD_EQUITY_WARN_PCT`, `DD_EQUITY_CLOSE_LOSERS_PCT`. Legacy `DD_EQUITY_CLOSE_ALL_PCT=3.0` retained.
+- New `Bridge` state: `_dd_warn_fired`, `_dd_close_losers_fired` alongside existing `_dd_close_all_fired`.
+- New helper `_close_losing_positions(mt5) → (count, total_loss)` — groups losing positions by magic and emits one `CLOSE_GROUP` per losing magic; updates scribe with `close_reason=DD_BREAKER_CLOSE_LOSERS`.
+- `_check_drawdown` rewritten as ordered T3 → T2 → T1 cascade (highest priority first so a 3.5% drawdown skips T1/T2 and goes straight to T3 in a single tick; T3 firing also silences T1/T2 for the same peak so Herald doesn't double-fire).
+
+### Why this matters (operator framing)
+
+Today's session showed the cliff effect: a 4.9% DD = nothing, a 5.0% DD = nuke everything. Many setups dip then recover; the hammer locks in losses at the worst moment and bans new entries until equity makes a new high. The graduated approach:
+
+1. **Salvages winners** — at 2% DD you may have 3 losers and 2 winners. T2 closes the 3, keeps the 2 running. Hammer killed all 5.
+2. **Early warning** — T1 gives operator ~1-2 minutes to manually intervene before T2.
+3. **Smaller blast radius** — operator can disable T2 (set to 0) for strategies where partial-close hurts more than it helps, or disable T1 if Herald noise is annoying.
+
+### Observable
+
+- Herald: `⚠️ DRAWDOWN WARN — T1` / `⚠️ DRAWDOWN BREAKER — T2 CLOSE LOSERS` / `🚨 DRAWDOWN BREAKER — T3 CLOSE ALL`.
+- `bridge.log` per tier: `DD BREAKER T1: ... — warn only` / `DD BREAKER T2: ... — closing losers only` / `DD BREAKER T3: ... — CLOSE ALL + WATCH`.
+- `scribe.system_events` types: `DD_BREAKER_WARN`, `DD_BREAKER_CLOSE_LOSERS`, `DD_BREAKER_CLOSE_ALL`.
+- T2's `close_reason` on closed groups: `DD_BREAKER_CLOSE_LOSERS` (distinct from T3's `DD_BREAKER`).
+
+### Activation
+
+- `make reload-bridge` to pick up.
+- `.env.example` updated with all three thresholds documented.
+- Tester mode bypasses the breaker (unchanged from legacy).
+
+---
+
 ## [S2] — 2026-05-15 (AURUM content-signature dedup window)
 
 Operator-requested follow-up to S1: extend the existing single-slot `_last_aurum_ts` dedup so the same *logical* command emitted with a fresh timestamp is also caught. The ts-based dedup only catches identical-timestamp re-reads of the same `aurum_cmd.json`; it can't catch the case where AURUM re-runs the LLM and re-emits the same intent with a new timestamp.

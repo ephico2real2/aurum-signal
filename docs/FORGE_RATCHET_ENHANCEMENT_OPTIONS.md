@@ -20,10 +20,11 @@
 
 ---
 
-### E3 — DD breaker graduation (warn → close-losers → close-all)
+### E3 — DD breaker graduation (warn → close-losers → close-all) ✅ SHIPPED 2026-05-15
 
-- **Why:** replace single-threshold hammer with graduated response
-- **Effort:** 1-day, contained to `bridge.py` `_check_drawdown`
+- **Why:** legacy single-threshold breaker killed winners with losers and banned new entries on every momentary spike.
+- **Done:** three tiers with independent env knobs (`DD_EQUITY_WARN_PCT=1.5`, `DD_EQUITY_CLOSE_LOSERS_PCT=2.0`, `DD_EQUITY_CLOSE_ALL_PCT=3.0`). T1 = Herald-only. T2 = `CLOSE_GROUP` per losing magic, winners keep running. T3 = legacy `CLOSE_ALL` + force WATCH. Each tier idempotent per peak; all three flags reset on new high. Set any tier to 0 to disable independently.
+- **Behaviour:** T3 firing also silences T1/T2 for the same peak (no Herald double-fire on a fast-and-deep drawdown). T2 groups losers by magic so one `CLOSE_GROUP` covers a multi-leg loss. Tester bypass preserved.
 
 ---
 
