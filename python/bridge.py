@@ -6,7 +6,7 @@ Central nervous system. Mode state machine. Coordinates everything.
 Entry point: python bridge.py
 """
 
-import os, json, logging, re, time, sys, urllib.error, urllib.request
+import os, json, logging, re, time, sys, urllib.error, urllib.request, uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -154,6 +154,16 @@ RESTORE_MODE_ON_RESTART = os.environ.get("RESTORE_MODE_ON_RESTART", "true").lowe
 
 # Sentinel override
 SENTINEL_OVERRIDE_DURATION = int(os.environ.get("SENTINEL_OVERRIDE_DURATION_SEC", "600"))  # 10min default
+
+# AURUM destructive-command confirmation gate (S1: G5008 mitigation).
+# When AURUM emits a high-blast-radius command (CLOSE_ALL, global MODIFY_SL/TP, etc.)
+# Bridge holds it pending operator's explicit `CONFIRM <proposal_id>` reply within
+# this TTL. Per-ticket / per-group / per-stage modifies are NOT gated.
+AURUM_CONFIRMATION_TTL_SEC = int(os.environ.get("AURUM_CONFIRMATION_TTL_SEC", "30"))
+AURUM_DESTRUCTIVE_ACTIONS = frozenset({
+    "CLOSE_ALL", "CLOSE_GROUP", "CLOSE_GROUP_PCT", "CLOSE_PCT",
+    "CLOSE_PROFITABLE", "CLOSE_LOSING", "MOVE_BE",
+})
 
 # Native scalper mode (passed to FORGE via config.json)
 FORGE_SCALPER_MODE = os.environ.get("FORGE_SCALPER_MODE", "NONE").upper()
@@ -1035,6 +1045,8 @@ class Bridge:
         self._last_recon_ts      = 0
         self._open_groups        = {}
         self._last_auto_scalper_ts  = 0
+        # S1: pending AURUM destructive-command proposals awaiting operator CONFIRM
+        self._pending_aurum_confirmations: dict[str, dict] = {}
         self._last_sydney_open_alert_key = None
         self._sentinel_user_override = False   # user manually bypassed sentinel
         self._sentinel_override_until = 0      # auto-revert timestamp
@@ -4221,8 +4233,68 @@ class Bridge:
         log.info("AUTO_SCALPER: AURUM responded with trade — processing next tick")
 
     # ── AURUM command processing ───────────────────────────────────
+    def _is_destructive_aurum_action(self, action: str, cmd: dict) -> bool:
+        """S1: classify whether an AURUM command needs operator CONFIRM before dispatch.
+
+        High-blast-radius actions (CLOSE_ALL, CLOSE_PROFITABLE, MOVE_BE, etc.) are
+        always destructive. MODIFY_SL/MODIFY_TP are destructive ONLY when scope is
+        global (no ticket/group_id/tp_stage) — scoped modifies match the EA's L0-L9
+        ratchet pattern and stay gate-free.
+        """
+        if action in AURUM_DESTRUCTIVE_ACTIONS:
+            return True
+        if action in ("MODIFY_SL", "MODIFY_TP"):
+            ticket, stage = _coerce_modify_scope(cmd)
+            if ticket is None and stage is None and cmd.get("group_id") is None:
+                return True
+        return False
+
+    def _summarize_destructive_action(self, action: str, cmd: dict) -> str:
+        if action == "CLOSE_ALL":
+            return "Close ALL open groups + pending orders"
+        if action == "CLOSE_GROUP":
+            return f"Close group {cmd.get('group_id')}"
+        if action == "CLOSE_GROUP_PCT":
+            return f"Close {cmd.get('pct', 70)}% of group {cmd.get('group_id')}"
+        if action == "CLOSE_PCT":
+            return f"Close {cmd.get('pct', 70)}% of every open position"
+        if action == "CLOSE_PROFITABLE":
+            return "Close ALL profitable positions"
+        if action == "CLOSE_LOSING":
+            return "Close ALL losing positions"
+        if action == "MOVE_BE":
+            return "Move SL → break-even on ALL open positions"
+        if action == "MODIFY_SL":
+            return f"Set SL={cmd.get('sl')} on ALL open positions (GLOBAL scope)"
+        if action == "MODIFY_TP":
+            return f"Set TP={cmd.get('tp')} on ALL open positions (GLOBAL scope)"
+        return action
+
+    def _sweep_expired_aurum_confirmations(self) -> None:
+        if not self._pending_aurum_confirmations:
+            return
+        now = time.time()
+        expired_ids = [
+            pid for pid, p in self._pending_aurum_confirmations.items()
+            if p.get("expires_at", 0) < now
+        ]
+        for pid in expired_ids:
+            p = self._pending_aurum_confirmations.pop(pid, {})
+            action = (p.get("cmd", {}).get("action") or "").upper()
+            log.info("AURUM confirmation expired: proposal=%s action=%s", pid, action)
+            try:
+                self._bridge_activity(
+                    "AURUM_CONFIRMATION_EXPIRED",
+                    reason=action,
+                    notes=json.dumps({"proposal_id": pid}, default=str),
+                )
+            except Exception:
+                pass
+
     def _check_aurum_command(self, mt5: dict):
         cmd = _read_json(AURUM_CMD_FILE)
+        # Sweep expired pending proposals every tick, even when no new cmd arrived.
+        self._sweep_expired_aurum_confirmations()
         if not cmd:
             return
         action = (cmd.get("action") or "").upper()
@@ -4231,6 +4303,74 @@ class Bridge:
         if not action or ts == getattr(self, "_last_aurum_ts", None):
             return
         self._last_aurum_ts = ts
+
+        # S1: operator CONFIRM <proposal_id> — look up and re-dispatch the held cmd
+        if action == "CONFIRM":
+            proposal_id = str(cmd.get("proposal_id") or "").strip().lower()
+            pending = self._pending_aurum_confirmations.pop(proposal_id, None)
+            if not pending:
+                log.warning(
+                    "AURUM CONFIRM: unknown or expired proposal_id=%s", proposal_id
+                )
+                self._bridge_activity(
+                    "AURUM_CONFIRMATION_REJECTED",
+                    reason="UNKNOWN_OR_EXPIRED",
+                    notes=json.dumps({"proposal_id": proposal_id}, default=str),
+                )
+                try:
+                    self.herald.send(
+                        f"⚠️ CONFIRM <code>{proposal_id}</code>: unknown or expired."
+                    )
+                except Exception:
+                    pass
+                return
+            cmd = pending.get("cmd") or {}
+            action = (cmd.get("action") or "").upper()
+            origin_source = str(cmd.get("origin_source") or cmd.get("source") or "").strip().upper()
+            log.info(
+                "AURUM CONFIRM accepted: proposal=%s action=%s — dispatching",
+                proposal_id, action,
+            )
+            self._bridge_activity(
+                "AURUM_CONFIRMATION_ACCEPTED",
+                reason=action,
+                notes=json.dumps({"proposal_id": proposal_id}, default=str),
+            )
+            # Fall through to existing dispatch chain with the held cmd.
+
+        # S1: destructive commands held pending CONFIRM (G5008 mitigation).
+        # Skip the gate when this cmd was just unsealed from a CONFIRM above —
+        # _pending_aurum_confirmations.pop already removed it.
+        elif self._is_destructive_aurum_action(action, cmd):
+            proposal_id = uuid.uuid4().hex[:8]
+            self._pending_aurum_confirmations[proposal_id] = {
+                "cmd": cmd,
+                "expires_at": time.time() + AURUM_CONFIRMATION_TTL_SEC,
+            }
+            summary = self._summarize_destructive_action(action, cmd)
+            log.warning(
+                "BRIDGE: AURUM %s HELD pending CONFIRM (proposal=%s ttl=%ds): %s",
+                action, proposal_id, AURUM_CONFIRMATION_TTL_SEC, summary,
+            )
+            try:
+                self.herald.send(
+                    f"⚠️ <b>Pending {action}</b>\n"
+                    f"{summary}\n"
+                    f"Reply <code>CONFIRM {proposal_id}</code> within "
+                    f"{AURUM_CONFIRMATION_TTL_SEC}s to execute."
+                )
+            except Exception:
+                pass
+            self._bridge_activity(
+                "AURUM_COMMAND_HELD",
+                reason=action,
+                notes=json.dumps({
+                    "proposal_id": proposal_id,
+                    "ttl_sec": AURUM_CONFIRMATION_TTL_SEC,
+                    "summary": summary,
+                }, default=str),
+            )
+            return
 
         if action == "MODE_CHANGE":
             new_mode = cmd.get("new_mode")
@@ -4840,19 +4980,39 @@ class Bridge:
         """
         AURUM-requested OPEN_GROUP: AEGIS → SCRIBE group → FORGE command.json
         (same end shape as Telegram SIGNAL / internal SCALPER dispatch).
+
+        Mode policy (operator-mandated 2026-05-15): AURUM may only OPEN_GROUP
+        when mode is HYBRID or AUTO_SCALPER. SCALPER mode is reserved for
+        FORGE EA's native scalper logic — AURUM must not place manual
+        entries that compete with the EA's autonomous setups. SIGNAL mode
+        is for Telegram-channel-driven entries; AURUM does not author those.
+        WATCH / OFF block all entries by definition.
         """
         eff = self._effective_mode()
-        if eff not in ("SCALPER", "SIGNAL", "HYBRID", "AUTO_SCALPER"):
+        if eff not in ("HYBRID", "AUTO_SCALPER"):
             log.warning(
-                "BRIDGE: AURUM OPEN_GROUP ignored — effective_mode=%s "
-                "(need SCALPER, SIGNAL, or HYBRID; WATCH if sentinel/circuit breaker)",
+                "BRIDGE: AURUM OPEN_GROUP rejected — effective_mode=%s "
+                "(AURUM entries require HYBRID or AUTO_SCALPER)",
                 eff,
             )
             self._bridge_activity(
                 "AURUM_OPEN_SKIPPED",
                 reason=f"effective_mode={eff}",
-                notes="OPEN_GROUP requires SCALPER, SIGNAL, or HYBRID",
+                notes=json.dumps({
+                    "direction": cmd.get("direction"),
+                    "entry_low": cmd.get("entry_low"),
+                    "entry_high": cmd.get("entry_high"),
+                    "rule": "AURUM_OPEN_GROUP requires HYBRID or AUTO_SCALPER",
+                }, default=str),
             )
+            try:
+                self.herald.send(
+                    f"🚫 <b>AURUM OPEN_GROUP rejected</b>\n"
+                    f"Mode is <code>{eff}</code> — AURUM entries need "
+                    f"<code>HYBRID</code> or <code>AUTO_SCALPER</code>."
+                )
+            except Exception:
+                pass
             return
 
         direction = (cmd.get("direction") or "").upper()

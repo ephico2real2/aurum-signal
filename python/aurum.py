@@ -1317,6 +1317,8 @@ class Aurum:
             "MOVE_BE", "CLOSE_PROFITABLE", "CLOSE_LOSING",
             "SENTINEL_OVERRIDE", "SCRIBE_QUERY", "SHELL_EXEC", "AURUM_EXEC",
             "ANALYSIS_RUN",
+            # S1: operator confirmation reply for held destructive commands
+            "CONFIRM",
         )
         commands_found: list[dict] = []
         for i in range(1, len(chunks), 2):
@@ -1403,7 +1405,33 @@ class Aurum:
             "origin_source": str(source or "TELEGRAM").upper().strip(),
         }
 
+    _CONFIRM_RE = re.compile(r"^\s*CONFIRM\s+([a-f0-9]{6,16})\b", re.IGNORECASE)
+
     def _handle_telegram_natural_language_command(self, text: str, source: str = "TELEGRAM") -> str | None:
+        # S1: literal `CONFIRM <proposal_id>` — short-circuit the LLM so the
+        # operator's confirmation reply cannot be re-summarized into something
+        # else. Writes the CONFIRM directly to aurum_cmd.json for Bridge to
+        # look up the held proposal.
+        m = self._CONFIRM_RE.match(text or "")
+        if m:
+            proposal_id = m.group(1).lower()
+            cmd = {
+                "action": "CONFIRM",
+                "proposal_id": proposal_id,
+                "origin_source": str(source or "TELEGRAM").upper().strip(),
+            }
+            self.write_command(cmd)
+            log.info("AURUM: CONFIRM intercepted from Telegram — proposal=%s", proposal_id)
+            try:
+                self.scribe.log_system_event(
+                    event_type="AURUM_CONFIRMATION_QUEUED",
+                    triggered_by="AURUM",
+                    reason="TELEGRAM_CONFIRM_RX",
+                    notes=f"proposal_id={proposal_id} source={source}",
+                )
+            except Exception:
+                pass
+            return f"CONFIRM {proposal_id} received — Bridge will dispatch if the proposal is still pending."
         if not self._is_telegram_health_check_request(text):
             return None
         cmd = self._telegram_health_check_command(source=source)

@@ -1,5 +1,116 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [SCRIBE PnL Rollup] — 2026-05-15 (auto-rollup total_pnl from trade_closures + journal fallback)
+
+Operator finding: `trade_groups.total_pnl` was 0 / NULL on most closed groups today, even though the broker journal (`forge_journal_trades`) had the correct deals. Pulling "all orders" required raw journal queries because the scribe roll-up wasn't writing back.
+
+Root cause: `update_trade_group` accepts `total_pnl` as an optional kwarg; most callers — `CLOSE_GROUP` via channel, `CHANNEL_CLOSE_ALL`, `AURUM_CLOSE_GROUP` (bridge.py:4530), `AURUM_CLOSE_ALL` (bridge.py:4401), pending-expired (bridge.py:1646), reconciler — pass it as `None`, which writes `NULL` straight to the column. Only the tracker's all-positions-drained path (bridge.py:2007) computes a rollup, and that path queries `trade_positions.pnl`, but `trade_positions` is sparsely populated (only groups where the tracker wrote a position row).
+
+### Changed — `python/scribe.py`
+
+- `update_trade_group(group_id, status, total_pnl=None, …)` now auto-rolls up when `total_pnl is None` AND the new status is terminal (CLOSED / CLOSED_ALL / SL_HIT / TP_HIT). Auto-rollup is skipped on OPEN / PARTIAL transitions.
+- New `_rollup_group_pnl(conn, group_id) → (pnl, pips, n)` helper:
+  1. **Primary**: sum `trade_closures.pnl` / `pips` where `trade_group_id = ?` (the canonical bridge-tracker write path).
+  2. **Fallback**: sum `forge_journal_trades.profit` where `magic = group.magic_number` AND `time BETWEEN group.timestamp AND group.closed_at` (with `+24h` padding when `closed_at` is missing). Temporal scoping is required because FORGE recycles magic numbers across cycles (magic 207402 alone hit 4 groups today — 397/399/400/412).
+  3. Returns `(0, 0, 0)` when neither source has data — caller leaves the column NULL rather than fabricating.
+- New `backfill_trade_group_pnl(since_iso=None, force=False) → {scanned, updated}` one-shot helper. `force=False` only touches NULL/0 rows; `force=True` recomputes every terminal-status row in scope (useful when a prior backfill produced wrong totals).
+
+### Backfill run (2026-05-15)
+
+```
+backfill_trade_group_pnl(since_iso='2026-04-01T00:00:00', force=True)
+→ {scanned: 412, updated: 360}
+```
+
+Today's groups (post-fix):
+
+| GID | Setup | Source | Magic | Net P&L |
+|---|---|---|---|---|
+| 400 | G5001 MOMENTUM_DUMP 22:55 (canonical ratchet) | FORGE | 207402 | +$103.84 |
+| 401 | G5002 MOMENTUM_DUMP | FORGE | 207403 | +$237.87 |
+| 402 | G5003 MOMENTUM_DUMP | FORGE | 207404 | +$124.32 |
+| 403 | G5003 BUY_LIMIT_RECOV | MANUAL_MT5 | 227413 | +$64.20 |
+| 404 | G5004 MOMENTUM_DUMP | FORGE | 207405 | +$79.68 |
+| 405 | G5005 MOMENTUM_DUMP | FORGE | 207406 | +$33.87 |
+| 406 | G5005 BUY_LIMIT_RECOV | MANUAL_MT5 | 227415 | +$88.50 |
+| 407 | G5006 MOMENTUM_DUMP | FORGE | 207407 | +$122.52 |
+| 408 | G5007 MOMENTUM_DUMP | FORGE | 207408 | +$103.44 |
+| **409** | **G5008 MOMENTUM_DUMP (closed by AURUM_CLOSE_ALL)** | FORGE | 207409 | **−$955.44** |
+| 410 / 411 | AURUM SCALPER mode (never executed) | AURUM | 202811/202812 | $0.00 |
+| 412 | G5001 various cycles | FORGE | 207402 | +$670.18 |
+
+### Activation
+
+- `make reload-bridge` to pick up changes — done 2026-05-15.
+- Going forward, any terminal-state `update_trade_group` call without an explicit `total_pnl` argument will auto-populate from authoritative sources.
+
+---
+
+## [S1b] — 2026-05-15 (AURUM OPEN_GROUP mode-restriction gate)
+
+Operator clarification (2026-05-15): "AURUM should try to place an order only when in hybrid mode or Auto_scalper mode — the scalper mode is only for the EA." Today's 14:21–14:31 AURUM OPEN_GROUP burst (groups 410, 411 placed; 3/5 rejected by Aegis on MAX_GROUPS / SL_TOO_TIGHT) all fired while bridge mode was `SCALPER` — confirming the bug.
+
+Root cause: `_dispatch_aurum_open_group` already had a mode check, but the allow-list was `("SCALPER", "SIGNAL", "HYBRID", "AUTO_SCALPER")`. SCALPER is reserved for FORGE EA's native scalper; AURUM placing manual entries there competes with the EA's setup decisions. SIGNAL is the Telegram-channel listener path; AURUM doesn't author those.
+
+### Changed
+
+**`python/bridge.py`:**
+- `_dispatch_aurum_open_group` allow-list tightened to `("HYBRID", "AUTO_SCALPER")`.
+- Rejection path now logs `AURUM_OPEN_SKIPPED reason=effective_mode=<mode>` with full notes (direction + entry range + rule citation) and sends a Herald notification (`🚫 AURUM OPEN_GROUP rejected — Mode is X — needs HYBRID or AUTO_SCALPER`).
+- Docstring expanded with the operator-mandated policy.
+
+**`SKILL.md` §5:**
+- New subsection "Mode restriction for AURUM OPEN_GROUP (operator-mandated 2026-05-15)" instructing the LLM to propose levels in prose rather than emit JSON when mode is disallowed.
+
+### Activation
+
+- `make reload-bridge` to pick up changes.
+- AURUM's MCP-driven analysis loop (TradingView chart + indicators → AI-backed trade decisions) remains intentional and unchanged — only the *output gate* is restricted by mode.
+
+---
+
+## [S1] — 2026-05-15 (AURUM destructive-command confirmation gate)
+
+Operator incident (2026-05-15): G5008 lost −$955.44 after operator's conversational "close all" inside a *question about* the trade was parsed by AURUM as an executable command and dispatched without a confirmation step. Scribe `close_reason = AURUM_CLOSE_ALL`.
+
+Root cause: AURUM's SKILL.md §5 instructed the LLM to "act, you must not refuse" on operator-directed action language. Aegis only validates `OPEN_GROUP` — every destructive command (`CLOSE_*`, global `MODIFY_*`, `MOVE_BE`) flowed straight from `aurum_cmd.json` → `forge_command.json` → EA execution with no gate.
+
+### Added — two-sided defense-in-depth confirmation gate
+
+**Bridge side (`python/bridge.py`) — hard backstop:**
+- `AURUM_CONFIRMATION_TTL_SEC` env (default 30s) + `AURUM_DESTRUCTIVE_ACTIONS` frozenset.
+- `Bridge._pending_aurum_confirmations: dict[str, dict]` keyed by 8-char hex `proposal_id`.
+- `_is_destructive_aurum_action(action, cmd)` — true for `CLOSE_ALL`/`CLOSE_GROUP`/`CLOSE_GROUP_PCT`/`CLOSE_PCT`/`CLOSE_PROFITABLE`/`CLOSE_LOSING`/`MOVE_BE` AND for `MODIFY_SL`/`MODIFY_TP` only when scope is global (no `ticket` / `group_id` / `tp_stage`).
+- `_summarize_destructive_action(action, cmd)` — human-readable summary for the Herald prompt.
+- `_sweep_expired_aurum_confirmations()` — TTL sweep on every Bridge tick; emits `AURUM_CONFIRMATION_EXPIRED` system_event.
+- `_check_aurum_command` reworked: TTL sweep at top → CONFIRM handler (pop pending, fall through to existing dispatch chain) → destructive gate (assign `proposal_id`, store with `expires_at`, Herald post, log `AURUM_COMMAND_HELD`, return). Existing if/elif dispatch unchanged.
+
+**AURUM side (`python/aurum.py`) — Telegram intercept:**
+- `_CONFIRM_RE = r"^\s*CONFIRM\s+([a-f0-9]{6,16})\b"` matches operator's literal reply.
+- `_handle_telegram_natural_language_command` short-circuits before the LLM: writes `{"action":"CONFIRM","proposal_id":<id>,"origin_source":"TELEGRAM"}` directly to `aurum_cmd.json` so confirmation cannot be re-summarized by the model. Logs `AURUM_CONFIRMATION_QUEUED`.
+- `CONFIRM` added to `valid_actions` so any LLM-emitted JSON fence with that action (edge case) also reaches Bridge.
+
+**SKILL.md side — LLM instruction:**
+- §5 new block lists the destructive action set + 4 rules: propose-don't-confirm, never self-emit CONFIRM, treat "close all" inside a question as conversational (no JSON), don't re-emit a held cmd on the next turn.
+
+### Failure modes blocked
+
+- G5008-class accidents: conversational "close all" → AURUM emits `CLOSE_ALL` → Bridge holds → operator sees Herald prompt → 30s TTL expires → no execution.
+- LLM playbook drift: even if a future SKILL.md edit drops the instruction, the bridge-side gate still holds (defense-in-depth).
+- AURUM hallucinating `CONFIRM` self-emit: bridge rejects unknown `proposal_id` with `AURUM_CONFIRMATION_REJECTED`.
+
+### Out of scope (intentional)
+
+- Per-ticket / per-group / per-stage `MODIFY_SL` / `MODIFY_TP` — low blast radius, matches EA L0-L9 ratchet path, gate-free.
+- `OPEN_GROUP` — Aegis already validates geometry/risk/regime; today's 14:21-14:31 sequence had 3/5 rejected by Aegis (`MAX_GROUPS:3/3`, `SL_TOO_TIGHT:2.7<3.0pips`).
+
+### Activation
+
+- `make reload-bridge` to pick up changes (no EA recompile required).
+- Memory `feedback_aurum_accidental_entry_safety` (M1 highest-leverage mitigation) — now satisfied.
+
+---
+
 ## [FORGE 2.7.110] — 2026-05-14 (CES Confluence Entry Score — Option C instrumentation-only ship)
 
 Operator question (2026-05-14):
