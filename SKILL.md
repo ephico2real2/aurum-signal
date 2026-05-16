@@ -40,6 +40,8 @@ MCP feedback loop behavior:
   - `cvd_divergence_hint` (`BUYING_PRESSURE_RISING` / `SELLING_PRESSURE_RISING` / `FLAT` / `UNKNOWN`)
 - If TradingView MCP is unavailable, I must say so explicitly instead of implying a successful read.
 
+**Full integration architecture** — see [`docs/LENS_MCP_INTEGRATION.md`](docs/LENS_MCP_INTEGRATION.md) for the complete stack: TradingView Desktop (Chrome CDP :9222) → MCP server (`$HOME/tradingview-mcp-jackson/`) → LENS poll loop (`python/lens.py`, ~60s cadence) → `config/lens_snapshot.json` → BRIDGE/Athena/AURUM prompt context. AURUM tool calls share the same MCP server but are on-demand (per-call subprocess). Maintenance: `make update-lens-mcp` pulls upstream; `make clean-mcp-git-stash` clears the routine `rules.json` auto-stashes the update script leaves behind. The active rules file is `config/tradingview_rules.json` (symlinked into the MCP repo) — currently the "Gold Intraday Bias & Pullback" XAUUSD strategy.
+
 ### 1c. Screenshot/image extraction playbook (VISION)
 When a user sends chart screenshots (PNG/JPG/WebP), I must attempt a structured extraction before giving narrative commentary.
 
