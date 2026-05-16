@@ -2172,13 +2172,146 @@ class Scribe:
     def update_trade_group(self, group_id: int, status: str,
                            total_pnl: float = None, pips: float = None,
                            trades_closed: int = None, close_reason: str = None):
+        """Update a trade_group's status + optional P&L rollup.
+
+        When the caller passes ``total_pnl=None`` and the new ``status`` is a
+        terminal state (CLOSED / CLOSED_ALL / SL_HIT / TP_HIT), the rollup is
+        computed automatically from ``trade_closures`` (preferred — populated
+        by the BRIDGE tracker at close-detection time), with
+        ``forge_journal_trades`` as fallback via the group's ``magic_number``
+        (catches the case where BRIDGE was down or initializing when the
+        close event fired and the tracker never wrote a closure row).
+
+        OPEN / PARTIAL transitions never trigger a rollup — those statuses
+        should preserve whatever P&L the previous update set (if any).
+        """
+        terminal = status not in ("OPEN", "PARTIAL")
         with self._conn() as c:
+            # Auto-rollup when the caller didn't supply explicit numbers AND
+            # the group is closing. This is the canonical P&L path for AURUM
+            # CLOSE_GROUP / CLOSE_ALL / channel-close / pending-expiry, none of
+            # which currently pass total_pnl.
+            if terminal and total_pnl is None:
+                rolled_pnl, rolled_pips, rolled_count = self._rollup_group_pnl(c, group_id)
+                if rolled_count > 0:
+                    total_pnl = rolled_pnl
+                    if pips is None:
+                        pips = rolled_pips
+                    if trades_closed is None:
+                        trades_closed = rolled_count
             c.execute("""UPDATE trade_groups SET status=?,total_pnl=?,
                 pips_captured=?,trades_closed=?,close_reason=?,
                 closed_at=? WHERE id=?""",
                 (status, total_pnl, pips, trades_closed, close_reason,
-                 self._now() if status not in ("OPEN","PARTIAL") else None,
+                 self._now() if terminal else None,
                  group_id))
+
+    def _rollup_group_pnl(self, conn, group_id: int) -> tuple[float, float, int]:
+        """Compute (pnl, pips, deal_count) for ``group_id`` from authoritative sources.
+
+        Order of preference:
+        1. ``trade_closures`` rows linked by ``trade_group_id`` (the canonical
+           BRIDGE-tracker write path; populated at close-detection).
+        2. ``forge_journal_trades`` rows linked by ``magic`` to the group's
+           ``magic_number``, summing only the closing-side deals (positive or
+           negative ``profit`` — opens are always 0). This is the broker
+           journal mirror, populated independently of BRIDGE state.
+
+        Returns (0.0, 0.0, 0) when neither source has data — caller should
+        leave the column NULL/0 rather than fabricate a value.
+        """
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl),0.0) AS pnl, "
+            "       COALESCE(SUM(pips),0.0) AS pips, "
+            "       COUNT(*) AS n "
+            "FROM trade_closures WHERE trade_group_id=?",
+            (group_id,),
+        ).fetchone()
+        if row and row[2] > 0:
+            return (round(float(row[0] or 0), 2),
+                    round(float(row[1] or 0), 1),
+                    int(row[2]))
+        # Journal fallback requires magic + temporal scoping. FORGE recycles
+        # magic numbers across cycles (e.g. magic 207402 = G5001 reused for
+        # consecutive entries on the same setup); summing journal rows by
+        # magic alone collapses multiple groups together. Scope to the
+        # group's [open, close] window so we get THIS cycle's deals only.
+        grp = conn.execute(
+            "SELECT magic_number, timestamp, closed_at "
+            "FROM trade_groups WHERE id=?",
+            (group_id,),
+        ).fetchone()
+        if not grp or not grp[0]:
+            return (0.0, 0.0, 0)
+        magic = int(grp[0])
+        opened_iso = grp[1]
+        closed_iso = grp[2]
+        if not opened_iso:
+            return (0.0, 0.0, 0)
+        # Closes are the deals with non-zero profit (opens are always 0.00).
+        # Bound the window: lower = group open; upper = close or +24h
+        # padding if the group is somehow flagged terminal without closed_at.
+        # Use strftime to convert ISO → unix epoch inside SQLite for
+        # comparison against forge_journal_trades.time.
+        jrow = conn.execute(
+            "SELECT COALESCE(SUM(profit),0.0) AS pnl, "
+            "       SUM(CASE WHEN profit != 0 THEN 1 ELSE 0 END) AS n "
+            "FROM forge_journal_trades "
+            "WHERE magic = ? "
+            "  AND time >= CAST(strftime('%s', ?) AS INTEGER) "
+            "  AND time <= CAST(strftime('%s', COALESCE(?, datetime(?, '+24 hours'))) AS INTEGER)",
+            (magic, opened_iso, closed_iso, opened_iso),
+        ).fetchone()
+        if jrow and jrow[1] and jrow[1] > 0:
+            return (round(float(jrow[0] or 0), 2), 0.0, int(jrow[1]))
+        return (0.0, 0.0, 0)
+
+    def backfill_trade_group_pnl(
+        self, since_iso: str | None = None, force: bool = False,
+    ) -> dict:
+        """One-shot: populate ``total_pnl`` on closed groups from
+        ``trade_closures`` / ``forge_journal_trades``.
+
+        - ``force=False`` (default): only touches rows where ``total_pnl`` is
+          NULL or 0 — safe to re-run without overwriting good data.
+        - ``force=True``: recomputes every terminal-status row in scope.
+          Useful when a prior backfill produced wrong totals (e.g. before the
+          temporal scoping for recycled magic numbers was in place).
+
+        Returns ``{"scanned": N, "updated": M}``.
+        """
+        updated = 0
+        scanned = 0
+        with self._conn() as c:
+            where = "status IN ('CLOSED','CLOSED_ALL','SL_HIT','TP_HIT')"
+            if not force:
+                where += " AND (total_pnl IS NULL OR total_pnl = 0)"
+            params: tuple = ()
+            if since_iso:
+                where += " AND timestamp >= ?"
+                params = (since_iso,)
+            rows = c.execute(
+                f"SELECT id FROM trade_groups WHERE {where}",
+                params,
+            ).fetchall()
+            for row in rows:
+                scanned += 1
+                gid = int(row[0])
+                pnl, pips, n = self._rollup_group_pnl(c, gid)
+                if n > 0 and pnl != 0:
+                    c.execute(
+                        "UPDATE trade_groups SET total_pnl=?, "
+                        "pips_captured=COALESCE(NULLIF(pips_captured,0), ?), "
+                        "trades_closed=COALESCE(NULLIF(trades_closed,0), ?) "
+                        "WHERE id=?",
+                        (pnl, pips or None, n, gid),
+                    )
+                    updated += 1
+        log.info(
+            "SCRIBE backfill: scanned=%d updated=%d force=%s",
+            scanned, updated, force,
+        )
+        return {"scanned": scanned, "updated": updated}
 
     def log_trade_position(self, group_id: int, data: dict, mode: str) -> int:
         """Insert a new trade_positions row.
