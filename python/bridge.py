@@ -5157,7 +5157,13 @@ class Bridge:
             "sl": sl,
             "tp1": tp1,
             "tp2": cmd.get("tp2"),
+            # v2.7.126: pass tp3/tp4/tp5 through to the EA when AURUM supplies
+            # them. EA registers each on g_groups[gi] and its existing staging
+            # passes (TP2→TP3, TP3→TP4, TP4→TP5) only fire when the target
+            # is > 0 — so omitting them preserves legacy 2-stage behaviour.
             "tp3": cmd.get("tp3"),
+            "tp4": cmd.get("tp4"),
+            "tp5": cmd.get("tp5"),
             "tp1_close_pct": TP1_CLOSE_PCT,
             "move_be_on_tp1": MOVE_BE_ON_TP1,
             "entry_type":    entry_type_label,

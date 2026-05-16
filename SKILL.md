@@ -121,6 +121,14 @@ BRIDGE reads `aurum_cmd.json` every cycle. All 10 FORGE command actions are supp
 **Trade execution:**
 - **OPEN_GROUP** (or **OPEN_TRADE**, normalized) → AEGIS validates → SCRIBE group → FORGE places N trades across entry ladder. For `source=SIGNAL`, BRIDGE currently routes all legs to TP1 by default (`tp1_close_pct=100`, `tp2/tp3=null`). Contract geometry is enforced before execution: BUY requires `tp1 > entry_high` and `sl < entry_low`; SELL requires `tp1 < entry_low` and `sl > entry_high`; optional BUY targets must increase (`tp2 > tp1`, `tp3 > tp2`) and optional SELL targets must decrease (`tp2 < tp1`, `tp3 < tp2`). Full gate order, R:R formulas, rejection codes: [docs/AEGIS.md](docs/AEGIS.md).
 
+**TP staging (v2.7.126):** I include only `tp1` and `tp2` in OPEN_GROUP JSON. The EA itself determines `tp3 / tp4 / tp5` from M5 ATR at open time using the same formula as the native scalper (`entry ± m5_atr × breakout_tpN_atr_mult`). Runtime promotion of runners along the chain is gated by regime + ADX inside the EA's `ManageOpenGroups` staging passes — TP3 unconditional once TP2 reached, TP4/TP5 require `TREND_BULL/BEAR/VOLATILE` + `m5_adx ≥ breakout_tpN_min_adx`. SL ratchets at every stage with the SL-invariant guarantee (BUY raises only, SELL lowers only):
+- TP1 hit → SL → BE (with optional ATR cushion)
+- TP2 reached → SL → TP1 (gated by `breakout_tp2_sl_ratchet_enabled`, default OFF)
+- TP3 reached → SL → TP2 (unconditional within stage)
+- TP4 reached → SL → TP3 (unconditional within stage)
+
+If I want to override and pin a specific extension target, I MAY include `tp3` / `tp4` / `tp5` in the OPEN_GROUP JSON — the EA accepts explicit values and only auto-computes when the field is missing or 0. Default behaviour: omit them and let the EA decide.
+
 **Close commands:**
 - **CLOSE_ALL** → close all EA positions + cancel all pending orders
 - **CLOSE_GROUP** → close positions + pendings for a specific group: `{"action":"CLOSE_GROUP","group_id":15}`
