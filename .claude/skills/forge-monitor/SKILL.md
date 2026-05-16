@@ -971,6 +971,62 @@ Every new setup type MUST follow the 8-step pattern in §10 (inventory check →
 Atlas §5/§6/§10 and playbook §12 are append-only (historical). Atlas §1/§3 and playbook §1
 are live-updated (current state).
 
+### MANDATORY: Counterfactual upside analysis on every loss (the "real money" rule)
+
+**Operator mandate (2026-05-16)**: *"This is real money. Imagine if we can sell 10 lot one day."*
+
+Every loss post-mortem must answer the **upside question**: what would the OPPOSITE-direction trade have captured, and how does that scale to operator-intended position size? Losing $3,655 on a BUY is half the story; the other half is the $5,386+ that the empirically-correct SELL would have captured at the same trigger. Don't stop at "loss avoided" — quantify the **directional flip win + scaling math**.
+
+#### §A — The 7-point counterfactual checklist (required on every loss)
+
+For every TAKEN losing trade in a monitoring session OR run analysis:
+
+1. **What actually happened** — entry price, SL distance, lot trajectory (initial + staged-add + wave-amp), realized loss
+2. **Adverse extreme in the OPPOSITE direction** — `SELECT MAX(price)` post-entry for SELL flip; `SELECT MIN(price)` post-entry for BUY flip. Would the opposite trade have stopped out?
+3. **SL feasibility math at 3 geometry options**:
+   - Tight (1.0×ATR from entry)
+   - Standard (1.5×ATR from entry, or mirror of original SL distance)
+   - Wide (`bb_upper/lower ± 1.5×ATR` — symmetric to the original setup's SL geometry)
+4. **Disciplined-wait variant**: wait for failure of original direction, fire opposite on confirmation, SL just above/below the failed extreme (typical SL distance: 3-10 pts vs 20+ pts for immediate fire)
+5. **R:R comparison** across actual / aggressive flip / disciplined wait:
+   - Show R:R as ratio (e.g. 5.6:1) — NOT just absolute dollar values
+   - The R:R is the structural edge; it doesn't change with lot size
+6. **Real-money scaling math** — show the P&L at operator's intended position size (typically 1, 5, 10 lots — match the operator's framing). Lot scales linearly; show explicitly.
+7. **Empirically-verified $/lot/pt** from actual realized deals BEFORE doing any scaling math:
+   - Query: `SELECT profit, volume FROM TRADES WHERE deal_ticket=N AND profit != 0`
+   - Compute: `$/lot/pt = profit / (volume × sl_distance_pts)`
+   - For XAUUSD on Vantage broker, ≈ $100/lot/pt — verify per-broker, never assume
+
+#### §B — Anti-patterns this rule rejects
+
+- ❌ **Stopping at "loss avoided"** — the upside math is part of the analysis. "We'd have lost $0 instead of $3,655" misses the "we'd have WON $5,386" half.
+- ❌ **Reporting absolute $ without R:R ratio** — R:R is the structural edge; absolute $ obscures it. Always show both.
+- ❌ **Lot-size assumption (default 0.2, 1.0)** — pull actual volumes from TRADES. The operator's intended scale matters.
+- ❌ **Using guessed $/lot/pt** — always verify from a realized deal in the same backtest before extrapolating. The $1 vs $100 distinction is 100× — it matters at scale.
+- ❌ **Reporting at the trade's actual lot size when operator's framing implies scaling** — when operator says "imagine 10 lot", scale the math to 10 lots. Don't stay at 1.6.
+
+#### §C — Reporting format (case study template)
+
+| Approach | SL distance | Loss if SL hit | Win at extreme | R:R |
+|---|---|---|---|---|
+| Disciplined wait (tight SL above/below failed extreme) | X pts | $X (10 lots: $X) | $X (10 lots: $X) | X:1 |
+| Aggressive flip (immediate, mirror SL distance) | X pts | $X | $X | X:1 |
+| Actual (what fired) | X pts | $X realized | n/a | downside skew |
+
+Plus a single one-line aggregate: *"At operator's intended scale, the disciplined-wait approach captures $X with bounded $Y downside (R:R Z:1)."*
+
+#### §D — The G5003 canonical example (verified empirical math)
+
+| Approach | SL pts | Loss @ 1.6 lots | Win @ 1.6 lots | Loss @ 10 lots | Win @ 10 lots | R:R |
+|---|---|---|---|---|---|---|
+| **Disciplined wait SELL** | 6 | $960 | $5,386 | **$6,000** | **$33,660** | **5.6:1** |
+| Aggressive SELL flip | 22.37 | $3,579 | $5,077 | $22,370 | $31,730 | 1.4:1 |
+| BUY actual | 22.45 | −$3,655 realized | (n/a) | −$22,845 scaled | (n/a) | 1:3 downside |
+
+This template is the standard. Apply on every loss analysis.
+
+---
+
 ### MANDATORY: empirical-data-only rule (technical banter is allowed; speculation is NOT)
 
 **Operator mandate (2026-05-16)**: *"You are allowed to banter with me technically — but only with empirical data and logic that conforms to the actual trades. So you must come prepared."*

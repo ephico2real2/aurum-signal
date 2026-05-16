@@ -252,6 +252,107 @@ If G5003 had fired **SELL** instead of **BUY**, with the same lot escalation (0.
 
 The operator's claim "and could be more" is empirically validated — the maximum realizable was $5,077 on the SELL leg alone (1.6 lots × 31.73 pts × $1/pt). With TP1 80% close geometry, the bulk locks fast and 20% rides to the low.
 
+### §4.4 Counterfactual SL-risk analysis — what if the SELL flip is wrong?
+
+The directional-flip mechanism's downside is "what if we flip to SELL and price actually keeps going up?" The empirical answer for THIS specific case + the broader R:R math.
+
+#### §4.4.1 The relevant prices (verified queries)
+
+| Datum | Value | Source |
+|---|---|---|
+| G5003 entry price | 4483.39 | `TRADES.deal_ticket=14` |
+| **Max adverse post-entry for SELL** | **4488.35** (+4.96 pts above entry) | `SIGNALS at 02:05:00` (verified MAX(price) query) |
+| ATR at G5003 entry | 14.91 | `SIGNALS row at G5003 trigger` |
+| `bb_upper` at G5003 entry | 4517.28 | `SIGNALS row at G5003 trigger` |
+
+#### §4.4.2 SL placement options + loss-if-hit math (1.6 lots — G5003's wave-amp peak)
+
+| SL geometry | SL price | Distance from entry | Would have hit? | Loss if hit (1.6 lots × pts × $1) |
+|---|---|---|---|---|
+| Tight (1.0×ATR above entry) | 4498.30 | 14.91 pts | ❌ peak was 4488.35 — safe | $2,386 |
+| Standard (1.5×ATR above entry — mirror of BUY SL distance) | 4505.76 | 22.37 pts | ❌ peak was 4488.35 — safe | $3,579 |
+| Wide (`bb_upper + 1.5×ATR` — symmetric to current setup's BUY SL pattern) | 4539.64 | 56.25 pts | ❌ way above peak | $9,000 |
+
+**Critical empirical point**: At any of these SL placements, **the SELL would NOT have hit SL on this specific trade**. The max adverse for a SELL was only **+4.96 pts**, far below even the tightest SL (+14.91 pts). The SELL would have lived through the small bounce and captured the −31.73 pt move down to 4451.66.
+
+#### §4.4.3 $/lot/pt empirical calibration (XAUUSD this broker)
+
+From the actual G5003 SL deals:
+- Deal 19: 0.2 lots, SL distance 22.45 pts, realized loss = `−$463.20`
+- `$463.20 / (0.2 × 22.45) = $103.21 per lot per pt`
+
+**Canonical broker math**: **1 lot × 1 pt ≈ $100** (100-oz XAUUSD contract). All P&L below uses this verified factor.
+
+#### §4.4.4 Disciplined-wait approach — empirical R:R at 1.6 lots
+
+The operator-described mechanism doesn't fire on the BUY trigger inverted. It **waits during cooldown, analyzes, then fires on confirmation** (bounce dies, SL placed just above the failed peak):
+
+| Approach | Entry | SL | SL distance | Lot | Loss if SL hit | Win if rides to 4451.66 |
+|---|---|---|---|---|---|---|
+| **Disciplined: wait, fire on confirmation** | ~4485 | 4491 | **6 pts** | 1.6 | **$960** | **+$5,386** |
+| Aggressive: fire on BUY trigger, inverted | 4483.39 | 4505.76 | 22.37 pts | 1.6 | $3,579 | +$5,077 |
+| BUY (actual, realized) | 4483.39 | 4460.94 | 22.45 pts | 1.6 | **−$3,655.40 (REALIZED)** | — |
+
+#### §4.4.5 R:R asymmetry
+
+| Approach | Worst case | Best case | R:R |
+|---|---|---|---|
+| **Disciplined cooldown-wait → SELL on confirmation** | **−$960** | **+$5,386** | **5.6 : 1** |
+| Aggressive SELL flip on BUY trigger | −$3,579 | +$5,077 | 1.4 : 1 |
+| Current BUY-at-trigger (what fired) | **−$3,655.40 (realized)** | +$1,212 (G5001 bounce scenario) | ≈ 1 : 3 (downside skew) |
+
+The disciplined wait converts the BUY-at-trigger's downside-skewed bet (loss 3× the upside) into an asymmetric-win bet (reward 5.6× the risk). The cooldown-flip routine isn't just about getting direction right — it's about **using the cooldown to wait for structure confirmation so the SL can sit tightly above the failed bounce peak**.
+
+#### §4.4.6 Real-money scaling — 10 lots
+
+**Operator framing (2026-05-16)**: *"This is real money. Imagine if we can sell 10 lot one day."*
+
+Same trade pattern, 10× position size:
+
+| Approach | Loss if SL hit | Win at window low (4451.66) | Win at G5003 BUY-SL level (4460.94) |
+|---|---|---|---|
+| **Disciplined wait SELL** (SL = 6 pts above failed peak) | **$6,000** | **$33,660** | $22,450 |
+| Aggressive SELL flip on BUY trigger | $22,370 | $31,730 | $22,450 |
+| Current BUY-at-trigger (loss × 6.25 scale) | **−$22,845 (realized scaled)** | — | — |
+
+**With TP1 80% close geometry on the disciplined-wait SELL** (per operator spec for fast breaks):
+
+| Component | Size | Pts | $ |
+|---|---|---|---|
+| TP1 close 80% at +0.4×ATR (~6 pts profit) | 8 lots | 6 | **+$4,800 banked fast** |
+| Remaining 20% rides to window low (BE-snap on the rest) | 2 lots | 33.66 | **+$6,732** |
+| **Total realized** | | | **~$11,532** |
+
+**Worst-case downside on disciplined-wait at 10 lots**: $6,000 (if the SELL stops out at the 6-pt SL above the failed peak — empirically didn't happen, but bounded).
+
+R:R remains 5.6:1 regardless of position size — the **structural** edge. Lot size scales linearly.
+
+#### §4.4.7 Generalizing the upside-analysis rule
+
+This counterfactual logic isn't G5003-specific. Per operator mandate (2026-05-16), **every loss post-mortem MUST include**:
+
+1. The actual SL distance + loss realized (what happened)
+2. The actual adverse extreme in the OPPOSITE direction (would the opposite trade have stopped out?)
+3. The SL feasibility math at multiple geometry options (tight / standard / wide)
+4. The disciplined-wait variant with tight SL above the failure level
+5. R:R comparison between actual path / aggressive flip / disciplined wait
+6. **Scaling math at operator's intended position size** (1, 5, 10 lots — show the real-money outcome)
+7. **Empirically verified $/lot/pt** from actual realized deals before scaling — no assumed defaults
+
+Codified in `forge-monitor/SKILL.md` as `### MANDATORY: Counterfactual upside analysis on every loss`.
+
+#### §4.4.5 Generalizing the upside-analysis rule
+
+This counterfactual logic isn't G5003-specific. Per operator mandate (2026-05-16), **every loss post-mortem MUST include**:
+
+1. The actual SL distance + loss realized (what happened)
+2. The actual adverse extreme in the opposite direction (would the opposite trade have stopped out?)
+3. The SL feasibility math at multiple geometry options (tight / standard / wide)
+4. The disciplined-wait variant with tight SL above the failure level
+5. R:R comparison between actual path / aggressive flip / disciplined wait
+
+Codified in `forge-monitor/SKILL.md` as `### MANDATORY: Counterfactual upside analysis on every loss`.
+
 ---
 
 ## §5 Industry citations (per WebSearch mandate, 2026-05-16)
