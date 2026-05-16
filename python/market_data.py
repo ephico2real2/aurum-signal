@@ -44,6 +44,61 @@ def enrich_mt5_for_stale_check(mt5: dict[str, Any], market_file: str) -> dict[st
         return mt5
 
 
+# v2.7.53 — Tester-priority overlay for market_data.json reads.
+#
+# When MT5 Strategy Tester runs concurrently with the live FORGE EA, both write
+# to Common/Files/market_data.json. Each consumer process (bridge, athena, ...)
+# polls and sees account.balance / positions / session flip between TESTER
+# values ($10k starting + sim P&L, sim positions) and LIVE broker values ($100k
+# real balance, real positions).
+#
+# Operator preference: **during a test run, all displays/logs should show the
+# TESTER state**, not the live broker. The flicker masks the test results.
+# Once the tester is no longer writing (process stopped, MT5 closed), consumers
+# automatically revert to live values within a short grace window.
+#
+# Mechanism:
+# - Every tester write (strategy_tester=true) refreshes `_last_tester_snapshot`
+#   and `_last_tester_write_ts`. Tester writes pass through unchanged.
+# - Live writes that arrive within `_TESTER_GRACE_SEC` of the most recent
+#   tester write are SHADOWED — the helper returns the cached tester snapshot
+#   instead of the live one, so consumers see stable tester data even when
+#   the live EA wins a write cycle in between.
+# - Live writes that arrive after `_TESTER_GRACE_SEC` of silence from the
+#   tester pass through normally — testing is considered "no longer active".
+#
+# Per-process state (each consumer maintains its own cache). The
+# `strategy_tester=true` flag is preserved on shadowed writes so all
+# downstream tester-mode guards (PROFIT_RATCHET, HERALD session/KZ suppression,
+# journal-sync routing) continue to fire correctly.
+_last_tester_snapshot: dict[str, Any] = {}
+_last_tester_write_ts: float = 0.0
+_TESTER_GRACE_SEC: float = 15.0
+
+
+def stabilize_mt5_tester_overlay(mt5: dict[str, Any]) -> dict[str, Any]:
+    """Return tester snapshot during a test run; live data otherwise.
+
+    Call right after `_read_json(MARKET_FILE)` + `enrich_mt5_for_stale_check()`
+    in any consumer that reads market_data.json (bridge, athena_api, etc.).
+    """
+    global _last_tester_snapshot, _last_tester_write_ts
+    if not isinstance(mt5, dict) or not mt5:
+        return mt5
+    now = time.time()
+    if mt5.get("strategy_tester"):
+        # Tester wrote — cache and return as-is.
+        _last_tester_snapshot = dict(mt5)
+        _last_tester_write_ts = now
+        return mt5
+    # Live write — if tester wrote recently, shadow this with the cached
+    # tester snapshot so consumers see a consistent test view.
+    if _last_tester_snapshot and (now - _last_tester_write_ts) < _TESTER_GRACE_SEC:
+        return dict(_last_tester_snapshot)
+    # No recent tester activity — live mode, pass through unchanged.
+    return mt5
+
+
 def mt5_tick_age_sec(mt5: dict) -> float | None:
     """Seconds since FORGE update (wall-clock). Uses _age_from_mtime when set (Strategy Tester)."""
     if not isinstance(mt5, dict):
