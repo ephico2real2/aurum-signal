@@ -88,6 +88,7 @@ help:
 	@echo "  make setup-indicators  Add all required indicators to TradingView chart"
 	@echo "  make check-indicators  Verify indicators are present (no changes)"
 	@echo "  make update-lens-mcp   Pull latest TradingView MCP, npm install, verify"
+	@echo "  make clean-mcp-git-stash  Drop stale rules.json auto-stashes left by update-lens-mcp (safe — refuses anything else)"
 	@echo "  (docs/OPERATIONS.md — restart, verify, AURUM prompt)"
 	@echo "  (docs/AEGIS.md — risk gate logic, AEGIS_* env tuning)"
 	@echo "  (docs/SENTINEL.md — calendar + FXStreet/Google/Investing RSS)"
@@ -514,7 +515,7 @@ reload-athena:
 LENS_MCP_DIR = $(HOME)/tradingview-mcp-jackson
 LENS_RULES_CANONICAL = $(ROOT_DIR)/config/tradingview_rules.json
 
-.PHONY: start-tradingview stop-tradingview mt5-start mt5-stop mt5-kill-residual setup-mt5-link check-tradingview update-lens-mcp system-up system-down
+.PHONY: start-tradingview stop-tradingview mt5-start mt5-stop mt5-kill-residual setup-mt5-link check-tradingview update-lens-mcp clean-mcp-git-stash system-up system-down
 
 start-tradingview:
 	@chmod +x $(SCRIPTS)/start_tradingview_cdp.sh
@@ -618,6 +619,51 @@ print(','.join((json.loads(p.read_text()).get('watchlist') or [])) if p.exists()
 	@echo "  Path:    $(LENS_MCP_DIR)/src/server.js"
 	@echo ""
 	@echo "✅ LENS MCP updated. BRIDGE picks up changes on next LENS fetch cycle."
+
+# Drop the stale `rules.json`-deletion stashes that `update-lens-mcp`
+# creates every run (line 598: `git stash --include-untracked` auto-stashes
+# the symlinked `rules.json` before each pull). Each stash is identical —
+# just the `rules.json` deletion — so they're safe to drop. Refuses to drop
+# any stash that touches a file other than `rules.json` so legitimate WIP
+# is never lost.
+clean-mcp-git-stash:
+	@if [ ! -d "$(LENS_MCP_DIR)/.git" ]; then \
+		echo "❌ MCP repo not found: $(LENS_MCP_DIR)"; exit 1; \
+	fi
+	@count=$$(git -C "$(LENS_MCP_DIR)" stash list | wc -l | tr -d ' '); \
+	if [ "$$count" -eq 0 ]; then \
+		echo "✅ No MCP stashes to clean."; exit 0; \
+	fi; \
+	echo "Found $$count MCP stash(es):"; \
+	git -C "$(LENS_MCP_DIR)" stash list; \
+	echo ""; \
+	echo "Verifying each is empty or rules.json-only..."; \
+	safe=1; \
+	i=0; \
+	while [ $$i -lt $$count ]; do \
+		files=$$(git -C "$(LENS_MCP_DIR)" stash show --name-only stash@{$$i} 2>/dev/null); \
+		if [ -z "$$files" ]; then \
+			echo "  ✓ stash@{$$i}: empty (no tracked changes)"; \
+		elif [ "$$files" = "rules.json" ]; then \
+			echo "  ✓ stash@{$$i}: rules.json only"; \
+		else \
+			echo "  ⚠ stash@{$$i} touches: $$files — manual review required"; \
+			safe=0; \
+		fi; \
+		i=$$((i+1)); \
+	done; \
+	if [ $$safe -eq 0 ]; then \
+		echo ""; \
+		echo "❌ Aborting — at least one stash has non-rules.json content."; \
+		echo "   Inspect with: git -C $(LENS_MCP_DIR) stash show -p stash@{N}"; \
+		exit 1; \
+	fi; \
+	echo ""; \
+	echo "  All $$count stash(es) are the routine rules.json auto-stash. Dropping..."; \
+	while [ $$(git -C "$(LENS_MCP_DIR)" stash list | wc -l | tr -d ' ') -gt 0 ]; do \
+		git -C "$(LENS_MCP_DIR)" stash drop stash@{0}; \
+	done; \
+	echo "✅ MCP git stash cleaned."
 
 # ── Full system lifecycle (dependency-ordered) ───────────────────────
 # system-up order:
