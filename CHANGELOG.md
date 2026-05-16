@@ -1,5 +1,39 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [S2] — 2026-05-15 (AURUM content-signature dedup window)
+
+Operator-requested follow-up to S1: extend the existing single-slot `_last_aurum_ts` dedup so the same *logical* command emitted with a fresh timestamp is also caught. The ts-based dedup only catches identical-timestamp re-reads of the same `aurum_cmd.json`; it can't catch the case where AURUM re-runs the LLM and re-emits the same intent with a new timestamp.
+
+### Changed — `python/bridge.py`
+
+- New `AURUM_DEDUP_WINDOW_SEC` env (default 10s) and `AURUM_DEDUP_BYPASS_ACTIONS` frozenset.
+- `Bridge._recent_aurum_signatures: dict[str, float]` — sha1[:12] of cmd minus volatile fields → first-seen ts.
+- `_aurum_cmd_signature(cmd)` — strips `timestamp`, `origin_source`, `source`, `proposal_id`, `reason` then sha1-hashes the canonical JSON. Two emissions of the exact same logical cmd produce the same signature.
+- `_sweep_expired_aurum_signatures()` — TTL sweep every Bridge tick.
+- `_check_aurum_command` order is now: ts dedup → S2 signature dedup → S1 CONFIRM handler / destructive gate → existing dispatch chain. Duplicates are dropped *before* the destructive gate so operator doesn't see two Herald CONFIRM prompts for the same intent.
+
+### Bypass list
+
+`CONFIRM` (each carries a unique `proposal_id` — S1 already gates it) and query/exec actions (`SCRIBE_QUERY`, `AURUM_EXEC`, `SHELL_EXEC`, `ANALYSIS_RUN`) skip the dedup — legitimate retries are common there.
+
+### Observable behaviour
+
+- Drops log a WARN line: `BRIDGE: AURUM <action> DEDUPED (sig=<hex> age=Xs window=10s)`.
+- Scribe `system_events` row: `AURUM_COMMAND_DEDUPED` with `reason=<action>` and notes `{signature, age_sec, window_sec}`.
+
+### Why the gap mattered
+
+S1 prevents accidental execution. S2 prevents accidental *prompt fatigue* — without it, AURUM rapidly re-emitting CLOSE_ALL (e.g. operator types "close all" twice in quick succession) would create two held proposals with two separate Herald prompts. Operator might confirm both. S2 collapses identical re-emissions inside the 10s window.
+
+Today's 14:21 vs 14:23 OPEN_GROUP burst (groups 410 vs 411 — same range, *different* lots 0.08 vs 0.50) would NOT be deduped — the signature includes `lot_per_trade`, so a sizing change produces a distinct hash. Only literal duplicates (same direction, same entry, same SL/TP, same lot) get dropped.
+
+### Activation
+
+- `AURUM_DEDUP_WINDOW_SEC=10` documented in `.env.example`.
+- `make reload-bridge` to pick up.
+
+---
+
 ## [S4] — 2026-05-15 (EA-side ExecuteOpenGroup defense-in-depth sanity checks)
 
 Operator-mandated: "EA must refuse pathological commands even when upstream Aegis approves." Today's G411 — AURUM-proposed SELL @ 4563.5–4564 with `lot_per_trade=0.5` (6× the prior G410 at the same range) — passed Aegis and only didn't fill due to timing. Without S4, a future variant would have filled at 0.5 lot. S4 closes that gap inside the EA itself, so Bridge/Aegis/AURUM bugs can't cascade into broker orders.

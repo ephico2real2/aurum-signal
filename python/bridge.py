@@ -6,7 +6,7 @@ Central nervous system. Mode state machine. Coordinates everything.
 Entry point: python bridge.py
 """
 
-import os, json, logging, re, time, sys, urllib.error, urllib.request, uuid
+import os, json, logging, re, time, sys, urllib.error, urllib.request, uuid, hashlib
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -163,6 +163,20 @@ AURUM_CONFIRMATION_TTL_SEC = int(os.environ.get("AURUM_CONFIRMATION_TTL_SEC", "3
 AURUM_DESTRUCTIVE_ACTIONS = frozenset({
     "CLOSE_ALL", "CLOSE_GROUP", "CLOSE_GROUP_PCT", "CLOSE_PCT",
     "CLOSE_PROFITABLE", "CLOSE_LOSING", "MOVE_BE",
+})
+
+# S2: signature-based dedup window for AURUM commands. The existing
+# `_last_aurum_ts` check only catches identical-timestamp re-reads of the
+# same aurum_cmd.json file; it cannot catch the case where AURUM re-emits
+# the *same logical command* with a fresh timestamp (e.g. LLM re-runs the
+# response after a Telegram retry). This window hashes the cmd minus
+# volatile fields (timestamp, origin_source, proposal_id, reason) and
+# drops any duplicate signature seen within S2_DEDUP_WINDOW_SEC.
+# Query / exec actions (SCRIBE_QUERY, AURUM_EXEC, SHELL_EXEC, ANALYSIS_RUN)
+# and CONFIRM bypass the dedup — legitimate retries are common there.
+AURUM_DEDUP_WINDOW_SEC = int(os.environ.get("AURUM_DEDUP_WINDOW_SEC", "10"))
+AURUM_DEDUP_BYPASS_ACTIONS = frozenset({
+    "CONFIRM", "SCRIBE_QUERY", "AURUM_EXEC", "SHELL_EXEC", "ANALYSIS_RUN",
 })
 
 # Native scalper mode (passed to FORGE via config.json)
@@ -1047,6 +1061,8 @@ class Bridge:
         self._last_auto_scalper_ts  = 0
         # S1: pending AURUM destructive-command proposals awaiting operator CONFIRM
         self._pending_aurum_confirmations: dict[str, dict] = {}
+        # S2: signature → first-seen-ts for content-based dedup window
+        self._recent_aurum_signatures: dict[str, float] = {}
         self._last_sydney_open_alert_key = None
         self._sentinel_user_override = False   # user manually bypassed sentinel
         self._sentinel_override_until = 0      # auto-revert timestamp
@@ -4270,6 +4286,34 @@ class Bridge:
             return f"Set TP={cmd.get('tp')} on ALL open positions (GLOBAL scope)"
         return action
 
+    def _aurum_cmd_signature(self, cmd: dict) -> str:
+        """S2: stable content-hash of an AURUM cmd, ignoring volatile fields.
+
+        Used to detect duplicate logical commands (same action + same key
+        params) emitted with fresh timestamps — the case the existing
+        `_last_aurum_ts` dedup misses.
+        """
+        sig_data = {
+            k: v for k, v in cmd.items()
+            if k not in (
+                "timestamp", "origin_source", "source",
+                "proposal_id", "reason",
+            )
+        }
+        sig_json = json.dumps(sig_data, sort_keys=True, default=str)
+        return hashlib.sha1(sig_json.encode("utf-8")).hexdigest()[:12]
+
+    def _sweep_expired_aurum_signatures(self) -> None:
+        if not self._recent_aurum_signatures:
+            return
+        cutoff = time.time() - AURUM_DEDUP_WINDOW_SEC
+        expired = [
+            sig for sig, ts in self._recent_aurum_signatures.items()
+            if ts < cutoff
+        ]
+        for sig in expired:
+            self._recent_aurum_signatures.pop(sig, None)
+
     def _sweep_expired_aurum_confirmations(self) -> None:
         if not self._pending_aurum_confirmations:
             return
@@ -4293,8 +4337,9 @@ class Bridge:
 
     def _check_aurum_command(self, mt5: dict):
         cmd = _read_json(AURUM_CMD_FILE)
-        # Sweep expired pending proposals every tick, even when no new cmd arrived.
+        # Sweep expired pending proposals + dedup signatures every tick.
         self._sweep_expired_aurum_confirmations()
+        self._sweep_expired_aurum_signatures()
         if not cmd:
             return
         action = (cmd.get("action") or "").upper()
@@ -4303,6 +4348,32 @@ class Bridge:
         if not action or ts == getattr(self, "_last_aurum_ts", None):
             return
         self._last_aurum_ts = ts
+
+        # S2: content-signature dedup. Drop the duplicate; existing logic
+        # decides whether to hold (S1) or dispatch the original.
+        # CONFIRM bypasses (each carries a unique proposal_id) and
+        # query/exec actions bypass (legitimate retries are common).
+        if action not in AURUM_DEDUP_BYPASS_ACTIONS:
+            sig = self._aurum_cmd_signature(cmd)
+            prev_ts = self._recent_aurum_signatures.get(sig)
+            now = time.time()
+            if prev_ts is not None and (now - prev_ts) < AURUM_DEDUP_WINDOW_SEC:
+                age = round(now - prev_ts, 2)
+                log.warning(
+                    "BRIDGE: AURUM %s DEDUPED (sig=%s age=%ss window=%ds)",
+                    action, sig, age, AURUM_DEDUP_WINDOW_SEC,
+                )
+                self._bridge_activity(
+                    "AURUM_COMMAND_DEDUPED",
+                    reason=action,
+                    notes=json.dumps({
+                        "signature": sig,
+                        "age_sec": age,
+                        "window_sec": AURUM_DEDUP_WINDOW_SEC,
+                    }, default=str),
+                )
+                return
+            self._recent_aurum_signatures[sig] = now
 
         # S1: operator CONFIRM <proposal_id> — look up and re-dispatch the held cmd
         if action == "CONFIRM":

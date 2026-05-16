@@ -46,10 +46,11 @@
 
 ---
 
-### S2 — Per-action dedup window in `_check_aurum_command`
+### S2 — Per-action content-signature dedup window ✅ SHIPPED 2026-05-15
 
-- **Why:** prevents duplicate Telegram processing
-- **Effort:** <1h
+- **Why:** prevents duplicate Telegram processing — extends `_last_aurum_ts` (which only catches identical-timestamp re-reads) to also catch the same *logical* command emitted with a fresh timestamp (LLM retry, double-fire, etc.).
+- **Done:** `_aurum_cmd_signature(cmd)` = sha1[:12] of cmd minus volatile fields (`timestamp`, `origin_source`, `proposal_id`, `reason`). `_recent_aurum_signatures` dict TTL'd by `AURUM_DEDUP_WINDOW_SEC` (default 10s). Bypass list: `CONFIRM` + query/exec actions. Drops log `AURUM_COMMAND_DEDUPED` to scribe + WARN bridge.log. Runs BEFORE S1 destructive gate so operator doesn't see duplicate Herald prompts.
+- **Behaviour:** today's 14:21 vs 14:23 OPEN_GROUP (same range, different lots) would NOT be deduped — signature includes `lot_per_trade`. Only true duplicates (same direction, same entry, same SL/TP, same lot) get dropped inside the window.
 
 ---
 
