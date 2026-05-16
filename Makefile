@@ -512,7 +512,7 @@ reload-athena:
 	@curl -sf http://localhost:7842/api/health > /dev/null 2>&1 && echo "✅ ATHENA up" || echo "⚠️  ATHENA not responding"
 
 # ── TradingView CDP + LENS MCP ─────────────────────────────────────────
-LENS_MCP_DIR = $(HOME)/tradingview-mcp-jackson
+LENS_MCP_DIR = $(HOME)/tradingview-mcp-aurum
 LENS_RULES_CANONICAL = $(ROOT_DIR)/config/tradingview_rules.json
 
 .PHONY: start-tradingview stop-tradingview mt5-start mt5-stop mt5-kill-residual setup-mt5-link check-tradingview update-lens-mcp clean-mcp-git-stash system-up system-down
@@ -593,7 +593,7 @@ update-lens-mcp:
 	@echo "Updating TradingView MCP (LENS)..."
 	@if [ ! -d "$(LENS_MCP_DIR)/.git" ]; then \
 		echo "  Cloning tradingview-mcp-jackson..."; \
-		git clone https://github.com/LewisWJackson/tradingview-mcp-jackson.git "$(LENS_MCP_DIR)"; \
+		git clone https://github.com/ephico2real2/tradingview-mcp-aurum.git "$(LENS_MCP_DIR)"; \
 	else \
 		echo "  Pulling latest from origin/main..."; \
 		git -C "$(LENS_MCP_DIR)" stash --include-untracked 2>/dev/null || true; \
