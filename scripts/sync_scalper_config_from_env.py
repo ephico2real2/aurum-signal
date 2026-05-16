@@ -31,6 +31,9 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_FAST_LOCK_MIN_HOLD_SEC_BREAKOUT": ("safety", "fast_lock_min_hold_sec_breakout", "int", 0.0, None),
     "FORGE_FAST_LOCK_BREATH_MULT": ("safety", "fast_lock_breath_mult", "float", 0.75, 2.5),
     "FORGE_FAST_LOCK_MIN_PROFIT_POINTS": ("safety", "fast_lock_min_profit_points", "float", 0.0, None),
+    # v2.7.125 — early-lock-floor (port of pre-strip Bridge B1 PROFIT_RATCHET)
+    "FORGE_LOCK_FLOOR_PIPS_ENABLED": ("safety", "lock_floor_pips_enabled", "bool01", None, None),
+    "FORGE_LOCK_FLOOR_PIPS": ("safety", "lock_floor_pips", "float", 0.0, 200.0),
     "FORGE_BOUNCE_MIN_TP1_ATR_MULT": ("bb_bounce", "min_tp1_atr_mult", "float", 0.0, 5.0),
     "FORGE_BOUNCE_MIN_TP2_ATR_MULT": ("bb_bounce", "min_tp2_atr_mult", "float", 0.0, 10.0),
     "FORGE_GATE_M5_ADX_HYSTERESIS_ENABLE": ("safety", "adx_hysteresis_enabled", "bool01", None, None),

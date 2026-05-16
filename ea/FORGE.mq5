@@ -1680,6 +1680,13 @@ struct ScalperConfig {
    double fast_lock_spread_guard_mult;
    // >1 widens fast-lock trigger/trail (more room before SL ratchet tightens). 1.0 = legacy behaviour.
    double fast_lock_breath_mult;
+   // v2.7.125 — early lock floor (B1 port from Bridge). When enabled AND
+   // L2's adaptive ratchet has fired, force SL to be at least
+   // entry ± lock_floor_pips × PipSize() (BUY/SELL). Tightens L2's lock_sl
+   // floor when the adaptive trail would otherwise lock less profit.
+   // Default disabled — operator opts in via FORGE_LOCK_FLOOR_PIPS_ENABLED=1.
+   bool   lock_floor_pips_enabled;
+   double lock_floor_pips;
    bool   adx_hysteresis_enabled;
    bool   adx_hysteresis_apply_in_tester;
    double adx_trend_enter;
@@ -3391,6 +3398,14 @@ void ManageOpenGroups() {
                double trail_sl = bid - (trail_pts * point);
                target_sl = MathMax(lock_sl, trail_sl);
                target_sl = MathMax(target_sl, open + (min_profit_pts * point));
+               // v2.7.125 early-lock-floor: if enabled, never lock LESS profit
+               // than entry + lock_floor_pips × PipSize(). Ported from the
+               // pre-strip Bridge B1 PROFIT_RATCHET; gives the same "chunky
+               // early lock" floor inside the EA's single-authority L2 path.
+               if(g_sc.lock_floor_pips_enabled && g_sc.lock_floor_pips > 0.0) {
+                  double floor_sl = open + (g_sc.lock_floor_pips * PipSize());
+                  target_sl = MathMax(target_sl, floor_sl);
+               }
                double max_valid = bid - min_dist;
                if(target_sl > max_valid) target_sl = max_valid;
                if(target_sl <= open) continue;
@@ -3412,6 +3427,13 @@ void ManageOpenGroups() {
                double trail_sl = ask + (trail_pts * point);
                target_sl = MathMin(lock_sl, trail_sl);
                target_sl = MathMin(target_sl, open - (min_profit_pts * point));
+               // v2.7.125 early-lock-floor: mirror of BUY block — for SELL,
+               // floor pulls SL DOWN to lock at least lock_floor_pips of
+               // profit (SL further from entry into the green).
+               if(g_sc.lock_floor_pips_enabled && g_sc.lock_floor_pips > 0.0) {
+                  double floor_sl = open - (g_sc.lock_floor_pips * PipSize());
+                  target_sl = MathMin(target_sl, floor_sl);
+               }
                double min_valid = ask + min_dist;
                if(target_sl < min_valid) target_sl = min_valid;
                if(target_sl >= open) continue;
@@ -5326,6 +5348,11 @@ void InitScalperConfig() {
    g_sc.fast_lock_min_profit_points = 12.0;
    g_sc.fast_lock_spread_guard_mult = 1.20;
    g_sc.fast_lock_breath_mult = 1.35;
+   // v2.7.125: early-lock-floor defaults — disabled by default; matches the
+   // pre-strip Bridge B1 PROFIT_RATCHET_LOCK_PIPS=25 chunky-lock behaviour
+   // when operator enables. PipSize() handles XAU $0.10/pip vs FX 0.0001.
+   g_sc.lock_floor_pips_enabled = false;
+   g_sc.lock_floor_pips = 25.0;
    g_sc.adx_hysteresis_enabled = false;  // disabled — ADX 25-33 is routine XAUUSD, gate was blocking all BB bounces
    g_sc.adx_hysteresis_apply_in_tester = false;
    g_sc.adx_trend_enter = 35.0;
@@ -6744,6 +6771,17 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "fast_lock_breath_mult")) {
       v = JsonGetDouble(content, "fast_lock_breath_mult");
       if(v >= 0.75 && v <= 2.5) g_sc.fast_lock_breath_mult = v;
+   }
+   // v2.7.125: early-lock-floor knobs (port of pre-strip Bridge B1 PROFIT_RATCHET)
+   if(JsonHasKey(content, "lock_floor_pips_enabled")) {
+      v = JsonGetDouble(content, "lock_floor_pips_enabled");
+      g_sc.lock_floor_pips_enabled = (v >= 0.5);
+   }
+   if(JsonHasKey(content, "lock_floor_pips")) {
+      v = JsonGetDouble(content, "lock_floor_pips");
+      // Sanity: reject negative / absurd-large values; > 200 pips on XAU
+      // would price the SL above current market on most ratchet entries.
+      if(v >= 0.0 && v <= 200.0) g_sc.lock_floor_pips = v;
    }
    if(JsonHasKey(content, "adx_hysteresis_enabled")) {
       v = JsonGetDouble(content, "adx_hysteresis_enabled");

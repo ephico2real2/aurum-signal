@@ -217,42 +217,21 @@ if SIGNAL_ENTRY_TYPE not in ("limit", "market"):
 SIGNAL_ENTRY_ZONE_CLUSTER  = os.environ.get("SIGNAL_ENTRY_ZONE_CLUSTER", "false").strip().lower() in ("1", "true", "yes", "on")
 SIGNAL_ENTRY_CLUSTER_PIPS  = float(os.environ.get("SIGNAL_ENTRY_CLUSTER_PIPS", "2.0"))
 PENDING_CANCEL_ON_GROUP_CLOSE = os.environ.get("PENDING_CANCEL_ON_GROUP_CLOSE", "true").strip().lower() in ("1", "true", "yes", "on")
-# Profit-ratchet: lock SL to entry+lock_pips once a leg is in profit by trigger_pips.
-# Opt-in (default false) so existing groups behave exactly as before unless the
-# operator explicitly enables it. See docs/CLI_API_CHEATSHEET.md § "Profit ratchet".
-PROFIT_RATCHET_ENABLED = os.environ.get("PROFIT_RATCHET_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-# Pip convention used by the ratchet (trader-style, matches the SCRIBE pips
-# column and AURUM/Athena reports):
-#   XAU/XAG  : 1 pip = $0.10  -> LOCK_PIPS=10 means SL pinned $1.00 past entry
-#   JPY pairs: 1 pip = 0.01
-#   majors   : 1 pip = 0.0001
-# This deliberately diverges from _pip_size_for_symbol (which uses broker
-# points = $0.01 for XAU) so the env-var value matches what the operator
-# sees in trade_closures.pips and Telegram alerts.
-try:
-    PROFIT_RATCHET_TRIGGER_PIPS = float(os.environ.get("PROFIT_RATCHET_TRIGGER_PIPS", "15"))
-except (TypeError, ValueError):
-    PROFIT_RATCHET_TRIGGER_PIPS = 15.0
-try:
-    PROFIT_RATCHET_LOCK_PIPS = float(os.environ.get("PROFIT_RATCHET_LOCK_PIPS", "10"))
-except (TypeError, ValueError):
-    PROFIT_RATCHET_LOCK_PIPS = 10.0
-if PROFIT_RATCHET_TRIGGER_PIPS <= PROFIT_RATCHET_LOCK_PIPS:
-    # The trigger must exceed the lock or the move is meaningless.
-    PROFIT_RATCHET_LOCK_PIPS = max(0.0, PROFIT_RATCHET_TRIGGER_PIPS - 1.0)
-# Hybrid TP tightening alongside the SL pin: when a leg crosses the trigger,
-# also pull its TP down (BUY) / up (SELL) to current_price ± buffer * pip_size
-# so further forward movement closes the leg with a TP_HIT (positive close)
-# instead of letting the SL ratchet catch it on a retrace. Per-ticket scope:
-# the leg that crossed the trigger is the only one tightened — sibling legs
-# in the same group keep their original TP1/TP2/TP3 targets and continue
-# running. Set to 0 to disable TP tightening (pure SL ratchet behaviour).
-try:
-    PROFIT_RATCHET_TP_BUFFER_PIPS = float(os.environ.get("PROFIT_RATCHET_TP_BUFFER_PIPS", "5"))
-except (TypeError, ValueError):
-    PROFIT_RATCHET_TP_BUFFER_PIPS = 5.0
-if PROFIT_RATCHET_TP_BUFFER_PIPS < 0:
-    PROFIT_RATCHET_TP_BUFFER_PIPS = 0.0
+# v2.7.125 STRIPPED — PROFIT_RATCHET (B1 SL ratchet + B2 hybrid TP tighten).
+# Removed per operator decision 2026-05-15 after the B1/B2 vs EA L0-L9 diff:
+#   • B1 (SL ratchet at MFE>=trigger) duplicated EA L2 fast-lock-trail with a
+#     fixed-pip formula instead of the adaptive trail; only added a chunky
+#     "early lock floor" in the 30-200 pip MFE window before L2 wakes up.
+#     That floor — the one useful behaviour — should be ported into EA L2
+#     itself as a single-authority addition (pending separate ticket).
+#   • B2 (hybrid TP tighten) was broker-rejected three times on the G5001
+#     case study (2026-05-15) with [invalid stops]. EA L4's tp1_close_pct
+#     mechanism banks the same profit reliably via real partial-close.
+# History preserved at python/bridge.py.backup-pre-b1-strip-20260515-222625.
+# Old env vars (no longer read): PROFIT_RATCHET_ENABLED,
+#   PROFIT_RATCHET_TRIGGER_PIPS, PROFIT_RATCHET_LOCK_PIPS,
+#   PROFIT_RATCHET_TP_BUFFER_PIPS. Bridge silently ignores them — they can
+#   stay in .env until the next housekeeping pass.
 # Optional SIGNAL-source override of TP1_CLOSE_PCT (mirrors AEGIS_SIGNAL_MIN_RR pattern)
 _SIG_TP1_RAW = os.environ.get("SIGNAL_TP1_CLOSE_PCT", "").strip()
 try:
@@ -1089,12 +1068,8 @@ class Bridge:
         self._known_unmanaged_positions: dict[int, dict] = {}   # ticket → snapshot (manual/non-FORGE)
         self._known_pendings:  dict[int, dict] = {}   # ticket → snapshot
         self._tracker_seeded = False
-        # Profit-ratchet bookkeeping: tickets we've already nudged so we don't
-        # spam FORGE with the same MODIFY_SL every tick. Cleared on close, on
-        # ratchet drop (so the next eligibility window can retry), and on
-        # SIGNAL group close (to wipe stale entries pointing at recycled tickets).
-        self._profit_ratcheted: set[int] = set()
-        self._profit_ratchet_tester_warned = False
+        # v2.7.125: PROFIT_RATCHET stripped — see header comment near
+        # SIGNAL_ENTRY_CLUSTER_PIPS for rationale + B1 port plan.
         self._tester_mode_logged = False
         # FORGE command queue: serialises command.json writes so rapid-fire
         # MODIFY_SL/MODIFY_TP sequences (per-ticket profit-ratchet, multi-stage
@@ -1696,10 +1671,6 @@ class Bridge:
         groups_touched: dict[int, list] = {}  # gid → [pnl, ...]
         for ticket in closed_tickets:
             snap = self._known_positions.pop(ticket)
-            try:
-                self._profit_ratcheted.discard(int(ticket))
-            except AttributeError:
-                pass  # tolerated for stubs without the bookkeeping set
             gid = snap["group_id"]
             pnl = snap.get("last_profit", 0)
             close_price = snap.get("current_price") or 0
@@ -2063,25 +2034,10 @@ class Bridge:
                 except Exception as _he:
                     log.debug("TRACKER herald error: %s", _he)
 
-        # ── Profit ratchet: lock SL once a leg is N pips green ──
-        # Runs after fills/closes are reconciled so we only ratchet on legs
-        # that are still live this tick. Opt-in via PROFIT_RATCHET_ENABLED.
-        if PROFIT_RATCHET_ENABLED:
-            in_tester = bool(mt5.get("strategy_tester"))
-            if in_tester:
-                # Strategy Tester frequently rejects per-ticket MODIFY_SL/TP
-                # ratchet writes as "Invalid stops". That can leave original
-                # SL in place and distort backtest outcomes. Native FORGE
-                # management remains active; disable BRIDGE ratchet in tester.
-                if not self._profit_ratchet_tester_warned:
-                    log.info(
-                        "BRIDGE: PROFIT_RATCHET disabled in strategy_tester mode "
-                        "(avoids Invalid stops / stale-SL artifacts)."
-                    )
-                    self._profit_ratchet_tester_warned = True
-            else:
-                self._profit_ratchet_tester_warned = False
-                self._apply_profit_ratchet(live_positions)
+        # v2.7.125: PROFIT_RATCHET (B1 SL + B2 TP) removed — see header
+        # comment for rationale. EA L2 fast-lock-trail + L5 BE-snap own
+        # post-placement SL management now; B1's "early lock floor" is
+        # the pending port-to-EA work.
 
     def _enqueue_forge_command(
         self,
@@ -2232,207 +2188,6 @@ class Bridge:
             return True
 
         return _verify
-
-    def _apply_profit_ratchet(self, live_positions: dict[int, dict]) -> None:
-        """For every FORGE-managed live position whose unrealised pip gain is
-        ≥ PROFIT_RATCHET_TRIGGER_PIPS and whose current SL is still worse than
-        ``entry ± PROFIT_RATCHET_LOCK_PIPS``, enqueue a per-ticket MODIFY_SL
-        for FORGE so any retracement closes at a small profit instead of
-        giving the move back.
-
-        Idempotency:
-          • ``_profit_ratcheted`` holds tickets we've already enqueued so we
-            don't duplicate while a write is in-flight.
-          • If the queue ultimately drops the command (FORGE never confirmed
-            the move within retry budget), the on_drop callback removes the
-            ticket from the set so a future eligible tick can re-attempt.
-        """
-        trigger = float(PROFIT_RATCHET_TRIGGER_PIPS)
-        lock = float(PROFIT_RATCHET_LOCK_PIPS)
-        if trigger <= 0:
-            return
-        for ticket, p in live_positions.items():
-            if ticket in self._profit_ratcheted:
-                continue
-            direction = (p.get("type") or "").upper()
-            if direction not in ("BUY", "SELL"):
-                continue
-            try:
-                open_price = float(p.get("open_price") or 0)
-                cur_price = float(p.get("current_price") or 0)
-                live_sl = float(p.get("sl") or 0)
-            except (TypeError, ValueError):
-                continue
-            if open_price <= 0 or cur_price <= 0:
-                continue
-            symbol = p.get("symbol")
-            pip_size = _ratchet_pip_size(symbol)
-            if pip_size <= 0:
-                continue
-            raw = cur_price - open_price
-            if direction == "SELL":
-                raw = -raw
-            pips = round(raw / pip_size, 1)
-            if pips < trigger:
-                continue
-            if direction == "BUY":
-                target_sl = round(open_price + lock * pip_size, 5)
-                already_locked = live_sl > 0 and live_sl >= target_sl - 1e-6
-            else:
-                target_sl = round(open_price - lock * pip_size, 5)
-                already_locked = live_sl > 0 and live_sl <= target_sl + 1e-6
-            if already_locked:
-                # Stop already past the lock target (e.g. FORGE moved BE on TP1)
-                # — nothing to do; mark to avoid re-checking each tick.
-                self._profit_ratcheted.add(int(ticket))
-                continue
-            magic = int(p.get("magic") or 0)
-            gid = self._known_positions.get(int(ticket), {}).get("group_id")
-            forge_cmd = {
-                "action": "MODIFY_SL",
-                "sl": target_sl,
-                "ticket": int(ticket),
-            }
-            if magic > 0:
-                forge_cmd["magic"] = magic
-            ticket_int = int(ticket)
-
-            def _on_drop(t=ticket_int) -> None:
-                # Release the dedup token so the next eligible tick can
-                # retry the ratchet — better than silently giving up.
-                self._profit_ratcheted.discard(t)
-                log.warning(
-                    "BRIDGE: profit-ratchet command for #%s dropped after retries; "
-                    "will re-attempt next eligibility window", t,
-                )
-
-            verifier = self._build_ticket_sl_verifier(ticket_int, target_sl, direction)
-            enqueued = self._enqueue_forge_command(
-                forge_cmd,
-                verifier=verifier,
-                description=f"PROFIT_RATCHET ticket={ticket_int} sl={target_sl}",
-                on_drop=_on_drop,
-                dedup_key=f"ratchet:{ticket_int}",
-            )
-            if enqueued is None:
-                # Already pending/in-flight from a prior tick — nothing to do.
-                continue
-            try:
-                self._sync_modify_targets(
-                    gid, sl=target_sl, tp=None, ticket=ticket_int, tp_stage=None,
-                )
-            except Exception as e:
-                log.debug("BRIDGE: profit-ratchet SCRIBE sync tolerated: %s", e)
-            self._profit_ratcheted.add(ticket_int)
-            # NOTE: we deliberately do NOT pre-update self._known_positions[t]['sl']
-            # to target_sl — the drift detector will pick up the actual live SL
-            # once FORGE applies the modify, and will skip its "learn-back" branch
-            # while the queue still has this MODIFY in flight (see _sync_positions).
-
-            # Hybrid TP tightening: enqueue a per-ticket MODIFY_TP that pulls
-            # this leg's TP toward current_price + buffer. Per-ticket scope
-            # means only the triggered leg is tightened — sibling legs keep
-            # their original TP1/TP2/TP3 targets and continue running. If the
-            # tightened TP would not actually tighten (i.e. it's already past
-            # current price + buffer), we skip the TP enqueue.
-            target_tp = self._compute_ratchet_tp(direction, cur_price, pip_size, p)
-            if target_tp is not None:
-                tp_cmd = {
-                    "action": "MODIFY_TP",
-                    "tp": target_tp,
-                    "ticket": ticket_int,
-                }
-                if magic > 0:
-                    tp_cmd["magic"] = magic
-                tp_verifier = self._build_ticket_tp_verifier(ticket_int, target_tp)
-                self._enqueue_forge_command(
-                    tp_cmd,
-                    verifier=tp_verifier,
-                    description=(
-                        f"PROFIT_RATCHET_TP ticket={ticket_int} tp={target_tp}"
-                    ),
-                    dedup_key=f"ratchet_tp:{ticket_int}",
-                )
-                try:
-                    self._sync_modify_targets(
-                        gid, sl=None, tp=target_tp,
-                        ticket=ticket_int, tp_stage=None,
-                    )
-                except Exception as e:
-                    log.debug("BRIDGE: profit-ratchet TP SCRIBE sync tolerated: %s", e)
-
-            tp_note = (
-                f" + TP tightened to {target_tp}"
-                if target_tp is not None else ""
-            )
-            _tlog(
-                "TRACKER", "PROFIT_RATCHET",
-                f"{direction} {pips:+.1f}pips → SL locked at {target_sl}"
-                f"{tp_note} (entry {open_price})",
-                group_id=gid, ticket=ticket,
-            )
-            self._bridge_activity(
-                "PROFIT_RATCHET",
-                reason=f"{pips:+.1f}p ≥ {trigger:.1f}p trigger",
-                notes=json.dumps({
-                    "ticket": ticket_int, "group_id": gid,
-                    "open_price": open_price, "new_sl": target_sl,
-                    "new_tp": target_tp,
-                    "trigger_pips": trigger, "lock_pips": lock,
-                    "tp_buffer_pips": float(PROFIT_RATCHET_TP_BUFFER_PIPS),
-                }, default=str),
-            )
-            try:
-                tp_msg = (
-                    f"\nTP tightened to <code>{target_tp}</code>"
-                    if target_tp is not None else ""
-                )
-                self.herald.send(
-                    f"🛡️ <b>PROFIT LOCKED</b> — {telegram_group_label(gid)} #{ticket}\n"
-                    f"{direction} +{pips:.1f}p → SL moved to <code>{target_sl}</code> "
-                    f"({lock:+.1f}p from entry)"
-                    f"{tp_msg}"
-                )
-            except Exception as _he:
-                log.debug("TRACKER profit-ratchet herald error: %s", _he)
-
-    @staticmethod
-    def _compute_ratchet_tp(
-        direction: str,
-        cur_price: float,
-        pip_size: float,
-        position_view: dict,
-    ) -> Optional[float]:
-        """Compute the tightened TP for the hybrid ratchet, or None to skip.
-
-        Skips the tighten when:
-          • ``PROFIT_RATCHET_TP_BUFFER_PIPS`` is 0 (feature disabled);
-          • The position has no resting TP today (target would be a regression);
-          • The proposed TP would NOT actually tighten the existing TP
-            (BUY: target_tp ≥ live_tp; SELL: target_tp ≤ live_tp).
-        """
-        buffer_pips = float(PROFIT_RATCHET_TP_BUFFER_PIPS)
-        if buffer_pips <= 0 or pip_size <= 0:
-            return None
-        try:
-            live_tp = float(position_view.get("tp") or 0)
-        except (TypeError, ValueError):
-            live_tp = 0.0
-        if live_tp <= 0:
-            # Position has no resting TP — don't introduce one here; the SL
-            # ratchet is already protecting the downside.
-            return None
-        offset = buffer_pips * pip_size
-        if direction == "BUY":
-            target_tp = round(cur_price + offset, 5)
-            # Tighten only if it pulls the TP CLOSER (lower for BUY).
-            if target_tp >= live_tp - 1e-6:
-                return None
-        else:
-            target_tp = round(cur_price - offset, 5)
-            if target_tp <= live_tp + 1e-6:
-                return None
-        return target_tp
 
     def _sync_open_groups_from_scribe(self):
         """Reload BRIDGE's open-group map from SCRIBE so ATHENA/reconciler stay aligned."""
