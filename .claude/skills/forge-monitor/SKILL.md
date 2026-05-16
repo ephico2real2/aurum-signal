@@ -2266,9 +2266,26 @@ This is the live trading SCRIBE DB. Use this for **LIVE MODE** monitoring (see n
 
 ## LIVE MODE — monitor the live broker EA instead of the tester (operator-mandated 2026-05-14)
 
-### Trigger phrases (route to LIVE MODE)
+### Mode triggers (TESTER vs LIVE — symmetric, operator-mandated 2026-05-16)
 
-Default `/forge-monitor` invocation = TESTER MODE (the Sections below). LIVE MODE is invoked by ANY message that contains the word `live` near a monitor-related token. Recognised forms include:
+The skill supports two modes. Either can be invoked explicitly; TESTER stays the default when no mode token is present.
+
+**TESTER MODE triggers** (route to backtest-journal monitoring):
+
+- `/forge-monitor` (no args — default)
+- `test mon`
+- `testmon`
+- `test-mon`
+- `tester mon`
+- `tester monitor` / `tester monitors`
+- `tester-mon`
+- `monitor tester`
+- `forge test monitor`
+- "monitor the forge tester" / "monitor the backtest"
+- "watch the backtest"
+- "tail the journal"
+
+**LIVE MODE triggers** (route to live-broker monitoring):
 
 - `/forge-monitor live`
 - `live /forge-monitor`
@@ -2282,9 +2299,15 @@ Default `/forge-monitor` invocation = TESTER MODE (the Sections below). LIVE MOD
 - "watch the live broker"
 - "tail live FORGE"
 
-**Rule**: if the operator's message contains the word `live` (case-insensitive) AND any of {`monitor`, `mon`, `forge-monitor`, `forge monitor`, `tail`, `watch`, `tick`}, route to LIVE MODE — do not over-narrow on the exact phrase. The intent signal is `live` + monitor-noun adjacency.
+**Precedence rule** (apply in order):
 
-When you detect any of these, **do NOT use the tester source journal DB**. Switch to the scribe DB + `market_data.json` per the section below. Report at the top of tick 0 that you're in LIVE MODE so the operator can confirm.
+1. If the message contains `live` (case-insensitive) AND any of {`monitor`, `mon`, `forge-monitor`, `forge monitor`, `tail`, `watch`, `tick`} → **LIVE MODE**.
+2. Else if the message contains `test` or `tester` (case-insensitive) AND any of {`monitor`, `mon`, `forge-monitor`, `forge monitor`, `tail`, `watch`, `tick`, `backtest`} → **TESTER MODE** (explicit).
+3. Else → **TESTER MODE** (default — no mode token in message).
+
+The intent signal is `<mode token>` + monitor-noun adjacency — do not over-narrow on exact phrasing. Both modes share the same housekeeping checks, PEMCG asymmetry audit, GFM-mandatory output rules, and Recommendations / Operator Q&A Log structure — only the data sources and time-windowing differ.
+
+When you detect LIVE MODE, **do NOT use the tester source journal DB**. Switch to the scribe DB + `market_data.json` per the LIVE MODE section. Report at the top of tick 0 which mode you're in so the operator can confirm.
 
 ### Data sources
 

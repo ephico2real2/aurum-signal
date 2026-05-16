@@ -38,7 +38,7 @@ Two modes share the same skill file at `.claude/skills/forge-monitor/SKILL.md`. 
 
 ### TESTER mode (default — backtest journal monitoring)
 
-Trigger: `/forge-monitor` (no args), "forge-monitor", "monitor the forge tester", "watch the backtest", "tail the journal", or similar.
+Trigger: `/forge-monitor` (no args), `test mon`, `testmon`, `test-mon`, `tester mon`, `tester monitor`, `tester-mon`, `monitor tester`, "forge-monitor", "monitor the forge tester", "monitor the backtest", "watch the backtest", "tail the journal", or similar. The intent signal is `test`/`tester` (case-insensitive) + monitor-noun adjacency (`monitor`/`mon`/`tail`/`watch`/`tick`/`backtest`) — don't over-narrow on exact phrasing. Symmetric to the LIVE mode trigger pattern below.
 
 Key paths:
 - Journal DB: `$HOME/Library/Application Support/net.metaquotes.wine.metatrader5/.../FORGE_journal_*_tester.db`
@@ -124,3 +124,65 @@ post-restart health probe.
 Run `make help` to see the full list (698-line Makefile). When in doubt about a
 target, grep the Makefile for it — every `.PHONY` block has a header comment
 explaining what it does.
+
+## Python environment — always use `.venv`
+
+The repo's Python interpreter is **`/Users/olasumbo/signal_system/.venv/bin/python`**
+(Python 3.13.5, created from Homebrew `python@3.13`). All four launchd-managed Python
+services are pinned to this venv via the rendered plists in
+`services/macos/rendered/com.signalsystem.{bridge,listener,aurum,athena}.plist`:
+
+```xml
+<key>ProgramArguments</key>
+<array>
+  <string>/Users/olasumbo/signal_system/.venv/bin/python</string>
+  <string>/Users/olasumbo/signal_system/python/athena_api.py</string>
+</array>
+```
+
+The Makefile auto-selects the venv interpreter when present
+(`Makefile:6-7` → `PYTHON := .venv/bin/python` fallback to `python3`), so every
+`make` target — tests, scribe checks, log readers, dashboards — runs against the
+same packages the services use.
+
+### The hard rule: never install with system `pip3`
+
+System Python is PEP 668 externally-managed; `pip3 install <pkg>` will either be
+blocked or pollute Homebrew's site-packages without touching what the services
+import. **Always target the venv directly.**
+
+| Task | Command |
+|---|---|
+| Create venv + install all deps (first time / after rebuild) | `make venv` |
+| Install / upgrade ONE package (durable) | edit `requirements.txt` pin, then `.venv/bin/pip install -r requirements.txt` |
+| Install / upgrade ONE package (ad-hoc, no pin change) | `.venv/bin/pip install --upgrade '<pkg>==<ver>'` |
+| Show installed version | `.venv/bin/pip show <pkg>` |
+| Sanity-import after install | `.venv/bin/python -c "import <pkg>; print(<pkg>.__version__)"` |
+| Reload a service after a package change | `make reload-athena` / `make reload-bridge` / `make reload` |
+| Recreate from scratch (if venv corrupted) | `rm -rf .venv && make venv` (safe — no project state lives in `.venv`) |
+
+Worked example (canonical pattern, used 2026-05-16 for `redis==7.4.0`):
+
+```bash
+# 1. Edit the pin in requirements.txt (durable record).
+# 2. Install into the venv.
+.venv/bin/pip install --upgrade 'redis==7.4.0'
+# 3. Verify import works under the venv interpreter.
+.venv/bin/python -c "import redis; print('redis-py', redis.__version__)"
+# 4. Reload the service that uses it.
+make reload-athena
+# 5. Confirm via the service's own health endpoint.
+curl -fsS http://127.0.0.1:7842/api/health | python3 -m json.tool
+```
+
+### When `pip install` fails with "externally-managed-environment"
+
+That error means you invoked **system** `pip3` (or unqualified `pip`) instead of
+`.venv/bin/pip`. Do NOT pass `--break-system-packages`. Re-run with the absolute
+venv path: `.venv/bin/pip install …`. The services don't see system site-packages.
+
+### Tests + scripts
+
+`tests/requirements-test.txt` is installed into the same venv by `make venv`
+(pytest, jsonschema, etc.). Run pytest as `.venv/bin/python -m pytest tests/`,
+not bare `pytest`, so the venv's resolver is used.
