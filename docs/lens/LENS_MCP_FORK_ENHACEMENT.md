@@ -180,6 +180,50 @@ Each PR includes:
 
 If a PR merges, we `git pull` upstream into our fork and drop the matching commits. Fork stays thin — ideally just a few commits ahead at any moment.
 
+## Honest payoff summary (2026-05-16 — operator-requested honest assessment)
+
+The operator asked for an unhyped readout of what F1-F5 actually buy. This is the canonical version. Replaces any "ship this and everything changes" framing in earlier sections.
+
+### Why each phase exists
+
+| Phase | What it adds | Real benefit | Honest scope limit |
+|---|---|---|---|
+| **F1** Fork + Makefile cutover | Our own copy of the MCP server we can edit | Without this we can't ship F2/F3/F4 — that's the only reason | Zero new behavior |
+| **F2** Write mutex + NDJSON tracer | Serializes write-class tool calls in-process. Optional tracer for observability. | Prevents two concurrent write evaluates from racing on Chrome's JS thread. Tracer gives per-call latency + queue wait visibility. | **Per-process only.** In the current spawn-per-call AURUM setup, there's only ever ONE writer per process — the mutex mostly idles. Becomes meaningful only when F3+F5 land. |
+| **F4** CDP reconnect + drain | Auto-detects Chrome disconnect via watchdog, reconnects. `trace.drain()` makes pre-throw events SIGKILL-safe. New `tv_cdp_status` tool. | Resilience: Chrome restart / TV close → automatic recovery instead of confusing errors mid-tool-call. | **Per-process only.** Short-lived AURUM spawn processes rarely live long enough for the watchdog to tick. Earns its keep once F3+F5 give us a long-lived process. |
+| **F3** Streamable HTTP transport | One MCP process serves N consumers via HTTP instead of N stdio subprocesses. | The unlock: makes F2+F4 actually do work. Removes per-spawn overhead (Chrome attach + tool registration ~200-500ms × every AURUM call). One CDP attachment shared by all consumers. | **Until F5 flips consumers to HTTP, nothing changes in production.** The HTTP server is shipped but unused by current services. |
+| **F5** launchd plist + Python HTTP client | Deploys the HTTP MCP as a launchd-managed daemon + flips `python/mcp_client.py` to HTTP. | **Activates F2+F3+F4 in production.** Replaces N short-lived processes with 1 persistent daemon. Per-call latency drops from ~300ms to ~5ms (no spawn cost). | Pure deployment plumbing — no new MCP capability. |
+
+### The actual chain of value
+
+Without F5, **F2/F4 don't do meaningful work in the deployed system today**. The mutex protects against intra-process races that the spawn-per-call pattern doesn't have. The watchdog needs process lifetime to tick.
+
+F3 is the transport switch. F5 is the deployment glue. Together they convert F2+F4 from "committed but idling" into "actually running."
+
+### What it doesn't solve (limits)
+
+- Doesn't help if TradingView Desktop isn't running with `--remote-debugging-port=9222` — `make start-tradingview` still required.
+- Doesn't affect FORGE EA / MT5 side — that's a separate process, separate journal DB.
+- Doesn't change the LENS broker-data path (MT5 → `market_data.json` → AURUM, no MCP involved).
+- Doesn't help if AURUM's LLM logic decides wrong things — MCP is a data plumbing layer, not a decision layer.
+
+### What it costs
+
+- ~700 lines of fork code we now own + must maintain when `@modelcontextprotocol/sdk` upgrades. Currently sitting on `^1.12.1`, installed `1.27.1`.
+- PR #42 may not merge upstream → we carry the fork indefinitely (acceptable per `project_aurum_ai_backed_trading.md`).
+- One more service to monitor (`make mcp-status` after F5) — a 5th process alongside bridge/listener/aurum/athena.
+
+### Honest payoff at current scale
+
+Per-call latency reduction (~300ms → ~5ms) × AURUM's polling cadence (every ~30s) = saves ~1 minute per hour of CPU spawn time. Not huge.
+
+The real win is **architectural**: when scaling to multiple Telegram conversations or adding LENS as a second consumer, the F2 mutex and F4 watchdog become load-bearing rather than dormant. Today they're insurance not yet needed; F5 makes them insurance actually held.
+
+**If F5 ships**: cleaner ops, slightly faster polling, safety nets activate.
+**If F5 doesn't ship**: F2/F3/F4 are committed code that doesn't change anything in production.
+
+---
+
 ## Open questions
 
 1. **Fork name** — `tradingview-mcp-aurum` matches our naming, or do we want something more generic like `tradingview-mcp-streamable`? (Operator decides; affects branding of upstream PRs.)
