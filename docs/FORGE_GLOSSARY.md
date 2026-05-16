@@ -99,13 +99,15 @@ Per `FORGE_SETUP_ICT_MAP.md §B.7` and `docs/research/ICT_KILLZONES.md`. All tim
 |---|---|---|
 | `ASIAN_KZ` | 19:00-23:00 prior day (Sun-Thu) | Range-bound; sets Asian H/L liquidity pools |
 | `LONDON_OPEN_KZ` | 02:00-05:00 | High volatility; sweeps Asian range |
-| `NY_AM_KZ` (LONDON Close overlap) | 07:00-10:00 | Highest volatility; primary trend session |
+| `NY_OPEN_KZ` (alias `NY_AM_KZ`) | 07:00-10:00 | Highest volatility; primary trend session (canonical FORGE label is `NY_OPEN_KZ`; ICT canon uses `NY_AM_KZ` for the same window) |
 | `LONDON_CLOSE_KZ` | 10:00-12:00 | London exit liquidity; afternoon trend forecast |
-| `NY_PM_KZ` | 13:30-16:00 | Afternoon trend continuation or fade |
+| `NY_PM_KZ` ← v2.7.122 F-α | 13:30-16:00 | Afternoon trend continuation or fade (60-70% of gold's daily range concludes here per EBC/ProjectSyndicate) |
 | `OFF_SESSION` | All other times (incl. 12:00-13:30 gap, 16:00-19:00 gap) | No setups (or relaxed gates depending on policy) |
-| `LONDON_SB` | 03:00-04:00 | Silver Bullet sub-window inside LONDON_OPEN_KZ |
-| `AM_SB` | 10:00-11:00 | Silver Bullet sub-window straddling NY_AM_KZ / LONDON_CLOSE_KZ boundary |
-| `PM_SB` | 14:00-15:00 | Silver Bullet sub-window inside NY_PM_KZ |
+| `LONDON_SB` ← v2.7.122 F-α | 03:00-04:00 | Silver Bullet sub-window inside LONDON_OPEN_KZ |
+| `AM_SB` ← v2.7.122 F-α | 10:00-11:00 | Silver Bullet sub-window straddling NY_OPEN_KZ / LONDON_CLOSE_KZ boundary |
+| `PM_SB` ← v2.7.122 F-α | 14:00-15:00 | Silver Bullet sub-window inside NY_PM_KZ |
+
+**Silver Bullet implementation note** (v2.7.122 F-α): silver_bullet tags populate INDEPENDENTLY of killzone — a tick can be inside both `LONDON_OPEN_KZ` AND `LONDON_SB` simultaneously (the SB is a 60-min hyper-concentrated FVG-entry sub-window). Read via `g_regime.silver_bullet` (single source of truth from `ComputeCurrentSilverBulletLabel()` in FORGE.mq5). Logged to `SIGNALS.silver_bullet` and `forge_signals.silver_bullet` columns. The retired `IctLiquidity.mqh:IsInSilverBulletWindow(t)` is now a thin wrapper reading `g_regime.silver_bullet != ""` (was hardcoded UTC-hour, divergent from chokepoint — per §B.7.2 issue #5).
 
 Per-category KZ favorability (per `Atom_KillzoneFavorable`):
 - **MSS_CONT**: LONDON_OPEN_KZ + NY_AM_KZ

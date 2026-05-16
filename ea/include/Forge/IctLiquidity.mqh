@@ -613,11 +613,16 @@ bool Forge_GetLatestLiquidityPool(bool buy_side, LiquidityPool &out)
 // CHANGELOG:
 //   2026-05-15  v2.7.120 initial ship.
 // ─────────────────────────────────────────────────────────────────────────────
-bool IsInLondonKillZone(datetime t)
+// v2.7.122 F-α — RETIRED to thin wrapper. Per FORGE_SETUP_ICT_MAP.md §B.7.4 step 2.
+//   The v2.7.120 implementation used hardcoded UTC hours which silently diverged from
+//   the NY-anchored DST-safe chokepoint (FORGE.mq5:ComputeCurrentKillzoneLabel) for
+//   GMT+2/+3 brokers and across DST transitions — see §B.7.2 for the 6 issues this
+//   resolved. Single source of truth = g_regime.killzone, populated each tick by the
+//   chokepoint. `t` param retained for compat; deprecated (state is per-tick, not
+//   arbitrary-time). Callers should be migrated to read g_regime.killzone directly.
+bool IsInLondonKillZone(datetime /*t — deprecated, ignored*/)
 {
-   if(t <= 0) return false;
-   MqlDateTime mt; TimeToStruct(t, mt);
-   return (mt.hour >= 7 && mt.hour < 10);
+   return (g_regime.killzone == "LONDON_OPEN_KZ");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -635,11 +640,12 @@ bool IsInLondonKillZone(datetime t)
 // CHANGELOG:
 //   2026-05-15  v2.7.120 initial ship.
 // ─────────────────────────────────────────────────────────────────────────────
-bool IsInNewYorkKillZone(datetime t)
+// v2.7.122 F-α — RETIRED to thin wrapper (§B.7.4 step 2). See IsInLondonKillZone above.
+//   Maps to NY_AM_KZ (the chokepoint's canonical name for the 07:00-10:00 NY window;
+//   formerly "NY_OPEN_KZ"). Both labels match per the chokepoint's KZ enum.
+bool IsInNewYorkKillZone(datetime /*t — deprecated, ignored*/)
 {
-   if(t <= 0) return false;
-   MqlDateTime mt; TimeToStruct(t, mt);
-   return (mt.hour >= 12 && mt.hour < 15);
+   return (g_regime.killzone == "NY_OPEN_KZ" || g_regime.killzone == "NY_AM_KZ");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -658,11 +664,13 @@ bool IsInNewYorkKillZone(datetime t)
 // CHANGELOG:
 //   2026-05-15  v2.7.120 initial ship.
 // ─────────────────────────────────────────────────────────────────────────────
-bool IsInSilverBulletWindow(datetime t)
+// v2.7.122 F-α — RETIRED to thin wrapper (§B.7.4 step 2). Now reads canonical
+//   g_regime.silver_bullet (LONDON_SB | AM_SB | PM_SB | "") populated each tick by
+//   ComputeCurrentSilverBulletLabel() in FORGE.mq5. The new chokepoint covers 3
+//   sub-windows (was 2 hardcoded UTC hours here) and is NY-anchored/DST-safe.
+bool IsInSilverBulletWindow(datetime /*t — deprecated, ignored*/)
 {
-   if(t <= 0) return false;
-   MqlDateTime mt; TimeToStruct(t, mt);
-   return (mt.hour == 10 || mt.hour == 14);
+   return (g_regime.silver_bullet != "");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -680,14 +688,13 @@ bool IsInSilverBulletWindow(datetime t)
 // CHANGELOG:
 //   2026-05-15  v2.7.120 initial ship.
 // ─────────────────────────────────────────────────────────────────────────────
-bool IsInKillZone(datetime t)
+// v2.7.122 F-α — RETIRED to thin wrapper (§B.7.4 step 2). "Any KZ active right now"
+//   = g_regime.killzone is one of the 5 canonical labels (not "" / OFF_SESSION).
+//   Fixes Impl B issue #4 — NY PM and London Close no longer conflated; both are
+//   distinct first-class killzones in the chokepoint.
+bool IsInKillZone(datetime /*t — deprecated, ignored*/)
 {
-   if(t <= 0) return false;
-   MqlDateTime mt; TimeToStruct(t, mt);
-   if(mt.hour >= 7  && mt.hour < 10) return true;  // London KZ
-   if(mt.hour >= 12 && mt.hour < 15) return true;  // NY AM KZ
-   if(mt.hour >= 15 && mt.hour < 17) return true;  // NY PM / London Close
-   return false;
+   return (g_regime.killzone != "");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -720,14 +727,17 @@ bool IsInKillZone(datetime t)
 // CHANGELOG:
 //   2026-05-15  v2.7.120 initial ship.
 // ─────────────────────────────────────────────────────────────────────────────
-int GetSessionContext(datetime t)
+// v2.7.122 F-α — RETIRED to thin wrapper (§B.7.4 step 2). Lookup of canonical
+//   g_regime.killzone string → int code. Kept for analytic-join compatibility only;
+//   ICT-module scoring should consume the string directly, not the int code.
+//   Now distinguishes NY_PM (code 3) from LONDON_CLOSE (code 4) — Impl B issue #4 closed.
+int GetSessionContext(datetime /*t — deprecated, ignored*/)
 {
-   if(t <= 0) return 0;
-   MqlDateTime mt; TimeToStruct(t, mt);
-   if(mt.hour >= 7  && mt.hour < 10) return 1;   // LONDON_KZ
-   if(mt.hour >= 12 && mt.hour < 15) return 2;   // NY_AM_KZ
-   if(mt.hour >= 15 && mt.hour < 17) return 3;   // NY_PM / LONDON_CLOSE overlap
-   return 0;                                      // ASIAN / DEAD_ZONE
+   if(g_regime.killzone == "LONDON_OPEN_KZ")  return 1;   // LONDON_KZ
+   if(g_regime.killzone == "NY_OPEN_KZ" || g_regime.killzone == "NY_AM_KZ") return 2;   // NY_AM_KZ
+   if(g_regime.killzone == "NY_PM_KZ")        return 3;   // NY_PM (5th KZ, v2.7.122 F-α)
+   if(g_regime.killzone == "LONDON_CLOSE_KZ") return 4;   // LONDON_CLOSE (now distinct from NY_PM)
+   return 0;                                              // ASIAN_KZ or OFF_SESSION
 }
 
 #endif // __FORGE_ICT_LIQUIDITY_MQH__

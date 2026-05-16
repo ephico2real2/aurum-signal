@@ -755,6 +755,19 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_KZ_NY_OPEN_END_MIN":       ("session_filter", "kz_ny_open_end_min",        "int",    0.0,  1440.0),
     "FORGE_KZ_LONDON_CLOSE_START_MIN":("session_filter", "kz_london_close_start_min", "int",    0.0,  1439.0),
     "FORGE_KZ_LONDON_CLOSE_END_MIN":  ("session_filter", "kz_london_close_end_min",   "int",    0.0,  1440.0),
+    # v2.7.122 F-α — 5th killzone (NY PM) + 3 Silver Bullet sub-windows.
+    # Per docs/FORGE_SETUP_ICT_MAP.md §B.7.3 — NY-anchored minute-of-day.
+    # NY_PM_KZ 13:30-16:00 NY (810-960); SB windows are 60-min hyper-concentrated
+    # FVG-entry zones inside parent KZs (LONDON_SB 03:00-04:00, AM_SB 10:00-11:00,
+    # PM_SB 14:00-15:00). silver_bullet column populated independently of killzone.
+    "FORGE_KZ_NY_PM_START_MIN":       ("session_filter", "kz_ny_pm_start_min",        "int",    0.0,  1439.0),
+    "FORGE_KZ_NY_PM_END_MIN":         ("session_filter", "kz_ny_pm_end_min",          "int",    0.0,  1440.0),
+    "FORGE_SB_LONDON_START_MIN":      ("session_filter", "sb_london_start_min",       "int",    0.0,  1439.0),
+    "FORGE_SB_LONDON_END_MIN":        ("session_filter", "sb_london_end_min",         "int",    0.0,  1440.0),
+    "FORGE_SB_AM_START_MIN":          ("session_filter", "sb_am_start_min",           "int",    0.0,  1439.0),
+    "FORGE_SB_AM_END_MIN":            ("session_filter", "sb_am_end_min",             "int",    0.0,  1440.0),
+    "FORGE_SB_PM_START_MIN":          ("session_filter", "sb_pm_start_min",           "int",    0.0,  1439.0),
+    "FORGE_SB_PM_END_MIN":            ("session_filter", "sb_pm_end_min",             "int",    0.0,  1440.0),
     # 2.7.38 Tier 1 Boolean Composites (all default-OFF; see docs/FORGE_INDICATOR_ATLAS.md §5).
     # Composites that GATE/AMPLIFY existing setups stay in composites.* scope.
     "FORGE_BLOCK_SELL_IN_CHOP_ENABLED":       ("composites", "block_sell_in_chop_enabled",       "bool01", None, None),

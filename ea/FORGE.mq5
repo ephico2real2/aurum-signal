@@ -1401,6 +1401,21 @@ struct ScalperConfig {
    int    kz_ny_open_end_min;
    int    kz_london_close_start_min;
    int    kz_london_close_end_min;
+   // v2.7.122 — F-α 5th killzone (NY PM) + 3 Silver Bullet sub-windows
+   // Per docs/FORGE_SETUP_ICT_MAP.md §B.7.3 — NY-anchored minute-of-day windows.
+   // NY_PM_KZ: 13:30-16:00 NY = the afternoon reversal/continuation window
+   // (60-70% of gold's daily range concludes here per EBC/ProjectSyndicate).
+   // Silver Bullet sub-windows: 60-min hyper-concentrated FVG-entry zones
+   // inside parent killzones (LONDON_SB ⊂ LONDON_OPEN_KZ; AM_SB straddles
+   // NY_AM_KZ/LONDON_CLOSE_KZ; PM_SB ⊂ NY_PM_KZ).
+   int    kz_ny_pm_start_min;
+   int    kz_ny_pm_end_min;
+   int    sb_london_start_min;
+   int    sb_london_end_min;
+   int    sb_am_start_min;
+   int    sb_am_end_min;
+   int    sb_pm_start_min;
+   int    sb_pm_end_min;
    // 2.7.38 Tier 1 Boolean Composites (all default-OFF)
    bool   block_sell_in_chop_enabled;
    bool   intraday_reversal_sell_enabled;
@@ -1858,7 +1873,8 @@ struct RegimeState {
 
    // Layer 5: Session / killzone / news (§11.3)
    string session;              // ASIA | LONDON | NY | ""
-   string killzone;             // NY_OPEN_KZ | LONDON_OPEN_KZ | LONDON_CLOSE_KZ | ASIAN_KZ | ""
+   string killzone;             // NY_OPEN_KZ | LONDON_OPEN_KZ | LONDON_CLOSE_KZ | NY_PM_KZ | ASIAN_KZ | "" (v2.7.122 +NY_PM)
+   string silver_bullet;        // LONDON_SB | AM_SB | PM_SB | "" — v2.7.122 F-α (FORGE_SETUP_ICT_MAP.md §B.7.3)
    int    minutes_into_kz;      // minutes since current killzone started (Judas Swing detector)
    bool   news_active;          // mirrors news_filter hot state
 
@@ -4405,6 +4421,7 @@ void WriteMarketData() {
    j += "\"forge_session_state\":{";
    j += "\"label\":\""           + JsonEscape(ComputeCurrentSessionLabel())  + "\",";
    j += "\"killzone\":\""        + JsonEscape(ComputeCurrentKillzoneLabel()) + "\",";
+   j += "\"silver_bullet\":\""   + JsonEscape(ComputeCurrentSilverBulletLabel()) + "\","; // v2.7.122 F-α
    j += "\"anchor_mode\":\""     + (g_sc.sessions_ny_anchored ? "NY" : "UTC") + "\",";
    j += "\"killzones_enabled\":" + IntegerToString(g_sc.killzones_enabled ? 1 : 0) + ",";
    j += "\"killzones_gate_entries\":" + IntegerToString(g_sc.killzones_gate_entries ? 1 : 0) + ",";
@@ -5315,6 +5332,15 @@ void InitScalperConfig() {
    g_sc.kz_ny_open_end_min       = 10*60;
    g_sc.kz_london_close_start_min= 10*60;
    g_sc.kz_london_close_end_min  = 12*60;
+   // v2.7.122 F-α — NY PM killzone + 3 Silver Bullet sub-windows (NY minute-of-day)
+   g_sc.kz_ny_pm_start_min       = 13*60 + 30;   // 13:30 NY (NY PM session open)
+   g_sc.kz_ny_pm_end_min         = 16*60;        // 16:00 NY (NY equity close)
+   g_sc.sb_london_start_min      =  3*60;        // 03:00 NY (Silver Bullet inside LONDON_OPEN_KZ)
+   g_sc.sb_london_end_min        =  4*60;        // 04:00 NY
+   g_sc.sb_am_start_min          = 10*60;        // 10:00 NY (Silver Bullet at NY_AM/LC overlap)
+   g_sc.sb_am_end_min            = 11*60;        // 11:00 NY
+   g_sc.sb_pm_start_min          = 14*60;        // 14:00 NY (Silver Bullet inside NY_PM_KZ)
+   g_sc.sb_pm_end_min            = 15*60;        // 15:00 NY
    // 2.7.38 Tier 1 Boolean Composites — all default-OFF
    g_sc.block_sell_in_chop_enabled            = false;
    g_sc.intraday_reversal_sell_enabled        = true;       // 2.7.53 — on by default; Apr 8 G5028 fix
@@ -6448,6 +6474,15 @@ void ReadScalperConfig() {
    if(JsonHasKey(content, "kz_ny_open_end_min"))        { v=JsonGetDouble(content,"kz_ny_open_end_min");        if(v>=0&&v<=1440) g_sc.kz_ny_open_end_min       =(int)v; }
    if(JsonHasKey(content, "kz_london_close_start_min")) { v=JsonGetDouble(content,"kz_london_close_start_min"); if(v>=0&&v<=1439) g_sc.kz_london_close_start_min=(int)v; }
    if(JsonHasKey(content, "kz_london_close_end_min"))   { v=JsonGetDouble(content,"kz_london_close_end_min");   if(v>=0&&v<=1440) g_sc.kz_london_close_end_min  =(int)v; }
+   // v2.7.122 F-α — NY PM killzone + Silver Bullet sub-windows
+   if(JsonHasKey(content, "kz_ny_pm_start_min"))        { v=JsonGetDouble(content,"kz_ny_pm_start_min");        if(v>=0&&v<=1439) g_sc.kz_ny_pm_start_min       =(int)v; }
+   if(JsonHasKey(content, "kz_ny_pm_end_min"))          { v=JsonGetDouble(content,"kz_ny_pm_end_min");          if(v>=0&&v<=1440) g_sc.kz_ny_pm_end_min         =(int)v; }
+   if(JsonHasKey(content, "sb_london_start_min"))       { v=JsonGetDouble(content,"sb_london_start_min");       if(v>=0&&v<=1439) g_sc.sb_london_start_min      =(int)v; }
+   if(JsonHasKey(content, "sb_london_end_min"))         { v=JsonGetDouble(content,"sb_london_end_min");         if(v>=0&&v<=1440) g_sc.sb_london_end_min        =(int)v; }
+   if(JsonHasKey(content, "sb_am_start_min"))           { v=JsonGetDouble(content,"sb_am_start_min");           if(v>=0&&v<=1439) g_sc.sb_am_start_min          =(int)v; }
+   if(JsonHasKey(content, "sb_am_end_min"))             { v=JsonGetDouble(content,"sb_am_end_min");             if(v>=0&&v<=1440) g_sc.sb_am_end_min            =(int)v; }
+   if(JsonHasKey(content, "sb_pm_start_min"))           { v=JsonGetDouble(content,"sb_pm_start_min");           if(v>=0&&v<=1439) g_sc.sb_pm_start_min          =(int)v; }
+   if(JsonHasKey(content, "sb_pm_end_min"))             { v=JsonGetDouble(content,"sb_pm_end_min");             if(v>=0&&v<=1440) g_sc.sb_pm_end_min            =(int)v; }
    // 2.7.38 Tier 1 Boolean Composites
    if(JsonHasKey(content, "block_sell_in_chop_enabled"))            { v=JsonGetDouble(content,"block_sell_in_chop_enabled");            g_sc.block_sell_in_chop_enabled=(v>=0.5); }
    if(JsonHasKey(content, "intraday_reversal_sell_enabled"))        { v=JsonGetDouble(content,"intraday_reversal_sell_enabled");        g_sc.intraday_reversal_sell_enabled=(v>=0.5); }
@@ -7390,7 +7425,28 @@ string ComputeCurrentKillzoneLabel() {
    if(MinuteInWindow(now_min, g_sc.kz_ny_open_start_min,      g_sc.kz_ny_open_end_min))      return "NY_OPEN_KZ";
    if(MinuteInWindow(now_min, g_sc.kz_london_open_start_min,  g_sc.kz_london_open_end_min))  return "LONDON_OPEN_KZ";
    if(MinuteInWindow(now_min, g_sc.kz_london_close_start_min, g_sc.kz_london_close_end_min)) return "LONDON_CLOSE_KZ";
+   // v2.7.122 F-α — NY PM killzone (5th canonical KZ per FORGE_SETUP_ICT_MAP.md §B.7.3).
+   // Inserted after LONDON_CLOSE so the 12:00-13:30 dead zone falls through to "".
+   if(MinuteInWindow(now_min, g_sc.kz_ny_pm_start_min,        g_sc.kz_ny_pm_end_min))        return "NY_PM_KZ";
    if(MinuteInWindow(now_min, g_sc.kz_asia_start_min,         g_sc.kz_asia_end_min))         return "ASIAN_KZ";
+   return "";
+}
+
+// v2.7.122 F-α — Silver Bullet sub-window classifier (per FORGE_SETUP_ICT_MAP.md §B.7.3).
+// Mirrors ComputeCurrentKillzoneLabel(): NY-anchored, Sunday-guard, config-driven.
+// Returns "LONDON_SB" / "AM_SB" / "PM_SB" / "" — three 60-min hyper-concentrated
+// FVG-entry zones inside parent killzones (per ICT canon). Empty string when outside
+// all three windows. Promoted to g_regime.silver_bullet by the per-tick chokepoint.
+string ComputeCurrentSilverBulletLabel() {
+   if(!g_sc.killzones_enabled) return "";
+   datetime ny = GetNYTimeNow();
+   MqlDateTime dt; TimeToStruct(ny, dt);
+   if(dt.day_of_week == 6) return "";
+   if(dt.day_of_week == 0 && dt.hour < 17) return "";
+   int now_min = dt.hour * 60 + dt.min;
+   if(MinuteInWindow(now_min, g_sc.sb_london_start_min, g_sc.sb_london_end_min)) return "LONDON_SB";
+   if(MinuteInWindow(now_min, g_sc.sb_am_start_min,     g_sc.sb_am_end_min))     return "AM_SB";
+   if(MinuteInWindow(now_min, g_sc.sb_pm_start_min,     g_sc.sb_pm_end_min))     return "PM_SB";
    return "";
 }
 
@@ -9909,7 +9965,9 @@ bool JournalInit() {
       "ote_retrace_score_buy INTEGER DEFAULT 0, "
       "ote_retrace_score_sell INTEGER DEFAULT 0, "
       "liq_sweep_rev_score_buy INTEGER DEFAULT 0, "
-      "liq_sweep_rev_score_sell INTEGER DEFAULT 0"
+      "liq_sweep_rev_score_sell INTEGER DEFAULT 0, "
+      // v2.7.122 F-α — Silver Bullet sub-window tag (LONDON_SB | AM_SB | PM_SB | "")
+      "silver_bullet TEXT DEFAULT ''"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -10138,6 +10196,10 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN ote_retrace_score_sell INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN liq_sweep_rev_score_buy INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN liq_sweep_rev_score_sell INTEGER DEFAULT 0;");
+   // v2.7.122 F-α — Silver Bullet sub-window tag (idempotent — sqlite ALTER raises if col
+   //   exists, harmless on fresh DB; pattern mirrors v2.7.119+ idempotent migrations).
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN silver_bullet TEXT DEFAULT '';");
+   DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_silver_bullet ON SIGNALS(silver_bullet);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_inside ON SIGNALS(m5_inside_bar);");
@@ -10319,6 +10381,9 @@ void JournalRecordSignal(string outcome, string gate_reason,
 
    string session  = ComputeCurrentSessionLabel();
    string killzone = ComputeCurrentKillzoneLabel();
+   // v2.7.122 F-α — self-populate silver_bullet (same anti-bug pattern as macd_hist v2.7.63;
+   //   never threaded through 116 call-site signatures). Returns "" outside SB windows.
+   string silver_bullet = ComputeCurrentSilverBulletLabel();
    // 2.7.45 — minutes_into_kz computed fresh (RegimeUpdate may not have run for early-gate SKIPs)
    int minutes_into_kz_now = (g_scalper_killzone_start_time > 0)
                              ? (int)((TimeTradeServer() - g_scalper_killzone_start_time) / 60)
@@ -10385,7 +10450,9 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "atom_htf_aligned_buy, atom_htf_aligned_sell, "
       "mss_cont_score_buy, mss_cont_score_sell, "
       "ote_retrace_score_buy, ote_retrace_score_sell, "
-      "liq_sweep_rev_score_buy, liq_sweep_rev_score_sell"
+      "liq_sweep_rev_score_buy, liq_sweep_rev_score_sell, "
+      // v2.7.122 F-α — Silver Bullet sub-window tag (LONDON_SB | AM_SB | PM_SB | "")
+      "silver_bullet"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -10554,7 +10621,9 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_ict_last_ote_retrace_score_buy)         + ", "
       + IntegerToString(g_ict_last_ote_retrace_score_sell)        + ", "
       + IntegerToString(g_ict_last_liq_sweep_rev_score_buy)       + ", "
-      + IntegerToString(g_ict_last_liq_sweep_rev_score_sell)
+      + IntegerToString(g_ict_last_liq_sweep_rev_score_sell)      + ", "
+      // v2.7.122 F-α — silver_bullet tag (self-populated above; "" outside SB windows)
+      + "'" + silver_bullet + "'"
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
@@ -11397,6 +11466,7 @@ void RegimeUpdate(double m5_adx_in, double m5_rsi_in,
    // Layer 5 — Session / killzone / news (§11.3)
    g_regime.session         = ComputeCurrentSessionLabel();
    g_regime.killzone        = ComputeCurrentKillzoneLabel();
+   g_regime.silver_bullet   = ComputeCurrentSilverBulletLabel();   // v2.7.122 F-α (§B.7.3 SB sub-windows)
    g_regime.minutes_into_kz = (g_scalper_killzone_start_time > 0)
                               ? (int)((now - g_scalper_killzone_start_time) / 60)
                               : 0;

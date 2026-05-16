@@ -217,7 +217,16 @@
     "kz_ny_open_start_min": 420,
     "kz_ny_open_end_min": 600,
     "kz_london_close_start_min": 600,
-    "kz_london_close_end_min": 720
+    "kz_london_close_end_min": 720,
+    "_comment_f_alpha_v2_7_122": "v2.7.122 F-α — 5th killzone (NY PM) + 3 Silver Bullet sub-windows per FORGE_SETUP_ICT_MAP.md §B.7.3",
+    "kz_ny_pm_start_min": 810,
+    "kz_ny_pm_end_min": 960,
+    "sb_london_start_min": 180,
+    "sb_london_end_min": 240,
+    "sb_am_start_min": 600,
+    "sb_am_end_min": 660,
+    "sb_pm_start_min": 840,
+    "sb_pm_end_min": 900
   },
   "safety": {
     "max_spread_points": 30,
