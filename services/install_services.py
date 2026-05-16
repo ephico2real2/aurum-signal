@@ -38,6 +38,29 @@ def resolve_signal_python(project: Path) -> str:
 def inject_signal_python(content: str, project: Path) -> str:
     return content.replace("__SIGNAL_PYTHON__", resolve_signal_python(project))
 
+
+def resolve_node_bin() -> str:
+    """
+    Absolute path to node for launchd ProgramArguments[0].
+    Launchd doesn't honor PATH for the executable lookup, only for the
+    process env after exec — so the path must be absolute. Resolution
+    order: NODE_BIN env override → which node → common Homebrew paths.
+    """
+    override = (os.environ.get("NODE_BIN") or "").strip()
+    if override and Path(override).is_file():
+        return override
+    w = shutil.which("node")
+    if w:
+        return w
+    for candidate in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
+        if Path(candidate).is_file():
+            return candidate
+    return "/usr/local/bin/node"
+
+
+def inject_node_bin(content: str) -> str:
+    return content.replace("__NODE_BIN__", resolve_node_bin())
+
 USERNAME  = os.environ.get("USER") or os.environ.get("USERNAME") or os.popen("whoami").read().strip()
 HOME      = Path.home()
 # Repo root: this file lives at <root>/services/install_services.py
@@ -47,7 +70,7 @@ if (_PROJECT_FROM_SCRIPT / "python" / "bridge.py").is_file():
 else:
     PROJECT = HOME / "signal_system"
 LOGS_DIR  = PROJECT / "logs"
-SERVICES  = ["bridge", "listener", "aurum", "athena"]
+SERVICES  = ["bridge", "listener", "aurum", "athena", "tv-mcp"]
 IS_MACOS  = platform.system() == "Darwin"
 IS_LINUX  = platform.system() == "Linux"
 
@@ -155,6 +178,7 @@ def install_macos():
         content = src.read_text()
         content = replace_username(content)
         content = inject_signal_python(content, PROJECT)
+        content = inject_node_bin(content)
         content = inject_env_vars(content, merged)
         rendered.write_text(content)
         print(f"✓ Rendered: {rendered}")

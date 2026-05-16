@@ -21,7 +21,7 @@ from herald import get_herald
 from status_report import report_component_status
 from market_data import build_execution_quote, fmt_age_short, safe_float
 from trading_session import get_ea_session, get_trading_session_utc, session_clock_summary
-from mcp_client import MCPSession
+from mcp_client import MCPSession, create_session
 from vision import Vision
 
 log = logging.getLogger("aurum")
@@ -1259,7 +1259,9 @@ class Aurum:
 
         results = []
         try:
-            with MCPSession(timeout=20) as mcp:
+            # F5: transport selected by LENS_MCP_TRANSPORT env (stdio default,
+            # http when tv-mcp launchd daemon is running). See mcp_client.py.
+            with create_session(timeout=20) as mcp:
                 for cmd in commands:
                     tool = cmd.get("tool", "")
                     args = cmd.get("args", {})

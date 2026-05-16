@@ -158,5 +158,158 @@ def quick_call(tool: str, arguments: dict = None, timeout: int = 20) -> dict:
     Convenient for scripts that only need a single MCP call.
     For multiple calls, use MCPSession as a context manager.
     """
-    with MCPSession(timeout=timeout) as session:
+    with create_session(timeout=timeout) as session:
         return session.call(tool, arguments)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# F5 — HTTP transport client (talks to the launchd-managed tv-mcp daemon)
+#
+# Same call() API as MCPSession, but uses HTTP instead of spawning a
+# subprocess per Python process. The transport is selected by the
+# LENS_MCP_TRANSPORT env var:
+#   - LENS_MCP_TRANSPORT=stdio (default, unchanged) → MCPSession (spawn-per-Python)
+#   - LENS_MCP_TRANSPORT=http  → MCPHttpSession (talks to localhost:8765/mcp)
+#
+# Why HTTP at all? See docs/lens/LENS_MCP_FORK_ENHACEMENT.md §"Honest payoff
+# summary". The win: 1 long-lived daemon + 1 CDP attachment + 1 mutex
+# serves ALL consumers; per-call latency drops from ~300ms (spawn cost)
+# to ~5ms (HTTP round-trip).
+# ─────────────────────────────────────────────────────────────────────────
+
+import urllib.request
+import urllib.error
+
+
+class MCPHttpSession:
+    """HTTP transport variant of MCPSession.
+
+    Same call() API. Uses Streamable HTTP per MCP spec 2025-11-25
+    against the launchd-managed tv-mcp daemon at MCP_HTTP_HOST:PORT.
+    Session ID is established by the initialize handshake and reused
+    across subsequent calls in the same Python process.
+    """
+
+    def __init__(self, base_url: str = None, timeout: int = 20):
+        host = os.environ.get("MCP_HTTP_HOST", "127.0.0.1")
+        port = os.environ.get("MCP_HTTP_PORT", "8765")
+        path = os.environ.get("MCP_HTTP_PATH", "/mcp")
+        self.base_url = base_url or os.environ.get("MCP_HTTP_URL", f"http://{host}:{port}{path}")
+        self.timeout = timeout
+        self.session_id = None
+        self._initialized = False
+        self._id_counter = 0
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def start(self):
+        """Initialize handshake — gets a session ID from the response header."""
+        resp = self._post({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "signal_system", "version": "1.0"},
+            },
+        })
+        if not resp or "result" not in resp:
+            raise ConnectionError(f"MCP HTTP server failed to initialize at {self.base_url}")
+        # Fire the initialized notification (sessionless follow-up)
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._initialized = True
+        log.debug("MCP HTTP session initialized: sid=%s url=%s", self.session_id, self.base_url)
+
+    def close(self):
+        """DELETE the session per MCP spec so the server cleans up state."""
+        if self.session_id:
+            try:
+                req = urllib.request.Request(
+                    self.base_url, method="DELETE",
+                    headers={"Mcp-Session-Id": self.session_id},
+                )
+                urllib.request.urlopen(req, timeout=2).close()
+            except Exception:
+                pass
+        self.session_id = None
+        self._initialized = False
+
+    def call(self, tool: str, arguments: dict = None) -> dict:
+        if not self._initialized:
+            raise RuntimeError("MCP HTTP session not initialized — call start() first")
+        self._id_counter += 1
+        resp = self._post({
+            "jsonrpc": "2.0",
+            "id": self._id_counter,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments or {}},
+        })
+        if not resp or "result" not in resp:
+            return {}
+        for block in resp["result"].get("content", []):
+            if block.get("type") == "text":
+                try:
+                    return json.loads(block["text"])
+                except (json.JSONDecodeError, TypeError):
+                    return {"raw_text": block["text"]}
+        return resp.get("result", {})
+
+    def _post(self, body: dict) -> dict | None:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if self.session_id:
+            headers["Mcp-Session-Id"] = self.session_id
+        req = urllib.request.Request(
+            self.base_url, method="POST",
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+        )
+        try:
+            response = urllib.request.urlopen(req, timeout=self.timeout)
+        except urllib.error.HTTPError as e:
+            # 404 = session expired — caller should re-initialize
+            if e.code == 404:
+                self.session_id = None
+                self._initialized = False
+                raise ConnectionError(f"MCP HTTP session expired/unknown (404). Re-create session.") from e
+            raise
+        # Capture session ID on the initialize response (header is per MCP spec)
+        sid = response.headers.get("Mcp-Session-Id") or response.headers.get("mcp-session-id")
+        if sid and not self.session_id:
+            self.session_id = sid
+        # Parse SSE response — for unary calls the server sends ONE data event
+        return self._parse_sse(response)
+
+    def _parse_sse(self, response) -> dict | None:
+        raw = response.read().decode("utf-8", errors="ignore")
+        # SSE frames: "data: {json}\n\n" — there may be multiple events; we
+        # care about the one carrying the JSON-RPC result.
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                payload = line[6:]
+                try:
+                    return json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+        return None
+
+
+def create_session(timeout: int = 20):
+    """Factory — pick the right session class based on LENS_MCP_TRANSPORT.
+
+    Consumers (lens.py, aurum.py, scripts) call this instead of MCPSession
+    directly so the transport choice is centralised. Default is stdio for
+    backward compatibility; flip via LENS_MCP_TRANSPORT=http when the
+    tv-mcp launchd daemon is running.
+    """
+    transport = (os.environ.get("LENS_MCP_TRANSPORT") or "stdio").lower()
+    if transport == "http":
+        return MCPHttpSession(timeout=timeout)
+    return MCPSession(timeout=timeout)

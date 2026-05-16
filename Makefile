@@ -511,6 +511,70 @@ reload-athena:
 	@sleep 8
 	@curl -sf http://localhost:7842/api/health > /dev/null 2>&1 && echo "✅ ATHENA up" || echo "⚠️  ATHENA not responding"
 
+# ── F5: tv-mcp launchd daemon (Streamable HTTP MCP) ─────────────────────
+# Long-lived MCP daemon serving the F2 mutex + F4 reconnect + F3 HTTP transport.
+# Default port 127.0.0.1:8765/mcp (configurable via .env MCP_HTTP_*).
+# Health probe: http://127.0.0.1:8765/health
+
+start-mcp:
+	@echo "Starting tv-mcp daemon..."
+	@PLIST=$(LAUNCH_AGENTS)/com.signalsystem.tv-mcp.plist; \
+	if [ -f "$$PLIST" ] || [ -L "$$PLIST" ]; then \
+		launchctl load "$$PLIST" 2>/dev/null; \
+		echo "  ✓ Loaded com.signalsystem.tv-mcp"; \
+	else \
+		echo "  ✗ plist not found — run: make services-install"; \
+		exit 1; \
+	fi
+	@sleep 2
+	@PORT=$$(grep -E "^MCP_HTTP_PORT=" .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | head -1); \
+	PORT=$${PORT:-8765}; \
+	curl -sf "http://127.0.0.1:$$PORT/health" > /dev/null 2>&1 && echo "✅ tv-mcp daemon up at :$$PORT" || echo "⚠️  tv-mcp daemon not responding on :$$PORT (check logs/tv-mcp.error.log)"
+
+stop-mcp:
+	@echo "Stopping tv-mcp daemon..."
+	@PLIST=$(LAUNCH_AGENTS)/com.signalsystem.tv-mcp.plist; \
+	if [ -f "$$PLIST" ] || [ -L "$$PLIST" ]; then \
+		launchctl unload "$$PLIST" 2>/dev/null && echo "  ✓ Stopped com.signalsystem.tv-mcp" || echo "  (was not running)"; \
+	else \
+		echo "  ✗ plist not found — nothing to stop"; \
+	fi
+
+reload-mcp:
+	@echo "Reloading tv-mcp daemon..."
+	@PLIST=$(LAUNCH_AGENTS)/com.signalsystem.tv-mcp.plist; \
+	if [ -f "$$PLIST" ] || [ -L "$$PLIST" ]; then \
+		launchctl unload "$$PLIST" 2>/dev/null; \
+		launchctl load "$$PLIST" 2>/dev/null; \
+		echo "  ✓ Reloaded com.signalsystem.tv-mcp"; \
+	else \
+		echo "  ✗ plist not found — run: make services-install"; \
+		exit 1; \
+	fi
+	@sleep 2
+	@PORT=$$(grep -E "^MCP_HTTP_PORT=" .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | head -1); \
+	PORT=$${PORT:-8765}; \
+	curl -sf "http://127.0.0.1:$$PORT/health" > /dev/null 2>&1 && echo "✅ tv-mcp daemon up at :$$PORT" || echo "⚠️  tv-mcp daemon not responding on :$$PORT"
+
+restart-mcp:
+	@echo "Full restart tv-mcp (re-render plist + reload)..."
+	@$(MAKE) stop-mcp 2>&1 | tail -3
+	@python3 services/install_services.py 2>&1 | grep -E "tv-mcp" | head -3
+	@$(MAKE) start-mcp
+
+mcp-status:
+	@echo "── tv-mcp daemon status ──"
+	@launchctl list 2>/dev/null | grep "com.signalsystem.tv-mcp" | awk '{printf "  PID: %s | LastExit: %s | Label: %s\n", $$1, $$2, $$3}' || echo "  not loaded"
+	@PORT=$$(grep -E "^MCP_HTTP_PORT=" .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | head -1); \
+	PORT=$${PORT:-8765}; \
+	HEALTH=$$(curl -sf --max-time 2 "http://127.0.0.1:$$PORT/health" 2>/dev/null); \
+	if [ -n "$$HEALTH" ]; then echo "  Health: $$HEALTH"; else echo "  Health: ⚠️ not responding on :$$PORT"; fi
+
+mcp-logs:
+	@echo "── tv-mcp daemon logs (Ctrl-C to exit tail) ──"
+	@touch logs/tv-mcp.log logs/tv-mcp.error.log 2>/dev/null
+	@tail -F logs/tv-mcp.log logs/tv-mcp.error.log
+
 # ── TradingView CDP + LENS MCP ─────────────────────────────────────────
 LENS_MCP_DIR = $(HOME)/tradingview-mcp-aurum
 LENS_RULES_CANONICAL = $(ROOT_DIR)/config/tradingview_rules.json

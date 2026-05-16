@@ -12,7 +12,7 @@ from pathlib import Path
 
 from scribe import get_scribe
 from status_report import report_component_status
-from mcp_client import MCPSession
+from mcp_client import MCPSession, create_session
 from freshness import DATA_FRESHNESS_WINDOWS
 
 log = logging.getLogger("lens")
@@ -363,7 +363,9 @@ class Lens:
             ob_boxes_resp = {}
             tv_brief_obj = self._last_tv_brief
             try:
-                with MCPSession(timeout=30) as session:
+                # F5: transport selected by LENS_MCP_TRANSPORT env (stdio default,
+                # http when tv-mcp launchd daemon is running). See mcp_client.py.
+                with create_session(timeout=30) as session:
                     quote = session.call("quote_get", {})
                     studies_resp = session.call("data_get_study_values", {})
                     chart_state = session.call("chart_get_state", {})
