@@ -1,5 +1,65 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [v2.7.125] — 2026-05-15 (Strip Bridge B1/B2 PROFIT_RATCHET; port early-lock-floor to EA L2)
+
+Operator decision after the B1/B2 vs EA L0-L9 diff (this session's analysis):
+- **B1** (Bridge PROFIT_RATCHET SL ratchet) had a single piece of unique value — a "chunky early lock floor" in the MFE 30-200 pip window before EA L2's adaptive trail wakes up. Everything else duplicated L2 with a fixed-pip formula.
+- **B2** (Bridge hybrid TP tighten) was broker-rejected three times on G5001 (`[invalid stops]`); EA L4's `tp1_close_pct` mechanism banks the same profit reliably via real partial-close.
+
+Per operator's "EA owns post-placement management" principle, both Bridge engines are removed and B1's unique behaviour is ported into the EA as a single-authority addition.
+
+### Removed — `python/bridge.py`
+
+- `PROFIT_RATCHET_ENABLED`, `PROFIT_RATCHET_TRIGGER_PIPS`, `PROFIT_RATCHET_LOCK_PIPS`, `PROFIT_RATCHET_TP_BUFFER_PIPS` module-level constants.
+- `Bridge._profit_ratcheted` set + `_profit_ratchet_tester_warned` flag from `__init__`.
+- `_apply_profit_ratchet()` and `_compute_ratchet_tp()` methods (~200 lines combined).
+- Call site in `_tick` that gated B1/B2 by `PROFIT_RATCHET_ENABLED`.
+- Discard call in close-detection path (the dedup set no longer exists).
+
+Old env vars (`PROFIT_RATCHET_*`) are silently ignored — Bridge stops reading them. They can stay in `.env` until the next housekeeping pass. Backup preserved at `python/bridge.py.backup-pre-b1-strip-20260515-222625` (local-only).
+
+### Added — `ea/FORGE.mq5` (port of B1's early-lock-floor into L2)
+
+Two new `ScalperConfig` fields:
+
+```mql5
+bool   lock_floor_pips_enabled;  // master toggle (default false)
+double lock_floor_pips;          // floor distance, operator-pip convention (default 25)
+```
+
+L2 fast-lock-trail block at `ManageOpenGroups` now applies the floor AFTER computing `target_sl = max(lock_sl, trail_sl)` and the `min_profit_pts` clamp, BEFORE the broker `max_valid` / `min_valid` clamp:
+
+```mql5
+// BUY
+if(g_sc.lock_floor_pips_enabled && g_sc.lock_floor_pips > 0.0) {
+   double floor_sl = open + (g_sc.lock_floor_pips * PipSize());
+   target_sl = MathMax(target_sl, floor_sl);
+}
+// SELL mirrors: target_sl = MathMin(target_sl, open - lock_floor_pips × PipSize())
+```
+
+Uses the existing `PipSize()` helper (`ea/FORGE.mq5:16353`) — XAU 2-digit returns `10 × point = $0.10/pip`, JPY/FX returns 10 points on pipette brokers, 1 point otherwise. So `25 × PipSize()` on XAU = $2.50 above entry (matches pre-strip Bridge B1 `LOCK_PIPS=25` behaviour). On EURUSD: 25 × 0.0001 = 25 pips standard FX convention.
+
+The floor only applies AFTER L2's adaptive trigger has fired (`moved_pts >= max(trigger_pts, progress_trigger)`); never premature.
+
+### Wired — config + env (per `feedback_no_dead_env_vars`)
+
+- `scripts/sync_scalper_config_from_env.py`: new mappings `FORGE_LOCK_FLOOR_PIPS_ENABLED → safety.lock_floor_pips_enabled` (`bool01`), `FORGE_LOCK_FLOOR_PIPS → safety.lock_floor_pips` (`float`, 0–200).
+- `config/scalper_config.defaults.json`: `"lock_floor_pips_enabled": 0`, `"lock_floor_pips": 25.0` in the `safety` block.
+- `ea/FORGE.mq5` `InitScalperConfig` defaults + `JsonHasKey` loaders.
+- `.env.example`: documented block next to the other `FORGE_FAST_LOCK_*` knobs.
+
+### Activation
+
+- Bridge: reloaded 2026-05-15 22:34 — B1/B2 dead, no more `PROFIT_RATCHET` emissions.
+- EA: `make forge-compile` rebuilt FORGE.ex5 (585190 bytes, version 2.7.123). MT5 must reload the `.ex5` (remove + drag-drop FORGE chart, or restart MT5) before the lock-floor logic is active. Default disabled — operator opts in by setting `FORGE_LOCK_FLOOR_PIPS_ENABLED=1` in `.env` and re-running `make forge-compile`.
+
+### Doc correction needed
+
+`docs/FORGE_RATCHET_DESIGN.md` §3.2 still attributes G5001's +$65.12 to L3 (B2). Forensics from this session showed the broker rejected all three B2 attempts with `[invalid stops]`; the +$65.12 was actually banked by EA L4's `tp1_close_pct=100` mechanism. Separate ticket — doc-only fix.
+
+---
+
 ## [hygiene] — 2026-05-15 (Codex review FAIL cleanup: missing .env.example entry + .env duplicate-line dedup)
 
 Codex `/forge-ea-review` (2026-05-15) flagged 17 FAILs against Mandatory Checks C + Variable Integrity. Root-causes:

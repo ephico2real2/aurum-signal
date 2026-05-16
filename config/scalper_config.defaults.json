@@ -242,6 +242,8 @@
     "fast_lock_min_profit_points": 12.0,
     "fast_lock_spread_guard_mult": 1.2,
     "fast_lock_breath_mult": 1.35,
+    "lock_floor_pips_enabled": 0,
+    "lock_floor_pips": 25.0,
     "adx_hysteresis_enabled": 1,
     "adx_hysteresis_apply_in_tester": 0,
     "adx_trend_enter": 54.0,
