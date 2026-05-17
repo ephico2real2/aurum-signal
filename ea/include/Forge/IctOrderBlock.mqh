@@ -104,7 +104,11 @@ int Forge_DetectOrderBlocks(double atr, double displacement_min_atr, int lookbac
    datetime now_t = TimeCurrent();
    int      max_age_sec = 60 * 60 * 6;   // 6h M5 OB lifespan
 
-   for(int i = lookback_bars; i >= 3; i--) {
+   // v2.7.137 R24 fix — scan NEWEST→OLDEST so the 16-slot ring keeps the most-recent
+   // OBs when more than 16 candidates exist in the lookback window. The previous
+   // OLDEST→NEWEST direction silently retained the most stale OBs in fast markets,
+   // which is exactly where breaker/retest atoms need fresh structure.
+   for(int i = 3; i <= lookback_bars; i++) {
       if(g_ob_ring_count >= 16) break;
 
       double o_disp = iOpen (_Symbol, PERIOD_M5, i);

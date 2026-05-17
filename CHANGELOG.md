@@ -1,5 +1,115 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [v2.7.137] — 2026-05-17 (pre-M7 stabilization batch — codex review fixes R21/R22/R24/R27 + cosmetic R29/R30 + R17 doc revision)
+
+Pre-stabilization batch that clears live-trading bugs + atom-scoring drift + comment-shape fragility BEFORE the v2.7.138 M7 fold multiplies code surface. Six codex-review findings plus the §B.4 doc revision land as one ship per operator decision (single-commit cadence, 2026-05-17). Validated against tester Run 4 (sim 2026-03-05 → 2026-04-17, XAUUSD, scalper mode DUAL).
+
+### R21 — MagicNumber-change orphan guard (🚨 critical live-trading fix)
+
+**Failure mode closed**: operator edits the EA input `MagicNumber` (e.g. 202401 → 202402) between EA loads while open groups exist under the previous base. `RebuildGroups` (FORGE.mq5:16151) and `SeedScalperGroupCounter` both filter strictly on the current `MagicNumber`, so the old-base positions become INVISIBLE to atomic management — no TP1 ratchet, no TP2 banking, no BE move, no SL discipline, no time-stop. The trader loses control of live exposure with no surface signal.
+
+**Design**: persist last-seen `MagicNumber` base to a state file in MT5 Common Files (`forge_magic_state.txt`). On `OnInit`, before `RebuildGroups`, compare prior vs current base across four paths: first-boot (no state file) → write current + log + proceed; match → silent heartbeat-update; benign change (mismatch, no orphans) → update state + log + proceed; destructive (mismatch, orphans found) → set `g_magic_base_mismatch_block=true`, log loud reconciliation steps with orphan count, do NOT update state file.
+
+**Block semantics**: management of existing positions continues (operator can close manually or via bridge). Only NEW entry-placement codepaths refuse via `MagicBaseGate_BlockEntries(reason)` helper, wired at 4 sites: `CheckNativeScalperSetups` (top of scalper-decision loop), `ExecuteOpenGroup` (bridge/aurum JSON OPEN command), `PlaceOpenGroupLeg` (defense-in-depth at leg placer), `ManageStagedNativeLegs` (staged scale-in adds new exposure).
+
+**Reconcile paths**: (a) close legacy positions at the broker, (b) revert `MagicNumber` to the prior value, or (c) delete `forge_magic_state.txt` to force first-boot reset (only when operator has manually verified no prior-base exposure exists).
+
+**Files**: `ea/FORGE.mq5` only — new state-file path constant, 3 new globals (`g_magic_base_prior`, `g_magic_base_mismatch_block`, `g_magic_base_orphan_count`), 2 new functions (`MagicBaseGate_Init`, `MagicBaseGate_BlockEntries`), 4 gate-site wires. Validated in Run 4: state file written with `last_magic_base=202401` matching current; silent-match path executed correctly (no log noise on matched boot).
+
+### R22 — KZ-favorable spec drift in `Atom_KillzoneFavorable` (silent since v2.7.123)
+
+**Failure mode closed**: Cat 1 MSS_CONT atom only accepted `NY_OPEN_KZ`; spec §B.8.2:625 says `{LDN_OPEN, NY_AM}`. The two are alias-tolerated per §B.7.3 (NY_OPEN ≡ NY_AM, same 07:00-10:00 NY window) but the alias wasn't wired in code — forward-compat hole. More critically, Cat 3 LIQ_SWEEP atom used `LONDON_CLOSE_KZ` as a "proxy until NY_PM_KZ ships". `NY_PM_KZ` shipped in v2.7.122 F-α (FORGE.mq5:7519) and the proxy was never removed. Result: Cat 3 was scoring the 10:00-12:00 NY window as favorable instead of the spec's 13:30-16:00 NY PM-reversal window. Silent atom-scoring drift across the entire LIQ_SWEEP_REVERSAL composite for 14 days.
+
+**Fix**: `ea/include/Forge/IctScoring.mqh::Atom_KillzoneFavorable` — Cat 1 accepts `NY_OPEN_KZ || NY_AM_KZ` (alias-tolerant); Cat 3 replaces `LONDON_CLOSE_KZ` with canonical `NY_PM_KZ`. Module docstring + CHANGELOG block updated; "proxy" language removed.
+
+**Validation in Run 4** (empirical, sim 2026-03-05 → 2026-03-06):
+
+| Killzone | Cat 3 favorable | Cat 1 favorable | Bars sampled |
+|---|---|---|---|
+| `LONDON_OPEN_KZ` | 214/217 (99%) ✓ | 214/217 (99%) ✓ | 217 |
+| `NY_OPEN_KZ` | **0/4011** ✓ (correctly excluded) | **4009/4011** (99%) ✓ (alias wired) | 4011 |
+| `ASIAN_KZ` | 0/13137 ✓ | 0/13137 ✓ | 13,137 |
+
+Cat 3 correctly excludes the wrong window; Cat 1 correctly accepts the alias. Final NY_PM_KZ validation lands when sim crosses 13:30-16:00 NY.
+
+### R24 — OB ring kept OLDEST 16, not NEWEST (wrong for fast markets)
+
+**Failure mode closed**: `Forge_DetectOrderBlocks` (ea/include/Forge/IctOrderBlock.mqh) scanned `for (int i = lookback_bars; i >= 3; i--)` and broke at `count >= 16`. In high-vol regimes with 16+ OB candidates in the lookback window, the ring filled with OLDEST OBs and skipped NEWEST. Cat 2/4 atoms (`atom_ob_confluence_*`, `atom_breaker_retest_*`) then read stale OBs in exactly the regime where fresh breaker structure matters most.
+
+**Fix**: scan direction reversed to `for (int i = 3; i <= lookback_bars; i++)` — ring now holds 16 freshest OBs. No consumer depends on chronological order (verified: all consumers iterate `0..g_ob_ring_count` and address by index, no time-based assumption).
+
+**Run 4 validation**: `atom_ob_broken` fired 4273× across 17,631 bars (24% breakage rate) — healthy ring activity consistent with newest-OB retention.
+
+### R27 — `PlaceMarketBatch` appended `|L<n>` after canonical comment (breaks 6/7-segment parser shape)
+
+**Failure mode closed**: `PlaceOpenGroupLeg` built canonical comment via `Forge_BuildScalpComment` (shape: `<zone>_<order>|<cat_dir>|G<id>|<tp_or_leg>|<kz_det>|<conv>[|<sk_det>]`, 6 or 7 segments). `PlaceMarketBatch` then appended `|L<n>` after the fact via `comment_base + "|L" + IntegerToString(leg + 1)`. Result: non-SK batch legs got an 8th segment with `L1` in the wrong slot; SK legs created a true 8-segment comment. Scribe parser (which splits on `|` and assigns by position) mis-classified attribution.
+
+**Fix**: new helper `Forge_OverrideTpOrLeg(built_comment, new_label)` in `ea/include/Forge/IctComment.mqh` performs in-place string surgery on the `<tp_or_leg>` segment (between pipes #3 and #4). `PlaceMarketBatch` replaces the post-hoc append with `Forge_OverrideTpOrLeg(comment_base, "L" + n)`. Shape stays at 6 or 7 segments; `L1`/`L2` lands in its canonical slot per `docs/FORGE_ICT_COMMENT_CODES.md §2.1`.
+
+**Validation in Run 4**: ICT comment self-test on `OnInit` printed 8 canonical sample shapes — all clean 6/7 segments including the canonical batch-leg shape `KZ_BUY_STOP_CONT|LIQ_SWEEP_B|G5003|L2|LDN_CL_KZ|H`. Full live-batch validation deferred (no bridge OPEN_GROUP in this tester scope).
+
+### R29 — comment drift after v2.7.136 atom rename
+
+`IctScoring.mqh:350` BREAKER_RETEST documentation block still said `breaker_present(3)`. v2.7.136 renamed the atom to `atom_ob_broken`. Updated to `atom_ob_broken(3)` to match the §B.8.2 catalog verbatim.
+
+### R30 — stale "pending" status in `docs/FORGE_ICT_COMMENT_CODES.md §8`
+
+§8 still said "helper expansion pending" though the helpers shipped in v2.7.132 and the self-test runs at every `OnInit`. §8.1 expanded to list the v2.7.132 ship items + the new `Forge_OverrideTpOrLeg` helper from R27. §8.2 trimmed to the genuinely-deferred items (scribe parser, Phase B legacy fixup).
+
+### R17 — `FORGE_SETUP_ICT_MAP.md §B.4` revised per consensus-gate audit
+
+Old §B.4 listed all 11 setups as M7 folds (the pre-canonical version that prompted the consensus-gate audit). Revised text reflects the corrected fold per `refinement-ideas/M7-design/2026-05-17_m7-mss-continuation-fold.md §8b/§8c` and the canonical catalog `docs/FORGE_ICT_SETUPS.md`. **Further refined 2026-05-17 per operator decision**: `MOMENTUM_DUMP` (v1 legacy) joins the RETIRE bucket because `MOMENTUM_DUMP_COMPOSITE` is the atom-composed ICT-aligned successor (v2.7.121 `_TEST` promotion); parallel validation done — commit to the composite.
+
+| Bucket | Count | Setups |
+|---|---|---|
+| KEEP in M7 | 6 | `BB_BREAKOUT`, `GAP_AND_GO`, `MOMENTUM_DUMP_COMPOSITE`, `BB_SQUEEZE`, `GRINDING_SELL`, `NY_SESSION_BEARISH_BREAKOUT_SELL` |
+| Provisional | 1 | `INSIDE_BAR` (operator call: keep or retire) |
+| Reclassify → M8 (OTE) | 2 | `BB_BREAKOUT_RETEST`, `FLAG_PENNANT` |
+| Reclassify → M9 (LIQ_SWEEP) | 1 | `ORB` |
+| RETIRE | 2 | `MA_CROSSOVER` (ICT explicitly rejects MAs), `MOMENTUM_DUMP` v1 legacy (superseded by composite) |
+
+New RETIRE bucket added to the §B.4 table. §9 changelog entry logged with cross-refs. Doc-only — no code or schema change.
+
+### Test scaffolding — `tests/api/test_m7_fold.py`
+
+17 `xfail(strict=True)` tests covering all 5 schema-parity layers (`setup_subtype` column) + per-setup fold-correctness + retire enforcement. Today every test FAILS (proving M7 hasn't shipped); when v2.7.138 M7 lands correctly, every test auto-PASSes. Operator removes the xfail markers once v2.7.138 is in.
+
+### Open findings logged from Run 4 monitoring (not in this batch)
+
+| ID | Finding | Disposition |
+|---|---|---|
+| R31 | M7 Explore audit missed `BB_PULLBACK_SCALP` (active setup; canon-correctly placed in §B.4 M8 fold but absent from M7-design Explore list) | OPEN — prerequisite for M7/M8 |
+| R32 | MOMENTUM_DUMP BUY counter-trend trap (G5002 + G5003 losing trades in Run 4 LONDON_OPEN_KZ at RSI 65 + h1=−0.72; DTC didn't catch because h4 was nearly flat); same structural class as Asia-session knife-catch BUYs | OPEN — canonical fix is the ISS gate (v2.7.116), not per-setup band-aids |
+
+Both stay OPEN in `refinement-ideas/improvement-recommendations/INDEX.md` per operator directive: "only implement solutions that are part of our final design" — no tactical per-setup gates; structural fix is the ISS score-first entry gate landing in v2.7.116.
+
+### Bonus cleanup — gate_legend.json stale CES entry → ISS
+
+`config/gate_legend.json` had a leftover `ces_below_threshold` entry from v2.7.110 (retired in v2.7.112 when CES was replaced by ISS — see `project_ces_provisional.md` memory). The EA stopped emitting that gate literal, so `tests/api/test_forge_27x_gates.py::test_gate_legend_entries_reachable_in_EA` was failing. Renamed entry to `iss_below_threshold` matching the actual literal at the post-v2.7.112 ISS gate site in EA source. Test suite returns to 55-passing. Doc-only — no EA code change.
+
+### Files
+
+- `VERSION` — 2.7.136 → 2.7.137
+- `ea/FORGE.mq5` — R21 (state file + gate function + 4 wire sites), R27 (`PlaceMarketBatch` uses new helper)
+- `ea/include/Forge/IctScoring.mqh` — R22 (Cat 1 alias + Cat 3 NY_PM_KZ), R29 (comment text)
+- `ea/include/Forge/IctOrderBlock.mqh` — R24 (scan direction reversed)
+- `ea/include/Forge/IctComment.mqh` — R27 (new `Forge_OverrideTpOrLeg` helper)
+- `docs/FORGE_SETUP_ICT_MAP.md` — R17 (§B.4 revised + §9 changelog)
+- `docs/FORGE_ICT_COMMENT_CODES.md` — R30 (§8 status updated)
+- `tests/api/test_m7_fold.py` — M7-arrival validator (xfail until v2.7.138)
+- `refinement-ideas/improvement-recommendations/INDEX.md` — R17/R21/R22/R24/R27/R29/R30 SHIPPED, R31/R32 OPEN
+- `config/gate_legend.json` — bonus cleanup: stale `ces_below_threshold` → `iss_below_threshold` (post-v2.7.112 rename was missed)
+- `refinement-ideas/M7-design/2026-05-17_m7-mss-continuation-fold.md` — §4 refined with global-set implementation-pattern decision + fire-site map (verified against ea/FORGE.mq5 — 11 sites across 8 setups)
+
+### Validation
+
+- `make forge-compile` clean (no errors, no warnings); FORGE.ex5 built `609792` bytes vs prior `607536` (delta from R21 state-file functions + R27 helper)
+- Run 4 tester baseline: R21 state file written + maintained correctly; R22 Cat 1/3 KZ distributions match spec; R24 OB ring active (24% breakage rate); R27 self-test 8 shapes clean
+- `tests/api/test_m7_fold.py` parses + collects 17 tests (all xfail)
+- Housekeeping checks A (dead env vars) / B (gate legend coverage) / C (scribe sync errors) all PASS
+
+---
+
 ## [v2.7.126] — 2026-05-15 (TP3/TP4/TP5 support for BRIDGE/AURUM OPEN_GROUP; EA auto-computes from M5 ATR)
 
 Operator decision: "we will open at tp1/tp2 but ability to move up tp3, tp4, tp5 during when market support it — the system should determine this."

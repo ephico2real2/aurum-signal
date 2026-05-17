@@ -170,6 +170,46 @@ string Forge_BuildScalpComment(const string order_type_code,
 }
 
 //+------------------------------------------------------------------+
+//| Forge_OverrideTpOrLeg (v2.7.137 R27)                              |
+//|                                                                   |
+//| Replace the <tp_or_leg> segment (4th pipe-delimited field) inside |
+//| an already-built canonical comment. Used by PlaceMarketBatch to   |
+//| label per-leg L1..LN without breaking the 6/7-segment shape that  |
+//| scribe parses. The previous PlaceMarketBatch code did             |
+//| `comment_base + "|L" + IntegerToString(leg + 1)` — which appended |
+//| an extra segment, putting "L1" in the SK_DETAIL slot on non-SK    |
+//| legs and creating an 8th segment on SK legs. Both corrupt scribe  |
+//| attribution.                                                      |
+//|                                                                   |
+//| Grammar (from Forge_BuildScalpComment):                           |
+//|   <zone>_<order_type>|<cat_dir>|G<id>|<tp_or_leg>|<kz_det>|<conv>|
+//|   [|<sk_det>]                                                     |
+//|   pipes:                                                          |
+//|     #1 separates zone_order from cat_dir                          |
+//|     #2 separates cat_dir from G<id>                               |
+//|     #3 separates G<id> from <tp_or_leg>  ← start of field         |
+//|     #4 separates <tp_or_leg> from <kz_det> ← end of field         |
+//+------------------------------------------------------------------+
+string Forge_OverrideTpOrLeg(const string built_comment, const string new_label) {
+   int pipe_count = 0;
+   int start_pos = -1;
+   int end_pos   = -1;
+   int n = StringLen(built_comment);
+   for(int i = 0; i < n; i++) {
+      if(StringGetCharacter(built_comment, i) == '|') {
+         pipe_count++;
+         if(pipe_count == 3)      start_pos = i + 1;
+         else if(pipe_count == 4) { end_pos = i; break; }
+      }
+   }
+   if(start_pos < 0) return built_comment;  // malformed → leave intact
+   if(end_pos   < 0) end_pos = n;           // tp_or_leg was last segment (no kz_det/conv) — replace to EOL
+   string head = StringSubstr(built_comment, 0, start_pos);
+   string tail = StringSubstr(built_comment, end_pos);
+   return head + new_label + tail;
+}
+
+//+------------------------------------------------------------------+
 //| Forge_IctComment_SelfTest                                         |
 //| Called once at EA OnInit. Builds 8 canonical sample comments and  |
 //| prints them so the operator can visually verify the codes line    |

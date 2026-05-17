@@ -42,7 +42,7 @@ Collapse 11 legacy entry triggers into ONE ICT-canonical `setup_type` (`MSS_CONT
 
 1. **Only 2 setups are default-ON**: `BB_BREAKOUT` (hardcoded `true`, no env knob) + `GRINDING_SELL`. The other 9 must be operator-enabled.
 2. **`BB_BREAKOUT_RETEST` is NOT independent** — it's a retest-arm of `BB_BREAKOUT` that fires when retest conditions are met (deferred immediate entry). Should fold as a sub-variant subtype.
-3. **`MOMENTUM_DUMP_COMPOSITE` is described as a REPLACEMENT for legacy `MOMENTUM_DUMP`** running in parallel for validation. Post-M7 they BOTH map to `MSS_CONTINUATION_*` but `setup_subtype` distinguishes — preserves ablation-study fidelity.
+3. **`MOMENTUM_DUMP_COMPOSITE` is described as a REPLACEMENT for legacy `MOMENTUM_DUMP`** running in parallel for validation. **Operator decision 2026-05-17**: parallel validation done — commit to the composite, **RETIRE the v1 legacy** alongside `MA_CROSSOVER`. The composite is atom-decomposed (pure-function evaluators per skill §I.8 plug-and-play principle #1), the legacy is monolithic inline logic at 3 sites. ICT alignment + modularity + plug-and-play all favor the composite. Post-M7 only `momentum_dump_composite` folds to `MSS_CONTINUATION_*`; `momentum_dump` joins the RETIRE bucket.
 4. **`NY_SESSION_BEARISH_BREAKOUT_SELL` has no enable flag** — fires whenever filter chain passes. Needs an explicit `g_sc.ny_session_bearish_breakout_sell_enabled` field added as part of M7 (per `feedback_no_dead_env_vars` — every setup must have a knob).
 5. **`BB_BREAKOUT` is hardcoded ON with no env** — should also gain `FORGE_SETUP_BB_BREAKOUT_ENABLED` for parity. Listed as M7 sub-improvement.
 
@@ -81,24 +81,90 @@ Same ALTER block pattern; `has_setup_subtype` SELECT flag; placeholder count 168
 
 ## §4 Code surface change pattern
 
-For each of the 11 legacy setups, at the fire-site:
+### §4.1 Implementation-pattern decision — global-set, NOT signature-thread
 
-**Before (legacy)**:
+**Decided 2026-05-17** (refined per Run 4 audit). `JournalRecordSignal` has **119 call sites** in `ea/FORGE.mq5`. Adding `setup_subtype` as a positional parameter to the function signature would ripple the change to all 119 callers — that's exactly the anti-pattern called out in skill §I.11.1 v2.7.122 F-α (macd_hist bug class: positional-parameter threading invites silent arity bugs across SKIP/TAKEN/diagnostic paths).
+
+**Canonical pattern instead**: set a global at the fire site, `JournalRecordSignal` reads it inline at the INSERT bind, clears after. Same mechanism already used by `pattern_score` (FORGE.mq5:4582 comment: *"pattern_score is setup-specific (caller-passed to JournalRecordSignal), not a tick-state global — JournalRecordSignal reads it inline"*) and the v2.7.122 F-α killzone/silver_bullet columns.
+
+**Per-call mechanism** (no signature change):
+
+```mql5
+// module-level (near other JournalRecordSignal tick-state globals, ~line 4580)
+string g_setup_subtype_for_next_signal = "";  // M7 — read by JournalRecordSignal INSERT,
+                                              // cleared after every JournalRecordSignal call
+
+// at every M7 fire site (the 7 setups in §2 table):
+g_setup_subtype_for_next_signal = "bb_breakout";  // <— set the subtype global
+string setup_type = "MSS_CONTINUATION_" + direction;  // <— change setup_type literal to MSS_CONT
+// ... existing trigger logic (UNCHANGED) ...
+JournalRecordSignal("TAKEN", "", setup_type, direction, /* ALL EXISTING PARAMS UNCHANGED */);
+
+// inside JournalRecordSignal, at the INSERT VALUES bind:
+// ... existing bindings ...
++ "'" + g_setup_subtype_for_next_signal + "',"
+// ... rest of bind ...
+g_setup_subtype_for_next_signal = "";  // <— clear so next non-M7 SKIP/TAKEN logs ""
+```
+
+**Why this beats signature-threading**:
+
+| Concern | Signature-thread approach | Global-set approach |
+|---|---|---|
+| Call sites touched | **119** (all callers) | **8** (only M7 fire sites — the 7 keep + 1 provisional) |
+| Arity-bug surface | High — every SKIP path, every diagnostic JournalRecordSignal at the 119 sites needs updating | Zero — non-M7 callers untouched, default `""` value lands |
+| Future M8/M9 expansion | Re-thread signature again (another 119-site ripple) | Set the same global at M8/M9 fire sites; no signature change ever |
+| Anti-pattern flagged in skill | YES — v2.7.122 F-α macd_hist bug class | NO — canonical |
+| Backward compatibility | Defaults required on every overload | Default `""` is the natural state of the global |
+
+### §4.2 Per-fire-site diff template
+
+For each of the 7 KEEP setups (+ 1 provisional), at the fire-site identified in §2:
+
+**Before (legacy, pre-M7)**:
 ```mql5
 string setup_type = "BB_BREAKOUT";
 // ... trigger logic ...
-JournalRecordSignal("TAKEN", "", setup_type, direction, ...);
+JournalRecordSignal("TAKEN", "", setup_type, direction, /* ...19 more params... */);
 ```
 
 **After (M7)**:
 ```mql5
-string setup_type    = "MSS_CONTINUATION_" + direction;  // _BUY or _SELL
-string setup_subtype = "bb_breakout";
-// ... same trigger logic (UNCHANGED) ...
-JournalRecordSignal("TAKEN", "", setup_type, direction, setup_subtype, ...);
+g_setup_subtype_for_next_signal = "bb_breakout";  // M7 — preserve original-trigger identity
+string setup_type = "MSS_CONTINUATION_" + direction;  // M7 — ICT-canonical setup_type
+// ... trigger logic (UNCHANGED) ...
+JournalRecordSignal("TAKEN", "", setup_type, direction, /* ...19 more params, UNCHANGED... */);
 ```
 
-The `JournalRecordSignal` signature gains a `setup_subtype` parameter (defaulted to `""` for legacy / non-MSS_CONT call sites until M8/M9 fold them too).
+`direction` is `"BUY"` or `"SELL"` (already a local at every fire site).
+
+### §4.3 Fire-site map (verified 2026-05-17 against ea/FORGE.mq5; revised for MOMENTUM_DUMP v1 retire)
+
+| Setup | Fire sites | Lines in FORGE.mq5 | M7 disposition |
+|---|---|---|---|
+| `BB_BREAKOUT` | 2 | 12876, 13231 | KEEP — fold to MSS_CONT |
+| `GAP_AND_GO` | 1 | 14219 | KEEP — fold to MSS_CONT |
+| `MOMENTUM_DUMP_COMPOSITE` | 1 | 13600 | KEEP — fold to MSS_CONT (sole displacement detector post-retire) |
+| `BB_SQUEEZE` | 1 | 14150 | KEEP — fold to MSS_CONT |
+| `GRINDING_SELL` | 1 | 12561 | KEEP — fold to MSS_CONT |
+| `NY_SESSION_BEARISH_BREAKOUT_SELL` | 1 | 13779 | KEEP — fold to MSS_CONT |
+| `INSIDE_BAR` (provisional) | 1 | 14114 | KEEP (provisional — operator call) |
+| **Total to fold** | **8 sites across 7 setups** | | **2-line diff per site** |
+| `MOMENTUM_DUMP` | 3 | 13259, 13439, 13572 | **RETIRE — delete** (sites removed entirely) |
+| `MA_CROSSOVER` | 1 | 13962 | **RETIRE — delete** (site removed entirely) |
+| **Total to retire** | **4 sites across 2 setups** | | **deletion** |
+
+Each KEEP site needs the 2-line diff (set subtype global + change setup_type literal). RETIRE sites get deleted entirely along with their env knobs / `g_sc.*` fields / cooldown timers. `JournalRecordSignal` itself gets a 1-line `g_setup_subtype_for_next_signal = "";` reset added near its existing tick-state clears.
+
+### §4.4 RETIRE / RECLASSIFY enforcement
+
+**RETIRE in this ship (or v2.7.137a sub-ship)**:
+- `MA_CROSSOVER` (FORGE.mq5:13962) — delete trigger site + `FORGE_SETUP_MA_CROSSOVER_ENABLED` env knob + `g_sc.ma_crossover_enabled` field + cooldown timer. Do NOT add `setup_subtype = "ma_crossover"`.
+- `MOMENTUM_DUMP` (FORGE.mq5:13259, 13439, 13572) — delete all 3 trigger sites + the `FORGE_DUMP_*` env knobs the composite doesn't reuse (per operator decision 2026-05-17, composite is the sole survivor). Audit step: cross-reference `MOMENTUM_DUMP_COMPOSITE`'s config-key set vs `MOMENTUM_DUMP`'s — knobs ONLY used by the v1 legacy get deleted; knobs SHARED with the composite stay. Do NOT add `setup_subtype = "momentum_dump"` — the composite preserves the displacement semantic independently and its `setup_subtype = "momentum_dump_composite"` is the canonical attribution post-fold.
+
+**DEFER to separate ships**:
+- `BB_BREAKOUT_RETEST` + `FLAG_PENNANT` → deferred to M8 OTE_RETRACEMENT ship. Fire sites stay on legacy `setup_type` literals until then. Do NOT touch them in M7.
+- `ORB` → deferred to M9 LIQUIDITY_SWEEP_REVERSAL ship. Same — do NOT touch in M7.
 
 ---
 
@@ -185,15 +251,15 @@ Each sub-ship = single commit. Total: 6 commits across one extended session OR o
 | MA_CROSSOVER | exists, EMA20×EMA50 | fold to M7 | [ICT explicitly avoids MAs / lagging indicators](https://eplanetbrokers.com/training/ict-trading-strategy-explained) | **FAIL — not ICT canon** | **RETIRE — do not migrate** |
 | ORB | exists, session range break | fold to M7 | session/IPDA opening range IS a liquidity zone — break is sweep, not continuation | **FAIL — wrong category** | Reclassify to M9 (LIQ_SWEEP_REV) |
 | GAP_AND_GO | exists, gap-and-go logic | fold to M7 | gap IS a displacement leg | **PASS** | Keep in M7 |
-| MOMENTUM_DUMP | exists, 2 sites | fold to M7 | M5 displacement = canonical MSS_CONT primary signal | **PASS** | Keep in M7 |
-| MOMENTUM_DUMP_COMPOSITE | exists, supersedes #5 | fold to M7 | same displacement primitive, atom-composed | **PASS** | Keep in M7 |
+| MOMENTUM_DUMP (v1 legacy) | exists, 3 sites | fold to M7 | M5 displacement = canonical MSS_CONT primary signal, BUT atom-composed successor (#6) supersedes | **FAIL — superseded** (operator decision 2026-05-17) | **RETIRE — do not migrate** (parallel validation done; composite wins on §I.8 atom-decomposed principle) |
+| MOMENTUM_DUMP_COMPOSITE | exists, supersedes #5 | fold to M7 | same displacement primitive, atom-composed; canonical ICT plug-and-play form | **PASS** | Keep in M7 (sole MSS displacement detector post-retire) |
 | BB_SQUEEZE | exists | fold to M7 | accumulation→expansion = IPDA phase = displacement | **PASS** | Keep in M7 |
 | FLAG_PENNANT | exists | fold to M7 | [bull flag fits ICT as "BOS pole + valid pullback"](https://innercircletrader.net/tutorials/bull-flag-pattern-trading-strategy/) — flag IS the OTE retracement | **FAIL — wrong category** | Reclassify to M8 (OTE_RETRACEMENT) |
 | INSIDE_BAR | exists | fold to M7 | consolidation→expansion = mini-displacement, but also classic chart pattern; ambiguous | **PROVISIONAL** | Operator call: keep in M7 OR retire |
 | GRINDING_SELL | exists | fold to M7 | multi-bar slow-displacement = slow MSS variant | **PASS** | Keep in M7 |
 | NY_SESSION_BEARISH_BREAKOUT_SELL | exists, no flag | fold to M7 | session-open displacement break + Killzone-tagged MSS | **PASS** | Keep in M7 (+ add missing enable flag) |
 
-**Consensus result**: 7/12 PASS, 4/12 FAIL (3 reclassify + 1 retire), 1/12 PROVISIONAL.
+**Consensus result** (refined 2026-05-17 post operator decision on MOMENTUM_DUMP v1/composite): 6/12 PASS, 5/12 FAIL (3 reclassify + 2 retire — MA_CROSSOVER + MOMENTUM_DUMP v1), 1/12 PROVISIONAL.
 
 The original §B.4 was **partially wrong** — it pre-classified all 11 as MSS_CONT without per-setup canon check. This audit + skill §I.15 codification means future fold-specs go through this gate FIRST.
 
@@ -203,8 +269,9 @@ The original §B.4 was **partially wrong** — it pre-classified all 11 as MSS_C
 
 ### ICT-canonical position on each setup type
 
-**Strong RETIRE candidate**:
+**Strong RETIRE candidates**:
 - `MA_CROSSOVER` — ICT EXPLICITLY rejects moving-average crossovers. Per [chartinglens.com ICT guide](https://chartinglens.com/blog/ict-trading-strategy-guide): *"Unlike traditional technical analysis that relies on lagging indicators like moving averages and RSI, the ICT method focuses on price action, time, and the structural mechanics of how markets move."* Per [eplanetbrokers.com ICT guide](https://eplanetbrokers.com/training/ict-trading-strategy-explained): *"ICT explicitly avoids moving average crossovers and other lagging indicators as primary trading tools."* — **No ICT primitive expressed. Retire, don't migrate.**
+- `MOMENTUM_DUMP` (v1 legacy) — **Operator decision 2026-05-17**: parallel validation between v1 legacy and `MOMENTUM_DUMP_COMPOSITE` is done. The composite is the atom-composed ICT-aligned successor (promoted from `_TEST` in v2.7.121 per FORGE.mq5:1215). Running both in parallel was a validation scaffold, not the design target. The composite wins on §I.8 plug-and-play principle #1 (atom-decomposed = pure-function evaluators; the legacy is monolithic inline at 3 sites — harder to plug into the ICT atom catalog). **Retire the v1 legacy, commit to the composite.**
 
 **Reclassify M7 → M8 (OTE_RETRACEMENT)**:
 - `FLAG_PENNANT` — Per [innercircletrader.net bull-flag guide](https://innercircletrader.net/tutorials/bull-flag-pattern-trading-strategy/): *"Although the bull flag is a classic technical analysis pattern, it sits perfectly inside the ICT framework as a visualization of a break of structure followed by a valid pullback, with the pole being the displacement leg that produced the BOS."* The POLE is the MSS displacement, the FLAG is the OTE retracement zone — entry happens on the FLAG, not the POLE. **Belongs in M8 OTE_RETRACEMENT.**
@@ -216,8 +283,7 @@ The original §B.4 was **partially wrong** — it pre-classified all 11 as MSS_C
 **KEEP in M7 (MSS_CONTINUATION)** — these ARE displacement-leg / structure-continuation setups:
 - `BB_BREAKOUT` — band-break IS a displacement event when paired with §B.8.2 atom_displacement_present ≥ 1.5×ATR. Per ICT integration, the band break itself isn't the ICT primitive — but the displacement leg the breakout produces IS the MSS confirmation criterion.
 - `GAP_AND_GO` — gap IS a displacement leg (weekend/news gap = same structural meaning as M5 displacement candle).
-- `MOMENTUM_DUMP` — the canonical M5 displacement detector. Textbook MSS_CONT primary signal.
-- `MOMENTUM_DUMP_COMPOSITE` — same primitive, atom-composed. Retire #5 when validation confirms equivalence.
+- `MOMENTUM_DUMP_COMPOSITE` — atom-composed M5 displacement detector; sole MSS displacement primary signal post-retire of v1 legacy.
 - `BB_SQUEEZE` — consolidation→expansion = ICT IPDA accumulation→expansion phase = displacement. Fit OK.
 - `GRINDING_SELL` — multi-bar slow-displacement variant of MSS_CONT.
 - `NY_SESSION_BEARISH_BREAKOUT_SELL` — session-open displacement break, MSS_CONT with Killzone tag.
@@ -225,36 +291,38 @@ The original §B.4 was **partially wrong** — it pre-classified all 11 as MSS_C
 **Provisional in M7 (operator call: keep or retire)**:
 - `INSIDE_BAR` — Could fit MSS_CONT (consolidation → expansion = displacement). BUT also a retail chart pattern. Per ICT integration thinking: the inside-bar pattern IS a visualization of consolidation, similar to flag. Could be reclassified to M8 OTE or retired. **Operator decision needed.**
 
-### Revised M7 scope (7 setups, not 11)
+### Revised M7 scope (6 setups, not 11) — post operator decision 2026-05-17
 
 | Bucket | Count | Setups |
 |---|---|---|
-| **M7 (MSS_CONT)** | 7 | BB_BREAKOUT, GAP_AND_GO, MOMENTUM_DUMP, MOMENTUM_DUMP_COMPOSITE, BB_SQUEEZE, GRINDING_SELL, NY_SESSION_BEARISH_BREAKOUT_SELL |
+| **M7 (MSS_CONT)** | 6 | BB_BREAKOUT, GAP_AND_GO, MOMENTUM_DUMP_COMPOSITE, BB_SQUEEZE, GRINDING_SELL, NY_SESSION_BEARISH_BREAKOUT_SELL |
 | **M7 (provisional)** | 1 | INSIDE_BAR (operator call) |
 | **M8 (OTE_RETRACEMENT)** | 2 | BB_BREAKOUT_RETEST, FLAG_PENNANT |
 | **M9 (LIQUIDITY_SWEEP_REVERSAL)** | 1 | ORB |
-| **RETIRE (don't migrate)** | 1 | MA_CROSSOVER |
+| **RETIRE (don't migrate)** | 2 | MA_CROSSOVER, MOMENTUM_DUMP (v1 legacy — superseded by composite) |
 
 ### Recommendation: update `FORGE_SETUP_ICT_MAP.md §B.4` to reflect this audit
 
 The current §B.4 fold-spec was written before the §B.8.2 atom catalog matured. Each setup's category should be determined by which §B.8.2 atom set it actually expresses, NOT by a fixed pre-classified list. This audit + WebSearch citations are the basis for the revision.
 
-### Updated migration order (M7 → 7 setups, not 11)
+### Updated migration order (M7 → 6 setups, not 11) — post operator decision 2026-05-17
 
 | Sub-ship | Folds | Total setups |
 |---|---|---|
 | M7a | BB_BREAKOUT (+ env knob OQ5) | 1 |
-| M7b | MOMENTUM_DUMP + MOMENTUM_DUMP_COMPOSITE (parallel — composite supersedes legacy when validated) | 2 |
+| M7b | MOMENTUM_DUMP_COMPOSITE — sole displacement detector post-retire of v1 legacy | 1 |
 | M7c | GAP_AND_GO + BB_SQUEEZE | 2 |
 | M7d | GRINDING_SELL + NY_SESSION_BEARISH_BREAKOUT_SELL (+ env knob OQ6) | 2 |
 | (Provisional) | INSIDE_BAR — fold or retire (operator call) | 0-1 |
-| | **M7 total: 7-8 setups (vs the original spec's 11)** | |
+| | **M7 total: 6-7 setups (vs the original spec's 11)** | |
 
-`MA_CROSSOVER` retire → separate v2.7.137a tech-debt commit; remove the trigger site + the env knob.
+**v2.7.137a tech-debt sub-ship** (retire bucket, separate commit from M7 fold OR bundled with v2.7.138):
+- `MA_CROSSOVER` — remove fire site (FORGE.mq5:13962) + env knob `FORGE_SETUP_MA_CROSSOVER_ENABLED` + `g_sc.ma_crossover_enabled` field + cooldown timer.
+- `MOMENTUM_DUMP` (v1 legacy) — remove 3 fire sites (FORGE.mq5:13259, 13439, 13572) + `FORGE_DUMP_*` env knobs that the composite doesn't reuse + `g_sc.dump_*` fields the composite doesn't read. NO migration to `setup_subtype` — the composite preserves displacement semantics independently.
 
-`BB_BREAKOUT_RETEST` + `FLAG_PENNANT` → M8 OTE_RETRACEMENT fold (separate ship).
-
-`ORB` → M9 LIQUIDITY_SWEEP_REVERSAL fold (separate ship).
+**Other reclassifications** (separate ships):
+- `BB_BREAKOUT_RETEST` + `FLAG_PENNANT` → M8 OTE_RETRACEMENT fold.
+- `ORB` → M9 LIQUIDITY_SWEEP_REVERSAL fold.
 
 ---
 

@@ -110,9 +110,9 @@ int g_ict_last_breaker_retest_score_sell = 0;
 //   falls inside the category's favored kill-zone set. Killzones are the prime
 //   windows for setup confluence (time + price + structure). Per §B.2 each
 //   category has its own favored set:
-//     1 MSS_CONT       : LONDON_OPEN_KZ + NY_OPEN_KZ
+//     1 MSS_CONT       : LONDON_OPEN_KZ + NY_OPEN_KZ / NY_AM_KZ (aliases per §B.7.3)
 //     2 OTE_RETRACE    : any non-empty KZ (any active session)
-//     3 LIQ_SWEEP_REV  : LONDON_OPEN_KZ + LONDON_CLOSE_KZ (NY_PM proxy)
+//     3 LIQ_SWEEP_REV  : LONDON_OPEN_KZ + NY_PM_KZ (spec §B.8.2:649)
 //     4 BREAKER_RETEST : any non-empty KZ
 //   The g_regime.killzone field is the single source of truth populated each
 //   tick by RegimeUpdate() (see §B.7). Reads via the global directly — no
@@ -134,6 +134,12 @@ int g_ict_last_breaker_retest_score_sell = 0;
 //
 // CHANGELOG
 //   2026-05-15  v2.7.123 Phase A ship.
+//   2026-05-17  v2.7.137 R22 fix — Cat 3 was using LONDON_CLOSE_KZ as a "proxy
+//               for NY_PM" — but NY_PM_KZ shipped in v2.7.122 F-α (FORGE.mq5:7519).
+//               The stale proxy made Cat 3 score the 10:00-12:00 NY window as
+//               favorable instead of the spec's 13:30-16:00 NY PM-reversal window.
+//               Cat 1 also gained the NY_AM_KZ alias per §B.7.3 (chokepoint may
+//               emit either name; both refer to 07:00-10:00 NY).
 // ─────────────────────────────────────────────────────────────────────────────
 bool Atom_KillzoneFavorable(int category, int direction)
 {
@@ -142,17 +148,18 @@ bool Atom_KillzoneFavorable(int category, int direction)
    string kz = g_regime.killzone;
    if(StringLen(kz) == 0) return false;  // outside any KZ → never favorable
    if(category == 1) {
-      // MSS_CONT: London Open + NY AM (the canonical institutional MSS windows)
-      return (kz == "LONDON_OPEN_KZ" || kz == "NY_OPEN_KZ");
+      // MSS_CONT: London Open + NY AM (the canonical institutional MSS windows).
+      // NY_OPEN_KZ and NY_AM_KZ are alias-tolerated per §B.7.3.
+      return (kz == "LONDON_OPEN_KZ" || kz == "NY_OPEN_KZ" || kz == "NY_AM_KZ");
    }
    if(category == 2) {
       // OTE_RETRACE: any active KZ (retracement-into-zone is valid all-session)
       return true;  // kz already non-empty per guard above
    }
    if(category == 3) {
-      // LIQ_SWEEP_REV: London Open + London Close (proxy for NY_PM until §B.7
-      // NY_PM_KZ ships). Liquidity sweeps cluster at session boundaries.
-      return (kz == "LONDON_OPEN_KZ" || kz == "LONDON_CLOSE_KZ");
+      // LIQ_SWEEP_REV: London Open + NY PM (per spec §B.8.2:649).
+      // Sweeps cluster at session opens + the PM reversal window.
+      return (kz == "LONDON_OPEN_KZ" || kz == "NY_PM_KZ");
    }
    if(category == 4) {
       // BREAKER_RETEST: any active KZ (retests can fire in any session window)
@@ -340,7 +347,7 @@ int ComputeCategoryScore(int category, int direction)
       if(Atom_KillzoneFavorable(3, direction)) score += 1;
    }
    else if(category == 4) {
-      // BREAKER_RETEST (v2.7.133 Phase 3 OB body): breaker_present(3) +
+      // BREAKER_RETEST (v2.7.133 Phase 3 OB body): atom_ob_broken(3) +
       //                 breaker_retest_in_progress(3) + breaker_fvg_confluence(2) +
       //                 KZ_favorable(1) + HTF_aligned(1) = 10
       // Globals populated by Forge_RebuildOBRing() in IctOrderBlock.mqh.

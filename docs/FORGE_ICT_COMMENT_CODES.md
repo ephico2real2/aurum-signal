@@ -327,19 +327,20 @@ After M7-M9 folds complete, all field-1 values use the ICT 4-letter short form +
 
 ## §8 Implementation status
 
-### §8.1 Shipped (v2.7.131)
+### §8.1 Shipped (v2.7.131 → v2.7.132)
 
-- ✅ `ea/include/Forge/IctComment.mqh` — module scaffold with `Forge_BuildIctScalpComment()` (4-segment legacy shape)
+- ✅ `ea/include/Forge/IctComment.mqh` — module scaffold (v2.7.131)
 - ✅ Module includes wired via `#include <Forge\IctComment.mqh>` in FORGE.mq5
+- ✅ **Full helper expansion (v2.7.132)** — `Forge_ZonePrefix`, `Forge_KillzoneDetailCode`, `Forge_SilverKnifeDetailCode`, `Forge_ConvictionLetter`, `Forge_AppendDirectionSuffix`, and the canonical `Forge_BuildScalpComment(order_type, setup_or_cat, direction, group_id, tp_or_leg, kz_label, sb_label, composite_score)` producer
+- ✅ **Self-test on OnInit (v2.7.132)** — `Forge_IctComment_SelfTest()` emits 8 sample comments at EA boot
+- ✅ **Glossary §11** — cross-referenced into this doc
+- ✅ **`FORGE_SETUP_ICT_MAP.md §9` changelog** — ship entries logged
+- ✅ **`Forge_OverrideTpOrLeg` (v2.7.137 R27)** — in-place `<tp_or_leg>` swap for `PlaceMarketBatch` per-leg labels; preserves the 6/7-segment shape
 
-### §8.2 Pending (this doc's blueprint)
+### §8.2 Pending
 
 | Item | Scope |
 |---|---|
-| **Helper expansion in `IctComment.mqh`** | `Forge_ZonePrefix(in_kz, in_sk)` → `"KZ"`/`"SK"`/`"OFF"`; `Forge_KillzoneDetailCode()`; `Forge_SilverKnifeDetailCode()`; `Forge_ConvictionLetter(score)`; rebuilt `Forge_BuildIctComment(order_type, ict_category, direction, group_id, tp_or_leg, kz_label, sk_label, composite_score)` |
-| **Self-test on OnInit** | `Forge_IctComment_SelfTest()` — emits 8 sample comments at EA boot, validates the codes round-trip |
-| **Glossary §11** | Cross-reference into this doc |
-| **`FORGE_SETUP_ICT_MAP.md §9` changelog** | One-liner ship entry |
 | **Scribe parser** | Defer until M7 ships (first ICT setup actually fires) |
 | **Phase B legacy fixup** | Backfill the 6 non-conforming legacy comment builders (cascade/recovery with missing SETUP_TYPE) — separate ship, NOT in this scope |
 

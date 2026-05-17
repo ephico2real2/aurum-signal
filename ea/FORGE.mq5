@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.206"
+#property version "2.207"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -80,7 +80,7 @@
 //   pending operator approval — see open thread on acronym table.
 #include <Forge\IctComment.mqh>
 
-const string FORGE_VERSION = "2.7.136";
+const string FORGE_VERSION = "2.7.137";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -176,6 +176,16 @@ double g_session_start_balance = 0;
 // ── NATIVE SCALPER STATE ──────────────────────────────────────────
 string g_scalper_mode = "NONE";  // NONE | BB_BOUNCE | BB_BREAKOUT | DUAL
 int    g_scalper_group_counter = 5000;  // native groups start at 5000+ to avoid BRIDGE collision
+
+// ── v2.7.137 R21 — MagicNumber-change orphan guard ─────────────────
+// When the operator changes input MagicNumber between EA loads, positions placed under
+// the previous base fall outside RebuildGroups's [MagicNumber, MagicNumber+10000) filter
+// and become invisible — silent loss of TP1/TP2/BE/SL/time-stop management. Persisting the
+// last-seen base lets OnInit detect the change before it's destructive.
+int    g_magic_base_prior            = 0;     // base read from forge_magic_state.txt (0 = no prior state)
+bool   g_magic_base_mismatch_block   = false; // true → refuse new entries until operator reconciles
+int    g_magic_base_orphan_count     = 0;     // open positions+orders found under prior base
+string g_magic_base_state_file       = "forge_magic_state.txt";
 int    g_scalper_session_trades = 0;
 datetime g_scalper_last_loss_time   = 0;
 // 2.7.41 — Track last TP1 win per direction. Used by regime-aware cooldown bypass:
@@ -2122,6 +2132,8 @@ double NormalizeLot(const double lot);
 bool ValidateStops(const double entry, const double sl, const double tp, const ENUM_ORDER_TYPE type);
 void RebuildGroups();
 void SeedScalperGroupCounter();  // v2.7.131 — magic-collision safety on EA reload
+void MagicBaseGate_Init();       // v2.7.137 R21 — detect MagicNumber change between EA loads
+bool MagicBaseGate_BlockEntries(string &reason);  // v2.7.137 R21 — gate helper for entry sites
 void ResetScalperSessionStateIfNeeded();
 string DealCloseReasonHint(const long reason_code);
 string BuildRecentClosedDealsJson(const int max_items = 40);
@@ -2229,6 +2241,11 @@ int OnInit() {
    }
    ForgeRefreshScalperAnalytics();
    WriteMarketData();
+   // v2.7.137 R21 — detect MagicNumber base change between EA loads BEFORE rebuilding
+   // groups. RebuildGroups + SeedScalperGroupCounter both filter by current MagicNumber,
+   // so a base change silently orphans existing positions. This gate persists the prior
+   // base, refuses new entries when orphans are found, and prints reconciliation steps.
+   MagicBaseGate_Init();
    RebuildGroups();
    // v2.7.131 — seed g_scalper_group_counter from broker state to avoid
    // group_magic collision on EA reload (chart reload / make forge-reload).
@@ -2837,6 +2854,15 @@ bool ValidateOpenGroupSanity(
 //| Open N trades as a group across entry ladder                       |
 //+------------------------------------------------------------------+
 void ExecuteOpenGroup(const string &json) {
+   // v2.7.137 R21 — MagicBase mismatch gate. Refuses bridge/aurum OPEN_GROUP commands
+   // when prior-base orphans exist; management of existing positions continues.
+   {
+      string _mb_reason = "";
+      if(MagicBaseGate_BlockEntries(_mb_reason)) {
+         PrintFormat("FORGE: OPEN_GROUP rejected — %s", _mb_reason);
+         return;
+      }
+   }
    int    group_id      = (int)JsonGetDouble(json, "group_id");
    string direction     = JsonGetString(json,  "direction");
    double lot_per_trade = JsonGetDouble(json,  "lot_per_trade");
@@ -3100,6 +3126,12 @@ void ExecuteOpenGroup(const string &json) {
 //+------------------------------------------------------------------+
 void ManageStagedNativeLegs() {
    if(!g_sc.staged_entry_enabled && !g_sc.native_force_staged_scale_in) return;
+   // v2.7.137 R21 — staged scale-in adds NEW exposure to a group, so it counts as a
+   // new entry for the magic-base orphan guard. Block while reconciling.
+   {
+      string _mb_reason = "";
+      if(MagicBaseGate_BlockEntries(_mb_reason)) return;
+   }
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -11692,6 +11724,24 @@ void CheckNativeScalperSetups() {
    double spread = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / _Point;
    int open_groups = ScalperOpenGroupCount();
 
+   // v2.7.137 R21 — MagicBase mismatch gate. If operator changed input MagicNumber while
+   // open positions exist under the prior base, MagicBaseGate_Init() set the block flag at
+   // OnInit. Refuse new scalper entries; management of existing positions continues.
+   {
+      string _mb_reason = "";
+      if(MagicBaseGate_BlockEntries(_mb_reason)) {
+         datetime _mb_bar = iTime(_Symbol, PERIOD_M5, 0);
+         if(_mb_bar != g_scalper_last_sesswarn_log_bar) {
+            g_scalper_last_sesswarn_log_bar = _mb_bar;
+            double _mb_spread = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / _Point;
+            PrintFormat("FORGE SCALPER: skip gate=%s (no new entries until reconciled)", _mb_reason);
+            JournalRecordSignal("SKIP", _mb_reason, "", "", SymbolInfoDouble(_Symbol,SYMBOL_BID),
+                                _mb_spread, 0,0,0,0,0,0,0,0,0);
+         }
+         return;
+      }
+   }
+
    // Safety guards
    // Live: London/NY session window. Tester: skip — simulated TimeGMT() often sits outside 07–20 UTC for
    // long stretches of a backtest (or the whole range), which zeroes out entries despite valid setups.
@@ -16193,6 +16243,117 @@ void RebuildGroups() {
 }
 
 //+------------------------------------------------------------------+
+//| MagicBaseGate (v2.7.137 R21 — MagicNumber-change orphan guard)    |
+//|                                                                   |
+//| FAILURE MODE THIS CLOSES: operator edits the EA input MagicNumber |
+//| (e.g. 202401 → 202402) between EA loads while open groups exist   |
+//| under the previous base. RebuildGroups (FORGE.mq5:16151) and      |
+//| SeedScalperGroupCounter both filter strictly by current           |
+//| MagicNumber, so the old-base positions become INVISIBLE to        |
+//| atomic management — no TP1 ratchet, no TP2 banking, no BE move,   |
+//| no time-stop, no SL discipline. The trader loses control of live  |
+//| exposure with no surface signal.                                  |
+//|                                                                   |
+//| DESIGN: persist last-seen MagicNumber base to a state file in     |
+//| Common Files. On OnInit, compare prior vs current:                |
+//|   - First boot (no state file)    : write current base, proceed   |
+//|   - prior == current              : heartbeat-update, proceed     |
+//|   - prior != current, no orphans  : benign change, update, log    |
+//|   - prior != current, orphans     : set block flag, DO NOT update |
+//|                                     state, log reconciliation     |
+//|                                     steps, refuse new entries     |
+//|                                                                   |
+//| BLOCK SEMANTICS: management of existing positions continues (the  |
+//| operator can close them manually or via the bridge). Only NEW     |
+//| entry-placement codepaths are refused via MagicBaseGate_BlockEntries|
+//|                                                                   |
+//| RECONCILE PATHS: (a) close legacy positions at the broker, (b)    |
+//| revert MagicNumber to the prior value, or (c) delete the state    |
+//| file (forge_magic_state.txt) to force a fresh first-boot read.    |
+//+------------------------------------------------------------------+
+void MagicBaseGate_Init() {
+   // Read prior state file if present
+   string body = "";
+   bool have_state = ReadTextFileDual(g_magic_base_state_file, body);
+   g_magic_base_prior = 0;
+   if(have_state && StringLen(body) > 0) {
+      // Parse "last_magic_base=NNNNNN" — only key we currently consume; tolerant
+      // of extra lines (symbol/last_seen_utc are diagnostic only).
+      int p = StringFind(body, "last_magic_base=");
+      if(p >= 0) {
+         string tail = StringSubstr(body, p + StringLen("last_magic_base="));
+         int nl = StringFind(tail, "\n");
+         if(nl > 0) tail = StringSubstr(tail, 0, nl);
+         g_magic_base_prior = (int)StringToInteger(tail);
+      }
+   }
+
+   // Match / first-boot → write fresh state, no block
+   if(g_magic_base_prior == 0 || g_magic_base_prior == MagicNumber) {
+      string out = "last_magic_base=" + IntegerToString(MagicNumber) + "\n"
+                 + "symbol=" + _Symbol + "\n"
+                 + "last_seen_utc=" + TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS) + "\n";
+      WriteJsonFileDual(g_magic_base_state_file, out);
+      if(g_magic_base_prior == 0)
+         PrintFormat("FORGE INIT R21: magic-base state file initialised — current base=%d (first boot or state cleared).",
+                     MagicNumber);
+      // Match path is silent — heartbeat written, no log noise needed
+      return;
+   }
+
+   // Mismatch → scan broker for positions+orders tagged with prior base across
+   // all three bands the EA writes (core + cascade + recovery; see SeedScalperGroupCounter
+   // banner for the band map). Range [prior, prior+40000) covers all three.
+   g_magic_base_orphan_count = 0;
+   int lo = g_magic_base_prior;
+   int hi = g_magic_base_prior + 40000;  // covers core+cascade+recovery bands
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol) continue;
+      int pm = (int)g_pos.Magic();
+      if(pm >= lo && pm < hi) g_magic_base_orphan_count++;
+   }
+   for(int oi = 0; oi < OrdersTotal(); oi++) {
+      ulong ot = OrderGetTicket(oi);
+      if(ot == 0 || !OrderSelect(ot)) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+      int om = (int)OrderGetInteger(ORDER_MAGIC);
+      if(om >= lo && om < hi) g_magic_base_orphan_count++;
+   }
+
+   if(g_magic_base_orphan_count == 0) {
+      // Benign: operator changed base after market close / between sessions, nothing orphaned.
+      // Update state to current and proceed normally.
+      string out = "last_magic_base=" + IntegerToString(MagicNumber) + "\n"
+                 + "symbol=" + _Symbol + "\n"
+                 + "last_seen_utc=" + TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS) + "\n";
+      WriteJsonFileDual(g_magic_base_state_file, out);
+      PrintFormat("FORGE INIT R21: magic-base changed prior=%d → current=%d with NO orphaned positions/orders. "
+                  "State file updated. Safe to proceed.",
+                  g_magic_base_prior, MagicNumber);
+      return;
+   }
+
+   // Destructive: orphans exist. Block new entries. DO NOT update state file —
+   // we want the next boot to re-evaluate after operator reconciles.
+   g_magic_base_mismatch_block = true;
+   PrintFormat("FORGE INIT R21 🚨 BLOCK: magic-base changed prior=%d → current=%d but %d open position(s)/order(s) "
+               "still tagged with the PRIOR base. NEW ENTRIES REFUSED until reconciled. "
+               "Management (TP/SL/close) on existing positions remains active.",
+               g_magic_base_prior, MagicNumber, g_magic_base_orphan_count);
+   PrintFormat("FORGE INIT R21 RECONCILE: (a) close the %d prior-base position(s)/order(s) at the broker, "
+               "OR (b) revert input MagicNumber to %d, OR (c) delete forge_magic_state.txt to force first-boot "
+               "(only if you've manually verified no prior-base exposure exists).",
+               g_magic_base_orphan_count, g_magic_base_prior);
+}
+
+bool MagicBaseGate_BlockEntries(string &reason) {
+   if(!g_magic_base_mismatch_block) { reason = ""; return false; }
+   reason = StringFormat("magic_base_mismatch prior=%d current=%d orphans=%d",
+                         g_magic_base_prior, MagicNumber, g_magic_base_orphan_count);
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| SeedScalperGroupCounter (v2.7.131 — magic-collision safety)       |
 //|                                                                   |
 //| Scans open positions + pending orders to find the highest         |
@@ -17309,7 +17470,11 @@ int PlaceMarketBatch(const string direction, const double target_lot,
       req.tp           = tp;
       req.type_filling = ORDER_FILLING_RETURN;
       req.magic        = leg_magic;
-      req.comment      = comment_base + "|L" + IntegerToString(leg + 1);
+      // v2.7.137 R27 fix — was: comment_base + "|L<n>" which appended an 8th
+      // segment (or corrupted SK_DETAIL slot on non-SK legs). Replace the
+      // <tp_or_leg> field in-place so the 6/7-segment scribe-parsed shape stays
+      // intact and "L<n>" lands in its canonical slot per FORGE_ICT_COMMENT_CODES.md.
+      req.comment      = Forge_OverrideTpOrLeg(comment_base, "L" + IntegerToString(leg + 1));
       req.deviation    = 30;
 
       g_trade.SetExpertMagicNumber(leg_magic);
@@ -17508,6 +17673,16 @@ bool PlaceOpenGroupLeg(
    // (1 / (1 + 1.5) = 0.4). At RR=2.0 it drops to 33.3%.
    ok = false;
    fail_reason = "";
+   // v2.7.137 R21 — defense-in-depth gate. ExecuteOpenGroup checks already, but recovery /
+   // recovery-cascade / future callers may invoke PlaceOpenGroupLeg directly; guarding here
+   // ensures no entry path bypasses the magic-base orphan block.
+   {
+      string _mb_reason = "";
+      if(MagicBaseGate_BlockEntries(_mb_reason)) {
+         fail_reason = _mb_reason;
+         return false;
+      }
+   }
    // Read current RSI/ADX for SKIP log completeness — open_group_* gates previously logged 0,0
    // (PlaceOpenGroupLeg has no caller-side indicator params; local read avoids signature churn)
    double _pog_buf[1];

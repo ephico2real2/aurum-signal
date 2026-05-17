@@ -655,9 +655,9 @@
     "explanation": "v2.7.107 DTC 5-state: SELL blocked because intraday triad confirms bear BUT H4 trend disagrees (h4_trend_strength \u2265 +0.5 \u2192 bull macro). This is the 'corrective dip inside larger bull trend' pattern \u2014 BUYs at deep oversold here are the OTE setup at H4 demand; SELLs are fighting the macro. Mirror of counter_bull_day_buy_block. Requires FORGE_COMPOSITE_DTC_5STATE_ENABLED=1 + FORGE_GATE_DTC_BLOCK_COUNTER_TREND_SELLS=1.",
     "category": "Day-Type / Bias"
   },
-  "ces_below_threshold": {
-    "label": "Entry blocked \u2014 Confluence Entry Score below threshold",
-    "explanation": "v2.7.110 CES (Confluence Entry Score) Option A gate: 0-10 score computed per setup-trigger from 7 atoms (DTC-aligned +3, PEMCG-clean +2, M5-momentum-candle +2, RSI-trend-zone +1, VWAP-confirm +1, H1-DI-dominance +1). When g_ces_score < FORGE_GATE_CES_MIN_THRESHOLD (default 6), setup is hard-blocked. Default-OFF \u2014 requires BOTH FORGE_COMPOSITE_CES_ENABLED=1 AND FORGE_GATE_CES_BLOCK_BELOW_THRESHOLD=1. v2.7.110 ships in Option C (instrumentation-only) mode \u2014 the gate is scaffolded but disengaged. Operator flips block flag after CES \u2194 outcome correlation is validated in backtest. See docs/FORGE_CES_DESIGN.md.",
+  "iss_below_threshold": {
+    "label": "Entry blocked \u2014 ISS (ICT Structure Score) below threshold",
+    "explanation": "v2.7.112+ ISS (ICT Structure Score) gate: 0-10 weighted boolean composite from 3 ICT structure atoms (MSS +5, FVG +3, ChoCH support +2). ChoCH-against is a separate HARD GATE (not summed) \u2014 fires when bearish/bullish ChoCH opposes the trade direction. When iss_score < FORGE_GATE_ISS_MIN_THRESHOLD (default 5 = MSS-mandatory bar), setup is hard-blocked. Default-OFF \u2014 requires BOTH FORGE_COMPOSITE_ISS_ENABLED=1 AND FORGE_GATE_ISS_BLOCK_BELOW_THRESHOLD=1. v2.7.112 ships scaffolding only (atoms stub at 0); real MSS/FVG/ChoCH detection lands in v2.7.113-115; gate activation v2.7.116 after validation. Supersedes the retired CES gate (v2.7.110 \u2192 v2.7.111). See docs/ICT-Structure-Score.md.",
     "category": "Composite / Confluence"
   }
 }
