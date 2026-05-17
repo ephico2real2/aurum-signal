@@ -296,6 +296,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_COMPOSITE_MSS_CONT_SCORE_ENABLED":                    ("safety",    "composite_mss_cont_score_enabled",              "bool01", None,  None),
     "FORGE_COMPOSITE_OTE_RETRACE_SCORE_ENABLED":                 ("safety",    "composite_ote_retrace_score_enabled",           "bool01", None,  None),
     "FORGE_COMPOSITE_LIQ_SWEEP_REV_SCORE_ENABLED":               ("safety",    "composite_liq_sweep_rev_score_enabled",         "bool01", None,  None),
+    "FORGE_COMPOSITE_BREAKER_RETEST_SCORE_ENABLED":              ("safety",    "composite_breaker_retest_score_enabled",        "bool01", None,  None),
     "FORGE_GATE_CVCSM_ENABLED":                                  ("safety",    "cvcsm_enabled",                                 "bool01", None,  None),
     "FORGE_GATE_CVCSM_RELEASE_THRESHOLD":                        ("safety",    "cvcsm_release_threshold",                       "int",    1,     7),
     "FORGE_TIMING_CVCSM_REQUIRED_CLEAN_BARS":                    ("safety",    "cvcsm_required_clean_bars",                     "int",    1,     20),

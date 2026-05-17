@@ -96,6 +96,11 @@ int g_ict_last_ote_retrace_score_buy    = 0;
 int g_ict_last_ote_retrace_score_sell   = 0;
 int g_ict_last_liq_sweep_rev_score_buy  = 0;
 int g_ict_last_liq_sweep_rev_score_sell = 0;
+// v2.7.133 Phase 3 — BREAKER_RETEST scores (populated by ComputeCategoryScore(4,*)
+// when composite_breaker_retest_score_enabled = true). Sources atom inputs from
+// g_ict_last_breaker_* globals exported by <Forge\IctOrderBlock.mqh>.
+int g_ict_last_breaker_retest_score_buy  = 0;
+int g_ict_last_breaker_retest_score_sell = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Atom_KillzoneFavorable — shared across all 4 ICT setup categories.
@@ -332,8 +337,17 @@ int ComputeCategoryScore(int category, int direction)
       if(Atom_KillzoneFavorable(3, direction)) score += 1;
    }
    else if(category == 4) {
-      // BREAKER_RETEST — deferred until Phase 3 IctOrderBlock.mqh ships
-      return 0;
+      // BREAKER_RETEST (v2.7.133 Phase 3 OB body): breaker_present(3) +
+      //                 breaker_retest_in_progress(3) + breaker_fvg_confluence(2) +
+      //                 KZ_favorable(1) + HTF_aligned(1) = 10
+      // Globals populated by Forge_RebuildOBRing() in IctOrderBlock.mqh.
+      if(g_ict_last_breaker_present > 0) score += 3;
+      if((direction == 1  && g_ict_last_breaker_retest_buy  > 0) ||
+         (direction == -1 && g_ict_last_breaker_retest_sell > 0)) score += 3;
+      if((direction == 1  && g_ict_last_breaker_fvg_buy  > 0) ||
+         (direction == -1 && g_ict_last_breaker_fvg_sell > 0)) score += 2;
+      if(Atom_KillzoneFavorable(4, direction)) score += 1;
+      if(Atom_HTFAligned(direction)) score += 1;
    }
 
    return score;

@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.202"
+#property version "2.203"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -69,13 +69,18 @@
 //   g_swing_highs/lows, IctSwingPoint). Wires real values into g_iss_choch_*
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
+// v2.7.133 — Phase 3 ICT component (Order Block + Breaker Block detection).
+//   Depends on IctStructure.mqh (reads g_fvg_ring for the FVG-confluence
+//   atom). Exports g_ict_last_breaker_* globals consumed by IctScoring.mqh
+//   to populate the previously-zero composite_breaker_retest_score columns.
+#include <Forge\IctOrderBlock.mqh>
 // v2.7.131 — ICT broker-comment builder (in-flight design, not yet wired).
 //   Pure-function utility; no state. Maps the 4 ICT-canonical categories
 //   to compact comment codes. Final segment composition (KZ / SB tags)
 //   pending operator approval — see open thread on acronym table.
 #include <Forge\IctComment.mqh>
 
-const string FORGE_VERSION = "2.7.132";
+const string FORGE_VERSION = "2.7.133";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -1128,6 +1133,7 @@ struct ScalperConfig {
    bool composite_mss_cont_score_enabled;
    bool composite_ote_retrace_score_enabled;
    bool composite_liq_sweep_rev_score_enabled;
+   bool composite_breaker_retest_score_enabled;  // v2.7.133 Phase 3 OB body
    // ─────────────────────────────────────────────────────────────────────────────
    // v2.7.117 — Cascade-recovery safety TP (live-broker requirement).
    // Previously BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY placed pendings with tp=0
@@ -5300,6 +5306,7 @@ void InitScalperConfig() {
    g_sc.composite_mss_cont_score_enabled       = false;
    g_sc.composite_ote_retrace_score_enabled    = false;
    g_sc.composite_liq_sweep_rev_score_enabled  = false;
+   g_sc.composite_breaker_retest_score_enabled = false;  // v2.7.133 Phase 3
    // v2.7.117 — cascade-recovery safety TP default (broker-side TP on recovery legs)
    g_sc.cascade_recovery_tp_atr_mult     = 2.0;   // 2×ATR safety TP — operator-spec default for live broker safety
    // ─────────────────────────────────────────────────────────────────────────────
@@ -6055,6 +6062,7 @@ void ReadScalperConfig() {
       if(JsonHasKey(content, "composite_mss_cont_score_enabled"))       { v = JsonGetDouble(content,"composite_mss_cont_score_enabled");       g_sc.composite_mss_cont_score_enabled       = (v >= 0.5); }
       if(JsonHasKey(content, "composite_ote_retrace_score_enabled"))    { v = JsonGetDouble(content,"composite_ote_retrace_score_enabled");    g_sc.composite_ote_retrace_score_enabled    = (v >= 0.5); }
       if(JsonHasKey(content, "composite_liq_sweep_rev_score_enabled"))  { v = JsonGetDouble(content,"composite_liq_sweep_rev_score_enabled");  g_sc.composite_liq_sweep_rev_score_enabled  = (v >= 0.5); }
+      if(JsonHasKey(content, "composite_breaker_retest_score_enabled")) { v = JsonGetDouble(content,"composite_breaker_retest_score_enabled"); g_sc.composite_breaker_retest_score_enabled = (v >= 0.5); }
       // v2.7.117 — cascade-recovery safety TP (BUY_LIMIT_RECOV / SELL_LIMIT_RECOVERY / BUY_STOP_CONT fallback)
       if(JsonHasKey(breakout_json, "cascade_recovery_tp_atr_mult")){ v = JsonGetDouble(breakout_json,"cascade_recovery_tp_atr_mult"); if(v > 0 && v <= 10.0) g_sc.cascade_recovery_tp_atr_mult = v; }
       // ─────────────────────────────────────────────────────────────────────────
@@ -8292,6 +8300,30 @@ void ForgeEvalAtoms() {
    } else {
       g_ict_last_liq_sweep_rev_score_buy  = 0;
       g_ict_last_liq_sweep_rev_score_sell = 0;
+   }
+
+   // v2.7.133 Phase 3 OB body — rebuild OB ring + score BREAKER_RETEST.
+   //   Defaults hardcoded here for v2.7.133 minimal-viable ship:
+   //     displacement_min_atr        = 1.5  (per ICT canon — large-bodied bar)
+   //     lookback_bars               = 50   (~4h M5)
+   //     retest_tolerance_atr        = 0.5  (price within 0.5×ATR of broken level)
+   //     fvg_confluence_tolerance_atr= 0.5  (FVG midpoint within 0.5×ATR of OB level)
+   //   These become FORGE_ICT_OB_* env knobs in v2.7.134 (Phase 3 schema parity).
+   if(g_sc.composite_breaker_retest_score_enabled) {
+      Forge_RebuildOBRing(m5_atr_now, 1.5, 50, 0.5, 0.5);
+      g_ict_last_breaker_retest_score_buy  = ComputeCategoryScore(4, 1);
+      g_ict_last_breaker_retest_score_sell = ComputeCategoryScore(4, -1);
+   } else {
+      // Zero everything when disabled — schema-parity byte-stable logs
+      g_ob_ring_count                        = 0;
+      g_ict_last_breaker_present             = 0;
+      g_ict_last_breaker_retest_buy          = 0;
+      g_ict_last_breaker_retest_sell         = 0;
+      g_ict_last_breaker_level               = 0.0;
+      g_ict_last_breaker_fvg_buy             = 0;
+      g_ict_last_breaker_fvg_sell            = 0;
+      g_ict_last_breaker_retest_score_buy    = 0;
+      g_ict_last_breaker_retest_score_sell   = 0;
    }
 }
 

@@ -1,5 +1,5 @@
 {
-  "version": "2.7.132",
+  "version": "2.7.133",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -459,6 +459,7 @@
     "composite_mss_cont_score_enabled": 1,
     "composite_ote_retrace_score_enabled": 1,
     "composite_liq_sweep_rev_score_enabled": 1,
+    "composite_breaker_retest_score_enabled": 0,
     "cvcsm_enabled": 0,
     "cvcsm_release_threshold": 2,
     "cvcsm_required_clean_bars": 2,
