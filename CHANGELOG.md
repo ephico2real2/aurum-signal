@@ -1,5 +1,58 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [v2.7.138] — 2026-05-17 (a.k.a. v2.7.137a tech-debt — RETIRE MA_CROSSOVER + MOMENTUM_DUMP v1)
+
+Per the M7 design doc §B.4 RETIRE bucket — the two setups that have no path forward in the ICT-canonical architecture get deleted:
+
+1. **MA_CROSSOVER** — ICT canon explicitly rejects moving-average crossovers as primary triggers (lagging indicators). No ICT primitive expressed → no migration to `setup_subtype` → full removal.
+2. **MOMENTUM_DUMP v1 (legacy monolithic)** — superseded by `MOMENTUM_DUMP_COMPOSITE` (atom-composed, v2.7.121 `_TEST` → canonical promotion). Operator decision 2026-05-17: parallel validation done, commit to the composite. The composite preserves displacement semantics independently.
+
+The version bumps from v2.7.137 → v2.7.138 (cleaner integer sequencing than "v2.7.137a" suffix); the "a" tech-debt label stays in design-doc references.
+
+### MA_CROSSOVER — fully retired
+
+- **EA code deleted**: `DetectMaCrossoverEvent` function (21 lines @ 8490); MA_CROSSOVER trigger block (45 lines @ 13987-14031); 7 struct fields (`ma_crossover_enabled/_adx_min/_lot_factor/_sl_atr_mult/_tp1_atr_mult/_tp2_atr_mult/_cooldown_seconds`); 7 default-init lines; 7 JSON-loader lines; 2 cooldown-timer globals (`g_ma_crossover_last_buy/sell_time`); lot-factor block (7 lines @ 15437-15443); `MarkSetupCooldownAnchorOnTaken` MA_CROSSOVER branch (3 lines @ 18127-18129); `combined_lot_factor` and PrintFormat MA_CROSSOVER references.
+- **Config deleted**: 7 env knobs from `.env` (`FORGE_SETUP_MA_CROSSOVER_ENABLED`, `FORGE_ATOM_MA_CROSSOVER_ADX_MIN`, 4× `FORGE_GEOMETRY_MA_CROSSOVER_*`, `FORGE_TIMING_MA_CROSSOVER_COOLDOWN_SECONDS`); matching block from `.env.example`; 7 sync-mapping lines from `scripts/sync_scalper_config_from_env.py`; 7 keys from `config/scalper_config.defaults.json` (across `setup` / `atom` / `geometry` / `timing` sections).
+
+### MOMENTUM_DUMP v1 — fully retired, lot/RR features migrated to composite
+
+- **EA code deleted**: v1 trigger block (314 lines @ 13229-13542, the entire `if(direction == "" && g_sc.dump_catch_enabled && m5_atr > 0.0)` block — detection setup, v2 sub-filters, BUY/SELL fire sites at the 3 lines that previously emitted `setup_type = "MOMENTUM_DUMP"`); 9 v1-only struct fields (`dump_catch_enabled`, `dump_lookback_bars`, `dump_atr_mult`, `dump_max_rsi`, `dump_min_adx`, `dump_require_psar`, `dump_require_d1_bias`, `dump_cooldown_seconds`, `dump_sell_h1_max`, `dump_require_bar_confirm`) + their defaults + JSON loaders (~30 lines total); 3 v1 cooldown-anchor globals (`g_scalper_last_dump_sell_time`, `g_scalper_last_dump_buy_time`, `g_scalper_last_dump_log_bar`).
+- **EA setup_type comparisons renamed** (11 sites): `setup_type == "MOMENTUM_DUMP"` → `setup_type == "MOMENTUM_DUMP_COMPOSITE"`. Lot factor stack (`dump_factor`, `dump_pyramid_factor`, `dump_dist_amplifier`, `dump_kz_amplifier`), legs-per-group, RR bypass, h1 trend ceiling, max-open-same-direction — all now apply to the composite (which IS the displacement detector post-retire). Pyramid counters (`g_dump_pyramid_consec_buy/sell_count`) and increment logic preserved; they fire on `MOMENTUM_DUMP_COMPOSITE` TAKENs (`MarkSetupCooldownAnchorOnTaken` already handles this via the v2.7.121 rename).
+- **Config deleted**: 10 v1-only env knobs from `.env` (`FORGE_DUMP_CATCH_ENABLED`, `FORGE_DUMP_REQUIRE_D1_BIAS`, `FORGE_DUMP_MIN_ADX`, `FORGE_DUMP_ATR_MULT`, `FORGE_DUMP_MAX_RSI`, `FORGE_DUMP_REQUIRE_BAR_CONFIRM`, `FORGE_DUMP_COOLDOWN_SECONDS`); matching `.env.example` block; 10 sync-mapping lines (including the `ENV_KEY_ALIASES` orphans for `FORGE_DUMP_SELL_H1_MAX`); 9 keys from `defaults.json`.
+- **Preserved (composite uses)**: `FORGE_DUMP_LOT_FACTOR`, `FORGE_GEOMETRY_DUMP_LOT_FACTOR_BUY/SELL`, `FORGE_ATOM_DUMP_RSI_MAX_BUY`, all `FORGE_GEOMETRY_DUMP_SL/TP_ATR_MULT_*`, `FORGE_TIMING_DUMP_MAX_HOLD_SECONDS`, all `FORGE_GATE_DUMP_*`, all `FORGE_DUMP_V2_*` and `FORGE_DUMP_BUY/SELL_H4/MACD/VWAP/POC/MAX_ADX/LATE_RSI_BLOCK/MAX_DIST_FROM_DAY_*_ATR`, `FORGE_DUMP_DIST_AMPLIFIER_*`, `FORGE_DUMP_KZ_AMPLIFIER_*`, `FORGE_DUMP_PYRAMID_*`, `FORGE_DUMP_CASCADE_ENABLED`, `FORGE_DUMP_LEGS_PER_GROUP`, `FORGE_DUMP_MAX_OPEN_SAME_DIRECTION`, `FORGE_DUMP_SELL_MIN_RSI`, `FORGE_DUMP_SELL_BLOCK_BELOW_BB_L`, `FORGE_DUMP_BELOW_BBL_BLOCK_MAX_RSI`.
+
+### Files
+
+- `VERSION` — 2.7.137 → 2.7.138
+- `ea/FORGE.mq5` — −468 lines from session start (18387 → 17919); FORGE_VERSION constant bumped; 11 setup_type rename hits; ~50 lines of struct/default/loader deletes; trigger blocks deleted
+- `ea/include/Forge/*.mqh` — unchanged in this ship (R21-R30 ICT modules untouched)
+- `.env` — 10 MOMENTUM_DUMP v1 knobs + 7 MA_CROSSOVER knobs removed
+- `.env.example` — matching documentation blocks removed
+- `scripts/sync_scalper_config_from_env.py` — 10+7 sync mappings + 2 `ENV_KEY_ALIASES` orphans removed
+- `config/scalper_config.defaults.json` — 9+7 default keys removed (across `setup` / `atom` / `geometry` / `timing` / `safety` sections)
+- `config/scalper_config.json` — auto-regen; env override count 256 → 247 (−9)
+- `CHANGELOG.md` — this entry
+
+### Validation
+
+- `make forge-compile` clean (no errors, no warnings); FORGE.ex5 rebuilt to `~599 KB` (vs initial 609 KB — −10 KB code).
+- 247 env overrides materialize cleanly (down from 256 — confirms 9 v1 knobs no longer mapped).
+- `setup_type == "MOMENTUM_DUMP"` count: **0** (all 11 renamed to `MOMENTUM_DUMP_COMPOSITE`).
+- `setup_type == "MA_CROSSOVER"` count: **0** (fire site deleted).
+- No dangling references — all dead-code paths swept.
+
+### Out of scope (intentionally deferred)
+
+- M7 setup_subtype column ship (Step 3 — next commit)
+- M8 OTE_RETRACEMENT fold (Step 4)
+- R33 BB_PULLBACK_SCALP retire (Phase 1 lands in M8; Phase 3 deletion ships post-M8 validation)
+- R23 Cat 3 wick-quality tier fix (separate ship)
+- R28 EA ALTER TABLE error swallow (separate ship)
+- All ISS atom wiring (v2.7.115+)
+- ISS hard-gate activation (v2.7.116+) — the structural answer to R32 counter-trend trap
+
+---
+
 ## [v2.7.137] — 2026-05-17 (pre-M7 stabilization batch — codex review fixes R21/R22/R24/R27 + cosmetic R29/R30 + R17 doc revision)
 
 Pre-stabilization batch that clears live-trading bugs + atom-scoring drift + comment-shape fragility BEFORE the v2.7.138 M7 fold multiplies code surface. Six codex-review findings plus the §B.4 doc revision land as one ship per operator decision (single-commit cadence, 2026-05-17). Validated against tester Run 4 (sim 2026-03-05 → 2026-04-17, XAUUSD, scalper mode DUAL).

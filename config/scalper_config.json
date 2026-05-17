@@ -1,5 +1,5 @@
 {
-  "version": "2.7.137",
+  "version": "2.7.138",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -374,15 +374,6 @@
     "daily_move_flip_hysteresis": 0.3,
     "daily_cancel_pending_on_flip": 1,
     "daily_cancel_includes_cascade": 1,
-    "dump_catch_enabled": 1,
-    "dump_lookback_bars": 3,
-    "dump_atr_mult": 1,
-    "dump_max_rsi": 41,
-    "dump_min_adx": 20,
-    "dump_require_psar": 1,
-    "dump_require_d1_bias": 0,
-    "dump_cooldown_seconds": 0,
-    "dump_sell_h1_max": 2,
     "dump_sl_atr_mult_buy": 3.5,
     "dump_sl_atr_mult_sell": 3.5,
     "dump_tp1_atr_mult_buy": 0.7,
@@ -528,7 +519,6 @@
     "dump_kz_tier4_factor": 1,
     "dump_kz_tier5_factor": 0.85,
     "dump_kz_no_zone_factor": 0.5,
-    "dump_require_bar_confirm": 1,
     "pullback_scalp_enabled": 1,
     "pullback_scalp_fresh_flip_bars": 3,
     "pullback_scalp_lot_factor": 0.5,
@@ -650,7 +640,6 @@
   },
   "setup": {
     "_comment": "Setup ENABLE toggles per FORGE_NAMING_CONVENTIONS.md \u00a74.9. All default-OFF. v2.7.38 composites that emit their own setup_type (BULL_DAY_DIP_BUY, FRACTIONAL_SELL_IN_BULL) will move here per \u00a710.5.1c rename plan.",
-    "ma_crossover_enabled": 1,
     "vwap_reversion_enabled": 1,
     "fib_confluence_enabled": 1,
     "inside_bar_enabled": 1,
@@ -667,7 +656,6 @@
   },
   "atom": {
     "_comment": "Atom thresholds (filter-chain predicates) per FORGE_NAMING_CONVENTIONS.md \u00a74.5.",
-    "ma_crossover_adx_min": 20.0,
     "vwap_reversion_min_deviation_atr": 1.0,
     "vwap_reversion_max_deviation_atr": 3.0,
     "vwap_reversion_min_extension_bars": 5,
@@ -708,10 +696,6 @@
   },
   "geometry": {
     "_comment": "Entry geometry (lot factor, SL/TP ATR multipliers) per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Lot factors default to 0.5 (conservative).",
-    "ma_crossover_lot_factor": 0.5,
-    "ma_crossover_sl_atr_mult": 1.5,
-    "ma_crossover_tp1_atr_mult": 0.5,
-    "ma_crossover_tp2_atr_mult": 1.5,
     "vwap_reversion_lot_factor": 0.5,
     "vwap_reversion_sl_atr_mult": 1.2,
     "vwap_reversion_tp1_atr_mult": 0.4,
@@ -759,7 +743,6 @@
   },
   "timing": {
     "_comment": "Per-setup cooldown timers per FORGE_NAMING_CONVENTIONS.md \u00a74.5. Defaults 600s = 10min per direction (matches BB_PULLBACK_SCALP / MOMENTUM_DUMP cadence).",
-    "ma_crossover_cooldown_seconds": 0,
     "vwap_reversion_cooldown_seconds": 0,
     "fib_confluence_cooldown_seconds": 0,
     "inside_bar_cooldown_seconds": 0,

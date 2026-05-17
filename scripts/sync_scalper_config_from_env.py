@@ -630,19 +630,10 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GATE_DAILY_FLIP_CANCEL_PENDING":   ("safety", "daily_cancel_pending_on_flip",  "bool01", None, None),
     "FORGE_GATE_DAILY_FLIP_CANCEL_CASCADE":  ("safety", "daily_cancel_includes_cascade", "bool01", None, None),
     # 2.7.28 — Momentum dump-catch market entry (Run 17 trend-capture gap fix).
-    "FORGE_DUMP_CATCH_ENABLED":      ("safety", "dump_catch_enabled",      "bool01", None, None),
-    "FORGE_DUMP_LOOKBACK_BARS":      ("safety", "dump_lookback_bars",      "int",    1,    20),
-    "FORGE_DUMP_ATR_MULT":           ("safety", "dump_atr_mult",           "float",  0.3,  5.0),
-    "FORGE_DUMP_MAX_RSI":            ("safety", "dump_max_rsi",            "float",  0,    100),
     "FORGE_ATOM_DUMP_RSI_MAX_BUY":        ("safety", "dump_max_rsi_buy",        "float",  0,    100),
-    "FORGE_DUMP_MIN_ADX":            ("safety", "dump_min_adx",            "float",  0,    100),
-    "FORGE_DUMP_REQUIRE_PSAR":       ("safety", "dump_require_psar",       "bool01", None, None),
-    "FORGE_DUMP_REQUIRE_D1_BIAS":    ("safety", "dump_require_d1_bias",    "bool01", None, None),
-    "FORGE_DUMP_COOLDOWN_SECONDS":   ("safety", "dump_cooldown_seconds",   "int",    0,    7200),
     "FORGE_DUMP_LOT_FACTOR":         ("safety", "dump_lot_factor",         "float",  0.01, 2.0),
     "FORGE_GEOMETRY_DUMP_LOT_FACTOR_BUY":     ("safety", "dump_buy_lot_factor",     "float",  0.0,  2.0),
     "FORGE_GEOMETRY_DUMP_LOT_FACTOR_SELL":    ("safety", "dump_sell_lot_factor",    "float",  0.0,  2.0),
-    "FORGE_ATOM_DUMP_H1_TREND_MAX_SELL":        ("safety", "dump_sell_h1_max",        "float",  0.0,  10.0),
     # 2.7.54 — Exit discipline + asymmetric TP1 (operator: "gold is not stocks — no mercy in forex")
     "FORGE_GEOMETRY_DUMP_SL_ATR_MULT_BUY":       ("safety", "dump_sl_atr_mult_buy",     "float",  0.3,  10.0),
     "FORGE_GEOMETRY_DUMP_SL_ATR_MULT_SELL":      ("safety", "dump_sl_atr_mult_sell",    "float",  0.3,  10.0),
@@ -703,7 +694,6 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     "FORGE_GEOMETRY_DUMP_KZ_TIER5_FACTOR":       ("safety", "dump_kz_tier5_factor",      "float", 0.0, 10.0),
     "FORGE_GEOMETRY_DUMP_KZ_NO_ZONE_FACTOR":     ("safety", "dump_kz_no_zone_factor",    "float", 0.0, 10.0),
     # 2.7.32 — Option B (default OFF) direction-confirmation gate
-    "FORGE_DUMP_REQUIRE_BAR_CONFIRM": ("safety", "dump_require_bar_confirm", "bool01", None, None),
     # 2.7.31 — BB_PULLBACK_SCALP additive setup (Run 19 Issue 4 / Task #53)
     "FORGE_PULLBACK_SCALP_ENABLED":            ("safety", "pullback_scalp_enabled",            "bool01", None, None),
     "FORGE_PULLBACK_SCALP_FRESH_FLIP_BARS":    ("safety", "pullback_scalp_fresh_flip_bars",    "int",    1,    20),
@@ -817,14 +807,7 @@ MAPPING: dict[str, tuple[str, str, str, float | None, float | None]] = {
     # Env prefixes follow FORGE_NAMING_CONVENTIONS.md §4 (SETUP / ATOM /
     # GEOMETRY / TIMING). JSON sections mirror scope per §10.5.1c.
 
-    # ── MA Crossover (EMA20 × EMA50 event-triggered entry) ──
-    "FORGE_SETUP_MA_CROSSOVER_ENABLED":              ("setup",    "ma_crossover_enabled",              "bool01", None, None),
-    "FORGE_ATOM_MA_CROSSOVER_ADX_MIN":               ("atom",     "ma_crossover_adx_min",              "float",  5.0, 80.0),
-    "FORGE_GEOMETRY_MA_CROSSOVER_LOT_FACTOR":        ("geometry", "ma_crossover_lot_factor",           "float",  0.1, 2.0),
-    "FORGE_GEOMETRY_MA_CROSSOVER_SL_ATR_MULT":       ("geometry", "ma_crossover_sl_atr_mult",          "float",  0.5, 5.0),
-    "FORGE_GEOMETRY_MA_CROSSOVER_TP1_ATR_MULT":      ("geometry", "ma_crossover_tp1_atr_mult",         "float",  0.1, 5.0),
-    "FORGE_GEOMETRY_MA_CROSSOVER_TP2_ATR_MULT":      ("geometry", "ma_crossover_tp2_atr_mult",         "float",  0.1, 10.0),
-    "FORGE_TIMING_MA_CROSSOVER_COOLDOWN_SECONDS":    ("timing",   "ma_crossover_cooldown_seconds",     "int",    0.0, 7200.0),
+    # ── MA Crossover RETIRED v2.7.137a (ICT canon rejects MAs as primary triggers) ──
 
     # ── VWAP Reversion (pullback-to-VWAP in trend direction) ──
     "FORGE_SETUP_VWAP_REVERSION_ENABLED":             ("setup",    "vwap_reversion_enabled",             "bool01", None, None),
@@ -1131,10 +1114,6 @@ ENV_KEY_ALIASES: dict[str, tuple[str, ...]] = {
         "FORGE_GEOMETRY_DUMP_LOT_FACTOR_SELL",
         "FORGE_DUMP_SELL_LOT_FACTOR",
     ),
-    "FORGE_ATOM_DUMP_H1_TREND_MAX_SELL": (
-        "FORGE_ATOM_DUMP_H1_TREND_MAX_SELL",
-        "FORGE_DUMP_SELL_H1_MAX",
-    ),
     "FORGE_ATOM_DUMP_RSI_MAX_BUY": (
         "FORGE_ATOM_DUMP_RSI_MAX_BUY",
         "FORGE_DUMP_MAX_RSI_BUY",
@@ -1203,7 +1182,6 @@ DEPRECATED_ALIASES: set[str] = {
     "FORGE_SELL_STOP_CONT_SL_ATR_MULT",
     "FORGE_DUMP_BUY_LOT_FACTOR",
     "FORGE_DUMP_SELL_LOT_FACTOR",
-    "FORGE_DUMP_SELL_H1_MAX",
     "FORGE_DUMP_MAX_RSI_BUY",
     "FORGE_NATIVE_FORCE_STAGED_SCALE_IN",
     "FORGE_NATIVE_LEGS_CLEAR_TREND_FACTOR",
