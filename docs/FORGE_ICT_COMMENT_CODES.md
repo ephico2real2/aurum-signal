@@ -52,6 +52,16 @@ The `<KZ_DETAIL>` and `<SK_DETAIL>` segments later in the comment provide the SP
 
 **Silver Knife implies Killzone.** Per ICT canon (and FORGE.mq5 implementation), every Silver Knife sub-window sits inside a Killzone. The `SK` code is a stricter classification — when both are true, the SK prefix wins.
 
+**Source-producer ↔ helper-consumer wiring:**
+
+| Chokepoint state values | Helper returns (IctComment.mqh:39-43) |
+|---|---|
+| `g_regime.silver_bullet != ""` | `"SK"` (SK check happens FIRST — implies KZ) |
+| `g_regime.killzone != ""` AND `g_regime.silver_bullet == ""` | `"KZ"` |
+| `g_regime.killzone == ""` | `"OFF"` |
+
+The chokepoint sets both globals per tick at FORGE.mq5:11547 (silver_bullet) + 11546 area (killzone). `Forge_ZonePrefix()` is the single resolver — order-placement code never re-computes zone classification from MqlDateTime.
+
 > **Terminology note**: `SILVER_KNIFE` is the operator's preferred internal name. ICT canonical literature uses `SILVER_BULLET`. The two refer to the same concept (60-min hyper-concentrated FVG-entry windows: 03:00-04:00 / 10:00-11:00 / 14:00-15:00 NY). FORGE source code (SIGNALS column `silver_bullet`, `ComputeCurrentSilverBulletLabel()`, etc.) uses the canonical term internally; the comment scheme uses `SK` for compactness AND operator preference.
 
 ### §3.2 `<ORDER_TYPE>` — order kind (8 codes, replaces legacy `SCALP_*` family)
@@ -130,6 +140,19 @@ For RECOVERY legs (BUY_LIMIT_RECOV / SELL_LIMIT_RECOV / PRE_TP1_RECOV): `R1` | `
 
 `<KZ_DETAIL>` is ALWAYS emitted — predictable 5-segment minimum. When `<ZONE>` = `OFF`, `<KZ_DETAIL>` = `OFF` (redundant by design, for parser predictability).
 
+**Source-producer ↔ helper-consumer wiring:**
+
+| Canonical label emitted by `ComputeCurrentKillzoneLabel()` (FORGE.mq5:7459-7466) | Stored in chokepoint state | Helper translates to comment code |
+|---|---|---|
+| `return "NY_OPEN_KZ"` (FORGE.mq5:7459) | `g_regime.killzone` | `IctComment.mqh:61` → `NY_OPEN_KZ` |
+| `return "LONDON_OPEN_KZ"` (FORGE.mq5:7460) | `g_regime.killzone` | `IctComment.mqh:60` → `LDN_OPEN_KZ` |
+| `return "LONDON_CLOSE_KZ"` (FORGE.mq5:7461) | `g_regime.killzone` | `IctComment.mqh:62` → `LDN_CL_KZ` |
+| `return "NY_PM_KZ"` (FORGE.mq5:7464) | `g_regime.killzone` | `IctComment.mqh:63` → `NY_PM_KZ` |
+| `return "ASIAN_KZ"` (FORGE.mq5:7465) | `g_regime.killzone` | `IctComment.mqh:59` → `ASIA_KZ` |
+| `return ""` (off-session fall-through, FORGE.mq5:7466) | `g_regime.killzone` (empty) | `IctComment.mqh:64` fall-through → `OFF` |
+
+The chokepoint produces the canonical label once per tick into `g_regime.killzone`. Comment builders pass `g_regime.killzone` directly into `Forge_BuildScalpComment()`, which calls `Forge_KillzoneDetailCode()` to produce the comment-segment code. No re-derivation, single source of truth.
+
 ### §3.9 `<CONV>` — conviction tag (1 char, the "character of trade quality")
 
 Derived from the category-matched composite score (`mss_cont_score_<dir>` / `ote_retrace_score_<dir>` / `liq_sweep_rev_score_<dir>` populated by F-β.1 v2.7.130):
@@ -152,6 +175,17 @@ The composite score itself stays in the `SIGNALS` row; the comment carries only 
 | `PM_SK` | `PM_SB` | 14:00 – 15:00 | NY_PM_KZ |
 
 Same dual-namespace pattern as `<ZONE>` SK vs canonical SB: comment uses `_SK` for compactness + operator vocabulary; SIGNALS column `silver_bullet` and atom names stay canonical `_SB`.
+
+**Source-producer ↔ helper-consumer wiring:**
+
+| Canonical label emitted by `ComputeCurrentSilverBulletLabel()` (FORGE.mq5:7474-7484) | Stored in chokepoint state | Helper translates to comment code |
+|---|---|---|
+| `return "LONDON_SB"` (FORGE.mq5:7481) | `g_regime.silver_bullet` | `IctComment.mqh:78` → `LDN_SK` |
+| `return "AM_SB"` (FORGE.mq5:7482) | `g_regime.silver_bullet` | `IctComment.mqh:79` → `AM_SK` |
+| `return "PM_SB"` (FORGE.mq5:7483) | `g_regime.silver_bullet` | `IctComment.mqh:80` → `PM_SK` |
+| `return ""` (outside any SB window) | `g_regime.silver_bullet` (empty) | `IctComment.mqh:81` fall-through → `""` (segment omitted) |
+
+Per-tick wire-up at FORGE.mq5:11547 (`g_regime.silver_bullet = ComputeCurrentSilverBulletLabel()`). Same single-source-of-truth pattern as killzone — chokepoint computes once, comment builders read `g_regime.silver_bullet` directly, no re-derivation in module code.
 
 ---
 
