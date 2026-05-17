@@ -134,16 +134,18 @@ These are the 28 legacy setups slated for fold under M7-M11 per `FORGE_SETUP_ICT
 
 ---
 
-## §7 PEMCG architecture terms (canonical — `docs/FORGE_PEMCG_ARCHITECTURE.md`)
+## §7 PEMCG architecture terms (🚫 RETIRED v2.7.129 Mode D — historical reference)
 
-| Term | Expansion | Definition |
+**Retirement note (2026-05-16)**: PEMCG / UMCG / CVCSM / BB_EXHAUSTION_REVERSAL retired behaviorally in v2.7.129 (masters flipped to default OFF). Code preserved as historical reference; v2.7.130 follow-up will delete the implementation. ICT 3-tier (atoms → category composites → Mode A/B/C gates) is the SOLE entry-gating substrate post-v2.7.129. Design rationale + 7-atom lessons + historical incidents preserved in [`FORGE_PEMCG_CVCSM_LESSONS_LEARNED.md`](FORGE_PEMCG_CVCSM_LESSONS_LEARNED.md).
+
+| Term | Expansion | Definition (historical) |
 |---|---|---|
-| **PEMCG** | Premium-Exhaustion Move Confluence Gate | A 7-atom composite measuring how exhausted current price action is. Each atom contributes ±1 to a per-direction `warning_count`. | `FORGE_PEMCG_ARCHITECTURE.md §2.1` |
-| **UMCG** | Unified Multi-Confluence Gate | The PEMCG consumer that blocks BB_EXHAUSTION_REVERSAL trades when reversal warning_count is too high. | `FORGE_PEMCG_ARCHITECTURE.md §3.1` |
-| **CVCSM** | Continuation-Violation Cooldown State Machine | Per-direction state machine that blocks counter-direction entries for N bars after a continuation violation (e.g. SELL after a recent BUY MFE > X). | `FORGE_PEMCG_ARCHITECTURE.md §3.2` |
-| **Layer 1** | n/a | The 7 PEMCG atoms themselves — `pemcg_buy_reversal_block`, `pemcg_sell_reversal_block`. | `FORGE_PEMCG_ARCHITECTURE.md §3` |
-| **Layer 2** | n/a | CVCSM cooldown gates that consume Layer 1 counts. | as above |
-| **Layer 3** | n/a | BB_EXHAUSTION_REVERSAL setups that fire when all 3 layers green-light. | as above |
+| **PEMCG** 🚫 | Premium-Exhaustion Move Confluence Gate | A 7-atom composite measuring how exhausted current price action is. Each atom contributes ±1 to a per-direction `warning_count`. **RETIRED v2.7.129.** | `FORGE_PEMCG_ARCHITECTURE.md §2.1` |
+| **UMCG** 🚫 | Unified Multi-Confluence Gate | The PEMCG consumer that blocks BB_EXHAUSTION_REVERSAL trades when reversal warning_count is too high. **RETIRED v2.7.129.** | `FORGE_PEMCG_ARCHITECTURE.md §3.1` |
+| **CVCSM** 🚫 | Continuation-Violation Cooldown State Machine | Per-direction state machine that blocks counter-direction entries for N bars after a continuation violation (e.g. SELL after a recent BUY MFE > X). **RETIRED v2.7.129** — clash analysis showed redundancy with ICT entry-gate when both read same substrate. | `FORGE_PEMCG_ARCHITECTURE.md §3.2` |
+| **Layer 1** 🚫 | n/a | The 7 PEMCG atoms themselves — `pemcg_buy_reversal_block`, `pemcg_sell_reversal_block`. **RETIRED v2.7.129.** | `FORGE_PEMCG_ARCHITECTURE.md §3` |
+| **Layer 2** 🚫 | n/a | CVCSM cooldown gates that consume Layer 1 counts. **RETIRED v2.7.129.** | as above |
+| **Layer 3** 🚫 | n/a | BB_EXHAUSTION_REVERSAL setups that fire when all 3 layers green-light. **RETIRED v2.7.129** — folds into ICT LIQUIDITY_SWEEP_REVERSAL category per App B M9. | as above |
 | **ISS** | ICT Structure Score | Multi-atom composite measuring ICT structural alignment. Predecessor to per-category composites; partly absorbed into ComputeCategoryScore. | `FORGE_SETUP_ICT_MAP.md §B.8` |
 | **ISS-C** | ISS Continuation | The continuation variant of ISS — bias-aligned trend follow setups. | `IctScoring.mqh` (scaffold) |
 

@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.198"
+#property version "2.199"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -70,7 +70,7 @@
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
 
-const string FORGE_VERSION = "2.7.128";
+const string FORGE_VERSION = "2.7.129";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -5389,7 +5389,16 @@ void InitScalperConfig() {
    g_sc.asia_capitulation_buy_tp2_atr_mult                 = 1.5;
    g_sc.asia_capitulation_buy_cooldown_sec                 = 1800;
    // v2.7.84 — 3-layer entry-gating defaults (UMCG + CVCSM + BB_EXHAUSTION_REVERSAL)
-   g_sc.umcg_enabled                          = true;
+   // v2.7.129 — Mode D RETIREMENT (2026-05-16): umcg_enabled=false is the master kill.
+   //   When OFF, PEMCG atom-compute is skipped (FORGE.mq5:7894 if-guard), warning counts
+   //   forced to 0 → UMCG SKIP gates never fire, CVCSM release-check sees 0 → never blocks,
+   //   BB_EXHAUSTION min_warnings=4 never satisfied → never fires. One knob = full Mode D.
+   //   Code preserved for forensics + lessons reference; rationale captured in
+   //   docs/FORGE_PEMCG_CVCSM_LESSONS_LEARNED.md. ICT 3-tier becomes sole entry-gating
+   //   substrate per project_pemcg_retirement_target.md memory. Operator can re-enable
+   //   via FORGE_GATE_UMCG_ENABLED=1 if needed for diagnostic ablation; not recommended
+   //   for live trading. Code-deletion follow-up scheduled for v2.7.130.
+   g_sc.umcg_enabled                          = false;  // v2.7.129 Mode D — retired
    g_sc.umcg_buy_block_threshold              = 5;   // v2.7.86 — was 3 (majority-minus-one over-blocked range bars); 5 = supermajority catches G5006 (6/7) + G5015 (5/7)
    g_sc.umcg_sell_block_threshold             = 5;   // v2.7.86 — was 3 (mirror)
    g_sc.umcg_pemcg_rsi_overbought             = 65.0;   // v2.7.88 — was 70.0; G5006 reproduced @ RSI 69.3 (post-peak retest 90s after RSI 74.5 peak)
@@ -5447,13 +5456,13 @@ void InitScalperConfig() {
    g_sc.ict_liquidity_sweep_window_bars            = 3;     // sweep-recent window (N bars)
    g_sc.ict_liquidity_equal_tolerance_atr_mult     = 0.2;   // equal-H/L tolerance (ATR units)
    g_sc.ict_liquidity_rejection_min_wick_atr_mult  = 0.3;   // sweep wick/ATR floor
-   g_sc.cvcsm_enabled                         = true;
+   g_sc.cvcsm_enabled                         = false;  // v2.7.129 Mode D — retired (defense-in-depth; umcg_enabled=false already neutralizes via warnings=0)
    g_sc.cvcsm_release_threshold               = 2;
    g_sc.cvcsm_required_clean_bars             = 2;
    g_sc.cvcsm_max_cooldown_sec                = 1800;
    g_sc.cvcsm_trigger_on_sl                   = true;
    g_sc.cvcsm_trigger_on_regime_flip          = true;
-   g_sc.bb_exhaustion_reversal_enabled        = true;
+   g_sc.bb_exhaustion_reversal_enabled        = false;  // v2.7.129 Mode D — retired; replaced by ICT LIQUIDITY_SWEEP_REVERSAL category per App B M9
    g_sc.bb_exhaustion_reversal_min_warnings   = 4;
    g_sc.bb_exhaustion_reversal_lot            = 0.10;
    g_sc.bb_exhaustion_reversal_sl_atr_mult    = 1.0;
