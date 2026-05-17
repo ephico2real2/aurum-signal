@@ -1,5 +1,76 @@
 # SIGNAL SYSTEM — CHANGELOG
 
+## [v2.7.139] — 2026-05-17 — M7 ICT-canonical fold ship (MSS_CONTINUATION)
+
+The M7 fold per `docs/FORGE_SETUP_ICT_MAP.md §B.4` lands the 6 KEEP setups (+ 1 provisional INSIDE_BAR) under the ICT-canonical `setup_type = "MSS_CONTINUATION_<DIR>"`. Legacy-trigger identity is preserved in the new `setup_subtype` SIGNALS column for ablation studies. Trigger logic UNCHANGED at every fire site — same fire conditions, same lot/SL/TP math. Only the `setup_type` label and the new subtype column change.
+
+### Schema-parity 5-layer ship (per skill §"Schema-parity ship")
+
+- **Layer 1** — EA `CREATE TABLE IF NOT EXISTS SIGNALS` text adds `setup_subtype TEXT` between `setup_type` and `direction`.
+- **Layer 2** — EA `ALTER TABLE SIGNALS ADD COLUMN setup_subtype TEXT DEFAULT '';` for existing DBs.
+- **Layer 3** — EA `JournalRecordSignal` INSERT col list adds `setup_subtype`; VALUES bind reads new global `g_setup_subtype_for_next_signal`.
+- **Layer 4** — `python/scribe.py`: CREATE TABLE adds `setup_subtype TEXT`; ALTER TABLE migration for existing DBs; SELECT FROM SIGNALS conditional `+ (", setup_subtype" if has_setup_subtype else ", ''")` appended at END (preserves all preceding r[N] index positions); INSERT col list extended; tuple-build reads `r[164]` (setup_subtype at end of SELECT); placeholder count math bumped `168 → 169` (added `+ 1` term with comment).
+- **Layer 5** — no `schemas/aurum_tester.sql` file exists in this repo; the scribe-side schema is the authoritative mirror.
+
+### Global-set pattern (per design doc §4.1 — avoids 119-caller signature ripple)
+
+New `string g_setup_subtype_for_next_signal = "";` tick-state global declared near other Layer-4 telemetry globals. Set at each of the 8 M7 fire sites just before the `setup_type = "MSS_CONTINUATION_" + direction` assignment. Read inline by JournalRecordSignal's INSERT VALUES bind. **Reset at the TOP of `CheckNativeScalperSetups`** (each tick starts clean), NOT inside JournalRecordSignal — this allows downstream consumers within the same tick (`MarkSetupCooldownAnchorOnTaken`, BB_BREAKOUT anchor block at FORGE.mq5:15695) to read the subtype AFTER the TAKEN JournalRecordSignal call. Same anti-pattern avoidance documented in skill §I.11.1 v2.7.122 F-α (macd_hist signature-thread bug class).
+
+### Fire-site rewrites (8 sites across 7 setups)
+
+| Setup | Fire-site line | subtype emitted |
+|---|---|---|
+| `BB_BREAKOUT` (BUY) | FORGE.mq5:12814 | `bb_breakout` |
+| `BB_BREAKOUT` (SELL) | FORGE.mq5:13169 | `bb_breakout` |
+| `GRINDING_SELL` | FORGE.mq5:12499 | `grinding_sell` |
+| `MOMENTUM_DUMP_COMPOSITE` (BIDIRECTIONAL) | FORGE.mq5:13199 | `momentum_dump_composite` |
+| `NY_SESSION_BEARISH_BREAKOUT_SELL` | FORGE.mq5:13378 | `ny_session_bearish_breakout_sell` |
+| `INSIDE_BAR` (provisional) | FORGE.mq5:13670 | `inside_bar` |
+| `BB_SQUEEZE` | FORGE.mq5:13706 | `bb_squeeze` |
+| `GAP_AND_GO` | FORGE.mq5:13775 | `gap_and_go` |
+
+Each site:
+```mql5
+g_setup_subtype_for_next_signal = "<legacy_lower>";  // M7
+setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "<LEGACY>")
+```
+
+### Downstream `setup_type` comparison refactors (25 sites)
+
+All 25 downstream `setup_type == "<LEGACY>"` checks for the 7 folded setups were renamed to `g_setup_subtype_for_next_signal == "<legacy_lower>"`. This covers the lot-factor stack (`dump_factor`, `dump_pyramid_factor`, `dump_dist_amplifier`, `dump_kz_amplifier`), RR bypass, MarkSetupCooldownAnchorOnTaken branches, the BB_BREAKOUT anchor block, etc. Non-M7 setups (BB_BOUNCE, BB_PULLBACK_SCALP, BB_BREAKOUT_RETEST, BB_LOWER_REVERSION_BUY, etc.) keep their `setup_type == "<NAME>"` checks unchanged — they'll be folded in M8/M9 with the same pattern.
+
+Per-setup rename counts:
+- BB_BREAKOUT: 4 downstream renames
+- GAP_AND_GO: 2
+- MOMENTUM_DUMP_COMPOSITE: 14
+- BB_SQUEEZE: 2
+- NY_SESSION_BEARISH_BREAKOUT_SELL: 1
+- INSIDE_BAR: 2
+
+### Test validation
+
+- `tests/api/test_m7_fold.py` — 17 tests, all pass (14 previously-xfail M7-arrival tests + 3 forever-invariants). Layer 1/2/3/4 schema parity, per-setup fold correctness, RETIRE enforcement (MA_CROSSOVER + MOMENTUM_DUMP v1 stay deleted), MSS_CONTINUATION string emission.
+- `tests/api/test_forge_27x_gates.py` — 55 tests, all pass after M7-aware refactor. Tests for INSIDE_BAR / BB_SQUEEZE / GAP_AND_GO setup wiring updated from `setup_type = "<NAME>"` literal check to `g_setup_subtype_for_next_signal = "<name>"` check. `test_ma_crossover_setup_wired_end_to_end` rewritten as `test_ma_crossover_setup_retired` (stays-correct invariant). `test_dump_judas_window_block_wired` rewritten as `test_dump_judas_window_block_retired` (gate lived inside v1 trigger block which is gone).
+- `make forge-compile` clean (0 errors / 0 warnings). FORGE.ex5 built.
+
+### Files
+
+- `VERSION` — 2.7.138 → 2.7.139
+- `ea/FORGE.mq5` — FORGE_VERSION constant + global decl + 8 fire-site rewrites + 25 downstream renames + JournalRecordSignal INSERT col list + VALUES bind + tick-top reset + ALTER TABLE migration
+- `python/scribe.py` — CREATE TABLE schema mirror (×2: both fresh-DB blocks) + ALTER TABLE migration + has_setup_subtype detection flag + SELECT extension at END + tuple-build setup_subtype_val + INSERT col list + placeholder count bumped (168 → 169)
+- `tests/api/test_m7_fold.py` — xfail markers removed from 14 M7-arrival tests (now pass); 2 test regex/assertion patterns refined for MQL5 string-concat tolerance and concat-form vs literal-form MSS_CONTINUATION emission
+- `tests/api/test_forge_27x_gates.py` — MA_CROSSOVER and judas-window tests rewritten as retire invariants; INSIDE_BAR / BB_SQUEEZE / GAP_AND_GO assertions updated to subtype-global checks
+- `CHANGELOG.md` — this entry
+
+### Out of scope (intentionally deferred)
+
+- M8 OTE_RETRACEMENT fold (Step 4 — next commit) — 11 setups including BB_PULLBACK_SCALP (R33 Phase 1 fold; Phase 2 retire post-validation)
+- M9 LIQUIDITY_SWEEP_REVERSAL fold (R20 — separate ship)
+- ISS atom wiring (v2.7.113-115) and ISS hard-gate activation (v2.7.116) — the structural answer to R32 counter-trend trap
+- Glossary update for `setup_subtype` term (defer to consolidated post-M9 glossary refresh)
+
+---
+
 ## [v2.7.138] — 2026-05-17 (a.k.a. v2.7.137a tech-debt — RETIRE MA_CROSSOVER + MOMENTUM_DUMP v1)
 
 Per the M7 design doc §B.4 RETIRE bucket — the two setups that have no path forward in the ICT-canonical architecture get deleted:

@@ -240,11 +240,6 @@
     "explanation": "The current ICT killzone window has already produced the configured maximum number of TAKEN entries (FORGE_GATE_KILLZONE_MAX_TRADES, default 0=disabled). Prevents over-trading inside a single high-liquidity window. Counter resets on the next killzone transition and on the daily reset.",
     "category": "Session / Time"
   },
-  "dump_judas_window": {
-    "label": "MOMENTUM_DUMP blocked in Judas window",
-    "explanation": "MOMENTUM_DUMP SELL was blocked because the current killzone is LONDON_OPEN_KZ AND minutes_into_kz<60. The first hour of London open commonly sweeps Asian highs/lows before reversing (Judas Swing), so DUMP SELLs in this window often get caught in the reversal. Operator opt-in via FORGE_GATE_DUMP_JUDAS_WINDOW_BLOCK=1.",
-    "category": "Session / Time"
-  },
   "kz_warmup": {
     "label": "Killzone warmup \u2014 waiting for opening volatility to settle",
     "explanation": "ALL entries blocked because the current killzone is within its first FORGE_GATE_KZ_WARMUP_MIN minutes (default 0=disabled, 15 typical). The opening minutes of a session commonly produce wide spreads and violent wicks that clear liquidity before the real move begins (stop-hunt risk). Once minutes_into_kz reaches the threshold, trading resumes normally.",
@@ -334,76 +329,6 @@
     "label": "Daily bias bullish \u2014 SELL blocked",
     "explanation": "FORGE's D1 SMA slope is positive beyond the configured threshold (daily_slope_block_atr \u00d7 daily_ATR), indicating a multi-day rip. SELL entries are blocked while this bias holds. Mirror of the BUY-block; prevents selling into a sustained upward trend.",
     "category": "Regime"
-  },
-  "dump_rsi_block": {
-    "label": "Dump-catch \u2014 RSI outside bound",
-    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired (M5 impulse > atr_mult \u00d7 ATR over lookback bars) but the M5 RSI was outside the dump_max_rsi bound (SELL requires RSI < max; BUY requires RSI > 100\u2212max). Prevents fading exhaustion moves.",
-    "category": "Entry Quality"
-  },
-  "dump_rsi_buy_ceil": {
-    "label": "Dump-catch BUY \u2014 RSI overbought ceiling",
-    "explanation": "v2.7.34 MOMENTUM_DUMP BUY trigger fired but M5 RSI is at or above dump_max_rsi_buy (default 70). At RSI \u2265 70 the up-move is wave-exhausted and likely to retrace down \u2014 the same chop-retrace principle as the SELL-side dump_max_rsi, inverted. Run 20 G5009 (RSI 72.2 BUY \u2192 \u2212$305 in 10-leg cascade) is the canonical case this gate prevents.",
-    "category": "Entry Quality"
-  },
-  "dump_h1_trend_block_sell": {
-    "label": "Dump-catch SELL \u2014 h1_trend too bullish (counter-trend block)",
-    "explanation": "v2.7.35 MOMENTUM_DUMP SELL trigger fired but H1 trend strength is at or above dump_sell_h1_max (default 2.0 when enabled). At very strong H1 bullish bias, counter-trend SELLs into a bull rally have negative expectancy. Run 23 G5004 (h1=2.06 -$19), G5008 (h1=2.27 -$47), G5020 (h1=1.05 -$21) \u2014 equivalent winners at similar h1_trend banked only $3-5 each. Net trade-off strongly positive.",
-    "category": "Entry Quality"
-  },
-  "dump_rsi_floor_sell": {
-    "label": "Dump-catch SELL \u2014 RSI floor (deep oversold protection)",
-    "explanation": "v2.7.55 MOMENTUM_DUMP SELL blocked because m5_rsi \u2264 dump_sell_min_rsi (default 30). Prevents selling INTO deep oversold where mean-reversion buyers wait \u2014 gold's standard-deviation oversold zone. Run 26 G5003 Mar 31 12:40 (RSI 32.4 SELL) was the canonical fail case this gate now blocks.",
-    "category": "Entry Quality"
-  },
-  "dump_below_bbl_block_sell": {
-    "label": "Dump-catch SELL \u2014 price below BB lower band (conjoint with RSI \u2264 35)",
-    "explanation": "v2.7.55 + v2.7.55.1 MOMENTUM_DUMP SELL blocked because price < m5_bb_l AND m5_rsi \u2264 dump_below_bbl_block_max_rsi (default 35). Mean-reversion zone protection \u2014 gold reverts UP from below BB lower band. Pairs with new BB_LOWER_REVERSION_BUY setup (same condition triggers BUY entry). Conjoint RSI gate (v2.7.55.1) preserves G5001/G5002 continuation-dump winners (RSI 38-40) while blocking G5003-style entries (RSI \u2264 35).",
-    "category": "Entry Quality"
-  },
-  "dump_adx_block": {
-    "label": "Dump-catch \u2014 ADX below minimum",
-    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but M5 ADX was below dump_min_adx. Filters whipsaw spikes that lack trend confirmation.",
-    "category": "Entry Quality"
-  },
-  "dump_psar_block": {
-    "label": "Dump-catch \u2014 PSAR misaligned",
-    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but PSAR was on the wrong side of price (SELL requires PSAR ABOVE, BUY requires PSAR BELOW). Structural confirmation gate.",
-    "category": "Entry Quality"
-  },
-  "dump_d1_bias_block": {
-    "label": "Dump-catch \u2014 daily bias disagrees",
-    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired but the v2.7.27 daily direction gate did not confirm the same bias (SELL requires d1_bear_bias, BUY requires d1_bull_bias). Prevents counter-daily momentum entries.",
-    "category": "Regime"
-  },
-  "dump_cooldown": {
-    "label": "Dump-catch \u2014 cooldown active",
-    "explanation": "v2.7.28 MOMENTUM_DUMP trigger fired within dump_cooldown_seconds of a prior dump entry in the same direction. Prevents serial entries on a single multi-bar impulse.",
-    "category": "Cooldowns"
-  },
-  "dump_chop_block": {
-    "label": "Dump-catch \u2014 RANGE regime chop filter",
-    "explanation": "v2.7.32 MOMENTUM_DUMP blocked because regime_label='RANGE' \u2014 chop/whipsaw zone where dump-catch SLs get wicked out on noise. Run 20 Mar 31 showed 4/7 RANGE-regime dumps lost on this pattern. Allow only TREND_BULL/TREND_BEAR/VOLATILE.",
-    "category": "Setup gates"
-  },
-  "dump_bar_confirm_missing": {
-    "label": "Dump-catch \u2014 prior bar direction confirmation missing (Option B, default OFF)",
-    "explanation": "v2.7.32 Option B: MOMENTUM_DUMP trigger fired but the immediately prior closed bar (bar 1) did NOT move in trade direction vs bar 2. Filters single-wick triggers in chop. Default OFF via FORGE_DUMP_REQUIRE_BAR_CONFIRM=0. Run 20 analysis showed 16 of 24 BUY losses were IMMEDIATE-SL direction failures that this gate would filter.",
-    "category": "Setup gates"
-  },
-  "ma_crossover_adx_below_min": {
-    "label": "MA crossover \u2014 M5 ADX below floor",
-    "explanation": "v2.7.42 MA_CROSSOVER trigger fired (EMA20\u00d7EMA50 sign-flip on M5) but m5_adx is below atom.ma_crossover_adx_min (default 20). Crossovers in low-ADX chop produce false signals; gate blocks until trend strength qualifies.",
-    "category": "Setup gates"
-  },
-  "ma_crossover_m15_misalign": {
-    "label": "MA crossover \u2014 M15 trend disagreement",
-    "explanation": "v2.7.42 MA_CROSSOVER trigger fired but the M15 trend direction (m15_ok_buy/m15_ok_sell) disagrees with the crossover direction. Multi-timeframe confluence guard \u2014 blocks counter-trend crossovers.",
-    "category": "Setup gates"
-  },
-  "ma_crossover_cooldown": {
-    "label": "MA crossover \u2014 cooldown active",
-    "explanation": "v2.7.42 MA_CROSSOVER trigger fired within timing.ma_crossover_cooldown_seconds (default 600) of a prior MA_CROSSOVER entry in the same direction. Bypassed when last group won TP1 in regime-aligned direction with M5 ADX confirmation (v2.7.41 bypass mechanism).",
-    "category": "Cooldowns"
   },
   "vwap_reversion_cooldown": {
     "label": "VWAP reversion \u2014 cooldown active",

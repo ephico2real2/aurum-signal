@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.208"
+#property version "2.209"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -80,7 +80,7 @@
 //   pending operator approval — see open thread on acronym table.
 #include <Forge\IctComment.mqh>
 
-const string FORGE_VERSION = "2.7.138";
+const string FORGE_VERSION = "2.7.139";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -281,6 +281,14 @@ datetime g_scalper_last_dailybias_buy_log_bar  = 0; // throttle daily_bear_block
 datetime g_scalper_last_dailybias_sell_log_bar = 0; // throttle daily_bull_block_sell
 
 // v2.7.137a — MOMENTUM_DUMP v1 cooldown anchors REMOVED (setup retired; composite owns its throttle).
+
+// v2.7.139 M7 — setup_subtype tick-state global. Set at each fire site to preserve
+// legacy-trigger identity (e.g. "momentum_dump_composite", "bb_breakout") before
+// JournalRecordSignal binds it into the SIGNALS row. Cleared at the end of every
+// JournalRecordSignal call so non-M7 callers (SKIP rows from other gates) emit "".
+// Pattern matches v2.7.122 F-α (killzone/silver_bullet) — avoids 119-caller
+// signature-thread per skill §I.11.1.
+string g_setup_subtype_for_next_signal = "";
 
 // 2.7.37 — Layer-4 atom telemetry globals. Populated once per tick by
 // ForgeEvalAtoms() at the top of CheckScalperEntry; consumed by
@@ -9898,6 +9906,7 @@ bool JournalInit() {
       "time INTEGER NOT NULL, "
       "symbol TEXT NOT NULL, "
       "setup_type TEXT, "
+      "setup_subtype TEXT, "
       "direction TEXT, "
       "outcome TEXT NOT NULL, "
       "gate_reason TEXT, "
@@ -10113,6 +10122,8 @@ bool JournalInit() {
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_synced ON TRADES(synced);");
    // run_id: per-run isolation
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN run_id INTEGER DEFAULT 0;");
+   // v2.7.139 M7 — setup_subtype preserves legacy-trigger identity post-MSS_CONTINUATION fold
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN setup_subtype TEXT DEFAULT '';");
    DatabaseExecute(g_journal_db, "ALTER TABLE TRADES ADD COLUMN run_id INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_run ON SIGNALS(run_id);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_trades_run ON TRADES(run_id);");
@@ -10519,7 +10530,7 @@ void JournalRecordSignal(string outcome, string gate_reason,
                              : 0;
 
    string sql = "INSERT INTO SIGNALS "
-      "(time, symbol, setup_type, direction, outcome, gate_reason, "
+      "(time, symbol, setup_type, setup_subtype, direction, outcome, gate_reason, "
       "price, spread, atr, rsi, adx, bb_upper, bb_lower, bb_mid, "
       "poc_price, vwap_price, fib_50, rsi_divergence, psar_state, "
       "pattern_score, h1_trend, regime_label, regime_confidence, "
@@ -10594,6 +10605,7 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
       + "'" + setup_type + "', "
+      + "'" + g_setup_subtype_for_next_signal + "', "  // v2.7.139 M7 — preserves legacy-trigger identity
       + "'" + direction + "', "
       + "'" + outcome + "', "
       + "'" + gate_reason + "', "
@@ -10793,6 +10805,11 @@ void JournalRecordSignal(string outcome, string gate_reason,
       return;
    }
    g_journal_signals_count++;
+   // v2.7.139 M7 — g_setup_subtype_for_next_signal is NOT reset here. Reset happens at
+   // the top of CheckNativeScalperSetups every tick so that downstream consumers
+   // (MarkSetupCooldownAnchorOnTaken, BB_BREAKOUT anchor at 15695-area) can read the
+   // subtype AFTER the TAKEN JournalRecordSignal call. Stale subtype leakage from one
+   // tick to the next is prevented by the tick-top reset.
 }
 
 // v2.7.111 — FlushJournalSignals: drain g_journal_signals_queue via one BEGIN..COMMIT.
@@ -11481,7 +11498,7 @@ bool CheckEntryQuality(const string direction, const double atr,
       //   global (default 1) so pyramid into confirmed cascade isn't capped early.
       // 2.7.56.1 — MDCT shares this cap with MD (per operator: "use variables from MD").
       int dir_cap_eff = g_sc.max_open_same_direction;
-      if((setup_type == "MOMENTUM_DUMP_COMPOSITE")
+      if((g_setup_subtype_for_next_signal == "momentum_dump_composite")
          && g_sc.dump_max_open_same_direction > 0) {
          dir_cap_eff = g_sc.dump_max_open_same_direction;
       }
@@ -11625,6 +11642,11 @@ void RegimeUpdate(double m5_adx_in, double m5_rsi_in,
 }
 
 void CheckNativeScalperSetups() {
+   // v2.7.139 M7 — reset subtype global at tick top. Fire sites set it later when
+   // they fire; SKIPs from gates above the fire sites correctly emit "" (no setup
+   // identity yet). Persists through PlaceMarketBatch + JournalRecordSignal +
+   // MarkSetupCooldownAnchorOnTaken within the same tick, then resets next tick.
+   g_setup_subtype_for_next_signal = "";
    EnsureIndicators();
    EnsureMTFIndicators();
    // 2.7.37 — Populate Layer-4 atom telemetry globals FIRST, before any
@@ -12481,7 +12503,8 @@ void CheckNativeScalperSetups() {
       if(_grs_sess_ok && _grs_bbm_ok && _grs_vel_ok && _grs_rsi_ok
          && _grs_macd_ok && _grs_room_ok && _grs_cool_ok) {
          direction  = "SELL";
-         setup_type = "GRINDING_SELL";
+         g_setup_subtype_for_next_signal = "grinding_sell";  // M7
+         setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "GRINDING_SELL")
          double _grs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
          double _grs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          sl  = NormalizeDouble(_grs_ask + m5_atr * g_sc.grinding_sell_sl_atr_mult,  _Digits);
@@ -12796,7 +12819,8 @@ void CheckNativeScalperSetups() {
             } else {
          direction = "BUY";
                sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
-         setup_type = "BB_BREAKOUT";
+         g_setup_subtype_for_next_signal = "bb_breakout";  // M7
+         setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "BB_BREAKOUT")
       }
             } // end h1_di_ok block
          }
@@ -13151,7 +13175,8 @@ void CheckNativeScalperSetups() {
             } else {
          direction = "SELL";
                sl = bo_sl; tp1 = bo_tp1; tp2 = bo_tp2;
-         setup_type = "BB_BREAKOUT";
+         g_setup_subtype_for_next_signal = "bb_breakout";  // M7
+         setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "BB_BREAKOUT")
       }
             } // end adx_dur_ok && rsi_decl_ok
          }
@@ -13181,7 +13206,8 @@ void CheckNativeScalperSetups() {
       if(mdct_event != 0
          && IsMomentumDumpCompositeActive(mdct_event, m5_rsi, m5_adx, h1_trend_strength)) {
          direction  = (mdct_event > 0) ? "BUY" : "SELL";
-         setup_type = "MOMENTUM_DUMP_COMPOSITE";
+         g_setup_subtype_for_next_signal = "momentum_dump_composite";  // M7
+         setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "MOMENTUM_DUMP_COMPOSITE")
          double mdct_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
          double mdct_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          if(mdct_event > 0) {
@@ -13360,7 +13386,8 @@ void CheckNativeScalperSetups() {
       if(_nybs_kz_ok && _nybs_vel_ok && _nybs_bbm_ok && _nybs_rsi_ok
          && _nybs_macd_ok && _nybs_room_ok && _nybs_cool_ok) {
          direction  = "SELL";
-         setup_type = "NY_SESSION_BEARISH_BREAKOUT_SELL";
+         g_setup_subtype_for_next_signal = "ny_session_bearish_breakout_sell";  // M7
+         setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "NY_SESSION_BEARISH_BREAKOUT_SELL")
          double _nybs_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
          double _nybs_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          sl  = NormalizeDouble(_nybs_ask + m5_atr * g_sc.ny_session_bearish_sell_sl_atr_mult, _Digits);
@@ -13652,7 +13679,8 @@ void CheckNativeScalperSetups() {
                                    mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
          if(ok) {
             direction  = ib_dir;
-            setup_type = "INSIDE_BAR";
+            g_setup_subtype_for_next_signal = "inside_bar";  // M7
+            setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "INSIDE_BAR")
             int ib_score = Score_SetupConfidence(ib_event, m5_adx, g_sc.inside_bar_adx_min,
                                                  h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double ib_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -13688,7 +13716,8 @@ void CheckNativeScalperSetups() {
                                       mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength);
          if(sq_ok) {
             direction  = sq_dir;
-            setup_type = "BB_SQUEEZE";
+            g_setup_subtype_for_next_signal = "bb_squeeze";  // M7
+            setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "BB_SQUEEZE")
             int sq_score = Score_SetupConfidence(sq_event, m5_adx, g_sc.bb_squeeze_adx_min, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double sq_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double sq_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -13757,7 +13786,8 @@ void CheckNativeScalperSetups() {
                             gap_last, g_sc.gap_and_go_cooldown_seconds, m5_adx,
                             mid,spread,m5_atr,m5_rsi,m5_bb_u,m5_bb_l,m5_bb_m,h1_trend_strength)) {
             direction  = gap_dir;
-            setup_type = "GAP_AND_GO";
+            g_setup_subtype_for_next_signal = "gap_and_go";  // M7
+            setup_type = "MSS_CONTINUATION_" + direction;  // M7 (was: "GAP_AND_GO")
             int gap_score = Score_SetupConfidence(gap_event, m5_adx, 15.0, h1_trend_strength, g_sc.trend_strength_atr_threshold);
             double gap_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             double gap_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -14684,7 +14714,7 @@ void CheckNativeScalperSetups() {
          }
          // 2.7.19 — failed-breakout-pullback gate tracker: record price + bar of THIS atr_ext SKIP for BUY
          // so a later lower-priced entry within breakout_failed_lookback_bars can be blocked.
-         if(direction == "BUY" && setup_type == "BB_BREAKOUT") {
+         if(direction == "BUY" && g_setup_subtype_for_next_signal == "bb_breakout") {
             g_scalper_last_atrext_skip_bar_buy   = m5bar;
             g_scalper_last_atrext_skip_price_buy = mid;
          }
@@ -14733,7 +14763,7 @@ void CheckNativeScalperSetups() {
    double reward = reward_tp1;
    if(setup_type == "BB_BOUNCE")
       reward = MathMax(reward_tp1, reward_tp2);
-   if(setup_type == "BB_BREAKOUT" || setup_type == "BB_BREAKOUT_RETEST") {
+   if(g_setup_subtype_for_next_signal == "bb_breakout" || setup_type == "BB_BREAKOUT_RETEST") {
       // Breakout scales out across 4 TPs — use the best reachable TP for the RR gate.
       // At base 2.0× SL: TP1(0.5x)=0.25 RR, TP2(1.5x)=0.75, TP3(2.5x)=1.25, TP4(4.0x)=2.0.
       double reward_tp3 = m5_atr * g_sc.breakout_tp3_atr_mult;
@@ -14754,11 +14784,11 @@ void CheckNativeScalperSetups() {
    //   Codex v2.7.38 review FAIL #1: without this bypass both new setup types are
    //   silently rejected by rr_too_low even when their composite enable flag is set.
    //   Same rationale as MOMENTUM_DUMP: trigger atoms + composite gates ARE the safety net.
-   bool _rr_bypass = (setup_type == "MOMENTUM_DUMP_COMPOSITE"
+   bool _rr_bypass = (g_setup_subtype_for_next_signal == "momentum_dump_composite"
                    || setup_type == "BB_PULLBACK_SCALP"
                    || setup_type == "FRACTIONAL_SELL_IN_BULL"
                    || setup_type == "BULL_DAY_DIP_BUY"
-                   || setup_type == "MOMENTUM_DUMP_COMPOSITE"   // 2.7.53 — parity with legacy MOMENTUM_DUMP
+                   || g_setup_subtype_for_next_signal == "momentum_dump_composite"   // 2.7.53 — parity with legacy MOMENTUM_DUMP
                    || setup_type == "BB_LOWER_REVERSION_BUY"          // 2.7.55 — tight-SL mean-reversion scalp; geometry-anchored
                    || setup_type == "ASIA_CAPITULATION_BUY"            // 2.7.81 — tight-SL Asia V-flush; geometry-anchored, fixed-lot
                    || setup_type == "TREND_CONTINUATION_BUY"          // 2.7.57 — tight scalp 0.3×ATR TP1; geometry-anchored
@@ -14790,7 +14820,7 @@ void CheckNativeScalperSetups() {
    int base_n = lot_inputs_override_eff ? MathMax(1, ScalperTrades) : MathMax(1, g_sc.lot_num_trades);
    base_n = MathMax(1, MathMin(30, base_n));
    // 2.7.56 — MOMENTUM_DUMP-specific leg count override. Operator: "fire 5+ legs per entry".
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE" && g_sc.dump_legs_per_group > 0) {
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite" && g_sc.dump_legs_per_group > 0) {
       base_n = MathMax(1, MathMin(30, g_sc.dump_legs_per_group));
    }
 
@@ -14799,7 +14829,7 @@ void CheckNativeScalperSetups() {
    double lot_ratio = 0.0;
    double lot_max_mult = MathMax(1.0, MathMin(5.0, NativeScalperAutoLotMaxMultiplier));
    double lot_trend_ref = MathMax(0.10, NativeScalperAutoLotTrendRef);
-   bool is_breakout_setup = (setup_type == "BB_BREAKOUT" || setup_type == "BB_BREAKOUT_RETEST");
+   bool is_breakout_setup = (g_setup_subtype_for_next_signal == "bb_breakout" || setup_type == "BB_BREAKOUT_RETEST");
    if(NativeScalperAutoLotByTrend && (!NativeScalperAutoLotBreakoutOnly || is_breakout_setup)) {
       double dir_h1 = (direction == "BUY") ? MathMax(0.0, h1_trend_strength) : MathMax(0.0, -h1_trend_strength);
       double dir_h4 = (direction == "BUY") ? MathMax(0.0, h4_trend_strength) : MathMax(0.0, -h4_trend_strength);
@@ -14836,7 +14866,7 @@ void CheckNativeScalperSetups() {
    // 2.7.32 — Scalp setups capped at 2 legs (was 5 default). Operator mandate post-Run 20:
    //   "fire 2 per leg, not 1" — keep some scaling flexibility while preventing the
    //   5-leg × -$10 SL = -$50 per direction-failure that broke Run 20 Mar 31.
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE" || setup_type == "BB_PULLBACK_SCALP") {
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite" || setup_type == "BB_PULLBACK_SCALP") {
       if(n > 2) {
          trades_policy_out += " scalp_leg_cap=2;";
          n = 2;
@@ -14932,11 +14962,11 @@ void CheckNativeScalperSetups() {
    // 2.7.35 — direction-specific override: dump_buy_lot_factor / dump_sell_lot_factor when set (> 0).
    //   In bullish regimes BUY MOMENTUM_DUMP should size up (with-trend); SELL stays probe-size.
    double _dump_eff_factor = g_sc.dump_lot_factor;
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE") {
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite") {
       if(direction == "BUY"  && g_sc.dump_buy_lot_factor  > 0.0) _dump_eff_factor = g_sc.dump_buy_lot_factor;
       if(direction == "SELL" && g_sc.dump_sell_lot_factor > 0.0) _dump_eff_factor = g_sc.dump_sell_lot_factor;
    }
-   double dump_factor = (setup_type == "MOMENTUM_DUMP_COMPOSITE" && _dump_eff_factor > 0.0 && _dump_eff_factor <= 2.0)
+   double dump_factor = (g_setup_subtype_for_next_signal == "momentum_dump_composite" && _dump_eff_factor > 0.0 && _dump_eff_factor <= 2.0)
                         ? _dump_eff_factor : 1.0;
    // 2.7.56 — Escalating MOMENTUM_DUMP pyramid factor (operator: "1x,2x,3x,4x,5x per consecutive fire").
    //   counter (g_dump_pyramid_consec_*) increments on each MOMENTUM_DUMP TAKEN in same direction
@@ -14946,7 +14976,7 @@ void CheckNativeScalperSetups() {
    //   DECREASING pyramid (operator: "5×, 4×, 3×, 2×, 1× — big lot at best entry, smaller adds").
    //   For canonical decreasing: base=5.0, step=-1.0, max=5.0, min=1.0 → 5,4,3,2,1,1,1...
    double dump_pyramid_factor = 1.0;
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE" && g_sc.dump_pyramid_enabled) {
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite" && g_sc.dump_pyramid_enabled) {
       int consec_n = (direction == "BUY") ? g_dump_pyramid_consec_buy_count
                                           : g_dump_pyramid_consec_sell_count;
       double pf = g_sc.dump_pyramid_base_factor + consec_n * g_sc.dump_pyramid_step;
@@ -14958,7 +14988,7 @@ void CheckNativeScalperSetups() {
    //   BUY far from day_high = lots of room above = high-conviction zone → 1.5× / 2.0× lot.
    //   SELL far from day_low = mirror.
    double dump_dist_amplifier = 1.0;
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE" && g_sc.dump_dist_amplifier_enabled && m5_atr > 0.0) {
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite" && g_sc.dump_dist_amplifier_enabled && m5_atr > 0.0) {
       double _amp_mid = (SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                        + SymbolInfoDouble(_Symbol, SYMBOL_BID)) / 2.0;
       double _amp_dist_atr = 0.0;
@@ -14975,7 +15005,7 @@ void CheckNativeScalperSetups() {
    //   Peak at 0-5 min, sharp decay to de-risk past 60 min. Block in dead zones (between KZs).
    //   Reads g_regime.killzone + g_regime.minutes_into_kz (already populated each tick).
    double dump_kz_amplifier = 1.0;
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE" && g_sc.dump_kz_amplifier_enabled) {
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite" && g_sc.dump_kz_amplifier_enabled) {
       bool _in_kz = (StringLen(g_regime.killzone) > 0 && g_regime.killzone != "NONE");
       if(!_in_kz) {
          // Dead zone between killzones — apply no_zone_factor (default 0 = effectively block)
@@ -14991,7 +15021,7 @@ void CheckNativeScalperSetups() {
    }
    // 2.7.53 — MOMENTUM_DUMP_COMPOSITE_TEST lot factor (parity with legacy dump_factor).
    // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix). Default 0.7→1.0.
-   double mdct_factor = (setup_type == "MOMENTUM_DUMP_COMPOSITE"
+   double mdct_factor = (g_setup_subtype_for_next_signal == "momentum_dump_composite"
                          && g_sc.momentum_dump_composite_lot_factor > 0.0
                          && g_sc.momentum_dump_composite_lot_factor <= 2.0)
                         ? g_sc.momentum_dump_composite_lot_factor : 1.0;
@@ -15033,7 +15063,7 @@ void CheckNativeScalperSetups() {
    //   The pivot-detection composite gives high-conviction SELL signals; amplifying
    //   the regime-aligned SELL is the with-trend doubling rationale (atlas §5.7).
    double intraday_reversal_factor = 1.0;
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE" && direction == "SELL"
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite" && direction == "SELL"
       && IsIntradayReversalSellActive(h1_trend_strength, m5_rsi,
                                        SymbolInfoDouble(_Symbol, SYMBOL_BID), m5_bb_m)) {
       intraday_reversal_factor = g_sc.intraday_reversal_sell_lot_mult;
@@ -15074,12 +15104,12 @@ void CheckNativeScalperSetups() {
                                    && g_sc.fib_confluence_lot_factor < 1.0)
                                    ? g_sc.fib_confluence_lot_factor : 1.0;
    // 2.7.42 — INSIDE_BAR lot factor (C-extended Tier 1). Default 0.5.
-   double inside_bar_factor = (setup_type == "INSIDE_BAR"
+   double inside_bar_factor = (g_setup_subtype_for_next_signal == "inside_bar"
                                && g_sc.inside_bar_lot_factor > 0.0
                                && g_sc.inside_bar_lot_factor < 1.0)
                                ? g_sc.inside_bar_lot_factor : 1.0;
    // 2.7.42 — BB_SQUEEZE lot factor (C-extended Tier 1). Default 0.5.
-   double bb_squeeze_factor = (setup_type == "BB_SQUEEZE"
+   double bb_squeeze_factor = (g_setup_subtype_for_next_signal == "bb_squeeze"
                                && g_sc.bb_squeeze_lot_factor > 0.0
                                && g_sc.bb_squeeze_lot_factor < 1.0)
                                ? g_sc.bb_squeeze_lot_factor : 1.0;
@@ -15089,7 +15119,7 @@ void CheckNativeScalperSetups() {
                         && g_sc.orb_lot_factor < 1.0)
                         ? g_sc.orb_lot_factor : 1.0;
    // 2.7.42 — GAP_AND_GO lot factor (C-extended Tier 2). Default 0.5.
-   double gap_and_go_factor = (setup_type == "GAP_AND_GO"
+   double gap_and_go_factor = (g_setup_subtype_for_next_signal == "gap_and_go"
                                && g_sc.gap_and_go_lot_factor > 0.0
                                && g_sc.gap_and_go_lot_factor < 1.0)
                                ? g_sc.gap_and_go_lot_factor : 1.0;
@@ -15669,7 +15699,7 @@ void CheckNativeScalperSetups() {
       spread,m5_atr,m5_rsi,m5_adx,m5_bb_u,m5_bb_l,m5_bb_m,entry_candle_score,h1_trend_strength,0,
       _taken_macd, _taken_m15adx, g_last_combined_lot_factor);
    // 2.7.17: track last BB_BREAKOUT entry time per direction for the breakout cooldown gate
-   if(setup_type == "BB_BREAKOUT") {
+   if(g_setup_subtype_for_next_signal == "bb_breakout") {
       if(direction == "BUY")  g_scalper_last_bb_breakout_buy  = TimeCurrent();
       if(direction == "SELL") g_scalper_last_bb_breakout_sell = TimeCurrent();
    }
@@ -17745,7 +17775,7 @@ void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direct
    } else if(setup_type == "TRENDLINE_BOUNCE") {
       if(buy)  g_trendline_bounce_last_buy_time  = now;
       if(sell) g_trendline_bounce_last_sell_time = now;
-   } else if(setup_type == "INSIDE_BAR") {
+   } else if(g_setup_subtype_for_next_signal == "inside_bar") {
       if(buy)  g_inside_bar_last_buy_time  = now;
       if(sell) g_inside_bar_last_sell_time = now;
    } else if(setup_type == "FIB_CONFLUENCE") {
@@ -17754,19 +17784,19 @@ void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direct
    } else if(setup_type == "VWAP_REVERSION") {
       if(buy)  g_vwap_reversion_last_buy_time  = now;
       if(sell) g_vwap_reversion_last_sell_time = now;
-   } else if(setup_type == "BB_SQUEEZE") {
+   } else if(g_setup_subtype_for_next_signal == "bb_squeeze") {
       if(buy)  g_bb_squeeze_last_buy_time  = now;
       if(sell) g_bb_squeeze_last_sell_time = now;
    } else if(setup_type == "ORB") {
       if(buy)  g_orb_last_buy_time  = now;
       if(sell) g_orb_last_sell_time = now;
-   } else if(setup_type == "GAP_AND_GO") {
+   } else if(g_setup_subtype_for_next_signal == "gap_and_go") {
       if(buy)  g_gap_and_go_last_buy_time  = now;
       if(sell) g_gap_and_go_last_sell_time = now;
    } else if(setup_type == "FLAG_PENNANT") {
       if(buy)  g_flag_pennant_last_buy_time  = now;
       if(sell) g_flag_pennant_last_sell_time = now;
-   } else if(setup_type == "MOMENTUM_DUMP_COMPOSITE") {
+   } else if(g_setup_subtype_for_next_signal == "momentum_dump_composite") {
       // 2.7.53 — parallel composite (parity with legacy MOMENTUM_DUMP).
       if(buy)  g_momentum_dump_composite_last_buy_time  = now;
       if(sell) g_momentum_dump_composite_last_sell_time = now;
@@ -17782,14 +17812,14 @@ void MarkSetupCooldownAnchorOnTaken(const string setup_type, const string direct
    } else if(setup_type == "TREND_CONTINUATION_SELL") {
       // 2.7.57 — direction-locked SELL (mirror).
       if(sell) g_trend_continuation_sell_last_time = now;
-   } else if(setup_type == "NY_SESSION_BEARISH_BREAKOUT_SELL") {
+   } else if(g_setup_subtype_for_next_signal == "ny_session_bearish_breakout_sell") {
       // v2.7.70 — direction-locked SELL.
       if(sell) g_ny_session_bearish_sell_last_time = now;
    }
    // 2.7.56 — Pyramid counter increment for MOMENTUM_DUMP (also covers MOMENTUM_DUMP_COMPOSITE_TEST).
    // 2.7.121 — Renamed to MOMENTUM_DUMP_COMPOSITE (drop _TEST suffix).
    //   Direction flip resets opposite-direction counter; same-direction increments.
-   if(setup_type == "MOMENTUM_DUMP_COMPOSITE") {
+   if(g_setup_subtype_for_next_signal == "momentum_dump_composite") {
       if(buy) {
          g_dump_pyramid_consec_buy_count++;
          g_dump_pyramid_consec_sell_count = 0;   // direction flip resets opposite

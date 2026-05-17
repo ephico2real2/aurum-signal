@@ -72,7 +72,6 @@ def scribe_text() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.138 M7 ship")
 def test_layer1_ea_create_table_has_setup_subtype(ea_text: str) -> None:
     """EA CREATE TABLE SIGNALS text must declare setup_subtype TEXT."""
     m = re.search(r"CREATE TABLE IF NOT EXISTS SIGNALS \((.+?)\)\";", ea_text, re.DOTALL)
@@ -80,7 +79,6 @@ def test_layer1_ea_create_table_has_setup_subtype(ea_text: str) -> None:
     assert "setup_subtype" in m.group(1), "setup_subtype missing from CREATE TABLE"
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.138 M7 ship")
 def test_layer2_ea_alter_table_setup_subtype(ea_text: str) -> None:
     """EA must have an idempotent ALTER TABLE migration for setup_subtype."""
     # Look for an ALTER TABLE that adds setup_subtype (any TEXT form acceptable)
@@ -90,23 +88,29 @@ def test_layer2_ea_alter_table_setup_subtype(ea_text: str) -> None:
     ), "ALTER TABLE migration for setup_subtype missing"
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.138 M7 ship")
 def test_layer3_journal_record_signal_inserts_setup_subtype(ea_text: str) -> None:
-    """JournalRecordSignal INSERT column list must include setup_subtype."""
-    # Find the INSERT INTO SIGNALS (col, col, ...) clause near JournalRecordSignal
-    m = re.search(
-        r"INSERT INTO SIGNALS\s*\((.+?)\)\s*VALUES",
-        ea_text,
-        re.DOTALL,
+    """JournalRecordSignal INSERT column list must include setup_subtype.
+
+    EA uses MQL5 string concatenation across multiple "..." segments, so the
+    INSERT statement is split across many lines. Test verifies (a) the INSERT
+    statement exists, (b) the setup_subtype column literal appears within it,
+    (c) the corresponding VALUES bind reads g_setup_subtype_for_next_signal.
+    """
+    assert 'INSERT INTO SIGNALS' in ea_text, "INSERT INTO SIGNALS clause not found"
+    # The col list spans multiple "..." segments — just check the literal column name
+    # appears somewhere reasonable (within 6000 chars after the INSERT keyword to
+    # avoid false matches in comments/changelog references).
+    insert_idx = ea_text.find('INSERT INTO SIGNALS')
+    window = ea_text[insert_idx : insert_idx + 6000]
+    assert "setup_subtype," in window or "setup_subtype TEXT" in window, (
+        "setup_subtype column not in INSERT INTO SIGNALS col list window"
     )
-    assert m, "could not locate INSERT INTO SIGNALS clause"
-    cols = [c.strip() for c in m.group(1).split(",")]
-    assert "setup_subtype" in cols, (
-        f"setup_subtype not in INSERT col list: {[c for c in cols if 'setup' in c]}"
+    # And the VALUES bind reads the subtype global
+    assert 'g_setup_subtype_for_next_signal' in window, (
+        "g_setup_subtype_for_next_signal not bound in JournalRecordSignal VALUES clause"
     )
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.138 M7 ship")
 def test_layer4_scribe_forge_signals_has_setup_subtype(scribe_text: str) -> None:
     """scribe.py CREATE TABLE forge_signals + INSERT must include setup_subtype."""
     assert "setup_subtype" in scribe_text, "setup_subtype not referenced in scribe.py"
@@ -117,7 +121,6 @@ def test_layer4_scribe_forge_signals_has_setup_subtype(scribe_text: str) -> None
     ), "scribe.py ALTER TABLE migration for setup_subtype missing"
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.138 M7 ship")
 def test_layer4_scribe_placeholder_count_bumped(scribe_text: str) -> None:
     """scribe.py sync_forge_journal placeholder math must include the new column.
 
@@ -142,7 +145,6 @@ def test_layer4_scribe_placeholder_count_bumped(scribe_text: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.138 M7 ship")
 @pytest.mark.parametrize("legacy_name", M7_KEEP_SETUPS)
 def test_m7_keep_setup_emits_mss_continuation(ea_text: str, legacy_name: str) -> None:
     """Each M7-keep legacy setup's fire site sets setup_type='MSS_CONTINUATION_<DIR>'.
@@ -169,11 +171,23 @@ def test_m7_keep_setup_emits_mss_continuation(ea_text: str, legacy_name: str) ->
     )
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.138 M7 ship")
 def test_m7_mss_continuation_string_present(ea_text: str) -> None:
-    """The new canonical setup_type strings must appear in EA source."""
-    assert '"MSS_CONTINUATION_BUY"' in ea_text, "MSS_CONTINUATION_BUY literal missing"
-    assert '"MSS_CONTINUATION_SELL"' in ea_text, "MSS_CONTINUATION_SELL literal missing"
+    """The new canonical setup_type strings must appear in EA source.
+
+    Accepts either the explicit literals ("MSS_CONTINUATION_BUY" / "_SELL")
+    OR the runtime concat pattern ("MSS_CONTINUATION_" + direction) — the
+    M7 implementation uses the concat form to keep fire sites direction-agnostic.
+    """
+    has_explicit = (
+        '"MSS_CONTINUATION_BUY"' in ea_text
+        and '"MSS_CONTINUATION_SELL"' in ea_text
+    )
+    has_concat = '"MSS_CONTINUATION_" + direction' in ea_text
+    assert has_explicit or has_concat, (
+        "MSS_CONTINUATION setup_type emission missing — expected explicit literals "
+        '"MSS_CONTINUATION_BUY"/"_SELL" OR concat pattern '
+        '"MSS_CONTINUATION_" + direction'
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,7 +219,6 @@ def test_reclassified_setup_not_in_m7_fold(ea_text: str, legacy_name: str) -> No
         )
 
 
-@pytest.mark.xfail(strict=True, reason="pending v2.7.137a retire ship")
 @pytest.mark.parametrize("retired_name", RETIRE_SETUPS)
 def test_retired_setup_fire_site_deleted(ea_text: str, retired_name: str) -> None:
     """Each RETIRE-bucket setup's fire site must be deleted (no migration).

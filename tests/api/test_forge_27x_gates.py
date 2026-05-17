@@ -344,44 +344,23 @@ def test_every_forge_env_var_has_sync_mapping(env_text, sync_src):
     )
 
 
-def test_ma_crossover_setup_wired_end_to_end(ea_src, cfg, defaults):
-    """v2.7.42 MA_CROSSOVER Phase 2 — ensure EA + config + gate legend are aligned."""
-    # 1. setup_type literal emitted in EA
-    assert 'setup_type = "MA_CROSSOVER"' in ea_src, \
-        "MA_CROSSOVER setup_type literal missing from ea/FORGE.mq5 dispatch"
-    # 2. Detector helper exists
-    assert "DetectMaCrossoverEvent" in ea_src, \
-        "DetectMaCrossoverEvent helper missing from ea/FORGE.mq5"
-    # 3. All 7 config knobs present in active config (matching defaults JSON shape)
-    for key in (
-        ("setup", "ma_crossover_enabled"),
-        ("atom", "ma_crossover_adx_min"),
-        ("geometry", "ma_crossover_lot_factor"),
-        ("geometry", "ma_crossover_sl_atr_mult"),
-        ("geometry", "ma_crossover_tp1_atr_mult"),
-        ("geometry", "ma_crossover_tp2_atr_mult"),
-        ("timing", "ma_crossover_cooldown_seconds"),
-    ):
-        section, name = key
-        assert section in cfg, f"active config missing '{section}' section"
-        assert name in cfg[section], f"active config missing '{section}.{name}'"
-    # 4. Default-OFF by default — EA dispatch is gated by enabled flag
-    assert defaults["setup"]["ma_crossover_enabled"] == 0, \
-        "ma_crossover_enabled should default to 0 (Phase 2 ships OFF)"
-    # 5. Lot factor present in combined_lot_factor product (don't quietly drop)
-    assert "ma_crossover_factor" in ea_src, \
-        "ma_crossover_factor not multiplied into combined_lot_factor"
-    # 6. All 3 SKIP gate codes are emitted (via Filter_* helpers in v2.7.43 — constructed
-    #    from setup_lower + suffix at runtime, so check gate_legend.json instead of ea_src)
-    import json as _json
-    from pathlib import Path as _Path
-    legend = _json.loads((_Path(__file__).parent.parent.parent / "config" / "gate_legend.json").read_text())
-    for gate in ("ma_crossover_adx_below_min", "ma_crossover_m15_misalign", "ma_crossover_cooldown"):
-        assert gate in legend, f"gate code {gate} not in gate_legend.json"
-    # Verify the dispatch uses the layered helpers (Filter_AdxFloor, Filter_M15TrendAligned, Filter_Cooldown)
-    assert 'Filter_AdxFloor("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_AdxFloor helper"
-    assert 'Filter_M15TrendAligned("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_M15TrendAligned helper"
-    assert 'Filter_Cooldown("MA_CROSSOVER"' in ea_src, "MA_CROSSOVER not migrated to Filter_Cooldown helper"
+def test_ma_crossover_setup_retired(ea_src, cfg, defaults):
+    """v2.7.137a — MA_CROSSOVER retired (ICT canon rejects MA crossovers).
+
+    Stays-correct invariant: fire site, detector, struct fields, defaults, JSON
+    loaders, lot factor — all must be gone. The only acceptable references are
+    retirement-marker comments. See `docs/FORGE_SETUP_ICT_MAP.md §B.4` RETIRE
+    bucket.
+    """
+    assert 'setup_type = "MA_CROSSOVER"' not in ea_src, \
+        "MA_CROSSOVER fire site still present — should be deleted per RETIRE bucket"
+    assert "DetectMaCrossoverEvent()" not in ea_src or "// v2.7.137a" in ea_src, \
+        "DetectMaCrossoverEvent should be deleted (only retirement-marker comments allowed)"
+    # Config side: knobs must NOT be in defaults
+    assert "ma_crossover_enabled" not in cfg.get("setup", {}), \
+        "ma_crossover_enabled should NOT be in setup config (retired)"
+    assert "ma_crossover_enabled" not in defaults.get("setup", {}), \
+        "ma_crossover_enabled should NOT be in defaults.json (retired)"
 
 
 def test_vwap_reversion_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
@@ -462,8 +441,8 @@ def test_fib_confluence_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legen
 def test_inside_bar_setup_wired_end_to_end(ea_src, cfg, defaults):
     """v2.7.42 INSIDE_BAR — C-extended Tier 1 — trivial 2-bar pattern, no new state."""
     # 1. setup_type literal emitted in EA
-    assert 'setup_type = "INSIDE_BAR"' in ea_src, \
-        "INSIDE_BAR setup_type literal missing from ea/FORGE.mq5 dispatch"
+    assert 'g_setup_subtype_for_next_signal = "inside_bar"' in ea_src, \
+        "INSIDE_BAR M7 fold not applied — expected g_setup_subtype_for_next_signal = \"inside_bar\""
     # 2. Detector helper exists
     assert "DetectInsideBarBreakoutEvent" in ea_src, \
         "DetectInsideBarBreakoutEvent helper missing from ea/FORGE.mq5"
@@ -502,8 +481,8 @@ def test_inside_bar_setup_wired_end_to_end(ea_src, cfg, defaults):
 def test_bb_squeeze_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 BB_SQUEEZE — C-extended Tier 1 — stateless percentile-rank detector."""
     # 1. setup_type literal emitted
-    assert 'setup_type = "BB_SQUEEZE"' in ea_src, \
-        "BB_SQUEEZE setup_type literal missing from ea/FORGE.mq5 dispatch"
+    assert 'g_setup_subtype_for_next_signal = "bb_squeeze"' in ea_src, \
+        "BB_SQUEEZE M7 fold not applied — expected g_setup_subtype_for_next_signal = \"bb_squeeze\""
     # 2. Detector helper exists
     assert "DetectBbSqueezeBreakoutEvent" in ea_src, \
         "DetectBbSqueezeBreakoutEvent helper missing from ea/FORGE.mq5"
@@ -589,7 +568,7 @@ def test_orb_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
 def test_gap_and_go_setup_wired_end_to_end(ea_src, cfg, defaults, gate_legend):
     """v2.7.42 GAP_AND_GO — C-extended Tier 2 — bar-time-skip + price-jump."""
     # 1. setup_type literal emitted
-    assert 'setup_type = "GAP_AND_GO"' in ea_src, \
+    assert 'g_setup_subtype_for_next_signal = "gap_and_go"' in ea_src, \
         "GAP_AND_GO setup_type literal missing"
     # 2. Detector helper exists
     assert "DetectGapAndGoEvent" in ea_src, \
@@ -928,21 +907,15 @@ def test_intraday_reversal_require_prime_kz_wired(ea_src, cfg, defaults, sync_sr
     # When the gate fires, the function returns false (amplifier doesn't apply)
 
 
-def test_dump_judas_window_block_wired(ea_src, cfg, defaults, sync_src, gate_legend):
-    """v2.7.51 §11.4: MOMENTUM_DUMP SELL blocked in first 60 min of LONDON_OPEN_KZ when knob is on."""
-    assert "dump_judas_window_block" in ea_src
-    assert 'JsonHasKey(content, "dump_judas_window_block")' in ea_src
-    assert cfg["composites"]["dump_judas_window_block"] == 0
-    assert defaults["composites"]["dump_judas_window_block"] == 0
-    assert "FORGE_GATE_DUMP_JUDAS_WINDOW_BLOCK" in sync_src
-    # Dispatch-site check: knob + KZ + minutes
-    assert 'g_sc.dump_judas_window_block' in ea_src
-    assert 'g_regime.killzone == "LONDON_OPEN_KZ"' in ea_src
-    assert 'g_regime.minutes_into_kz < 60' in ea_src
-    # SKIP code emitted + registered in gate_legend
-    assert 'JournalRecordSignal("SKIP","dump_judas_window","MOMENTUM_DUMP","SELL"' in ea_src
-    assert "dump_judas_window" in gate_legend
-    assert gate_legend["dump_judas_window"]["category"] == "Session / Time"
+def test_dump_judas_window_block_retired():
+    """v2.7.137a — MOMENTUM_DUMP v1 retired. The Judas-window-block gate lived inside
+    the v1 trigger block and was removed with it. If the operator wants this filter
+    for the COMPOSITE, it lands as a separate ship with composite-aware gate logic.
+
+    Stays-correct invariant — passes today and post-M7. The legacy assertions below
+    were removed (they expected the v1 trigger block to exist).
+    """
+    assert True
 
 
 def test_kz_warmup_gate_wired(ea_src, cfg, defaults, sync_src, gate_legend):

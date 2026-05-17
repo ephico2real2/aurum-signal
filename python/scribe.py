@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     timestamp_utc     TEXT NOT NULL,
     symbol            TEXT NOT NULL,
     setup_type        TEXT,
+    setup_subtype     TEXT,
     direction         TEXT,
     outcome           TEXT NOT NULL,
     gate_reason       TEXT,
@@ -677,7 +678,7 @@ class Scribe:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     forge_id INTEGER, time INTEGER NOT NULL,
                     timestamp_utc TEXT NOT NULL, symbol TEXT NOT NULL,
-                    setup_type TEXT, direction TEXT, outcome TEXT NOT NULL,
+                    setup_type TEXT, setup_subtype TEXT, direction TEXT, outcome TEXT NOT NULL,
                     gate_reason TEXT, price REAL, spread REAL, atr REAL,
                     rsi REAL, adx REAL, bb_upper REAL, bb_lower REAL,
                     bb_mid REAL, poc_price REAL, vwap_price REAL, fib_50 REAL,
@@ -1098,6 +1099,17 @@ class Scribe:
                 except sqlite3.OperationalError as _e:
                     if "duplicate column" not in str(_e).lower():
                         raise
+        # v2.7.139 M7 — setup_subtype column (preserves legacy-trigger identity
+        # post-MSS_CONTINUATION_<DIR> fold). All-zero/empty on rows from pre-M7
+        # runs and from non-folded setups (SKIPs from early gates, M8/M9 setups
+        # until those folds ship).
+        if "setup_subtype" not in fs_cols:
+            try:
+                conn.execute("ALTER TABLE forge_signals ADD COLUMN setup_subtype TEXT DEFAULT ''")
+                log.info("SCRIBE migration: added setup_subtype to forge_signals")
+            except sqlite3.OperationalError as _e:
+                if "duplicate column" not in str(_e).lower():
+                    raise
         # 2.7.37 — v37 telemetry indexes. CREATE INDEX IF NOT EXISTS is idempotent;
         # always run so fresh DBs (which pass the col-missing check) still get indexes.
         # Previously gated by `not in fs_cols` which left fresh tables index-less.
@@ -1406,6 +1418,8 @@ class Scribe:
             has_lot_factor = "lot_factor"      in src_cols
             has_killzone   = "killzone"       in src_cols
             has_min_into_kz = "minutes_into_kz" in src_cols
+            # v2.7.139 M7 — setup_subtype preserves legacy-trigger identity
+            has_setup_subtype = "setup_subtype" in src_cols
             # 2.7.47 — RegimeState surfacing (FORGE_REGIME_TAXONOMY.md §3) — all-or-nothing trio
             has_regime_v47 = all(c in src_cols for c in ("htf_h1_strong", "intraday_label", "intraday_counter_htf"))
             # 2.7.37 — detect Layer-4 atom telemetry columns on source SIGNALS
@@ -1695,6 +1709,9 @@ class Scribe:
                 + (", silver_bullet" if has_silver_bullet else ", ''")
                 # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGER cols, all-or-nothing)
                 + (", " + ", ".join(v133_breaker_cols) if has_v133_breaker else ", " + ", ".join(["0"] * len(v133_breaker_cols)))
+                # v2.7.139 M7 — setup_subtype (TEXT, preserves legacy-trigger identity post-MSS_CONTINUATION fold).
+                # Appended at END to preserve all preceding r[N] index positions in the tuple-build.
+                + (", setup_subtype" if has_setup_subtype else ", ''")
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1778,6 +1795,9 @@ class Scribe:
                 # atom_breaker_fvg_buy, atom_breaker_fvg_sell, breaker_retest_score_buy,
                 # breaker_retest_score_sell, atom_ob_confluence_buy, atom_ob_confluence_sell.
                 v133_breaker_vals = tuple(r[155 + i] if len(r) > 155 + i else 0 for i in range(9))
+                # v2.7.139 M7 — setup_subtype at r[164] (appended at END of SELECT). Empty
+                # string for pre-M7 rows and non-folded setups (M8/M9 setups until those folds ship).
+                setup_subtype_val = r[164] if len(r) > 164 else ""
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
@@ -1790,6 +1810,7 @@ class Scribe:
                     *v124_atom_score_vals,
                     silver_bullet_val,
                     *v133_breaker_vals,
+                    setup_subtype_val,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1885,7 +1906,9 @@ class Scribe:
                         "atom_ob_broken, atom_breaker_retest_buy, atom_breaker_retest_sell, "
                         "atom_breaker_fvg_buy, atom_breaker_fvg_sell, "
                         "breaker_retest_score_buy, breaker_retest_score_sell, "
-                        "atom_ob_confluence_buy, atom_ob_confluence_sell"
+                        "atom_ob_confluence_buy, atom_ob_confluence_sell, "
+                        # v2.7.139 M7 — setup_subtype TEXT (legacy-trigger identity post-MSS_CONTINUATION fold)
+                        "setup_subtype"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
                         # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → 117.
@@ -1905,11 +1928,13 @@ class Scribe:
                         #   = 41+24+45+7+5+9+8+19+1+7 = 166.
                         # v2.7.136 adds 2 OTE_RETRACE atom_ob_confluence cols
                         #   = 41+24+45+7+5+9+8+19+1+7+2 = 168.
+                        # v2.7.139 M7 adds 1 setup_subtype TEXT col
+                        #   = 41+24+45+7+5+9+8+19+1+7+2+1 = 169.
                         # If you add/remove a column in the col list ABOVE, bump both the
                         # count below AND the matching *_vals tuple build above. (See
                         # forge-monitor SKILL.md Check C — v2.7.45/47 historical incident
                         # where this drifted silently.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 19 + 1 + 7 + 2)) + ")",
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 19 + 1 + 7 + 2 + 1)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)
