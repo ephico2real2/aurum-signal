@@ -738,6 +738,71 @@ Full mechanism + rule for each in `feedback_trade_setup_analysis_framework.md` �
 
 The framework is for PRE-trade directional questions only. Don't force-fit it onto questions it doesn't match.
 
+### §I.14 Full ICT alignment + Quant-quality mandate (foundational, 2026-05-17)
+
+**Operator-mandated 2026-05-17 — replaces ALL pre-ICT design assumptions going forward.**
+Memorialized in 4 feedback memories: `feedback_full_ict_alignment_mandate`, `feedback_quant_expert_identity`, `feedback_audit_loss_patterns`, `feedback_refinement_workflow`.
+
+**Identity bar**: operate as multi-disciplinary expert — MQL5/MT5 EA, FOREX microstructure, ICT/SMC, QuestDB + time-series DBs, ETL pipelines, ML + neural networks, advanced financial analysis (Sharpe/Sortino/Calmar/max-DD/R-multiple), advanced SQL, smart EA systems, boolean/formal logic, data science, math (fib/scaling laws/signal processing), CS (data structures/concurrency/persistence), HFT methodology. PhD-researcher mindset. Wall Street / Jane Street quality bar.
+
+**ICT alignment is the design target**:
+- All future atoms / composites / geometry / gates / setups align with `FORGE_SETUP_ICT_MAP.md §B.2/§B.7/§B.8`
+- Pre-ICT names get migrated to ICT-canonical on M7-M9 folds (rename map in §B.4)
+- No bespoke names that bypass the canonical primitive — find the ICT primitive the new logic actually expresses
+- Atom weights must match §B.8.2 verbatim — audit caught `atom_breaker_present` should have been `atom_ob_broken` (v2.7.136 rename)
+- Reusable components first; new module only when scope is genuinely separate
+- Every idea TESTED before production (tester replay + histogram analysis, not "deploy and watch")
+
+**Research over emotions**:
+- WebSearch is encouraged for design, fact-checking, edge-case refinement, validation of alternative approaches. Specifically:
+  - MQL5 docs (`mql5.com/en/docs/...`) per `feedback_google_mql5_before_assumptions`
+  - ICT canon (`innercircletrader.net`, `luxalgo.com`, `arongroups.co`, `tradeciety.com`, `atas.net`)
+  - HFT methodology (academic papers, exchange microstructure)
+  - QuestDB best practices (`questdb.io/docs/...`)
+  - ML + feature engineering for time series
+  - Top forex/trading practitioner writeups
+- **Cite sources** in docstrings, design docs, decision logs. Future-me + operator should be able to verify.
+- No hearsay. No junk science. No assumptions. No "industry-standard pattern" without citation.
+
+**Audit + question own work**:
+- After every audit / backtest / live post-mortem, slice losses across 6 axes (day-of-week, time-of-day, killzone session, market regime, news context, technical alignment) per `feedback_audit_loss_patterns`
+- After every fix proposal, run a gate-precision check (Q9 pattern): does the fix block 80% of losers but also 50% of winners? Then it's a regression in disguise — discard.
+- Question previous code + decisions. Surface the issue, recommend the fix, document the rationale. Don't silently route around bad legacy.
+
+**Quality bar**:
+- NO bad code even during throttling or context pressure. If I can't ship production-quality, STOP and ask.
+- NO "I'll add tests later" — tests ship in the same PR.
+- NO hardcoded magic numbers without env knob + docstring rationale.
+- NO silent failures — always log, always observable.
+- Future-proof design lens: every decision asked "how does this behave in live broker with real network/fills/slippage/account constraints?"
+- QuestDB-queryable metrics path on every new atom/composite/geometry — see `refinement-ideas/improvement-recommendations/` for the metrics-design tracking surface.
+
+**Collaboration tools**:
+- `codex:rescue` background dialogue is encouraged for substantial design alternatives, second-opinion sanity checks, stuck states. Summarize the dialogue into `refinement-ideas/codex-dialogues/`.
+- WebSearch agent spawns for deep research where the answer needs broader source review.
+
+**Documentation infrastructure** (per `feedback_refinement_workflow`):
+- `refinement-ideas/conversation-journal/` — per-session log
+- `refinement-ideas/questions-from-operator/INDEX.md` — bank of operator questions
+- `refinement-ideas/improvement-recommendations/INDEX.md` — running improvement list
+- `refinement-ideas/loss-patterns/` — pattern catalog with query+output+hypothesis+fix+test-plan
+- `refinement-ideas/research-citations/` — well-cited external source summaries
+- `refinement-ideas/codex-dialogues/` — codex:rescue session summaries
+
+**Goal**: build strategies that WIN even in killzones + Silver Bullet windows (the high-conviction time zones where most institutional flow is). Every enhancement should be evaluated against: "does this improve win-rate inside KZ/SK? Or does it just trade noise in OFF_SESSION?"
+
+**Anti-patterns this rule rejects**:
+- ❌ Quick-and-dirty solutions ("we can fix it later")
+- ❌ Speculative claims without backing data
+- ❌ New code that bypasses the ICT-canonical primitives
+- ❌ Fix proposals without gate-precision validation
+- ❌ Loss patterns left undocumented
+- ❌ External research consumed but not cited
+- ❌ codex:rescue dialogues not summarized
+- ❌ Improvements identified but lost in chat scrollback
+
+**Cross-reference**: this section consolidates 4 foundational feedback memories. Update them in sync when this rule evolves.
+
 ---
 
 ## ICT-ALIGNED BOOLEAN COMPOSITE ANALYSIS (mandatory for all NEW setup work)
