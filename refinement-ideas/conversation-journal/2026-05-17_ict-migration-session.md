@@ -117,3 +117,40 @@ Highlights:
 - All 4 ICT category composites now alive (atoms+scoring+schema+env knobs)
 - Foundational mandate operational
 - `refinement-ideas/` surface ready for population
+
+## Audit findings (post-session)
+
+### Self-audit (verbose, mine — 2026-05-17 later in session)
+- **Dimension A (rule violations, grade C-)**: zero tests across 933 LOC; 5 uncited thresholds in IctOrderBlock.mqh
+- **Dimension B (mandate-vs-delivery, grade D)**: 0 KZ/SK behavioral changes (operator's #1 goal); 0 QuestDB work; 6 versions shipped without tester runs
+- **Dimension C (numerical/cross-doc, grade A)**: math + cross-refs verified
+
+### Codex:rescue independent review (background — `2026-05-17_ict-migration-review.md`)
+- 🚨 1 CRITICAL: MagicNumber change orphans groups → R21
+- 7 design concerns:
+  - Cat 1/3 KZ spec drift (Atom_KillzoneFavorable wrong KZ aliases) → R22
+  - Cat 3 wick-quality binary vs spec'd 0/1/2 tier → R23
+  - 🚨 OB ring retains OLDEST 16 not NEWEST → R24
+  - OB "last opposite" strict vs broad rule ambiguity → R25
+  - Comment length budget at risk with legacy names → R26 (resolves with M7)
+  - 🚨 PlaceMarketBatch breaks 6/7-segment comment parser → R27
+  - EA ALTER swallows real errors → R28
+- 3 cosmetic: R29, R30
+
+### Operator-caught audit gap
+- Accepted Explore's 11 setups + §B.4 fold-spec without per-setup canon check
+- Consensus gate codified as response: `feedback_consensus_gate_for_findings` + skill §I.15
+- Retroactively applied to M7 design: 4/11 setups need reclassify (MA_CROSSOVER→RETIRE; FLAG_PENNANT+BB_BREAKOUT_RETEST→M8 OTE; ORB→M9 LIQ_SWEEP)
+- §B.4 spec needs revision (R17)
+
+### Pre-M7 fix candidates (must triage before M7 code lands)
+- R21 (CRITICAL — MagicNumber orphan)
+- R22 (Cat 1/3 KZ spec drift — M7 uses Cat 1)
+- R24 (OB ring direction — affects Cat 2 + Cat 4)
+- R27 (PlaceMarketBatch comment shape — M7 comment integration)
+- R14 (tester validation of v2.7.131-136 — baseline before M7 multiplies)
+
+### What's gained
+- Three independent audit perspectives now in writing — self-audit, codex review, operator challenge
+- Each caught what others missed — validates the consensus-gate principle
+- Skill §I.15 codification ensures next session applies the same discipline

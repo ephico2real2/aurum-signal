@@ -803,6 +803,56 @@ Memorialized in 4 feedback memories: `feedback_full_ict_alignment_mandate`, `fee
 
 **Cross-reference**: this section consolidates 4 foundational feedback memories. Update them in sync when this rule evolves.
 
+### §I.15 Consensus gate for agent findings (foundational, 2026-05-17)
+
+**Operator-mandated 2026-05-17 — addresses the M7 design blind spot.**
+Memorialized in `feedback_consensus_gate_for_findings`. Closes a real failure mode I just exhibited.
+
+**The blind spot, plainly**: when Explore / codex:rescue / WebSearch / any background agent returns findings, those are DATA POINTS, not DECISIONS. Agents find code that EXISTS — they don't validate whether code SHOULD exist. I built the M7 design doc on Explore's report of 11 legacy setups without per-setup ICT-canon check. The operator caught it: `MA_CROSSOVER` should RETIRE (ICT rejects lagging indicators), `FLAG_PENNANT` belongs in OTE not MSS (flag IS the retracement), `ORB` likely belongs in LIQ_SWEEP not MSS (range break is a liquidity sweep). 3 of 11 findings were OUTDATED relative to current ICT alignment goal.
+
+**The consensus gate** — a finding is ACCEPTED only when all 3 sources agree:
+
+1. **The agent finding** — what the codebase / external source says exists
+2. **The canonical spec** — `FORGE_SETUP_ICT_MAP.md §B.2 + §B.8`, `FORGE_GLOSSARY.md`, mandate memories
+3. **ICT-canon WebSearch** — what ICT/SMC literature explicitly says about this term/concept/pattern (cite the URL)
+
+If 2/3 disagree → finding is OUTDATED or PRE-CANONICAL → **FIX before designing on top** (retire / reclassify / replace). Don't perpetuate.
+
+**Operational checklist** — paste into every design doc that builds on agent findings:
+
+```markdown
+### §Xb Per-finding consensus check (mandatory per skill §I.15)
+
+| Finding | Agent says | Canon spec says (§B.X / glossary) | ICT-canon WebSearch says | Consensus | Action |
+|---|---|---|---|---|---|
+| Setup X | exists in source | listed in fold spec Z | (cite URL — does ICT use this primitive?) | PASS / FAIL | proceed / retire / reclassify |
+```
+
+**When to invoke the consensus gate** (mandatory):
+- Spinning up Explore for codebase mapping → check findings before designing on top
+- Spinning up codex:rescue for second-opinion → check codex's findings against canon
+- WebSearch returns external claim → check against current canon spec
+- Operator references a pre-ICT setup / atom / pattern → check if it's still aligned or needs retire/reclassify
+
+**Worked example (the M7 blind-spot incident)**:
+
+| Setup | Explore found | §B.4 says | ICT-canon WebSearch | Consensus | Action |
+|---|---|---|---|---|---|
+| MA_CROSSOVER | exists, has trigger logic | fold to M7 (MSS_CONT) | [chartinglens.com](https://chartinglens.com/blog/ict-trading-strategy-guide) + [eplanetbrokers.com](https://eplanetbrokers.com/training/ict-trading-strategy-explained) — "ICT explicitly avoids moving average crossovers and other lagging indicators" | **FAIL** (1/3 says use, 2/3 say don't) | **RETIRE — do not migrate** |
+| FLAG_PENNANT | exists, has trigger logic | fold to M7 (MSS_CONT) | [innercircletrader.net bull-flag](https://innercircletrader.net/tutorials/bull-flag-pattern-trading-strategy/) — "the pole being the displacement leg that produced the BOS" → flag IS the retracement | **FAIL — wrong category** | **Reclassify to M8 (OTE_RETRACEMENT)** |
+| MOMENTUM_DUMP | exists, has trigger logic | fold to M7 (MSS_CONT) | ICT canon: displacement leg = M5 impulse = MSS confirmation primitive | **PASS** | **Keep in M7** |
+
+**Anti-patterns this rule rejects**:
+- ❌ "Explore says X exists; X must be relevant" — agents don't reason about relevance
+- ❌ "Spec lists Y in target Z; Y must belong in Z" — specs can be pre-canonical, outdated, wrong
+- ❌ "WebSearch returned this URL; my reading is correct" — quote source verbatim before asserting canon-alignment
+- ❌ Burying disagreement findings ("I noticed but kept building")
+- ❌ Skipping the per-finding canon check because the agent's report looks confident
+
+**When to update the spec instead of fix the finding**: if 2/3 sources DISAGREE WITH THE SPEC (i.e. spec is the outlier), per `feedback_full_ict_alignment_mandate` §I.5.6 — update the spec, append §9 changelog entry, leave the original wording with a strike-through + new wording. The spec is authoritative but not immutable.
+
+**Cross-reference**: this section codifies the consensus gate. The 4 foundational memories from §I.14 + the consensus gate together form the ICT-alignment-discipline surface.
+
 ---
 
 ## ICT-ALIGNED BOOLEAN COMPOSITE ANALYSIS (mandatory for all NEW setup work)
