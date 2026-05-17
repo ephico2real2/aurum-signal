@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.201"
+#property version "2.202"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -69,8 +69,13 @@
 //   g_swing_highs/lows, IctSwingPoint). Wires real values into g_iss_choch_*
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
+// v2.7.131 — ICT broker-comment builder (in-flight design, not yet wired).
+//   Pure-function utility; no state. Maps the 4 ICT-canonical categories
+//   to compact comment codes. Final segment composition (KZ / SB tags)
+//   pending operator approval — see open thread on acronym table.
+#include <Forge\IctComment.mqh>
 
-const string FORGE_VERSION = "2.7.131";
+const string FORGE_VERSION = "2.7.132";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -2217,6 +2222,9 @@ int OnInit() {
    // v2.7.131 — seed g_scalper_group_counter from broker state to avoid
    // group_magic collision on EA reload (chart reload / make forge-reload).
    SeedScalperGroupCounter();
+   // v2.7.132 — self-test the ICT comment builder (prints 8 canonical shapes
+   // to the EA journal so the operator can verify the codes line up).
+   Forge_IctComment_SelfTest();
    g_scalper_mode = ScalperMode;
    if(g_scalper_mode != "NONE") {
       Print("FORGE: Native scalper mode = ", g_scalper_mode);
@@ -3146,7 +3154,10 @@ void ManageStagedNativeLegs() {
       double tp2p = (g_groups[gi].tp2 > 0) ? g_groups[gi].tp2 : tp1g;
       double tp_for_this = (i < g_groups[gi].staged_tp1_legs) ? tp1g : tp2p;
       string tp_label = (i < g_groups[gi].staged_tp1_legs) ? "TP1" : "TP2";
-      string comment = "SCALP|" + g_groups[gi].scalper_setup + "|G" + IntegerToString(g_groups[gi].id) + "|" + tp_label;
+      // v2.7.132 — zone-leading ICT comment scheme per docs/FORGE_ICT_COMMENT_CODES.md
+      string comment = Forge_BuildScalpComment("MKT", g_groups[gi].scalper_setup, g_groups[gi].direction,
+                                                g_groups[gi].id, tp_label,
+                                                g_regime.killzone, g_regime.silver_bullet, -1);
       double lotv = g_groups[gi].staged_lot;
       // 2.7.34 — Wave-confirmation amplifier. After staged_add_min_favorable_points has been satisfied
       // (direction proven via favorable price move), amplify this leg's lot by wave_confirmation_lot_mult.
@@ -3518,9 +3529,19 @@ void ManageOpenGroups() {
          for(int pj = 0; pj < ArraySize(pos_lock); pj++) {
             if(!g_pos.SelectByTicket(pos_lock[pj])) continue;
             string cmt = g_pos.Comment();
-            if(StringFind(cmt, "SCALP|") != 0) continue;  // only native scalper legs
-            bool is_bounce = (StringFind(cmt, "SCALP|BB_BOUNCE|") == 0);
-            bool is_breakout = (StringFind(cmt, "SCALP|BB_BREAKOUT|") == 0) || (StringFind(cmt, "SCALP|BB_BREAKOUT_RETEST|") == 0);
+            // v2.7.132 — accept new zone-leading shapes (KZ_/SK_/OFF_) + legacy "SCALP|"
+            // for in-flight positions placed pre-migration.
+            bool is_native = (StringFind(cmt, "SCALP|")  == 0) ||
+                             (StringFind(cmt, "KZ_")     == 0) ||
+                             (StringFind(cmt, "SK_")     == 0) ||
+                             (StringFind(cmt, "OFF_")    == 0);
+            if(!is_native) continue;
+            // Extract field 1 (setup_or_cat segment) — between first and second pipe
+            int _p1 = StringFind(cmt, "|");
+            int _p2 = (_p1 >= 0) ? StringFind(cmt, "|", _p1 + 1) : -1;
+            string _f1 = (_p1 >= 0 && _p2 > _p1) ? StringSubstr(cmt, _p1 + 1, _p2 - _p1 - 1) : "";
+            bool is_bounce = (StringFind(_f1, "BB_BOUNCE") == 0);
+            bool is_breakout = (StringFind(_f1, "BB_BREAKOUT") == 0) || (StringFind(_f1, "BB_BREAKOUT_RETEST") == 0);
             datetime pos_time = (datetime)PositionGetInteger(POSITION_TIME);
             int held_sec = (int)MathMax(0, TimeCurrent() - pos_time);
             int min_hold = is_bounce ? g_sc.fast_lock_min_hold_sec_bounce : g_sc.fast_lock_min_hold_sec_breakout;
@@ -15605,7 +15626,9 @@ void CheckNativeScalperSetups() {
    for(int i = 0; i < open_first; i++) {
       double tp_for_this = (i < tp1_count) ? tp1 : tp2_price;
       string tp_label = (i < tp1_count) ? "TP1" : "TP2";
-      string comment = "SCALP|" + setup_type + "|G" + IntegerToString(group_id) + "|" + tp_label;
+      // v2.7.132 — zone-leading ICT comment scheme per docs/FORGE_ICT_COMMENT_CODES.md
+      string comment = Forge_BuildScalpComment("MKT", setup_type, direction, group_id, tp_label,
+                                                g_regime.killzone, g_regime.silver_bullet, -1);
       bool ok = false;
       if(direction == "BUY") {
          if(g_sc.native_scalper_use_limit_entry && !is_breakout_setup && m5_bb_l > 0) {
@@ -15788,7 +15811,9 @@ void CheckNativeScalperSetups() {
       _lreq.expiration = limit_exp;
       _lreq.type_filling = ORDER_FILLING_RETURN;
       _lreq.magic      = (ulong)group_magic + 20000;  // distinct from market order magic
-      _lreq.comment    = "SCALP_LIMIT|" + setup_type + "|G" + IntegerToString(group_id);
+      // v2.7.132 — zone-leading ICT comment scheme
+      _lreq.comment    = Forge_BuildScalpComment("LIMIT", setup_type, "SELL", group_id, "TP1",
+                                                  g_regime.killzone, g_regime.silver_bullet, -1);
       g_trade.SetExpertMagicNumber((ulong)group_magic + 20000);
       if(OrderSend(_lreq, _lres) && _lres.order > 0) {
          // L1 always uses slot [0]; slot [1] is reserved for L2 (hard-coded below)
@@ -15821,7 +15846,9 @@ void CheckNativeScalperSetups() {
          _l2req.expiration = l2_exp;
          _l2req.type_filling = ORDER_FILLING_RETURN;
          _l2req.magic      = (ulong)group_magic + 20001;  // distinct from L1 (+20000)
-         _l2req.comment    = "SCALP_LIMIT_L2|" + setup_type + "|G" + IntegerToString(group_id);
+         // v2.7.132 — zone-leading ICT comment scheme
+         _l2req.comment    = Forge_BuildScalpComment("LIMIT_L2", setup_type, "SELL", group_id, "TP1",
+                                                      g_regime.killzone, g_regime.silver_bullet, -1);
          g_trade.SetExpertMagicNumber((ulong)group_magic + 20001);
          if(OrderSend(_l2req, _l2res) && _l2res.order > 0) {
             if(!g_sell_limit_stack[1].active) {
@@ -16265,7 +16292,10 @@ void ArmPostTP1Ladder(const int gi) {
             _ssr.expiration   = ss_exp;
             _ssr.type_filling = ORDER_FILLING_RETURN;
             _ssr.magic        = ss_magic;
-            _ssr.comment      = "SCALP_SELL_STOP_CONT|G" + IntegerToString(grp_id) + "|L" + IntegerToString(legs_placed+1);
+            // v2.7.132 — zone-leading ICT comment scheme (was: missing setup_type)
+            _ssr.comment      = Forge_BuildScalpComment("SELL_STOP_CONT", g_groups[gi].scalper_setup, "SELL",
+                                                         grp_id, "L" + IntegerToString(legs_placed+1),
+                                                         g_regime.killzone, g_regime.silver_bullet, -1);
             g_trade.SetExpertMagicNumber(ss_magic);
             if(OrderSend(_ssr, _ssres) && _ssres.order > 0) {
                g_sell_limit_stack[_s].ticket    = _ssres.order;
@@ -16346,7 +16376,10 @@ void ArmPostTP1Ladder(const int gi) {
             _blr.expiration   = bl_exp;
             _blr.type_filling = ORDER_FILLING_RETURN;
             _blr.magic        = (ulong)grp_magic + 20009; // slot[9] — clear of cascade slots [2..8]
-            _blr.comment      = "SCALP_BUY_LIMIT_RECOV|G" + IntegerToString(grp_id);
+            // v2.7.132 — zone-leading ICT comment scheme (was: missing setup_type)
+            _blr.comment      = Forge_BuildScalpComment("BUY_LIMIT_RECOV", g_groups[gi].scalper_setup, "BUY",
+                                                         grp_id, "R1",
+                                                         g_regime.killzone, g_regime.silver_bullet, -1);
             g_trade.SetExpertMagicNumber(_blr.magic);
             if(OrderSend(_blr, _blres) && _blres.order > 0) {
                g_sell_limit_stack[9].ticket    = _blres.order;
@@ -16470,7 +16503,10 @@ void ArmPostTP1Ladder(const int gi) {
             _bsr.expiration   = bs_exp;
             _bsr.type_filling = ORDER_FILLING_RETURN;
             _bsr.magic        = bs_magic;
-            _bsr.comment      = "SCALP_BUY_STOP_CONT|G" + IntegerToString(grp_id) + "|L" + IntegerToString(legs_placed_b + 1);
+            // v2.7.132 — zone-leading ICT comment scheme (was: missing setup_type)
+            _bsr.comment      = Forge_BuildScalpComment("BUY_STOP_CONT", g_groups[gi].scalper_setup, "BUY",
+                                                         grp_id, "L" + IntegerToString(legs_placed_b + 1),
+                                                         g_regime.killzone, g_regime.silver_bullet, -1);
             g_trade.SetExpertMagicNumber(bs_magic);
             if(OrderSend(_bsr, _bsres) && _bsres.order > 0) {
                g_buy_stop_stack[_sb].ticket    = _bsres.order;
@@ -16549,7 +16585,10 @@ void ArmPostTP1Ladder(const int gi) {
                _slr.expiration   = sl_exp;
                _slr.type_filling = ORDER_FILLING_RETURN;
                _slr.magic        = (ulong)grp_magic + 20009;  // slot[9] — clear of cascade slots [2..8]
-               _slr.comment      = "SCALP_SELL_LIMIT_RECOV|G" + IntegerToString(grp_id);
+               // v2.7.132 — zone-leading ICT comment scheme (was: missing setup_type)
+               _slr.comment      = Forge_BuildScalpComment("SELL_LIMIT_RECOV", g_groups[gi].scalper_setup, "SELL",
+                                                            grp_id, "R1",
+                                                            g_regime.killzone, g_regime.silver_bullet, -1);
                g_trade.SetExpertMagicNumber(_slr.magic);
                if(OrderSend(_slr, _slres) && _slres.order > 0) {
                   g_buy_stop_stack[9].ticket    = _slres.order;
@@ -16702,7 +16741,11 @@ void ArmPreTP1Recovery(const int gi) {
    req.expiration   = expiry;
    req.type_filling = ORDER_FILLING_RETURN;
    req.magic        = grp_magic + 30009;
-   req.comment      = (is_sell ? "SCALP_PRE_TP1_RECOV_SELL|G" : "SCALP_PRE_TP1_RECOV_BUY|G") + IntegerToString(grp_id);
+   // v2.7.132 — zone-leading ICT comment scheme (was: direction baked in prefix)
+   req.comment      = Forge_BuildScalpComment("PRE_TP1_RECOV", g_groups[gi].scalper_setup,
+                                               is_sell ? "SELL" : "BUY",
+                                               grp_id, "R1",
+                                               g_regime.killzone, g_regime.silver_bullet, -1);
 
    g_trade.SetExpertMagicNumber(req.magic);
    if(OrderSend(req, res) && res.order > 0) {
@@ -17355,7 +17398,10 @@ bool PlaceOpenGroupLeg(
    double _log_rsi = (g_mtf[0].h_rsi != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_rsi,0,0,1,_pog_buf)==1) ? _pog_buf[0] : 0;
    double _log_adx = (g_mtf[0].h_adx != INVALID_HANDLE && CopyBuffer(g_mtf[0].h_adx,0,0,1,_pog_buf)==1) ? _pog_buf[0] : 0;
    string tp_label = (leg_index < (int)MathCeil(leg_count * 0.7)) ? "TP1" : "TP2";
-   string comment = "FORGE|G" + IntegerToString(group_id) + "|" + IntegerToString(leg_index) + "|" + tp_label;
+   // v2.7.132 — zone-leading ICT comment scheme (was: "FORGE|G<id>|<leg>|<tp>" non-conforming)
+   string comment = Forge_BuildScalpComment("MKT", "OPEN_GROUP", direction,
+                                             group_id, tp_label,
+                                             g_regime.killzone, g_regime.silver_bullet, -1);
    string req_type = NormalizeOrderType(leg.order_type);
    double entry = leg.entry_price;
    double entry_tolerance = MathMax(g_sc.pending_entry_threshold_points * _Point, _Point);
