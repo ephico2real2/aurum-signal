@@ -277,7 +277,14 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     ote_retrace_score_buy         INTEGER DEFAULT 0,
     ote_retrace_score_sell        INTEGER DEFAULT 0,
     liq_sweep_rev_score_buy       INTEGER DEFAULT 0,
-    liq_sweep_rev_score_sell      INTEGER DEFAULT 0
+    liq_sweep_rev_score_sell      INTEGER DEFAULT 0,
+    atom_breaker_present          INTEGER DEFAULT 0,
+    atom_breaker_retest_buy       INTEGER DEFAULT 0,
+    atom_breaker_retest_sell      INTEGER DEFAULT 0,
+    atom_breaker_fvg_buy          INTEGER DEFAULT 0,
+    atom_breaker_fvg_sell         INTEGER DEFAULT 0,
+    breaker_retest_score_buy      INTEGER DEFAULT 0,
+    breaker_retest_score_sell     INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forge_journal_trades (
@@ -760,7 +767,15 @@ class Scribe:
                     -- v2.7.122 F-α — Silver Bullet sub-window tag (LONDON_SB | AM_SB | PM_SB | "")
                     -- Per docs/FORGE_SETUP_ICT_MAP.md §B.7.3. Self-populated inside FORGE.mq5
                     -- JournalRecordSignal from ComputeCurrentSilverBulletLabel() (no signature thread).
-                    silver_bullet TEXT DEFAULT ''
+                    silver_bullet TEXT DEFAULT '',
+                    -- v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 cols).
+                    atom_breaker_present INTEGER DEFAULT 0,
+                    atom_breaker_retest_buy INTEGER DEFAULT 0,
+                    atom_breaker_retest_sell INTEGER DEFAULT 0,
+                    atom_breaker_fvg_buy INTEGER DEFAULT 0,
+                    atom_breaker_fvg_sell INTEGER DEFAULT 0,
+                    breaker_retest_score_buy INTEGER DEFAULT 0,
+                    breaker_retest_score_sell INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -1049,6 +1064,27 @@ class Scribe:
             except sqlite3.OperationalError as _e:
                 if "duplicate column" not in str(_e).lower():
                     raise
+        # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGERs).
+        #   Per docs/FORGE_SETUP_ICT_MAP.md §B.2 + §B.8.2 (BREAKER_RETEST category).
+        #   Sourced from g_ict_last_breaker_* + breaker_retest_score_* globals
+        #   in FORGE.mq5 ForgeEvalAtoms when composite_breaker_retest_score_enabled=1.
+        _v133_breaker_cols = [
+            ("atom_breaker_present",        "INTEGER DEFAULT 0"),
+            ("atom_breaker_retest_buy",     "INTEGER DEFAULT 0"),
+            ("atom_breaker_retest_sell",    "INTEGER DEFAULT 0"),
+            ("atom_breaker_fvg_buy",        "INTEGER DEFAULT 0"),
+            ("atom_breaker_fvg_sell",       "INTEGER DEFAULT 0"),
+            ("breaker_retest_score_buy",    "INTEGER DEFAULT 0"),
+            ("breaker_retest_score_sell",   "INTEGER DEFAULT 0"),
+        ]
+        for _col, _decl in _v133_breaker_cols:
+            if _col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE forge_signals ADD COLUMN {_col} {_decl}")
+                    log.info("SCRIBE migration: added %s to forge_signals", _col)
+                except sqlite3.OperationalError as _e:
+                    if "duplicate column" not in str(_e).lower():
+                        raise
         # 2.7.37 — v37 telemetry indexes. CREATE INDEX IF NOT EXISTS is idempotent;
         # always run so fresh DBs (which pass the col-missing check) still get indexes.
         # Previously gated by `not in fs_cols` which left fresh tables index-less.
@@ -1444,6 +1480,14 @@ class Scribe:
             #   LONDON_SB | AM_SB | PM_SB | "". Self-populated in FORGE.mq5
             #   JournalRecordSignal via ComputeCurrentSilverBulletLabel().
             has_silver_bullet = "silver_bullet" in src_cols
+            # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGER cols).
+            v133_breaker_cols = [
+                "atom_breaker_present",
+                "atom_breaker_retest_buy", "atom_breaker_retest_sell",
+                "atom_breaker_fvg_buy", "atom_breaker_fvg_sell",
+                "breaker_retest_score_buy", "breaker_retest_score_sell",
+            ]
+            has_v133_breaker = all(c in src_cols for c in v133_breaker_cols)
 
             # ── 2. wall_time map (cached; refresh when new run_id seen) ──────
             wall_time_map  = self._fj_wall_time_cache.get(cache_key, {0: 0})
@@ -1633,6 +1677,8 @@ class Scribe:
                 + (", " + ", ".join(v124_atom_score_cols) if has_v124_atom_scores else ", " + ", ".join(["0"] * len(v124_atom_score_cols)))
                 # v2.7.122 F-α — silver_bullet sub-window tag (1 TEXT col; LOG-ONLY)
                 + (", silver_bullet" if has_silver_bullet else ", ''")
+                # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGER cols, all-or-nothing)
+                + (", " + ", ".join(v133_breaker_cols) if has_v133_breaker else ", " + ", ".join(["0"] * len(v133_breaker_cols)))
                 + f" FROM SIGNALS WHERE synced = 0 ORDER BY id LIMIT {max(1, int(batch_size))}"
             )
             rows = src.execute(select_sql).fetchall()
@@ -1709,6 +1755,12 @@ class Scribe:
                 v124_atom_score_vals = tuple(r[142 + i] if len(r) > 142 + i else 0 for i in range(12))
                 # v2.7.122 F-α — silver_bullet at r[154] (after v124_atom_score_cols 12 cols ending r[153])
                 silver_bullet_val = r[154] if len(r) > 154 else ""
+                # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score at r[155]..r[161]
+                # (7 INTEGER cols, all-or-nothing per has_v133_breaker). SELECT order fixed by
+                # v133_breaker_cols list above: atom_breaker_present, atom_breaker_retest_buy,
+                # atom_breaker_retest_sell, atom_breaker_fvg_buy, atom_breaker_fvg_sell,
+                # breaker_retest_score_buy, breaker_retest_score_sell.
+                v133_breaker_vals = tuple(r[155 + i] if len(r) > 155 + i else 0 for i in range(7))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
@@ -1720,6 +1772,7 @@ class Scribe:
                     *v123_atom_vals,
                     *v124_atom_score_vals,
                     silver_bullet_val,
+                    *v133_breaker_vals,
                 ))
                 synced_ids.append(fid)
                 dedup_set.add(dedup_pair)  # update in-place so next batch sees it
@@ -1805,7 +1858,15 @@ class Scribe:
                         "liq_sweep_rev_score_buy, liq_sweep_rev_score_sell, "
                         # v2.7.122 F-α — Silver Bullet sub-window tag (LONDON_SB | AM_SB | PM_SB | "")
                         # per docs/FORGE_SETUP_ICT_MAP.md §B.7.3. Self-populated in FORGE.mq5.
-                        "silver_bullet"
+                        "silver_bullet, "
+                        # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGER cols).
+                        # Per docs/FORGE_SETUP_ICT_MAP.md §B.2 (BREAKER_RETEST category).
+                        # Captured at FORGE.mq5 chokepoint via g_ict_last_breaker_* +
+                        # g_ict_last_breaker_retest_score_* set by ForgeEvalAtoms when
+                        # composite_breaker_retest_score_enabled=1.
+                        "atom_breaker_present, atom_breaker_retest_buy, atom_breaker_retest_sell, "
+                        "atom_breaker_fvg_buy, atom_breaker_fvg_sell, "
+                        "breaker_retest_score_buy, breaker_retest_score_sell"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
                         # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → 117.
@@ -1821,11 +1882,13 @@ class Scribe:
                         #   = 41+24+45+7+5+9+8+19 = 158.
                         # v2.7.122 F-α adds 1 silver_bullet TEXT col
                         #   = 41+24+45+7+5+9+8+19+1 = 159.
+                        # v2.7.133 Phase 3b adds 7 BREAKER_RETEST atom + composite score cols
+                        #   = 41+24+45+7+5+9+8+19+1+7 = 166.
                         # If you add/remove a column in the col list ABOVE, bump both the
                         # count below AND the matching *_vals tuple build above. (See
                         # forge-monitor SKILL.md Check C — v2.7.45/47 historical incident
                         # where this drifted silently.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 19 + 1)) + ")",
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 19 + 1 + 7)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)

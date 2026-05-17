@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.203"
+#property version "2.204"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -80,7 +80,7 @@
 //   pending operator approval — see open thread on acronym table.
 #include <Forge\IctComment.mqh>
 
-const string FORGE_VERSION = "2.7.133";
+const string FORGE_VERSION = "2.7.134";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -10042,8 +10042,7 @@ bool JournalInit() {
       "atom_htf_aligned_buy INTEGER DEFAULT 0, "
       "atom_htf_aligned_sell INTEGER DEFAULT 0, "
       // v2.7.124 Phase B (6 INTEGERs) — composite scores 0-10 per §B.8.2.
-      //   Each pair (BUY/SELL) populated only when its enable flag is ON. BREAKER_RETEST
-      //   deferred until Phase 3 IctOrderBlock.mqh ships.
+      //   Each pair (BUY/SELL) populated only when its enable flag is ON.
       "mss_cont_score_buy INTEGER DEFAULT 0, "
       "mss_cont_score_sell INTEGER DEFAULT 0, "
       "ote_retrace_score_buy INTEGER DEFAULT 0, "
@@ -10051,7 +10050,17 @@ bool JournalInit() {
       "liq_sweep_rev_score_buy INTEGER DEFAULT 0, "
       "liq_sweep_rev_score_sell INTEGER DEFAULT 0, "
       // v2.7.122 F-α — Silver Bullet sub-window tag (LONDON_SB | AM_SB | PM_SB | "")
-      "silver_bullet TEXT DEFAULT ''"
+      "silver_bullet TEXT DEFAULT '', "
+      // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score per §B.8.2.
+      //   Populated by Forge_RebuildOBRing + ComputeCategoryScore(4,*) when
+      //   composite_breaker_retest_score_enabled=1. All-zero rows when OFF.
+      "atom_breaker_present INTEGER DEFAULT 0, "
+      "atom_breaker_retest_buy INTEGER DEFAULT 0, "
+      "atom_breaker_retest_sell INTEGER DEFAULT 0, "
+      "atom_breaker_fvg_buy INTEGER DEFAULT 0, "
+      "atom_breaker_fvg_sell INTEGER DEFAULT 0, "
+      "breaker_retest_score_buy INTEGER DEFAULT 0, "
+      "breaker_retest_score_sell INTEGER DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -10283,6 +10292,16 @@ bool JournalInit() {
    // v2.7.122 F-α — Silver Bullet sub-window tag (idempotent — sqlite ALTER raises if col
    //   exists, harmless on fresh DB; pattern mirrors v2.7.119+ idempotent migrations).
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN silver_bullet TEXT DEFAULT '';");
+   // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 new columns).
+   //   Populated by Forge_RebuildOBRing + ComputeCategoryScore(4,*) when
+   //   composite_breaker_retest_score_enabled=1.
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_present INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_retest_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_retest_sell INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_fvg_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_fvg_sell INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN breaker_retest_score_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN breaker_retest_score_sell INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_silver_bullet ON SIGNALS(silver_bullet);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
@@ -10562,7 +10581,13 @@ void JournalRecordSignal(string outcome, string gate_reason,
       "ote_retrace_score_buy, ote_retrace_score_sell, "
       "liq_sweep_rev_score_buy, liq_sweep_rev_score_sell, "
       // v2.7.122 F-α — Silver Bullet sub-window tag (LONDON_SB | AM_SB | PM_SB | "")
-      "silver_bullet"
+      "silver_bullet, "
+      // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGERs).
+      //   Sourced from g_ict_last_breaker_* + g_ict_last_breaker_retest_score_* set
+      //   in ForgeEvalAtoms() when composite_breaker_retest_score_enabled=1.
+      "atom_breaker_present, atom_breaker_retest_buy, atom_breaker_retest_sell, "
+      "atom_breaker_fvg_buy, atom_breaker_fvg_sell, "
+      "breaker_retest_score_buy, breaker_retest_score_sell"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -10733,7 +10758,15 @@ void JournalRecordSignal(string outcome, string gate_reason,
       + IntegerToString(g_ict_last_liq_sweep_rev_score_buy)       + ", "
       + IntegerToString(g_ict_last_liq_sweep_rev_score_sell)      + ", "
       // v2.7.122 F-α — silver_bullet tag (self-populated above; "" outside SB windows)
-      + "'" + silver_bullet + "'"
+      + "'" + silver_bullet + "', "
+      // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGERs).
+      + IntegerToString(g_ict_last_breaker_present)               + ", "
+      + IntegerToString(g_ict_last_breaker_retest_buy)            + ", "
+      + IntegerToString(g_ict_last_breaker_retest_sell)           + ", "
+      + IntegerToString(g_ict_last_breaker_fvg_buy)               + ", "
+      + IntegerToString(g_ict_last_breaker_fvg_sell)              + ", "
+      + IntegerToString(g_ict_last_breaker_retest_score_buy)      + ", "
+      + IntegerToString(g_ict_last_breaker_retest_score_sell)
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue
