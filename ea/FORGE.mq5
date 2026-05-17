@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.193"
+#property version "2.198"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -70,7 +70,7 @@
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
 
-const string FORGE_VERSION = "2.7.123";
+const string FORGE_VERSION = "2.7.128";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -9822,6 +9822,24 @@ bool JournalInit() {
          PrintFormat("FORGE JOURNAL: PRAGMA synchronous=NORMAL FAILED — error=%d", GetLastError());
    }
 
+   // v2.7.128 — PRAGMA busy_timeout fix for WAL contention with bridge.py sync.
+   //   Root cause (2026-05-16 Run 49 incident): bridge.py polls Agent-3000 tester DB
+   //   every 60s in 5000-row batches. When FORGE OnInit's INSERT INTO TESTER_RUNS
+   //   fires while bridge holds a WAL read lock, DatabaseExecute() returns false
+   //   silently → last_insert_rowid() = 0 → g_tester_run_id = 0 → ALL subsequent
+   //   SIGNALS rows mis-attributed with run_id=0. Symptom: 20,377 "database is
+   //   locked" errors in tester log + missing TESTER_RUNS row for the new run.
+   //
+   //   Fix: PRAGMA busy_timeout=5000 makes SQLite wait up to 5s for a lock to
+   //   clear before failing the statement (vs failing immediately). All subsequent
+   //   operations on this connection inherit the timeout. Per
+   //   https://www.sqlite.org/pragma.html#pragma_busy_timeout — recommended for any
+   //   multi-process SQLite scenario.
+   if(DatabaseExecute(g_journal_db, "PRAGMA busy_timeout=5000;"))
+      PrintFormat("FORGE JOURNAL: PRAGMA busy_timeout=5000ms applied (WAL contention safety)");
+   else
+      PrintFormat("FORGE JOURNAL: PRAGMA busy_timeout FAILED — error=%d (TESTER_RUNS INSERT may mis-attribute under bridge contention)", GetLastError());
+
    string sql_signals =
       "CREATE TABLE IF NOT EXISTS SIGNALS ("
       "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -10292,15 +10310,41 @@ bool JournalInit() {
          + IntegerToString(ScalperTesterWarmupM5Bars) + ", "
          + IntegerToString(ScalperWarmupSeconds) + ", "
          + IntegerToString(MagicNumber) + ")";
-      DatabaseExecute(g_journal_db, ins);
+      // v2.7.128 — Defense-in-depth retry. busy_timeout above SHOULD handle WAL contention
+      //   internally, but we additionally check return value + retry to cover edge cases
+      //   (e.g., DB temporarily unavailable during bridge sync cycle boundary). Without
+      //   this, the silent-failure pattern from Run 49 (2026-05-16) reappears: INSERT
+      //   fails → last_insert_rowid()=0 → g_tester_run_id=0 → all signals mis-attributed.
+      bool inserted = false;
+      int last_err = 0;
+      for(int attempt = 1; attempt <= 10; attempt++) {
+         if(DatabaseExecute(g_journal_db, ins)) {
+            inserted = true;
+            break;
+         }
+         last_err = GetLastError();
+         // Brief context switch — gives WAL writer a chance to finish + release lock
+         if(attempt < 10) Sleep(100);
+      }
+      if(!inserted) {
+         PrintFormat("FORGE JOURNAL CRITICAL: TESTER_RUNS INSERT failed after 10 retries — last_err=%d. g_tester_run_id will stay 0; ALL signals will mis-attribute with run_id=0. Bridge.py WAL contention suspected — check bridge.log for sync activity at this wall_time.",
+                     last_err);
+      }
       // Read the new run's id into g_tester_run_id so all signals/trades reference it
       int rstmt = DatabasePrepare(g_journal_db, "SELECT last_insert_rowid()");
       if(rstmt != INVALID_HANDLE) {
          if(DatabaseRead(rstmt)) DatabaseColumnInteger(rstmt, 0, g_tester_run_id);
          DatabaseFinalize(rstmt);
       }
-      PrintFormat("FORGE JOURNAL: tester run=%d wall_time=%I64d balance=%.2f version=%s",
-                  g_tester_run_id, (long)GetTickCount64(), AccountInfoDouble(ACCOUNT_BALANCE), FORGE_VERSION);
+      // Sanity check — last_insert_rowid() returns 0 if no successful INSERT on this
+      //   connection. If we got 0 here despite the retry above succeeding, schema is
+      //   wrong (TESTER_RUNS table missing rowid? unlikely with AUTOINCREMENT). Log it.
+      if(inserted && g_tester_run_id <= 0) {
+         PrintFormat("FORGE JOURNAL WARN: TESTER_RUNS INSERT succeeded but last_insert_rowid()=%d — schema unexpected (check AUTOINCREMENT on id column)", g_tester_run_id);
+      }
+      PrintFormat("FORGE JOURNAL: tester run=%d wall_time=%I64d balance=%.2f version=%s (inserted=%s, retries=%d)",
+                  g_tester_run_id, (long)GetTickCount64(), AccountInfoDouble(ACCOUNT_BALANCE), FORGE_VERSION,
+                  inserted ? "true" : "false", inserted ? 0 : 10);
    }
 
    return true;
