@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.199"
+#property version "2.201"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -70,7 +70,7 @@
 //   atoms (previously stubbed at 0). Default-OFF.
 #include <Forge\IctLiquidity.mqh>
 
-const string FORGE_VERSION = "2.7.130";
+const string FORGE_VERSION = "2.7.131";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -2105,6 +2105,7 @@ bool PlaceOpenGroupLeg(
 double NormalizeLot(const double lot);
 bool ValidateStops(const double entry, const double sl, const double tp, const ENUM_ORDER_TYPE type);
 void RebuildGroups();
+void SeedScalperGroupCounter();  // v2.7.131 — magic-collision safety on EA reload
 void ResetScalperSessionStateIfNeeded();
 string DealCloseReasonHint(const long reason_code);
 string BuildRecentClosedDealsJson(const int max_items = 40);
@@ -2213,6 +2214,9 @@ int OnInit() {
    ForgeRefreshScalperAnalytics();
    WriteMarketData();
    RebuildGroups();
+   // v2.7.131 — seed g_scalper_group_counter from broker state to avoid
+   // group_magic collision on EA reload (chart reload / make forge-reload).
+   SeedScalperGroupCounter();
    g_scalper_mode = ScalperMode;
    if(g_scalper_mode != "NONE") {
       Print("FORGE: Native scalper mode = ", g_scalper_mode);
@@ -16042,6 +16046,86 @@ void RebuildGroups() {
    }
    if(ArraySize(g_groups) > 0) {
       Print("FORGE: Rebuilt ", ArraySize(g_groups), " trade groups from open positions");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| SeedScalperGroupCounter (v2.7.131 — magic-collision safety)       |
+//|                                                                   |
+//| Scans open positions + pending orders to find the highest         |
+//| EA-native group_id currently on the broker, then seeds            |
+//| g_scalper_group_counter from that max. Prevents collision on EA   |
+//| reload when open groups exist.                                    |
+//|                                                                   |
+//| FAILURE MODE THIS CLOSES: without seeding, OnInit leaves the      |
+//| module-level g_scalper_group_counter at its 5000 init value       |
+//| (FORGE.mq5:173). If EA reloads (chart reload / make forge-reload  |
+//| / MT5 restart) while open groups G5001-G5005 exist, the next new  |
+//| group becomes G5001 → group_magic = MagicNumber + 5001 → COLLIDES |
+//| with still-open G5001's magic. Position-management lookups by     |
+//| magic_offset would resolve to the wrong group.                    |
+//|                                                                   |
+//| BANDS SCANNED (per FORGE.mq5:51-52 + 10766-10767 + 16611):        |
+//|   primary       : MagicNumber + 5001..9999                        |
+//|   cascade slots : MagicNumber + 25001..29999  (group_id + 20000+s)|
+//|   pre-TP1 recov : MagicNumber + 35001..39999  (group_id + 30009)  |
+//|                                                                   |
+//| Cascade-band magics are AMBIGUOUS — offset 25008 could be group   |
+//| 5001 cascade slot 7 OR group 5008 cascade slot 0. We take the     |
+//| UPPER BOUND (offset - 20000), which over-estimates group_id in    |
+//| some cases. That's defensively correct: the seeded counter is an  |
+//| upper bound, so the next new group_id never collides. Wasting a   |
+//| few slots in the 9999-counter ceiling is harmless (current max:   |
+//| 5018 across all tester DB history).                               |
+//+------------------------------------------------------------------+
+void SeedScalperGroupCounter() {
+   int max_seen = 5000;  // floor at init value — never seed below
+
+   // Scan open positions on this symbol
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(!g_pos.SelectByIndex(i) || g_pos.Symbol() != _Symbol) continue;
+      int pm = (int)g_pos.Magic();
+      int off = pm - MagicNumber;
+      int gid = 0;
+      if(off >= 5001 && off <= 9999)        gid = off;
+      else if(off >= 25001 && off <= 29999) gid = off - 20000;   // cascade band — upper-bound estimate
+      else if(off >= 35001 && off <= 39999) gid = off - 30000;   // pre-TP1 recovery band
+      if(gid > max_seen) max_seen = gid;
+   }
+
+   // Scan pending orders on this symbol (cascade limits / recovery limits)
+   for(int oi = 0; oi < OrdersTotal(); oi++) {
+      ulong ot = OrderGetTicket(oi);
+      if(ot == 0) continue;
+      if(!OrderSelect(ot)) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+      int om = (int)OrderGetInteger(ORDER_MAGIC);
+      int off = om - MagicNumber;
+      int gid = 0;
+      if(off >= 5001 && off <= 9999)        gid = off;
+      else if(off >= 25001 && off <= 29999) gid = off - 20000;
+      else if(off >= 35001 && off <= 39999) gid = off - 30000;
+      if(gid > max_seen) max_seen = gid;
+   }
+
+   if(max_seen > g_scalper_group_counter) {
+      int prev = g_scalper_group_counter;
+      g_scalper_group_counter = max_seen;
+      PrintFormat("FORGE INIT: g_scalper_group_counter seeded from broker state %d → %d "
+                  "(prevents group_magic collision on EA reload). Next group_id will be %d.",
+                  prev, max_seen, max_seen + 1);
+   } else {
+      PrintFormat("FORGE INIT: g_scalper_group_counter stays at %d (no EA-native open groups found above).",
+                  g_scalper_group_counter);
+   }
+
+   // Counter-exhaustion warning: 9999 is the primary-band ceiling (FORGE.mq5:3219 range check).
+   // At counter=9999, the next ++ produces 10000, landing in the empty-buffer band where the
+   // narrow magic-range check at FORGE.mq5:3219 would exclude it → orphan groups invisible to mgmt.
+   if(g_scalper_group_counter >= 9900) {
+      PrintFormat("FORGE WARN: g_scalper_group_counter near ceiling (%d of 9999). "
+                  "Restart the EA after current groups close to reset counter to 5000.",
+                  g_scalper_group_counter);
    }
 }
 
