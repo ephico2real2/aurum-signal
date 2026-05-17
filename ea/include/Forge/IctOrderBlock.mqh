@@ -73,7 +73,9 @@ int            g_ob_ring_count = 0;
 
 // ─── Module-exported globals for atom evaluators ───────────────────────────
 
-int    g_ict_last_breaker_present       = 0;   // 1 if any OB in ring is broken
+int    g_ict_last_atom_ob_broken        = 0;   // 1 if any OB in ring is broken (canonical name per §B.8.2 Cat 4)
+int    g_ict_last_atom_ob_confluence_buy  = 0; // v2.7.136 — Cat 2 OTE_RETRACE atom: active OB aligned with BUY direction near price
+int    g_ict_last_atom_ob_confluence_sell = 0; // v2.7.136 — Cat 2 OTE_RETRACE atom: active OB aligned with SELL direction near price
 int    g_ict_last_breaker_retest_buy    = 0;   // 1 if broken bearish OB retesting (BUY trigger)
 int    g_ict_last_breaker_retest_sell   = 0;   // 1 if broken bullish OB retesting (SELL trigger)
 double g_ict_last_breaker_level         = 0.0; // price level being retested
@@ -255,7 +257,39 @@ void Forge_RebuildOBRing(double atr,
    for(int idx = 0; idx < g_ob_ring_count; idx++) {
       if(g_ob_ring[idx].broken) broken_count++;
    }
-   g_ict_last_breaker_present = (broken_count > 0) ? 1 : 0;
+   g_ict_last_atom_ob_broken = (broken_count > 0) ? 1 : 0;
+}
+
+//+------------------------------------------------------------------+
+//| Forge_HasOBConfluence  (v2.7.136 — Cat 2 OTE_RETRACE atom)        |
+//| PURPOSE: Return true if an active (non-broken, non-mitigated) OB  |
+//|          exists in the trade direction near the current price.   |
+//|          Per §B.8.2 Category 2 weight=1 atom marked "post-Phase 3"|
+//|          — previously stubbed at score+=0 in IctScoring.mqh.     |
+//| PARAMETERS:                                                      |
+//|   direction      — +1 for BUY (looking for bullish OB),          |
+//|                    -1 for SELL (looking for bearish OB)           |
+//|   atr            — current M5 ATR                                |
+//|   tolerance_atr  — proximity tolerance × ATR                      |
+//+------------------------------------------------------------------+
+bool Forge_HasOBConfluence(int direction, double atr, double tolerance_atr) {
+   if(atr <= 0.0) return false;
+   double tol = tolerance_atr * atr;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double mid = (bid + ask) / 2.0;
+   for(int idx = 0; idx < g_ob_ring_count; idx++) {
+      if(g_ob_ring[idx].broken)    continue;  // breaker — that's a Cat 4 atom, not Cat 2
+      if(g_ob_ring[idx].mitigated) continue;
+      bool dir_match = (direction == 1 && g_ob_ring[idx].bullish)
+                    || (direction == -1 && !g_ob_ring[idx].bullish);
+      if(!dir_match) continue;
+      // "Near" = price within tolerance band around the OB zone
+      if(mid >= (g_ob_ring[idx].low - tol) && mid <= (g_ob_ring[idx].high + tol)) {
+         return true;
+      }
+   }
+   return false;
 }
 
 #endif // __FORGE_ICT_ORDER_BLOCK_MQH__

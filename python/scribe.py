@@ -278,13 +278,17 @@ CREATE TABLE IF NOT EXISTS forge_signals (
     ote_retrace_score_sell        INTEGER DEFAULT 0,
     liq_sweep_rev_score_buy       INTEGER DEFAULT 0,
     liq_sweep_rev_score_sell      INTEGER DEFAULT 0,
-    atom_breaker_present          INTEGER DEFAULT 0,
+    -- v2.7.136: atom_breaker_present renamed → atom_ob_broken (§B.8.2 canonical)
+    atom_ob_broken                INTEGER DEFAULT 0,
     atom_breaker_retest_buy       INTEGER DEFAULT 0,
     atom_breaker_retest_sell      INTEGER DEFAULT 0,
     atom_breaker_fvg_buy          INTEGER DEFAULT 0,
     atom_breaker_fvg_sell         INTEGER DEFAULT 0,
     breaker_retest_score_buy      INTEGER DEFAULT 0,
-    breaker_retest_score_sell     INTEGER DEFAULT 0
+    breaker_retest_score_sell     INTEGER DEFAULT 0,
+    -- v2.7.136 — Cat 2 OTE_RETRACE atom_ob_confluence
+    atom_ob_confluence_buy        INTEGER DEFAULT 0,
+    atom_ob_confluence_sell       INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forge_journal_trades (
@@ -769,13 +773,18 @@ class Scribe:
                     -- JournalRecordSignal from ComputeCurrentSilverBulletLabel() (no signature thread).
                     silver_bullet TEXT DEFAULT '',
                     -- v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 cols).
-                    atom_breaker_present INTEGER DEFAULT 0,
+                    -- v2.7.136: atom_breaker_present renamed → atom_ob_broken (matches
+                    --   §B.8.2 canonical). atom_ob_confluence_* added for Cat 2 OTE_RETRACE.
+                    atom_ob_broken INTEGER DEFAULT 0,
                     atom_breaker_retest_buy INTEGER DEFAULT 0,
                     atom_breaker_retest_sell INTEGER DEFAULT 0,
                     atom_breaker_fvg_buy INTEGER DEFAULT 0,
                     atom_breaker_fvg_sell INTEGER DEFAULT 0,
                     breaker_retest_score_buy INTEGER DEFAULT 0,
-                    breaker_retest_score_sell INTEGER DEFAULT 0
+                    breaker_retest_score_sell INTEGER DEFAULT 0,
+                    -- v2.7.136 — Cat 2 OTE_RETRACE atom_ob_confluence (2 cols).
+                    atom_ob_confluence_buy INTEGER DEFAULT 0,
+                    atom_ob_confluence_sell INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_fs_time ON forge_signals(time);
                 CREATE INDEX IF NOT EXISTS idx_fs_outcome ON forge_signals(outcome);
@@ -1068,14 +1077,18 @@ class Scribe:
         #   Per docs/FORGE_SETUP_ICT_MAP.md §B.2 + §B.8.2 (BREAKER_RETEST category).
         #   Sourced from g_ict_last_breaker_* + breaker_retest_score_* globals
         #   in FORGE.mq5 ForgeEvalAtoms when composite_breaker_retest_score_enabled=1.
+        # v2.7.136 — atom_breaker_present renamed → atom_ob_broken per §B.8.2.
+        #   atom_ob_confluence_buy/_sell added for Cat 2 OTE_RETRACE.
         _v133_breaker_cols = [
-            ("atom_breaker_present",        "INTEGER DEFAULT 0"),
+            ("atom_ob_broken",              "INTEGER DEFAULT 0"),
             ("atom_breaker_retest_buy",     "INTEGER DEFAULT 0"),
             ("atom_breaker_retest_sell",    "INTEGER DEFAULT 0"),
             ("atom_breaker_fvg_buy",        "INTEGER DEFAULT 0"),
             ("atom_breaker_fvg_sell",       "INTEGER DEFAULT 0"),
             ("breaker_retest_score_buy",    "INTEGER DEFAULT 0"),
             ("breaker_retest_score_sell",   "INTEGER DEFAULT 0"),
+            ("atom_ob_confluence_buy",      "INTEGER DEFAULT 0"),
+            ("atom_ob_confluence_sell",     "INTEGER DEFAULT 0"),
         ]
         for _col, _decl in _v133_breaker_cols:
             if _col not in fs_cols:
@@ -1481,11 +1494,14 @@ class Scribe:
             #   JournalRecordSignal via ComputeCurrentSilverBulletLabel().
             has_silver_bullet = "silver_bullet" in src_cols
             # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGER cols).
+            # v2.7.136 — atom_breaker_present renamed → atom_ob_broken (§B.8.2 canonical) +
+            #   atom_ob_confluence_buy/_sell added for Cat 2 OTE_RETRACE = 9 cols total.
             v133_breaker_cols = [
-                "atom_breaker_present",
+                "atom_ob_broken",
                 "atom_breaker_retest_buy", "atom_breaker_retest_sell",
                 "atom_breaker_fvg_buy", "atom_breaker_fvg_sell",
                 "breaker_retest_score_buy", "breaker_retest_score_sell",
+                "atom_ob_confluence_buy", "atom_ob_confluence_sell",
             ]
             has_v133_breaker = all(c in src_cols for c in v133_breaker_cols)
 
@@ -1755,12 +1771,13 @@ class Scribe:
                 v124_atom_score_vals = tuple(r[142 + i] if len(r) > 142 + i else 0 for i in range(12))
                 # v2.7.122 F-α — silver_bullet at r[154] (after v124_atom_score_cols 12 cols ending r[153])
                 silver_bullet_val = r[154] if len(r) > 154 else ""
-                # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score at r[155]..r[161]
-                # (7 INTEGER cols, all-or-nothing per has_v133_breaker). SELECT order fixed by
-                # v133_breaker_cols list above: atom_breaker_present, atom_breaker_retest_buy,
-                # atom_breaker_retest_sell, atom_breaker_fvg_buy, atom_breaker_fvg_sell,
-                # breaker_retest_score_buy, breaker_retest_score_sell.
-                v133_breaker_vals = tuple(r[155 + i] if len(r) > 155 + i else 0 for i in range(7))
+                # v2.7.133 Phase 3b + v2.7.136 — BREAKER_RETEST atoms + composite score + OTE OB
+                # confluence at r[155]..r[163] (9 INTEGER cols, all-or-nothing per
+                # has_v133_breaker). SELECT order fixed by v133_breaker_cols list above:
+                # atom_ob_broken, atom_breaker_retest_buy, atom_breaker_retest_sell,
+                # atom_breaker_fvg_buy, atom_breaker_fvg_sell, breaker_retest_score_buy,
+                # breaker_retest_score_sell, atom_ob_confluence_buy, atom_ob_confluence_sell.
+                v133_breaker_vals = tuple(r[155 + i] if len(r) > 155 + i else 0 for i in range(9))
                 insert_params.append((
                     fid, r[1], ts_utc, *r[2:28], source, run_id,
                     r[29], r[30], r[31], wall_time, aurum_rid, killzone_val, min_into_kz_val,
@@ -1861,12 +1878,14 @@ class Scribe:
                         "silver_bullet, "
                         # v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGER cols).
                         # Per docs/FORGE_SETUP_ICT_MAP.md §B.2 (BREAKER_RETEST category).
-                        # Captured at FORGE.mq5 chokepoint via g_ict_last_breaker_* +
-                        # g_ict_last_breaker_retest_score_* set by ForgeEvalAtoms when
-                        # composite_breaker_retest_score_enabled=1.
-                        "atom_breaker_present, atom_breaker_retest_buy, atom_breaker_retest_sell, "
+                        # Captured at FORGE.mq5 chokepoint via g_ict_last_*ob_broken / breaker_* +
+                        # g_ict_last_breaker_retest_score_* set by ForgeEvalAtoms.
+                        # v2.7.136 — atom_breaker_present renamed → atom_ob_broken (§B.8.2);
+                        #   atom_ob_confluence_buy/_sell added for Cat 2 OTE_RETRACE (2 cols).
+                        "atom_ob_broken, atom_breaker_retest_buy, atom_breaker_retest_sell, "
                         "atom_breaker_fvg_buy, atom_breaker_fvg_sell, "
-                        "breaker_retest_score_buy, breaker_retest_score_sell"
+                        "breaker_retest_score_buy, breaker_retest_score_sell, "
+                        "atom_ob_confluence_buy, atom_ob_confluence_sell"
                         ") "
                         # Base group = 41 cols (37 original + 2 v2.7.45 killzone/min_into_kz
                         # + 3 v2.7.47 RegimeState trio). v2.7.110 adds 7 CES cols → 117.
@@ -1884,11 +1903,13 @@ class Scribe:
                         #   = 41+24+45+7+5+9+8+19+1 = 159.
                         # v2.7.133 Phase 3b adds 7 BREAKER_RETEST atom + composite score cols
                         #   = 41+24+45+7+5+9+8+19+1+7 = 166.
+                        # v2.7.136 adds 2 OTE_RETRACE atom_ob_confluence cols
+                        #   = 41+24+45+7+5+9+8+19+1+7+2 = 168.
                         # If you add/remove a column in the col list ABOVE, bump both the
                         # count below AND the matching *_vals tuple build above. (See
                         # forge-monitor SKILL.md Check C — v2.7.45/47 historical incident
                         # where this drifted silently.)
-                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 19 + 1 + 7)) + ")",
+                        "VALUES (" + ",".join(["?"] * (41 + 24 + 45 + 7 + 5 + 9 + 8 + 19 + 1 + 7 + 2)) + ")",
                         insert_params,
                     )
                     inserted = len(insert_params)

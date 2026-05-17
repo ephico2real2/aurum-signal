@@ -55,7 +55,7 @@
 //+------------------------------------------------------------------+
 
 #property strict
-#property version "2.205"
+#property version "2.206"
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Files\FileTxt.mqh>
@@ -80,7 +80,7 @@
 //   pending operator approval — see open thread on acronym table.
 #include <Forge\IctComment.mqh>
 
-const string FORGE_VERSION = "2.7.135";
+const string FORGE_VERSION = "2.7.136";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARITY INVARIANT (v2.7.30+) — Backtest-knob-transfer-to-live contract
@@ -8290,9 +8290,41 @@ void ForgeEvalAtoms() {
       g_ict_last_atom_htf_aligned_sell = 0;
    }
 
+   // v2.7.133 / v2.7.135 / v2.7.136 — OB ring rebuild MUST happen BEFORE any
+   //   composite score reads its globals. Cat 2 OTE_RETRACE reads
+   //   g_ict_last_atom_ob_confluence_* (Phase 3 dependency), Cat 4 BREAKER_RETEST
+   //   reads g_ict_last_atom_ob_broken + the breaker_* globals. One ring rebuild
+   //   serves both consumers. Default OFF; params env-tunable via FORGE_ICT_OB_*.
+   bool ob_ring_needed = g_sc.composite_breaker_retest_score_enabled
+                      || g_sc.composite_ote_retrace_score_enabled;
+   if(ob_ring_needed) {
+      Forge_RebuildOBRing(m5_atr_now,
+                          g_sc.ict_ob_displacement_min_atr,
+                          g_sc.ict_ob_lookback_bars,
+                          g_sc.ict_ob_retest_tolerance_atr,
+                          g_sc.ict_ob_fvg_confluence_tolerance_atr);
+      // Cat 2 OTE_RETRACE atom_ob_confluence — populate per direction
+      g_ict_last_atom_ob_confluence_buy  = Forge_HasOBConfluence(1,  m5_atr_now,
+                                            g_sc.ict_ob_fvg_confluence_tolerance_atr) ? 1 : 0;
+      g_ict_last_atom_ob_confluence_sell = Forge_HasOBConfluence(-1, m5_atr_now,
+                                            g_sc.ict_ob_fvg_confluence_tolerance_atr) ? 1 : 0;
+   } else {
+      // Zero everything when neither consumer is enabled — schema-parity byte-stable.
+      g_ob_ring_count                        = 0;
+      g_ict_last_atom_ob_broken              = 0;
+      g_ict_last_breaker_retest_buy          = 0;
+      g_ict_last_breaker_retest_sell         = 0;
+      g_ict_last_breaker_level               = 0.0;
+      g_ict_last_breaker_fvg_buy             = 0;
+      g_ict_last_breaker_fvg_sell            = 0;
+      g_ict_last_atom_ob_confluence_buy      = 0;
+      g_ict_last_atom_ob_confluence_sell     = 0;
+   }
+
    // v2.7.124 Phase B — composite scores. Each enable flag default OFF; compute
    //   BOTH directions when ON so the scorer column pair logs simultaneously.
    //   ComputeCategoryScore lives in <Forge\IctScoring.mqh> (anti-overfit unified fn).
+   //   Order: OB ring rebuilt ABOVE → scores can read g_ict_last_atom_ob_*.
    if(g_sc.composite_mss_cont_score_enabled) {
       g_ict_last_mss_cont_score_buy  = ComputeCategoryScore(1, 1);
       g_ict_last_mss_cont_score_sell = ComputeCategoryScore(1, -1);
@@ -8317,29 +8349,12 @@ void ForgeEvalAtoms() {
       g_ict_last_liq_sweep_rev_score_sell = 0;
    }
 
-   // v2.7.133 Phase 3 OB body — rebuild OB ring + score BREAKER_RETEST.
-   //   v2.7.135 — params now env-tunable via FORGE_ICT_OB_* (see g_sc.ict_ob_*).
-   //   Defaults match the v2.7.133 hardcodes: 1.5×ATR displacement, 50-bar
-   //   lookback, 0.5×ATR retest tolerance, 0.5×ATR FVG-confluence tolerance.
    if(g_sc.composite_breaker_retest_score_enabled) {
-      Forge_RebuildOBRing(m5_atr_now,
-                          g_sc.ict_ob_displacement_min_atr,
-                          g_sc.ict_ob_lookback_bars,
-                          g_sc.ict_ob_retest_tolerance_atr,
-                          g_sc.ict_ob_fvg_confluence_tolerance_atr);
       g_ict_last_breaker_retest_score_buy  = ComputeCategoryScore(4, 1);
       g_ict_last_breaker_retest_score_sell = ComputeCategoryScore(4, -1);
    } else {
-      // Zero everything when disabled — schema-parity byte-stable logs
-      g_ob_ring_count                        = 0;
-      g_ict_last_breaker_present             = 0;
-      g_ict_last_breaker_retest_buy          = 0;
-      g_ict_last_breaker_retest_sell         = 0;
-      g_ict_last_breaker_level               = 0.0;
-      g_ict_last_breaker_fvg_buy             = 0;
-      g_ict_last_breaker_fvg_sell            = 0;
-      g_ict_last_breaker_retest_score_buy    = 0;
-      g_ict_last_breaker_retest_score_sell   = 0;
+      g_ict_last_breaker_retest_score_buy  = 0;
+      g_ict_last_breaker_retest_score_sell = 0;
    }
 }
 
@@ -10070,13 +10085,19 @@ bool JournalInit() {
       // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score per §B.8.2.
       //   Populated by Forge_RebuildOBRing + ComputeCategoryScore(4,*) when
       //   composite_breaker_retest_score_enabled=1. All-zero rows when OFF.
-      "atom_breaker_present INTEGER DEFAULT 0, "
+      //   v2.7.136: atom_breaker_present renamed → atom_ob_broken per §B.8.2 canonical.
+      "atom_ob_broken INTEGER DEFAULT 0, "
       "atom_breaker_retest_buy INTEGER DEFAULT 0, "
       "atom_breaker_retest_sell INTEGER DEFAULT 0, "
       "atom_breaker_fvg_buy INTEGER DEFAULT 0, "
       "atom_breaker_fvg_sell INTEGER DEFAULT 0, "
       "breaker_retest_score_buy INTEGER DEFAULT 0, "
-      "breaker_retest_score_sell INTEGER DEFAULT 0"
+      "breaker_retest_score_sell INTEGER DEFAULT 0, "
+      // v2.7.136 — Cat 2 OTE_RETRACE atom_ob_confluence (post-Phase 3 dependency,
+      //   weight 1 per §B.8.2). Populated by Forge_HasOBConfluence in
+      //   IctOrderBlock.mqh when composite_ote_retrace_score_enabled=1.
+      "atom_ob_confluence_buy INTEGER DEFAULT 0, "
+      "atom_ob_confluence_sell INTEGER DEFAULT 0"
       ");";
 
    // TRADES schema v2: UNIQUE(deal_ticket, run_id) allows multiple tester runs
@@ -10311,13 +10332,21 @@ bool JournalInit() {
    // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 new columns).
    //   Populated by Forge_RebuildOBRing + ComputeCategoryScore(4,*) when
    //   composite_breaker_retest_score_enabled=1.
-   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_present INTEGER DEFAULT 0;");
+   // v2.7.136 — atom_breaker_present renamed → atom_ob_broken per §B.8.2 canonical.
+   //   ADD COLUMN is idempotent; SQLite ignores existing-column ALTER. Pre-v2.7.136
+   //   DBs may still have atom_breaker_present sitting in the schema; that column
+   //   is now orphaned (no writer). Operator may DROP it via `ALTER TABLE SIGNALS
+   //   DROP COLUMN atom_breaker_present` (SQLite 3.35+) or leave it as dead column.
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_ob_broken INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_retest_buy INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_retest_sell INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_fvg_buy INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_breaker_fvg_sell INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN breaker_retest_score_buy INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN breaker_retest_score_sell INTEGER DEFAULT 0;");
+   // v2.7.136 — Cat 2 OTE_RETRACE atom_ob_confluence (post-Phase 3 dependency)
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_ob_confluence_buy INTEGER DEFAULT 0;");
+   DatabaseExecute(g_journal_db, "ALTER TABLE SIGNALS ADD COLUMN atom_ob_confluence_sell INTEGER DEFAULT 0;");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_silver_bullet ON SIGNALS(silver_bullet);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_h1_di_balance ON SIGNALS(h1_di_balance);");
    DatabaseExecute(g_journal_db, "CREATE INDEX IF NOT EXISTS idx_sig_m5_cascade ON SIGNALS(m5_lh_cascade, m5_hl_cascade);");
@@ -10599,11 +10628,13 @@ void JournalRecordSignal(string outcome, string gate_reason,
       // v2.7.122 F-α — Silver Bullet sub-window tag (LONDON_SB | AM_SB | PM_SB | "")
       "silver_bullet, "
       // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGERs).
-      //   Sourced from g_ict_last_breaker_* + g_ict_last_breaker_retest_score_* set
+      //   Sourced from g_ict_last_*ob_broken / breaker_* + g_ict_last_breaker_retest_score_* set
       //   in ForgeEvalAtoms() when composite_breaker_retest_score_enabled=1.
-      "atom_breaker_present, atom_breaker_retest_buy, atom_breaker_retest_sell, "
+      "atom_ob_broken, atom_breaker_retest_buy, atom_breaker_retest_sell, "
       "atom_breaker_fvg_buy, atom_breaker_fvg_sell, "
-      "breaker_retest_score_buy, breaker_retest_score_sell"
+      "breaker_retest_score_buy, breaker_retest_score_sell, "
+      // v2.7.136 — Cat 2 OTE_RETRACE atom_ob_confluence (2 INTEGERs)
+      "atom_ob_confluence_buy, atom_ob_confluence_sell"
       ") VALUES ("
       + IntegerToString((long)TimeCurrent()) + ", "
       + "'" + _Symbol + "', "
@@ -10776,13 +10807,17 @@ void JournalRecordSignal(string outcome, string gate_reason,
       // v2.7.122 F-α — silver_bullet tag (self-populated above; "" outside SB windows)
       + "'" + silver_bullet + "', "
       // v2.7.133 Phase 3b — BREAKER_RETEST atoms + composite score (7 INTEGERs).
-      + IntegerToString(g_ict_last_breaker_present)               + ", "
+      //   v2.7.136 — atom_breaker_present global renamed → g_ict_last_atom_ob_broken.
+      + IntegerToString(g_ict_last_atom_ob_broken)                + ", "
       + IntegerToString(g_ict_last_breaker_retest_buy)            + ", "
       + IntegerToString(g_ict_last_breaker_retest_sell)           + ", "
       + IntegerToString(g_ict_last_breaker_fvg_buy)               + ", "
       + IntegerToString(g_ict_last_breaker_fvg_sell)              + ", "
       + IntegerToString(g_ict_last_breaker_retest_score_buy)      + ", "
-      + IntegerToString(g_ict_last_breaker_retest_score_sell)
+      + IntegerToString(g_ict_last_breaker_retest_score_sell)     + ", "
+      // v2.7.136 — Cat 2 OTE_RETRACE atom_ob_confluence (2 INTEGERs)
+      + IntegerToString(g_ict_last_atom_ob_confluence_buy)        + ", "
+      + IntegerToString(g_ict_last_atom_ob_confluence_sell)
       + ")";
 
    // v2.7.111 — when batch_txn knob is ON, defer INSERT to the tick-end flush queue

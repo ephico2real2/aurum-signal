@@ -319,8 +319,11 @@ int ComputeCategoryScore(int category, int direction)
       FVGZone fvg_z;
       double current_price = (direction == 1) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       if(Forge_GetActiveFVGAlignedWith(direction == 1 ? "BUY" : "SELL", current_price, fvg_z)) score += 2;
-      // OB_confluence — Phase 3 stub (IctOrderBlock.mqh module not yet shipped)
-      score += 0;
+      // v2.7.136 — OB_confluence atom now wired (Phase 3 OB module shipped v2.7.133).
+      // Active (non-broken, non-mitigated) OB in trade direction near current price.
+      // Per §B.8.2 Category 2 weight=1.
+      if((direction == 1  && g_ict_last_atom_ob_confluence_buy  > 0) ||
+         (direction == -1 && g_ict_last_atom_ob_confluence_sell > 0)) score += 1;
       if(Atom_KillzoneFavorable(2, direction)) score += 1;
       if(Atom_HTFAligned(direction)) score += 1;
    }
@@ -341,7 +344,7 @@ int ComputeCategoryScore(int category, int direction)
       //                 breaker_retest_in_progress(3) + breaker_fvg_confluence(2) +
       //                 KZ_favorable(1) + HTF_aligned(1) = 10
       // Globals populated by Forge_RebuildOBRing() in IctOrderBlock.mqh.
-      if(g_ict_last_breaker_present > 0) score += 3;
+      if(g_ict_last_atom_ob_broken > 0) score += 3;
       if((direction == 1  && g_ict_last_breaker_retest_buy  > 0) ||
          (direction == -1 && g_ict_last_breaker_retest_sell > 0)) score += 3;
       if((direction == 1  && g_ict_last_breaker_fvg_buy  > 0) ||
