@@ -1,5 +1,5 @@
 {
-  "version": "2.7.123",
+  "version": "2.7.128",
   "description": "TEMPLATE \u2014 edit this file (or FORGE_* keys in .env); run `make scalper-env-sync` / `make forge-compile` to generate `config/scalper_config.json`. Do not hand-edit the generated JSON; `version` is always overwritten from the repo VERSION file.",
   "bb_bounce": {
     "enabled": true,
@@ -221,7 +221,16 @@
     "kz_ny_open_start_min": 420,
     "kz_ny_open_end_min": 600,
     "kz_london_close_start_min": 600,
-    "kz_london_close_end_min": 720
+    "kz_london_close_end_min": 720,
+    "_comment_f_alpha_v2_7_122": "v2.7.122 F-\u03b1 \u2014 5th killzone (NY PM) + 3 Silver Bullet sub-windows per FORGE_SETUP_ICT_MAP.md \u00a7B.7.3",
+    "kz_ny_pm_start_min": 810,
+    "kz_ny_pm_end_min": 960,
+    "sb_london_start_min": 180,
+    "sb_london_end_min": 240,
+    "sb_am_start_min": 600,
+    "sb_am_end_min": 660,
+    "sb_pm_start_min": 840,
+    "sb_pm_end_min": 900
   },
   "safety": {
     "max_spread_points": 30,
@@ -246,6 +255,8 @@
     "fast_lock_min_profit_points": 5,
     "fast_lock_spread_guard_mult": 1.2,
     "fast_lock_breath_mult": 1.35,
+    "lock_floor_pips_enabled": 0,
+    "lock_floor_pips": 25.0,
     "adx_hysteresis_enabled": 1,
     "adx_hysteresis_apply_in_tester": 0,
     "adx_trend_enter": 54.0,

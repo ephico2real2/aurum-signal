@@ -165,6 +165,14 @@ test:
 test-api:
 	@$(PYTHON) $(SCRIPTS)/test_api.py
 
+# Spoof-test the LISTENER ingest allow-list against all known channels using
+# the production helpers (no service restart, no touching launchd). Pass
+# ALLOW='-1002...' to override the env without editing .env:
+#   make test-ingest-gate
+#   make test-ingest-gate ALLOW=-1002034822451,-1001959885205
+test-ingest-gate:
+	@$(PYTHON) $(SCRIPTS)/test_listener_ingest_gate.py $(if $(ALLOW),--allow=$(ALLOW))
+
 test-ui:
 	@cd $(TESTS) && npx playwright test --reporter=list
 

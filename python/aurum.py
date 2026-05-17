@@ -13,7 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from anthropic import Anthropic
+from anthropic import (
+    Anthropic,
+    APIStatusError,
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+    RateLimitError,
+    InternalServerError,
+)
 from telethon import TelegramClient, events
 
 from scribe import get_scribe
@@ -224,9 +234,88 @@ class Aurum:
         except httpx.TimeoutException as e:
             log.warning("AURUM Claude API timeout: %s", e)
             return "AURUM: Claude API timed out. Please retry."
+        except APITimeoutError as e:
+            log.warning("AURUM Anthropic SDK timeout: %s", e)
+            return "AURUM: Claude API timed out. Please retry."
+        except APIConnectionError as e:
+            log.warning("AURUM Anthropic connection error: %s", e)
+            return "🌐 AURUM offline — can't reach Anthropic API (network). Retry shortly."
+        except APIStatusError as e:
+            return self._format_anthropic_api_error(e)
         except Exception as e:
             log.error(f"AURUM query error: {e}")
-            return f"AURUM: Error — {str(e)[:100]}"
+            # Preserve full message (no 100-char truncation — earlier truncation hid
+            # the "Your credit balance is too low" wording in the credit-empty case).
+            return f"AURUM: Error — {str(e)[:400]}"
+
+    def _format_anthropic_api_error(self, err: APIStatusError) -> str:
+        """Translate an anthropic.APIStatusError into a short actionable Telegram reply.
+
+        Why: the SDK's repr is `"Error code: 400 - {'type': 'error', 'error': {...}}"`,
+        which previously got truncated at 100 chars and surfaced as "AURUM: Error —
+        Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error',
+        'message': 'Your cred" — operator couldn't tell credit-empty from any other
+        400. We extract the structured `error.message` and map known causes to a
+        clean instruction (top up, check key, retry, etc.).
+        """
+        # Pull the structured Anthropic error envelope when available.
+        body = getattr(err, "body", None) or {}
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (ValueError, TypeError):
+                body = {}
+        err_obj = (body or {}).get("error") if isinstance(body, dict) else None
+        err_type = ""
+        err_msg = ""
+        if isinstance(err_obj, dict):
+            err_type = str(err_obj.get("type") or "").strip()
+            err_msg = str(err_obj.get("message") or "").strip()
+        status = getattr(err, "status_code", None)
+        msg_lower = err_msg.lower()
+
+        # Log the full thing once at ERROR so the file always has the request_id +
+        # full payload for postmortems.
+        request_id = getattr(err, "request_id", None) or "—"
+        log.error(
+            "AURUM Anthropic API error status=%s type=%s request_id=%s message=%s",
+            status, err_type or type(err).__name__, request_id, err_msg or str(err),
+        )
+
+        # Map the common operator-actionable cases to a clean Telegram reply.
+        if "credit balance is too low" in msg_lower or "billing" in msg_lower:
+            return (
+                "💳 AURUM offline — Anthropic credit balance is empty.\n"
+                "Top up at https://console.anthropic.com/settings/billing then resend."
+            )
+        if isinstance(err, AuthenticationError) or err_type == "authentication_error":
+            return (
+                "🔐 AURUM offline — Anthropic rejected the API key "
+                "(invalid, revoked, or expired).\n"
+                "Check ANTHROPIC_API_KEY in .env, then `make reload-bridge`."
+            )
+        if isinstance(err, PermissionDeniedError) or err_type == "permission_error":
+            return (
+                "🔐 AURUM offline — API key lacks permission for this model/workspace.\n"
+                f"Details: {err_msg or 'permission denied'}"
+            )
+        if isinstance(err, RateLimitError) or err_type in ("rate_limit_error", "overloaded_error"):
+            return (
+                "⏳ AURUM rate-limited by Anthropic — please retry in a few seconds.\n"
+                f"Details: {err_msg or err_type}"
+            )
+        if isinstance(err, InternalServerError) or (status and 500 <= int(status) < 600):
+            return (
+                "🌩 Anthropic API server error — please retry shortly.\n"
+                f"Details: {err_msg or f'HTTP {status}'}"
+            )
+        if isinstance(err, BadRequestError) or err_type == "invalid_request_error":
+            # Generic 400 catch-all: surface the FULL message field (not truncated),
+            # operator needs to see what was rejected.
+            return f"⚠️ AURUM: Anthropic rejected the request — {err_msg or str(err)[:400]}"
+
+        # Truly unknown APIStatusError shape — give whatever we have.
+        return f"⚠️ AURUM: Anthropic API error (status={status}) — {err_msg or str(err)[:400]}"
 
     def _build_system_prompt(self, context: str, memory: str = "") -> str:
         soul  = _SOUL_CACHE or self._soul

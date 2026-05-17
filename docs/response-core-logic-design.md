@@ -477,3 +477,14 @@ I have the full picture. Writing the review with file:line cites + the refactor 
 ⏺ Background work standing:
   - #47 missed-opportunities audit — completed, 5 composites proposed in docs/april/
   - v2.7.95 refactor — branch up, baseline backup taken, awaiting your Option A vs B decision before EA edits
+
+
+
+####
+
+ ok- enabled all this knob in releases - i will start test and in the background create a branch and start working on "[Pasted text #3 +12 lines]" cancel sweep runs every M5
+  close (300s) 
+
+enhancement.
+
+  buy at market price ==> buy ==> 1 legs to filled market order and another 2nd leg for a buy stop

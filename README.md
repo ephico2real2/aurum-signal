@@ -10,6 +10,7 @@
 - **TradingView Desktop with CDP enabled (`localhost:9222`)** (LENS live indicator source)
 - **TradingView MCP server (forked)**: `https://github.com/ephico2real2/tradingview-mcp-aurum.git` — operator's fork with F2 mutex + F3 HTTP transport + F4 reconnect (see `docs/lens/LENS_MCP_FORK_ENHACEMENT.md`). Upstream: `https://github.com/LewisWJackson/tradingview-mcp-jackson.git`.
 - **Redis 7+** (Athena read-cache, port 6379 default) — install: `brew install redis && brew services start redis`. Verify: `redis-cli ping` returns `PONG`. Athena API caches hot scribe queries in Redis with TTL=2s to prevent dashboard polling from blocking on heavy backtest write transactions. `ATHENA_CACHE_ENABLED=0` in `.env` disables the cache layer (falls back to direct scribe reads). Future: Dragonfly via Docker in F6 compose stack (Redis-API-compatible drop-in replacement; no code change required).
+- **RedisInsight (optional GUI)** — `brew install --cask redis-insight`. Launch `Redis Insight.app` (Applications) → **Add Database** → host `127.0.0.1`, port `6379`, no auth. Filter the key browser on prefix `signal:` to see only Athena's cached entries. Useful for confirming the cache is populating during dashboard polling (key count rises during use), inspecting cached payloads, and watching TTL countdown. Not required for runtime — `redis-cli` covers the same checks from terminal.
 - **Telegram account + Bot API token** (LISTENER intake + HERALD/AURUM notifications)
 - **Anthropic API key** (LISTENER parsing + AURUM intelligence layer)
 - **Tesseract OCR (optional, recommended for chart image extraction quality)**
@@ -98,14 +99,38 @@ make setup-mt5-link
 python3 python/bridge.py --mode WATCH
 ```
 
-## Testing (clean machine)
+## Python environment — `.venv`
 
-Avoid PEP 668 “externally managed” Python: use a **repo `.venv`**, not system `pip`.
+Every Python service (bridge, listener, aurum, athena) runs from
+**`.venv/bin/python`** — the launchd plists in `services/macos/rendered/`
+hardcode that interpreter, and the `Makefile` auto-selects it when present
+(`PYTHON := .venv/bin/python`). System Python is PEP 668 externally-managed and
+**must not** be used for `pip install` here — packages installed there are
+invisible to the services.
+
+```bash
+make venv                                # one-shot: create .venv + install requirements.txt + tests/requirements-test.txt
+.venv/bin/pip install -r requirements.txt  # re-sync after editing pins
+.venv/bin/pip show <pkg>                   # what version is the venv on?
+.venv/bin/python -c "import <pkg>; print(<pkg>.__version__)"  # confirm import
+```
+
+After changing a package the services depend on, reload them:
+
+```bash
+make reload-athena   # or reload-bridge / reload (all four)
+```
+
+If `.venv` gets corrupted, it's safe to nuke and rebuild — no project state
+lives there: `rm -rf .venv && make venv`. The full operator runbook
+(installing single packages, recovering from PEP 668 errors, worked example)
+is in `CLAUDE.md` → *Python environment — always use `.venv`*.
+
+### Testing (clean machine)
 
 ```bash
 make venv
-# Optional: Playwright + npm UI harness (make test / test-ui)
-make setup-tests
+make setup-tests                        # optional: Playwright + npm UI harness for make test / test-ui
 
 make test-api                           # scripts/test_api.py (needs services per that script)
 .venv/bin/python -m pytest tests/ -q    # full unit/API pytest tree (jsonschema, etc.)

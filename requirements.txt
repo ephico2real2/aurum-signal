@@ -16,7 +16,7 @@ python-telegram-bot>=22.0         # Bot API library for Herald notifications
 flask>=3.1.0,<4.0.0              # 4.x TBD — cap for safety
 flask-cors>=6.0.0
 flask-swagger-ui>=5.0.0
-redis>=5.0                       # redis-py client for Athena read-cache. brew install redis-server (server is 8.x). Future: Dragonfly via Docker in F6 compose, same redis-py client. No upper cap — let pip take latest (5.3.1 currently installed).
+redis==7.4.0                     # redis-py client for Athena read-cache (pinned). 7.4.0 release (2026-03-24): fixes password-leak in ConnectionPool __repr__, cluster metrics AttributeError when connection/ClusterNode is None, refactored MultiDBClient health-check, exposes Otel classes via redis.observability. Requires Python>=3.10. Supports Redis server 7.2/7.4/8.0/8.2 (brew installs 8.x). Future: Dragonfly via Docker in F6 compose, same client.
 
 # ── HTTP ──────────────────────────────────────────────────────────
 requests>=2.33.0

@@ -82,6 +82,16 @@ VISION_LOW_CONFIDENCE_HOLD = os.environ.get("VISION_LOW_CONFIDENCE_HOLD", "true"
 LISTENER_SIGNAL_MEDIA_SUMMARY_TO_BOT = os.environ.get(
     "LISTENER_SIGNAL_MEDIA_SUMMARY_TO_BOT", "true"
 ).lower() in ("1", "true", "yes")
+# Credit gate: when on (default), only messages from rooms in
+# SIGNAL_TRADE_ROOMS/ACTIVE_SIGNAL_TRADE_ROOMS are parsed via Claude Haiku.
+# Watched-but-non-tradable channels fall through to the free regex parser.
+# Set LISTENER_CLAUDE_TRADE_ROOMS_ONLY=0 for backfill / parser-tuning runs where
+# you intentionally want every channel parsed by Claude.
+LISTENER_CLAUDE_TRADE_ROOMS_ONLY = os.environ.get(
+    "LISTENER_CLAUDE_TRADE_ROOMS_ONLY", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+
+
 LISTENER_SIGNAL_MEDIA_ARCHIVE_ENABLED = os.environ.get(
     "LISTENER_SIGNAL_MEDIA_ARCHIVE_ENABLED", "true"
 ).lower() in ("1", "true", "yes")
@@ -99,6 +109,40 @@ def _normalize_allowlist_token(value: str) -> str:
     value = unicodedata.normalize("NFKC", value or "")
     value = re.sub(r"\s+", " ", value).strip().lower()
     return value
+
+
+def _parse_chat_token_list(env_value: str) -> set[str]:
+    """Parse a comma-separated env value into a set of normalized chat tokens.
+    Tokens may be chat_ids (e.g. -1001234567890) or channel titles (e.g. "GARRY'S SIGNALS").
+    """
+    if not env_value or not env_value.strip():
+        return set()
+    return {
+        _normalize_allowlist_token(token)
+        for token in env_value.split(",")
+        if token and token.strip()
+    }
+
+
+# Ingest gate (strict allow-list). Runs at the very top of _handle_message,
+# before any work (scribe, media, Claude). Use this to pin processing to a
+# subset of subscribed channels — anything NOT in this list is dropped at
+# ingest. If unset, all subscribed channels process normally.
+#
+# Design note: a separate block-list was considered and removed — an allow-list
+# already implies "everything else is blocked", so a second flag added config
+# surface (precedence rules between allow and block) for zero new capability.
+# To mute a channel, narrow the allow-list to exclude it.
+#
+# Tokens are comma-separated with NO surrounding whitespace (matches operator
+# convention for env-list values). Each token can be a chat_id (e.g.
+# -1001234567890) OR a channel title (case/whitespace-normalized match — handles
+# unicode quotes etc.). Spaces inside a channel title are fine, only the comma
+# separators must be clean. Example:
+#   LISTENER_INGEST_ALLOWED_CHATS=-1001959885205,-1002034822451
+LISTENER_INGEST_ALLOWED_CHATS = _parse_chat_token_list(
+    os.environ.get("LISTENER_INGEST_ALLOWED_CHATS", "")
+)
 
 
 def _parse_signal_trade_rooms() -> tuple[set[str], str]:
@@ -216,6 +260,19 @@ class Listener:
             log.info(
                 "LISTENER: %s empty — all rooms are tradable",
                 SIGNAL_TRADE_ROOMS_ENV_NAMES,
+            )
+        if LISTENER_INGEST_ALLOWED_CHATS:
+            log.info(
+                "LISTENER: ingest gate = ALLOW-LIST (%d entries from "
+                "LISTENER_INGEST_ALLOWED_CHATS): %s — all other subscribed "
+                "channels will be DROPPED at the top of _handle_message",
+                len(LISTENER_INGEST_ALLOWED_CHATS),
+                sorted(LISTENER_INGEST_ALLOWED_CHATS),
+            )
+        else:
+            log.info(
+                "LISTENER: ingest gate inactive — all subscribed channels "
+                "will be processed (set LISTENER_INGEST_ALLOWED_CHATS to filter)"
             )
         log.info(f"LISTENER initialised — watching {len(CHANNELS)} channels")
 
@@ -582,6 +639,26 @@ class Listener:
         if not text.strip() and not has_media:
             return
 
+        # Ingest gate (strict allow-list).
+        # See LISTENER_INGEST_ALLOWED_CHATS env docs near the top of this file.
+        # Runs BEFORE staleness tracking, dedup, scribe writes, media download,
+        # and Claude — full silence for chats not in the allow-list.
+        if LISTENER_INGEST_ALLOWED_CHATS:
+            _chat_id = getattr(msg, "chat_id", None)
+            _channel_title = getattr(getattr(msg, "chat", None), "title", "") or ""
+            _tokens: set[str] = set()
+            for v in Listener._chat_id_variants(_chat_id):
+                _tokens.add(_normalize_allowlist_token(v))
+            if _channel_title:
+                _tokens.add(_normalize_allowlist_token(_channel_title))
+            if not (_tokens & LISTENER_INGEST_ALLOWED_CHATS):
+                log.debug(
+                    "LISTENER ingest gate: dropped chat_id=%s channel=%r "
+                    "— not in LISTENER_INGEST_ALLOWED_CHATS",
+                    _chat_id, _channel_title,
+                )
+                return
+
         # Track last ingest timestamp for staleness detection
         self._last_ingest_at = datetime.now(timezone.utc)
 
@@ -614,7 +691,7 @@ class Listener:
                 pass
 
         source_type = "MIXED" if (text.strip() and has_media) else ("IMAGE" if has_media else "TEXT")
-        parsed = await self._parse(text) if text.strip() else {"type": "IGNORE"}
+        parsed = await self._parse(text, chat_id=msg.chat_id, channel=channel) if text.strip() else {"type": "IGNORE"}
         parsed = self._normalize_parsed(parsed)
         vision_id = None
         vision_result = None
@@ -875,7 +952,33 @@ class Listener:
             if vision_id:
                 self.scribe.update_vision_extraction_result(vision_id, "DISPATCHED_MANAGEMENT", linked_signal_id=signal_id)
 
-    async def _parse(self, text: str) -> dict | None:
+    async def _parse(self, text: str, chat_id=None, channel: str = "") -> dict | None:
+        # Credit gate: skip Claude for messages outside the trade-room allowlist.
+        # Why: Listener watches several signal channels but only ACTIVE_SIGNAL_TRADE_ROOMS
+        # produce executable signals — parsing chit-chat in non-tradable rooms with
+        # Claude burns API credit for no execution outcome. Falls through to the
+        # regex fallback (free) so we still write IGNORE/ENTRY rows to scribe.
+        if (
+            LISTENER_CLAUDE_TRADE_ROOMS_ONLY
+            and SIGNAL_TRADE_ROOMS
+            and chat_id is not None
+        ):
+            in_allowlist = False
+            if channel:
+                if Listener._normalize_room_name(channel) in SIGNAL_TRADE_ROOMS:
+                    in_allowlist = True
+            if not in_allowlist:
+                for id_variant in Listener._chat_id_variants(chat_id):
+                    if id_variant in SIGNAL_TRADE_ROOMS:
+                        in_allowlist = True
+                        break
+            if not in_allowlist:
+                log.debug(
+                    "LISTENER credit gate: skipping Claude for chat_id=%s channel=%r "
+                    "(not in trade-room allowlist; using regex fallback)",
+                    chat_id, channel,
+                )
+                return self._fallback_parse(text)
         if not self.claude:
             return self._fallback_parse(text)
         try:
